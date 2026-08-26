@@ -163,8 +163,24 @@ jobs:
           # An `if`, not `[ … ] && …`: under `set -e` a false test as the last
           # command of a line is a FAILING step.
           if [ "${{ runner.os }}" = "Windows" ]; then bin="$bin.exe"; fi
-          "$bin" --help | grep -q 'backtest'
-          "$bin" rules | grep -q 'pipe-to-tail'
+
+          # CAPTURE FIRST, then grep the variable — never `"$bin" | grep -q`.
+          #
+          # This step runs under `bash -e -o pipefail`. `grep -q` exits at its
+          # first match and closes the pipe, and the binary — correctly, since
+          # v2.0.0 — then dies of SIGPIPE with status 141 like any Unix
+          # filter. Under pipefail that is a FAILED step, so the more
+          # correctly the binary behaves the harder this breaks.
+          #
+          # Both spellings were wrong here in turn, which is why this comment
+          # is long: before the SIGPIPE fix the same two lines failed with 101
+          # (a Rust panic writing to the closed pipe) on this same target and
+          # no other. A command substitution drains the output completely, so
+          # there is no early reader and no signal either way.
+          help=$("$bin" --help)
+          printf '%s' "$help" | grep -q 'backtest'
+          rules=$("$bin" rules)
+          printf '%s' "$rules" | grep -q 'pipe-to-tail'
           # The real thing: one command through the real rule engine.
           out=$("$bin" check 'git push origin main 2>&1 | tail -5')
           printf '%s\n' "$out"
