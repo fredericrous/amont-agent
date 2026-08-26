@@ -23,7 +23,7 @@
 //! `has_flag` skips it.
 //!
 //! The blanking discipline is lifted from
-//! `amont_runtime::hooks::ban_terms::blank_non_code`: blank rather than delete,
+//! amont's `ban_terms::blank_non_code`: blank rather than delete,
 //! so byte offsets stay meaningful and a reported span still points at the
 //! right part of the original text.
 //!

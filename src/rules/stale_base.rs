@@ -216,7 +216,7 @@ fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
     let from = creation.start.unwrap_or_else(|| "HEAD".to_string());
     // `feat/x` and `myremote/x` look the same to `examine`. Ask git which.
     if from.contains('/')
-        && amont_runtime::git::succeeds_in(
+        && crate::git::succeeds_in(
             cwd,
             &[
                 "rev-parse",

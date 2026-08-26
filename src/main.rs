@@ -18,22 +18,28 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
+mod atomic;
 mod backtest;
 mod civil;
 mod corpus;
 mod decision;
 mod doctor;
+mod git;
+mod gitconfig;
 mod graduate;
 mod guidance;
 mod hook;
 mod journal;
+mod json;
 mod payload;
 mod rules;
 mod settings;
 mod shell;
 mod stale;
 mod stance;
+mod term;
 mod transcript;
+mod ui;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -132,7 +138,7 @@ fn parse(argv: Vec<OsString>) -> Invocation {
 fn main() -> ExitCode {
     // Claude Code does not spawn us from git, but a session started inside a
     // git hook still carries GIT_DIR / GIT_WORK_TREE, and those beat
-    // `current_dir` for every git command we run. `amont_runtime::git` builds
+    // `current_dir` for every git command we run. `crate::git` builds
     // its own Commands and has no seam to pass an environment through, so the
     // scrub has to happen here. This is the same failure the test harness's
     // `strip_git_env` exists to prevent; it committed to the wrong repository
@@ -564,9 +570,9 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
         println!(
             "  {} {line}",
             if *ok {
-                amont_runtime::ui::valid_sign()
+                crate::ui::valid_sign()
             } else {
-                amont_runtime::ui::error_sign()
+                crate::ui::error_sign()
             }
         );
     }

@@ -1,7 +1,7 @@
 //! The rules, and the contract every rule obeys.
 //!
 //! A rule is one module plus one line in [`RULES`] — the same shape
-//! `amont_runtime::registry::CHECKS` uses, and for the same reason: a rule's
+//! amont's `registry::CHECKS` uses, and for the same reason: a rule's
 //! name, its default stance and its function are declared together, so adding
 //! one cannot half-happen.
 //!

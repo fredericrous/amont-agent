@@ -1,6 +1,6 @@
 //! The record of what the guard saw.
 //!
-//! Modelled on `amont_runtime::bypass`, including its central rule: **this
+//! Modelled on amont's `bypass` store, including its central rule: **this
 //! module only counts. Nothing in it may participate in a decision.** The
 //! stance gates a command; the journal informs a human. A wrong read here
 //! miscounts, and it must never be able to do worse than that.
@@ -35,7 +35,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use amont_runtime::ui;
+use crate::ui;
 
 /// First line of the journal. A future format bumps this, and an older reader
 /// sees an empty journal rather than misreading one.

@@ -34,7 +34,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use amont_runtime::{config, git};
+use crate::git;
+use crate::gitconfig as config;
 
 /// `amont.agent.fetch` — whether a session opening may touch the network at
 /// all. `false` still reports the distance to the last-fetched `origin/main`;

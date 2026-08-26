@@ -31,7 +31,7 @@
 //! effect is to clamp to silence anyway. That asymmetry looks like an
 //! inconsistency and is a deliberate one.
 
-use amont_runtime::config;
+use crate::gitconfig as config;
 
 use crate::rules::{Rule, Stance};
 

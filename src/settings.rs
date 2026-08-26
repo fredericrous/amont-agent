@@ -418,10 +418,7 @@ pub fn apply(plan: &Plan) -> std::io::Result<()> {
     if let Some(parent) = plan.path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let staged = amont_runtime::hookfile::stage(&plan.path, &plan.after, false)?;
-    amont_runtime::hookfile::commit_all(vec![staged])
-        .map(|_| ())
-        .map_err(|e| std::io::Error::other(format!("{e:?}")))
+    crate::atomic::write_atomic(&plan.path, &plan.after)
 }
 
 /// The block to paste when we will not write it ourselves.

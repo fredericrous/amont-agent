@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use amont_runtime::json;
+use crate::json;
 
 use crate::civil::{iso, week_start, Day};
 use crate::rules::{self, Rule};
@@ -113,11 +113,11 @@ pub fn run(
 /// The first version of this printed the head and produced samples that looked
 /// like false positives while being correct.
 pub fn excerpt(src: &str, from: usize, to: usize) -> String {
-    // Derived from the terminal, not invented here: `amont_runtime::live`
+    // Derived from the terminal, not invented here: `term::term_width`
     // already owns the `$COLUMNS`-with-a-sane-floor answer, and a second copy
     // would be a second place for the fallback to drift. Samples are printed
     // under a six-space indent, hence the margin.
-    let width = amont_runtime::live::term_width().saturating_sub(8).max(40);
+    let width = crate::term::term_width().saturating_sub(8).max(40);
     let from = floor_char(src, from.min(src.len()));
     let to = ceil_char(src, to.min(src.len()).max(from));
     let mid = one_line(src[from..to].trim());

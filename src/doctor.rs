@@ -25,7 +25,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use amont_runtime::ui;
+use crate::ui;
 
 use crate::journal;
 use crate::rules;

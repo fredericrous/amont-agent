@@ -24,7 +24,7 @@
 
 use std::process::ExitCode;
 
-use amont_runtime::{json, ui};
+use crate::{json, ui};
 
 /// Claude Code truncates hook output at 10,000 characters and writes the
 /// remainder to a file. Staying under it keeps the reason in the model's
