@@ -1,0 +1,110 @@
+name: Docs
+
+# Publishes docs/ as a book on GitHub Pages.
+#
+# The point of this workflow is that the documentation is VERSIONED WITH THE
+# CODE. Until it existed, the most important pages — the flow, the commit
+# convention, how to opt out — lived in a GitHub wiki: a separate repository
+# that no pull request can review, that no `git bisect` can date, and that can
+# describe an implementation two rewrites out of date without anything noticing.
+# It did. The wiki's opt-out page still described `hook.skip` as a glob and told
+# people to `rm .git/hooks/*`, months after both had stopped being true.
+#
+# `build` runs on pull requests too, WITHOUT deploying. A broken SUMMARY link or
+# a page nobody added to the table of contents should fail the PR that
+# introduced it, not the first push to main afterwards.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yaml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yaml"
+  workflow_dispatch:
+
+# Read-only by default; the deploy job asks for exactly what it needs and
+# nothing else gets it.
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one in flight: a half-published site is
+# worse than a stale one. Pull-request builds cancel freely — they publish
+# nothing.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MDBOOK_VERSION: "0.4.40"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build the book
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # The release tarball rather than `cargo install mdbook`: it is one
+      # download against a three-minute compile, and this job has no other
+      # reason to have a Rust toolchain.
+      - name: install mdbook
+        run: |
+          set -euo pipefail
+          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: build
+        run: mdbook build docs
+
+      # `mdbook build` is happy to render a book whose SUMMARY points at files
+      # that do not exist — `create-missing = false` makes that an error rather
+      # than a stub page, but only for entries it can parse. This asserts the
+      # output actually contains the pages, so a rename that silently drops one
+      # fails here instead of shipping a table of contents with a hole in it.
+      - name: every page in SUMMARY.md was rendered
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r page; do
+            html="target/book/${page%.md}.html"
+            if [ ! -f "$html" ]; then
+              echo "::error file=docs/SUMMARY.md::$page is in SUMMARY.md but $html was not produced"
+              missing=1
+            fi
+          done < <(grep -oE '\]\(([a-zA-Z0-9._/-]+\.md)\)' docs/SUMMARY.md | sed -E 's/^\]\((.*)\)$/\1/' | sort -u)
+          [ "$missing" -eq 0 ] || exit 1
+          echo "every SUMMARY.md entry rendered"
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: target/book
+
+  # Separate job so the permission escalation is scoped to the step that needs
+  # it, and so a pull request cannot reach it at all.
+  deploy:
+    name: publish to Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

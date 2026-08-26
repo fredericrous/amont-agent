@@ -1,0 +1,75 @@
+# Changelog
+
+## v2.0.0
+
+`amont-agent` is now its own project. It was previously a third binary inside
+the [amont](https://github.com/fredericrous/amont) release — bundled in the
+tarball, in the `amont` npm package, and in amont's installers.
+
+**Nothing about how the guard behaves has changed.** The hook's output is
+byte-identical to 1.18.2 for every rule. Config keys are unchanged
+(`amont.agent.*`, `$AMONT_AGENT_OFF`), the journal is still at
+`~/.claude/amont-agent/journal.log`, and an existing `settings.json` entry
+keeps working.
+
+### If you had it from amont
+
+Your installed copy still works and is not removed. amont 1.19.0 stops
+shipping it, so to keep getting updates install it from here:
+
+```sh
+brew install fredericrous/tap/amont-agent
+# or
+curl -fsSL https://raw.githubusercontent.com/fredericrous/amont-agent/main/install/install.sh | sh
+```
+
+Then `rm ~/.local/bin/amont-agent` is safe once the new one is on `PATH`, and
+`amont-agent doctor` will confirm which one Claude Code is actually running.
+
+### Why the major bump
+
+The version had to exceed 1.18.2 on crates.io regardless. `2.0.0` marks the
+real break — it is no longer bundled and must be installed separately — and
+keeps the two version streams independent, so `amont 1.19` and
+`amont-agent 2.0` never look like they must match.
+
+### Changed
+
+- **No `amont-runtime` dependency.** Six small modules replace what this crate
+  used to reach for. `cargo tree` is now `serde` and `serde_json` and nothing
+  else — both only for *reading*.
+- **A cloned repository can no longer weaken a stance.** amont's config reader
+  lets a repository's committed policy `set` lines outrank system and global
+  git config — correct for a hook manager, wrong for a guard, because it meant
+  a cloned repository could set `amont.agent.<rule>.stance = observe` and
+  disarm the guard on the machine of whoever cloned it. The reader here has no
+  policy ladder. Stances answer to your own git config and to nothing a
+  `git clone` can carry.
+- **`settings.json` permissions are no longer widened.** The previous write
+  path set mode `0644` unconditionally. An existing file now keeps the mode it
+  had, and one created here starts at `0600` — it can hold MCP environment
+  blocks, and those hold credentials.
+- **The stale-`AGENTS.md` notice now shells out** to `amont agents-md --check`
+  instead of linking amont's generator, and decides on amont's *stderr* rather
+  than its exit code. `agents-md --check` returns 1 for a file it could not
+  read as well as for a drifted one, so the exit code alone would announce
+  staleness for a permissions error. With no `amont` on `PATH` the check is
+  silent, which is the right answer for anyone who does not use amont.
+
+### Fixed
+
+- **The declared MSRV was not buildable.** Every published version up to 1.18.2
+  claimed `rust-version = "1.74"`, inherited from amont's dependency-free
+  commit path and — as that manifest's own comment predicted — long since
+  drifted: `serde_json`'s `preserve_order` pulls `indexmap` → `hashbrown
+  0.17.1`, which is edition 2024 and requires 1.85. Cargo 1.74 could not parse
+  it at all. The floor is now **1.85.0**, measured (1.84 fails, 1.85 passes)
+  and enforced by CI against the committed lockfile.
+
+### Added
+
+- **Documentation.** `backtest` → `explain` → `corpus check` → `graduate` is a
+  coherent measure-then-block workflow and was previously undocumented
+  anywhere. It now has [a page of its own](docs/measuring.md), with the
+  `pipe-to-tail` decision as the worked example.
+- Windows is now in the test matrix alongside Linux and macOS.
