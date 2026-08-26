@@ -66,6 +66,22 @@ keeps the two version streams independent, so `amont 1.19` and
   it at all. The floor is now **1.85.0**, measured (1.84 fails, 1.85 passes)
   and enforced by CI against the committed lockfile.
 
+### Fixed (2)
+
+- **A closed pipe no longer panics.** `amont-agent rules | head`,
+  `--help | grep -q`, or any listing whose reader hangs up early printed a
+  Rust backtrace — "failed printing to stdout: Broken pipe" — instead of
+  dying from the signal like every other Unix filter. Rust ignores SIGPIPE at
+  startup, so `println!` hits EPIPE and EPIPE is a panic.
+
+  This is a bug the split introduced by omission: amont's `main` has restored
+  SIGPIPE's default disposition since `amont list | head` panicked, and this
+  crate left the workspace with the modules it imported rather than the ones
+  it needed. The v2.0.0 release dry run caught it, from a smoke step doing
+  `amont-agent --help | grep -q backtest` — which failed on exactly one of
+  six build targets, because the output is small enough that whether the race
+  fires depends on the machine.
+
 ### Added
 
 - **Documentation.** `backtest` → `explain` → `corpus check` → `graduate` is a

@@ -135,7 +135,43 @@ fn parse(argv: Vec<OsString>) -> Invocation {
     Invocation::Usage(format!("unknown command `{head}`"))
 }
 
+/// Die quietly when the reader hangs up, like every other Unix filter.
+///
+/// Rust ignores SIGPIPE at startup, so `amont-agent rules | head` panicked
+/// with a backtrace the moment `head` closed the pipe — `println!` hit EPIPE
+/// and EPIPE is a panic. Restoring SIGPIPE's default disposition makes the
+/// exit what a shell user expects (killed by the signal, status 141).
+///
+/// It matters more here than in an ordinary filter. This binary's entire
+/// claim is that it is composed and predictable in front of somebody's
+/// shell; a stack trace out of `rules | head` reads as a crash in exactly
+/// the tool you were deciding whether to trust with your commands. It is
+/// also the one thing this crate did NOT inherit when it left the amont
+/// workspace: amont's `main` has carried this since `list | head` panicked,
+/// and the split copied the modules the crate imported rather than the ones
+/// it should have.
+///
+/// `extern "C"` rather than a crate: std already links libc, and a signal
+/// disposition is not worth a dependency. Windows has no SIGPIPE; there the
+/// pipe-closed write fails an `Err` path instead of raising a signal, and
+/// this is a no-op.
+#[cfg(unix)]
+fn die_on_sigpipe() {
+    extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn die_on_sigpipe() {}
+
 fn main() -> ExitCode {
+    die_on_sigpipe();
     // Claude Code does not spawn us from git, but a session started inside a
     // git hook still carries GIT_DIR / GIT_WORK_TREE, and those beat
     // `current_dir` for every git command we run. `crate::git` builds
