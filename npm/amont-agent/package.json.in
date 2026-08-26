@@ -1,0 +1,43 @@
+{
+  "name": "amont-agent",
+  "version": "__VERSION__",
+  "description": "A guard that inspects a shell command before Claude Code runs it",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent",
+    "guard",
+    "hooks",
+    "shell",
+    "git"
+  ],
+  "homepage": "https://github.com/fredericrous/amont-agent#readme",
+  "bugs": "https://github.com/fredericrous/amont-agent/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fredericrous/amont-agent.git"
+  },
+  "license": "MIT",
+  "author": "Frederic Rousseau",
+  "type": "commonjs",
+  "bin": {
+    "amont-agent": "bin/amont-agent.js"
+  },
+  "files": [
+    "bin/amont-agent.js",
+    "bin/native.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "amont-agent-darwin-arm64": "__VERSION__",
+    "amont-agent-darwin-x64": "__VERSION__",
+    "amont-agent-linux-arm64-gnu": "__VERSION__",
+    "amont-agent-linux-x64-gnu": "__VERSION__",
+    "amont-agent-linux-x64-musl": "__VERSION__",
+    "amont-agent-win32-x64": "__VERSION__"
+  }
+}

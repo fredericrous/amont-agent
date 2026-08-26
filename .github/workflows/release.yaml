@@ -1,0 +1,479 @@
+name: Release
+
+# Cutting a release means: a tag, prebuilt binaries for every platform this
+# guard claims to support, and checksums.
+#
+# Triggered by the TAG, never by a branch push. The tag is the decision.
+
+on:
+  push:
+    tags: ["v*"]
+  # So a release can be rehearsed end to end without publishing one.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (dry run — no release is published)"
+        required: false
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The tag and the manifest must agree BEFORE anything is built.
+  #
+  # The footgun that motivated this: a commit-msg hook rejects a commit, the
+  # shell carries on to `git tag`, and the tag lands on the OLD head — so CI
+  # builds and publishes the new version number from stale code. Registries
+  # are immutable; the wrong bytes under a version cannot be replaced, only
+  # superseded. Checking costs four lines and runs first.
+  guard:
+    name: the tag says what the manifest says
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          set -euo pipefail
+          manifest=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            dry=false
+          else
+            tag="${{ inputs.tag }}"
+            tag="${tag#v}"
+            [ -n "$tag" ] || tag="$manifest"
+            dry=true
+          fi
+          echo "manifest=$manifest tag=$tag dry_run=$dry"
+          if [ "$manifest" != "$tag" ]; then
+            echo "::error::tag v$tag does not match the manifest version $manifest."
+            echo "::error::Commit the version bump FIRST, confirm HEAD moved, then tag."
+            exit 1
+          fi
+          # The release notes lead with CHANGELOG.md's section for this
+          # version, so a missing section would publish a release that opens
+          # with nothing. Refuse now, while writing it costs one commit
+          # instead of a re-release.
+          if ! awk -v ver="v$manifest" '$1 == "##" && $2 == ver { found = 1 } END { exit !found }' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## v$manifest' section."
+            echo "::error::Write what the upgrader gets, then tag."
+            exit 1
+          fi
+          echo "version=$manifest" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: guard
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # One broken target must not hide the others: a partial release is
+      # something to see in full, not to discover one platform at a time.
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          # Static, so it runs on distros older than the runner's glibc — the
+          # usual reason a "linux" binary fails for somebody.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            packages: musl-tools
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            packages: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain for ${{ matrix.target }}
+        run: rustup target add ${{ matrix.target }}
+      - name: Install cross-compilation packages
+        if: matrix.packages != ''
+        # The Azure apt mirror hung `apt-get update` for a full job budget
+        # three releases running in amont. Three defences, each sufficient
+        # alone: the canonical archive instead of the Azure mirror, a
+        # per-fetch timeout with retries, and a step budget so a hang costs
+        # five minutes and a cheap rerun, not the release.
+        timeout-minutes: 5
+        run: |
+          # The runner routes apt through `mirror+file:/etc/apt/apt-mirrors.txt`,
+          # so rewriting the sources files alone still let every fetch start at
+          # the Azure mirror. Rewrite the mirror LIST, which is the knob the
+          # image actually reads.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf 'http://archive.ubuntu.com/ubuntu\tpriority:1\n' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15 install -y ${{ matrix.packages }}
+      - name: Point cargo at the cross linker
+        if: matrix.linker != ''
+        run: |
+          target_upper=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${target_upper}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Archive
+        id: archive
+        run: |
+          set -euo pipefail
+          version="${{ needs.guard.outputs.version }}"
+          name="amont-agent-${version}-${{ matrix.target }}"
+          staging="dist/$name"
+          mkdir -p "$staging"
+          cp README.md LICENSE "$staging/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/amont-agent.exe" "$staging/"
+            (cd dist && 7z a "$name.zip" "$name" > /dev/null)
+            echo "asset=dist/$name.zip" >> "$GITHUB_OUTPUT"
+          else
+            cp "target/${{ matrix.target }}/release/amont-agent" "$staging/"
+            (cd dist && tar czf "$name.tar.gz" "$name")
+            echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Prove the thing we are about to hand people actually runs, and that it
+      # still DECIDES — a binary that answers `--help` and then refuses nothing
+      # is the defect `cargo test` structurally cannot see, because tests never
+      # touch the packaged artifact.
+      - name: The packaged binary runs, and still says no
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
+        run: |
+          set -euo pipefail
+          version="${{ needs.guard.outputs.version }}"
+          bin="dist/amont-agent-${version}-${{ matrix.target }}/amont-agent"
+          # An `if`, not `[ … ] && …`: under `set -e` a false test as the last
+          # command of a line is a FAILING step.
+          if [ "${{ runner.os }}" = "Windows" ]; then bin="$bin.exe"; fi
+          "$bin" --help | grep -q 'backtest'
+          "$bin" rules | grep -q 'pipe-to-tail'
+          # The real thing: one command through the real rule engine.
+          out=$("$bin" check 'git push origin main 2>&1 | tail -5')
+          printf '%s\n' "$out"
+          printf '%s' "$out" | grep -q 'pipe-to-tail' || {
+            echo "::error::the packaged binary did not refuse a piped push"; exit 1; }
+          echo "the packaged binary runs and still decides"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.archive.outputs.asset }}
+          if-no-files-found: error
+
+  # The blocking twin of ci.yaml's advisory audit — same parsing, opposite
+  # stakes. On a PR an advisory is information; on a TAG it is about to be
+  # compiled into six binaries and served to installers, so:
+  #
+  #   - a VULNERABILITY fails the release;
+  #   - warning-class advisories (unmaintained/unsound) stay named annotations:
+  #     a gate nothing can pass is a gate people learn to delete;
+  #   - a fetch failure ALSO fails, unlike ci.yaml: "could not check" is not
+  #     "clean", and an unchecked tree does not ship. On a PR you retry
+  #     tomorrow; a release published today is immutable today.
+  audit:
+    name: no known vulnerabilities ship
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Audit
+        run: |
+          set -euo pipefail
+          if ! cargo audit --json > audit.json; then
+            # Distinguish "found something" from "could not ask". Only the
+            # latter is fatal here regardless of content.
+            if [ ! -s audit.json ]; then
+              echo "::error::cargo audit produced no output — the tree is UNVERIFIED, and an unverified tree does not ship."
+              exit 1
+            fi
+          fi
+          python3 - <<'PY'
+          import json, pathlib, sys
+          raw = pathlib.Path("audit.json").read_text()
+          if not raw.strip():
+              print("::error::empty audit report — nothing was verified")
+              sys.exit(1)
+          d = json.loads(raw)
+          vulns = d.get("vulnerabilities", {}).get("list", [])
+          for v in vulns:
+              a = v.get("advisory", {})
+              print(f"::error::{a.get('id')} {a.get('package')}: {a.get('title')}")
+          for kind, items in d.get("warnings", {}).items():
+              for w in items:
+                  a = (w.get("advisory") or {})
+                  print(f"::warning::{kind}: {a.get('package') or w.get('package')}")
+          if vulns:
+              print(f"::error::{len(vulns)} vulnerability advisories — not shipping")
+              sys.exit(1)
+          print("no vulnerability advisories")
+          PY
+
+  publish:
+    name: publish the release
+    needs: [guard, build, audit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -la
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      # A dry run stops here, having built and checksummed everything. The only
+      # step it skips is the irreversible one.
+      - name: Publish
+        if: needs.guard.outputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Idempotent, because re-running a release is a normal thing to want:
+          # the reason to re-run is usually that a LATER step failed.
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists — refreshing its assets"
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          else
+            # Notes an upgrader can read, then the generated PR list. Matching
+            # on $2 rather than a prefix so extracting v2.0.2 can never grab
+            # v2.0.21.
+            notes=$(mktemp)
+            awk -v ver="${GITHUB_REF_NAME}" '
+              $1 == "##" && $2 == ver { grab = 1; next }
+              $1 == "##" && grab      { exit }
+              grab                    { print }
+            ' CHANGELOG.md > "$notes"
+            printf '\n---\n\n' >> "$notes"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${GITHUB_REF_NAME}" --jq .body >> "$notes"
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes-file "$notes" \
+              dist/*
+          fi
+      - name: Dry run summary
+        if: needs.guard.outputs.dry_run == 'true'
+        run: |
+          echo "### Dry run — nothing published" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat dist/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # npm, so `npx amont-agent` works and a JS team can pin the version.
+  #
+  # Seven packages: six per-platform ones carrying the SAME binaries this
+  # release already published and checksummed, and `amont-agent` itself, which
+  # is a JS shim plus six `optionalDependencies`. No `postinstall` anywhere, so
+  # this survives `npm ci --ignore-scripts`, an offline cache and a
+  # pull-through registry.
+  publish-npm:
+    name: publish to npm
+    needs: [guard, build, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # For --provenance.
+      id-token: write
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+          merge-multiple: true
+      - run: npm whoami
+      - name: Build the package tree
+        run: ./scripts/npm-pack.sh "$VERSION" dist-assets dist/npm
+      - name: Publish
+        run: |
+          set -euo pipefail
+          publish() {
+            local dir="$1"
+            echo "→ publishing $(basename "$dir")"
+            if out=$(npm publish --access public --provenance "$dir" 2>&1); then
+              printf '%s\n' "$out"
+            else
+              printf '%s\n' "$out"
+              if printf '%s' "$out" | grep -qiE "cannot publish over|previously published|EPUBLISHCONFLICT"; then
+                echo "  already published — continuing"
+              elif printf '%s' "$out" | grep -q "E403"; then
+                # Every one of these packages is created by its FIRST publish,
+                # and creating a package is a different permission from
+                # updating one. npm says only "You may not perform that action
+                # with these credentials", which sends people to check the
+                # secret is set — it is, or `npm whoami` above would have
+                # failed.
+                echo "::error::403 creating $(basename "$dir"). The token authenticates but may not CREATE packages."
+                echo "::error::These are all first publishes, so that is the permission being refused:"
+                echo "::error::  · granular token — 'Packages and scopes' must be Read and write on ALL packages."
+                echo "::error::    Selecting individual packages cannot work here: they do not exist yet."
+                echo "::error::  · classic token — must be Automation (Read-only cannot publish; Publish prompts for 2FA)."
+                echo "::error::Then re-run without a new tag: gh workflow run release.yaml --ref ${GITHUB_REF_NAME}"
+                exit 1
+              else
+                echo "::error::publishing $(basename "$dir") failed"
+                exit 1
+              fi
+            fi
+          }
+
+          # AN EXPLICIT LIST, NOT A GLOB — and this is the one line in this
+          # file most worth reading before changing.
+          #
+          # amont could write `for dir in dist/npm/amont-*` and then publish
+          # `dist/npm/amont` afterwards, because its root package's directory
+          # is `amont` and that glob cannot match it. Here the root package IS
+          # `amont-agent`, so the same glob matches the root as well as the six
+          # platforms — and `amont-agent` sorts BEFORE
+          # `amont-agent-darwin-arm64`, so the root would publish first, before
+          # its optionalDependencies exist, and then publish again at the end.
+          #
+          # The failure is silent and permanent: npm versions are immutable, so
+          # a root package published against six nonexistent deps cannot be
+          # fixed, only superseded by a version bump. The platform packages
+          # must all exist before the package that depends on them.
+          for t in darwin-arm64 darwin-x64 linux-arm64-gnu linux-x64-gnu linux-x64-musl win32-x64; do
+            publish "dist/npm/amont-agent-$t"
+          done
+          publish dist/npm/amont-agent
+
+          echo "### Published to npm" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`npx amont-agent\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+  # IMMUTABLE, so a bad publish can only be yanked and superseded, never fixed.
+  #
+  # `needs: build` on purpose. If a target does not compile, that is a release
+  # nobody should be able to `cargo install` either.
+  publish-crates:
+    name: publish to crates.io
+    needs: [guard, build, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish
+        run: |
+          set -euo pipefail
+          # No poll after the upload. cargo ALREADY waits for it to become
+          # available — the run log reads "waiting for X to be available at
+          # registry" then "Published X" — and the crates.io API rate-limits
+          # datacenter IPs, so a poll on top saw non-200 for a crate that had
+          # just published fine and failed the job ten minutes later.
+          #
+          # Idempotency comes from cargo's own answer instead: re-running a
+          # release must not fail on a crate that is already up, and "already
+          # uploaded" is exactly that answer — anything else is a real failure.
+          echo "→ publishing amont-agent $VERSION"
+          if out=$(cargo publish --locked 2>&1); then
+            printf '%s\n' "$out"
+          else
+            printf '%s\n' "$out"
+            if printf '%s' "$out" | grep -qiE "already (been )?uploaded|already exists"; then
+              echo "  amont-agent $VERSION was already published — continuing"
+            else
+              echo "::error::publishing amont-agent failed"
+              exit 1
+            fi
+          fi
+          echo "### Published to crates.io" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`cargo install amont-agent\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+  # The tap formula, bumped by the release rather than by hand: a release is
+  # not published until `brew upgrade` can see it.
+  #
+  # Auth is a deploy key that can write to the TAP REPOSITORY and nothing else
+  # (secret TAP_DEPLOY_KEY) — narrower than any PAT. The rewrite is
+  # scripts/bump-tap.py, which asserts on every surprise rather than sedding
+  # hopefully, and `ruby -c` proves the result is at least a formula before
+  # anything is pushed.
+  publish-tap:
+    name: publish to the homebrew tap
+    needs: [guard, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      # From the PUBLISHED release, not from this run's artifacts: the formula
+      # must name the bytes an installer will actually download, and reading
+      # them back from the release asserts they are there.
+      - name: Download the published checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "v$VERSION" --pattern SHA256SUMS
+      - name: Clone the tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" \
+            git clone --depth 1 git@github.com:fredericrous/homebrew-tap.git tap
+      - name: Rewrite the formula
+        run: |
+          set -euo pipefail
+          python3 scripts/bump-tap.py "$VERSION" SHA256SUMS tap/Formula/amont-agent.rb
+          ruby -c tap/Formula/amont-agent.rb
+      - name: Push
+        run: |
+          set -euo pipefail
+          cd tap
+          if git diff --quiet; then
+            echo "the tap already carries $VERSION — nothing to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/amont-agent.rb
+          git commit -m "chore: amont-agent $VERSION"
+          git push origin HEAD
+          echo "### Published to the homebrew tap" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`brew upgrade fredericrous/tap/amont-agent\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"

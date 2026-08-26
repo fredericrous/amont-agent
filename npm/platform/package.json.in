@@ -1,0 +1,23 @@
+{
+  "name": "__PKG__",
+  "version": "__VERSION__",
+  "description": "The amont-agent binary for __OS__/__CPU__",
+  "homepage": "https://github.com/fredericrous/amont-agent#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fredericrous/amont-agent.git"
+  },
+  "license": "MIT",
+  "author": "Frederic Rousseau",
+  "preferUnplugged": true,
+  "os": [
+    "__OS__"
+  ],
+  "cpu": [
+    "__CPU__"
+  ],
+__LIBC__
+  "files": [
+    "bin/"
+  ]
+}

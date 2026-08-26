@@ -10,15 +10,22 @@ readme = "README.md"
 keywords = ["claude", "hooks", "guard", "shell", "git"]
 categories = ["development-tools", "command-line-utilities"]
 
-# 1.74 is what `cargo +1.74.0 check` accepts against the committed
-# Cargo.lock — serde_json's floor is far below it, and nothing in this crate
-# reaches past `std::io::IsTerminal` (1.70) or `std::io::Error::other` (1.74).
+# MEASURED, not inherited. `cargo +1.84.0 check --locked` fails and
+# `cargo +1.85.0 check --locked` passes, so 1.85.0 is the floor.
 #
-# In the amont workspace this number carried a caveat: CI's msrv job checked
-# the commit-path crates and not this one, so the floor was documentation
-# rather than a promise. Here there is one crate and the msrv job checks it,
-# so the caveat is retired and this is a claim again.
-rust-version = "1.74"
+# It is not the 1.74 this crate claimed inside the amont workspace, and the
+# difference is the point. That number was the COMMIT PATH's floor, verified
+# against two dependency-free crates and inherited by this one, which has
+# dependencies. Its own manifest comment said so: "this number has no guard
+# and will drift the first time a dependency raises its own." It had already
+# drifted — serde_json's `preserve_order` pulls indexmap, which pulls
+# hashbrown 0.17.1, which is edition 2024 and declares 1.85.0. Cargo 1.74
+# cannot parse that manifest at all, so every published `amont-agent` up to
+# 1.18.2 carried a floor nothing could build at.
+#
+# The msrv job checks THIS crate with `--locked`, so the number is a claim
+# again rather than a comment with syntax. Raising it is a release note.
+rust-version = "1.85.0"
 
 [dependencies]
 # For READING, not writing. Two things need a real parser and neither is

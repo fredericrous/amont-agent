@@ -273,7 +273,7 @@ pub fn lex(src: &str) -> Parsed {
                             };
                             w.expanded = true;
                             w.raw.extend_from_slice(&b[i..=close]);
-                            w.text.extend(std::iter::repeat(b' ').take(close - i + 1));
+                            w.text.extend(std::iter::repeat_n(b' ', close - i + 1));
                             i = close + 1;
                         }
                         other => {
@@ -311,7 +311,7 @@ pub fn lex(src: &str) -> Parsed {
                 }
                 w.expanded = true;
                 w.raw.extend_from_slice(&b[i..=j]);
-                w.text.extend(std::iter::repeat(b' ').take(j - i + 1));
+                w.text.extend(std::iter::repeat_n(b' ', j - i + 1));
                 i = j + 1;
             }
             b'$' if i + 1 < n && (b[i + 1] == b'(' || b[i + 1] == b'{') => {
@@ -326,7 +326,7 @@ pub fn lex(src: &str) -> Parsed {
                 let w = word.get_or_insert_with(|| Build::new(i));
                 w.expanded = true;
                 w.raw.extend_from_slice(&b[i..=end]);
-                w.text.extend(std::iter::repeat(b' ').take(end - i + 1));
+                w.text.extend(std::iter::repeat_n(b' ', end - i + 1));
                 i = end + 1;
             }
             b'<' if i + 1 < n && b[i + 1] == b'<' => {

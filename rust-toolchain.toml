@@ -1,0 +1,27 @@
+# The toolchain this repository builds with, pinned.
+#
+# WHY A PIN, when "latest stable" is the usual advice: CI runs
+# `cargo clippy --all-targets -- -D warnings`. Under `-D warnings`, every
+# clippy release is a potential breaking change — a lint added upstream turns
+# an untouched, already-merged commit red on the next scheduled run, on a
+# Thursday, with no commit to blame it on. This pin is what makes a red build
+# attributable to a change somebody made.
+#
+# The scheduled `audit` run is why that matters more here than in a repository
+# nobody builds on a cron: this workflow wakes up weekly on its own.
+#
+# BUMPING THIS IS A DELIBERATE PR, not a drive-by. Raise the version, run
+# `make check`, and fix whatever new lints fire in the SAME change, so the lint
+# fixes are reviewed as lint fixes rather than as noise inside an unrelated
+# diff. That is the whole cost of the pin, and it is the point of it.
+#
+# NOT the MSRV. This is what we BUILD with; the floor the source is allowed to
+# require is `rust-version` in Cargo.toml (1.85.0, measured), and CI's `msrv`
+# job is what proves that floor is real. The two numbers move independently
+# and mean different things.
+[toolchain]
+channel = "1.94.1"
+# rustfmt and clippy are separately-installable components. Naming them here
+# means `rustup` provisions them with the toolchain, so `make lint` works on a
+# fresh checkout instead of failing with "'cargo-clippy' is not installed".
+components = ["rustfmt", "clippy"]

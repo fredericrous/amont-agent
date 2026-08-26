@@ -1,0 +1,155 @@
+name: CI
+
+# This binary sits in front of every shell command a coding agent runs, and
+# it can refuse one. A broken build is felt the moment somebody opens a
+# session, so everything that can be checked before a release is checked here.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  # For `audit` above all. A new advisory against a crate in this tree
+  # appears without anybody pushing anything, so a push-only workflow learns
+  # about it whenever the next commit happens to land. Monday morning, so a
+  # finding is read at the start of a week rather than on a Friday.
+  schedule:
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# GitHub's DEFAULT shell is `bash -e {0}` — no pipefail. Only naming bash
+# explicitly gets `bash -eo pipefail {0}`. Without this, a piped command
+# reports the exit status of the LAST stage and a failing suite goes GREEN.
+#
+# Which is, with some irony, the exact mistake `pipe-to-tail` exists to
+# refuse. It would be a poor look to ship it from a workflow that makes it.
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # The behavioural coverage lives in `tests/`; these two keep the source
+      # honest. `make lint` runs EXACTLY these, so a contributor can reproduce
+      # a red `rust` job without pushing.
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  # The floor `rust-version` claims, compiled against.
+  #
+  # In the amont workspace this crate's floor was inherited from the
+  # dependency-free commit path, and its own manifest admitted CI never
+  # checked it: "this number has no guard and will drift the first time a
+  # dependency raises its own." It had drifted — every published version up
+  # to 1.18.2 claimed 1.74, which cargo 1.74 could not build. This job is why
+  # that cannot happen again.
+  #
+  # `--locked`, emphatically. amont's msrv job deleted Cargo.lock first,
+  # which was safe THERE because the crates it checked had no dependencies at
+  # all. Here a fresh resolve would silently pick whatever the registry offers
+  # today and prove nothing about what we ship.
+  msrv:
+    name: msrv (builds on 1.85.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Keep in step with `rust-version` in Cargo.toml.
+      MSRV: "1.85.0"
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$MSRV" --profile minimal --no-self-update
+      - run: cargo "+$MSRV" check --locked --all-targets
+
+  # NON-BLOCKING, deliberately: an advisory is information about a dependency,
+  # not a defect in the change under review, and a scheduled run that goes red
+  # on somebody else's disclosure trains people to ignore red. Findings surface
+  # as ::warning:: annotations. The RELEASE workflow's twin blocks instead —
+  # same parsing, opposite stakes.
+  #
+  # `cargo install --locked cargo-audit`, NOT a marketplace action. Pulling an
+  # unaudited third-party action — which runs with this workflow's token — into
+  # the job whose purpose is supply-chain hygiene is self-defeating.
+  audit:
+    name: cargo audit (advisory, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-audit
+          key: audit-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install cargo-audit
+        run: command -v cargo-audit >/dev/null || cargo install --locked cargo-audit
+      - name: Audit
+        run: |
+          set -euo pipefail
+          cargo audit --json > audit.json || true
+          python3 - <<'PY'
+          import json, pathlib
+          d = json.loads(pathlib.Path("audit.json").read_text() or "{}")
+          vulns = d.get("vulnerabilities", {}).get("list", [])
+          for v in vulns:
+              adv = v.get("advisory", {})
+              print(f"::warning::{adv.get('id')} {adv.get('package')}: {adv.get('title')}")
+          warns = d.get("warnings", {})
+          for kind, items in warns.items():
+              for w in items:
+                  adv = (w.get("advisory") or {})
+                  print(f"::warning::{kind}: {adv.get('package') or w.get('package')}")
+          print(f"{len(vulns)} vulnerability advisories, {sum(len(v) for v in warns.values())} warnings")
+          PY
+
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # All three, because this crate's answers are platform-shaped in ways a
+      # single runner would hide: `atomic.rs` carries file modes on unix and
+      # deliberately does not on Windows, the settings path differs, and the
+      # `guidance` shell-out resolves a program on PATH — which on Windows
+      # means `.exe` resolution rules that have broken this project before.
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      # `git` is present on every GitHub runner, and the tests need it: the
+      # stale-base rules build real repositories to ask real questions. They
+      # set GIT_CONFIG_GLOBAL=/dev/null themselves so a runner's config cannot
+      # change an answer.
+      - name: git identity for the fixtures
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name CI
+          git config --global init.defaultBranch main
+      - run: cargo test --locked
