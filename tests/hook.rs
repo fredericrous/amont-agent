@@ -435,6 +435,19 @@ fn a_branch_started_from_a_stale_head_is_advised() {
 /// stderr and exit code are the contract this crate reads. Three cases,
 /// because the middle one is the whole reason the decision is made on
 /// stderr rather than on the exit code.
+///
+/// UNIX ONLY, and the reason is Windows' process creation rather than
+/// anything about this crate. `CreateProcessW` appends `.exe` and nothing
+/// else when the name it is given has no extension, so neither a `#!/bin/sh`
+/// stub nor an `amont.bat` is reachable through `Command::new("amont")`
+/// there — the stub would have to be a real compiled executable, which is
+/// more machinery than this assertion is worth.
+///
+/// What is NOT lost on Windows: `guidance`'s own unit tests cover the stderr
+/// parsing and every not-drift case on every platform, and
+/// `a_marked_block_with_no_amont_installed_says_nothing` below covers the
+/// no-amont path there too.
+#[cfg(unix)]
 #[test]
 fn a_session_opening_on_a_stale_guidance_block_is_told() {
     let (_, work) = a_stale_clone(); // `work` is up to date with origin
@@ -449,12 +462,9 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
     std::fs::create_dir_all(&bin).unwrap();
     let stub = bin.join("amont");
     let write_stub = |body: &str| {
+        use std::os::unix::fs::PermissionsExt;
         std::fs::write(&stub, body).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
     };
 
     // Drifted: amont exits 1 and says so on stderr.
