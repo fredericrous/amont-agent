@@ -18,12 +18,31 @@ Either one downloads a release binary, verifies it against the published
 `SHA256SUMS`, and puts it in `~/.local/bin`. Neither wires anything in.
 
 Or: `brew install fredericrous/tap/amont-agent`, `cargo install amont-agent`,
-`npx amont-agent`, or a binary straight from
+or a binary straight from
 [Releases](https://github.com/fredericrous/amont-agent/releases/latest).
 
-Under npm, node start-up is paid on every hook call. `amont-agent install`
-writes the path of a real binary, so if you care about the ~30ms, install one
-of the other ways.
+## Why there is no npm package
+
+There was one, briefly, and removing it is the more useful answer than
+listing install methods.
+
+`install` bakes the ABSOLUTE path of the running binary into
+`settings.json`, deliberately: a `PATH`-resolved command exits 127 into
+Claude Code's non-blocking bucket the moment `PATH` differs, which disables
+the guard with nothing to notice it. npm cannot supply a stable absolute
+path. Under `npx` the binary lives in npm's `_npx` cache, which npm garbage-
+collects; under a project-local `npm i -D` it lives in one project's
+`node_modules`, while the guard it configures is machine-global — so
+`rm -rf node_modules` in one repository would silently disable the guard for
+every session on the machine.
+
+amont has an npm package for a reason that does not transfer: it is a
+per-repository tool, and `npm i -D amont` plus a `prepare` script means the
+hooks travel with the repository. This is per-developer machine
+configuration — `~/.claude/settings.json`, global git config, a journal in
+`~/.claude/`. Nothing about it belongs to a project.
+
+Every channel above hands `install` a path that stays put.
 
 ## The wiring
 

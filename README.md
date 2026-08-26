@@ -46,7 +46,7 @@ amont-agent doctor           # installed, runnable, and actually firing?
 ```
 
 Also: `brew install fredericrous/tap/amont-agent` · `cargo install amont-agent`
-· `npx amont-agent` · [prebuilt binaries](https://github.com/fredericrous/amont-agent/releases/latest)
+· [prebuilt binaries](https://github.com/fredericrous/amont-agent/releases/latest)
 for Linux (gnu/musl, x86_64 and aarch64), macOS (Intel and Apple silicon) and
 Windows.
 

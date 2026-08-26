@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.0.1
+
+### Removed
+
+- **There is no npm package, and there will not be one.** `amont-agent` was
+  published to npm as part of v2.0.0 — or rather, five of its seven packages
+  were, before npm's spam filter rejected the sixth by name. That block was
+  worth listening to, because it stopped a package that should not have
+  existed.
+
+  `install` bakes the ABSOLUTE path of the running binary into
+  `settings.json`, deliberately: a `PATH`-resolved command exits 127 into
+  Claude Code's non-blocking bucket the moment `PATH` differs, which disables
+  the guard with nothing to notice it. npm cannot supply a stable absolute
+  path. Under `npx` the binary sits in npm's `_npx` cache, which npm garbage-
+  collects. Under a project-local `npm i -D` it sits in one project's
+  `node_modules`, while the guard it configures is machine-global — so
+  `rm -rf node_modules` in a single repository would silently disable the
+  guard for every session on the machine.
+
+  amont's npm package exists for a reason that does not transfer: it is a
+  per-repository tool, and `npm i -D amont` plus a `prepare` script makes the
+  hooks travel with the repository. This is per-developer machine
+  configuration, and nothing about it belongs to a project.
+
+  The five platform packages published under v2.0.0 have been unpublished.
+  The root package `amont-agent` was never published — the release workflow
+  publishes platform packages before the package that depends on them, so
+  the failure stopped short of creating a root package with a broken
+  `optionalDependency`.
+
+  **Install with Homebrew, cargo, the shell installer, or a release binary.**
+  Each hands `install` a path that stays put.
+
 ## v2.0.0
 
 `amont-agent` is now its own project. It was previously a third binary inside
