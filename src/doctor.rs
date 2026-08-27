@@ -257,6 +257,12 @@ fn pipe(bin: &Path, payload: &str) -> Option<String> {
     use std::process::Stdio;
     let mut child = Command::new(bin)
         .arg("hook")
+        // Do not let the self-test count as a firing: see `journal::record`.
+        // Without this the probe writes a denial to the journal on every
+        // `doctor` run, which both inflates the evidence behind every rule
+        // and makes the liveness check below unfalsifiable — the journal
+        // would always be seconds old because doctor had just written it.
+        .env(crate::journal::ENV_PROBE, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -371,21 +377,44 @@ fn liveness(installs: &[Install]) -> Finding {
         );
     };
 
+    // The best evidence the guard is alive, from EITHER source.
+    //
+    // `newest_fire` was computed above and then never consulted here, which
+    // made the accusation below contradict the promise its own comment makes
+    // — "it can only ever confirm, never accuse". A rule that fired after the
+    // last heartbeat is proof the hook did not stop firing, and the journal
+    // records every firing.
+    //
+    // The failure that exposed this: one Claude Code session open for more
+    // than six hours. `SessionStart` writes the heartbeat once, at the
+    // beginning, so the heartbeat ages while the session file keeps being
+    // written — and `doctor` announced "the guard has not run in 14h" with
+    // the journal sitting in the same directory, last written seconds
+    // earlier by a `pipe-to-tail` denial. A long session is the NORMAL case
+    // for this tool; the check was accusing it of the one thing it was
+    // demonstrably not doing.
+    //
+    // Taking the max only ever moves liveness FORWARD, so the journal keeps
+    // its "confirm, never accuse" property: a genuinely quiet period leaves
+    // no entries and the heartbeat still decides.
+    let alive = newest_fire.map_or(beat, |fired| fired.max(beat));
+
     // A session file is written continuously while a session is open, so the
     // newest one is almost always newer than the last heartbeat by seconds.
     // Only a gap wide enough to span a whole session means anything.
     const GRACE: u64 = 6 * 60 * 60;
-    if session > beat + GRACE {
+    if session > alive + GRACE {
         return Finding::bad(
-            format!("the guard has not run in {}", ago(session - beat)),
+            format!("the guard has not run in {}", ago(session - alive)),
             format!(
-                "a session was active {} after the last heartbeat, so the hook stopped \
-                 firing. Check `claude --debug-file <path>` for its exit code.",
-                ago(session - beat)
+                "a session was active {} after the guard last showed any sign of life, \
+                 so the hook stopped firing. Check `claude --debug-file <path>` for its \
+                 exit code.",
+                ago(session - alive)
             ),
         );
     }
-    Finding::good(format!("last ran {} ago", ago(now().saturating_sub(beat))))
+    Finding::good(format!("last ran {} ago", ago(now().saturating_sub(alive))))
 }
 
 /// What is actually armed, so "installed" is never mistaken for "blocking".
