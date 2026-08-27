@@ -73,7 +73,24 @@ pub struct Entry<'a> {
 
 /// Append one record. Every failure is swallowed: the journal must never be
 /// able to fail the hook, and `the_journal_never_fails_the_hook` pins that.
+/// Set by `doctor`'s own probe on the child it spawns. See [`record`].
+pub const ENV_PROBE: &str = "AMONT_AGENT_PROBE";
+
 pub fn record(entry: &Entry) {
+    // `doctor` proves the guard works by feeding the real binary a command it
+    // must refuse. That firing is synthetic — nobody typed it, and no model
+    // was going to run it — so recording it would put a `pipe-to-tail` denial
+    // in the journal every time somebody asks whether the guard is healthy.
+    //
+    // That matters beyond tidiness. The journal is the measurement: `status`
+    // counts it, and the per-1000 evidence that gates `graduate` comes from
+    // the same data. A health check that inflates a rule's firing rate makes
+    // the rule look more necessary the more often you check on it — the
+    // observer changing what it observes, which is the exact distinction
+    // `observe` and `advise` exist to keep clean.
+    if std::env::var_os(ENV_PROBE).is_some() {
+        return;
+    }
     let _ = try_record(entry);
 }
 

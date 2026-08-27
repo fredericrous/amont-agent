@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`doctor` no longer accuses a live guard of being dead.** `SessionStart`
+  writes the heartbeat once, at the beginning of a session, so any session
+  open longer than the six-hour grace made the heartbeat age while the
+  transcript kept being written — and `doctor` reported
+
+  ```
+  ✗ the guard has not run in 14h
+  ```
+
+  with the journal in the same directory, last written seconds earlier by a
+  real `pipe-to-tail` denial. A long session is the normal case for this
+  tool, so the check was accusing it of the one thing it was demonstrably not
+  doing, and sending people to read debug logs for a hook that was working.
+
+  The journal was already read for exactly this purpose and then never
+  consulted at the verdict. It now is. Liveness takes the later of the
+  heartbeat and the last firing, so the journal keeps the property its own
+  comment claimed — it can confirm, never accuse: a genuinely quiet period
+  leaves no entries and the heartbeat still decides.
+
+- **`doctor` no longer writes to the journal it is inspecting.** The probe
+  that proves the guard works feeds the real binary a command it must refuse,
+  and that firing was recorded like any other. So every health check added a
+  synthetic `pipe-to-tail` denial to the measurement — the same data `status`
+  counts and the per-1000 evidence that gates `graduate` comes from. A rule
+  looked more necessary the more often you asked whether the guard was
+  healthy.
+
+  It also made the liveness check above unfalsifiable once it started reading
+  the journal, since the journal would always be seconds old by the time it
+  was read. Both were found by the same test.
+
 ## v2.0.1
 
 ### Removed

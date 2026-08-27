@@ -207,3 +207,128 @@ fn the_kill_switch_is_reported() {
     assert!(text.contains("AMONT_AGENT_OFF"), "{text}");
     assert!(text.contains("observe"), "{text}");
 }
+
+/// A long-running session must not be mistaken for a dead guard.
+///
+/// `SessionStart` writes the heartbeat once, at the beginning, so in a
+/// session open for more than the six-hour grace the heartbeat ages while
+/// the transcript keeps being written. `doctor` announced "the guard has not
+/// run in 14h" with the journal in the same directory, last written seconds
+/// earlier by a real `pipe-to-tail` denial.
+///
+/// A long session is the NORMAL case for this tool, so the check was
+/// accusing it of the one thing it was demonstrably not doing — and telling
+/// somebody to go read debug logs for a hook that was working.
+fn install_both(h: &Home) {
+    std::fs::write(
+        h.settings(),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{"matcher": "Bash", "hooks": [
+                    {"type": "command", "command": env!("CARGO_BIN_EXE_amont-agent"), "args": ["hook"]}
+                ]}],
+                "SessionStart": [{"hooks": [
+                    {"type": "command", "command": env!("CARGO_BIN_EXE_amont-agent"), "args": ["hook"]}
+                ]}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// Backdate a file, since the whole question is about relative ages.
+fn backdate(path: &std::path::Path, stamp: &str) {
+    let out = Command::new("touch")
+        .arg("-t")
+        .arg(stamp)
+        .arg(path)
+        .output()
+        .expect("touch runs");
+    assert!(out.status.success(), "touch -t {stamp}: {out:?}");
+}
+
+#[test]
+fn a_recent_firing_outweighs_an_old_heartbeat() {
+    let h = Home::new("long-session");
+    h.with_a_session();
+    install_both(&h);
+
+    let dir = h.0.join("amont-agent");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(dir.join("heartbeat"), "x\n").expect("heartbeat");
+    // Well past the six-hour grace, and before the session was written.
+    backdate(&dir.join("heartbeat"), "202001010000");
+    // The journal, written now: a rule fired, so the hook is plainly alive.
+    std::fs::write(
+        dir.join("journal.log"),
+        "F 1 pipe-to-tail deny denied - - - x\n",
+    )
+    .expect("journal");
+
+    let (code, out) = h.run(&["doctor"]);
+    assert!(
+        !out.contains("has not run"),
+        "the journal proves it ran; accusing it anyway is the bug:\n{out}"
+    );
+    assert!(out.contains("last ran"), "{out}");
+    assert_eq!(code, 0, "a live guard must not exit non-zero:\n{out}");
+}
+
+/// And the journal only ever CONFIRMS. With no firings recorded, an old
+/// heartbeat beside a much newer session still means the hook stopped —
+/// which is the accusation the check exists to make, and which the fix above
+/// must not have softened into uselessness.
+#[test]
+fn an_old_heartbeat_with_no_firings_still_accuses() {
+    let h = Home::new("really-dead");
+    h.with_a_session();
+    install_both(&h);
+
+    let dir = h.0.join("amont-agent");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(dir.join("heartbeat"), "x\n").expect("heartbeat");
+    backdate(&dir.join("heartbeat"), "202001010000");
+    // No journal at all: nothing has fired since.
+
+    let (_code, out) = h.run(&["doctor"]);
+    assert!(
+        out.contains("has not run"),
+        "a genuinely dead guard must still be called out:\n{out}"
+    );
+}
+
+/// Asking whether the guard is healthy must not change what it has measured.
+///
+/// `doctor` proves the guard works by feeding the real binary a command it
+/// must refuse, and that firing used to be journalled like any other. The
+/// journal is the measurement: `status` counts it, and the per-1000 evidence
+/// that gates `graduate` comes from the same data — so a rule looked more
+/// necessary the more often somebody checked on it.
+///
+/// It also made the liveness check unfalsifiable, since the journal was
+/// always seconds old by the time it was read.
+#[test]
+fn doctor_does_not_journal_its_own_probe() {
+    let h = Home::new("no-pollution");
+    h.with_a_session();
+    install_both(&h);
+
+    let journal = h.0.join("amont-agent").join("journal.log");
+    let before = std::fs::read_to_string(&journal).unwrap_or_default();
+
+    let (_code, out) = h.run(&["doctor"]);
+    // The probe really did run — otherwise this proves nothing.
+    assert!(
+        out.contains("valid decision document"),
+        "the probe must actually fire for this test to mean anything:\n{out}"
+    );
+
+    let after = std::fs::read_to_string(&journal).unwrap_or_default();
+    assert_eq!(
+        before,
+        after,
+        "doctor wrote {} bytes to the journal it is only supposed to read",
+        after.len().saturating_sub(before.len())
+    );
+}
