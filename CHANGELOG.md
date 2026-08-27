@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+- `packaging/amont-agent.rb`, the seed used once to create the tap's formula.
+  It has said `version "0.0.0"` with zero checksums ever since, while the
+  real formula moved to 2.0.2 — a file that looks authoritative, is not, and
+  drifts further with every release. Nothing referenced it.
+
+  The tap is the single source for the formula, and `scripts/bump-tap.py`
+  rewrites it on each release. amont keeps no seed either.
+
+  **What is still missing, and is the real gap:** nothing verifies that the
+  tap's formula can install what a release actually shipped. `publish-tap`
+  runs `ruby -c`, which proves the file parses and nothing more. amont's own
+  formula kept a `bin.install "amont-agent"` line for three releases after
+  that binary left the archive, so `brew install` failed outright the whole
+  time while every release went green — the checksums matched, the syntax
+  was valid, and nobody ran brew. A stale copy in this repository would not
+  have caught that; a post-publish `brew install` from the tap would.
+
 ## v2.0.2
 
 ### Fixed
