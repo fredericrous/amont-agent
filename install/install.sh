@@ -146,17 +146,16 @@ main() {
     upgrading=0
     [ -x "$BIN_DIR/amont-agent" ] && upgrading=1
     mkdir -p "$BIN_DIR"
-    for b in amont-agent; do
-        if [ -f "$tmp/$name/$b" ]; then
-            # Write to a temporary name and rename over the destination:
-            # replacing a RUNNING binary in place fails on some platforms, and
-            # rename is atomic, so a half-copied amont-agent never exists.
-            cp "$tmp/$name/$b" "$BIN_DIR/.$b.new"
-            chmod 755 "$BIN_DIR/.$b.new"
-            mv "$BIN_DIR/.$b.new" "$BIN_DIR/$b"
-            ok "installed $BIN_DIR/$b"
-        fi
-    done
+    b=amont-agent
+    if [ -f "$tmp/$name/$b" ]; then
+        # Write to a temporary name and rename over the destination:
+        # replacing a RUNNING binary in place fails on some platforms, and
+        # rename is atomic, so a half-copied amont-agent never exists.
+        cp "$tmp/$name/$b" "$BIN_DIR/.$b.new"
+        chmod 755 "$BIN_DIR/.$b.new"
+        mv "$BIN_DIR/.$b.new" "$BIN_DIR/$b"
+        ok "installed $BIN_DIR/$b"
+    fi
 
     printf '\n'
     case ":$PATH:" in
@@ -174,7 +173,7 @@ main() {
         printf '    amont-agent install          # print the settings block, write nothing\n'
         printf '    amont-agent install --write  # merge it into ~/.claude/settings.json\n'
         printf '    amont-agent doctor           # installed, runnable, and actually firing?\n\n'
-        printf '  Every rule but pipe-to-tail ships as `observe`, so nothing is\n'
+        printf '  Every rule but pipe-to-tail ships as observe, so nothing is\n'
         printf '  refused until you have seen what it would have caught:\n\n'
         printf '    amont-agent status\n\n'
     fi
