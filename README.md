@@ -160,6 +160,13 @@ commit before it exists, by the same author. Independent of this: no shared
 code, and neither needs the other. They meet in one optional place, described
 in [the session notice](docs/session-notice.md).
 
+[attest](https://github.com/fredericrous/attest) — the CI end of the same
+story: amont signs a note at pre-push naming the gates that really ran, and
+attest verifies it so CI can skip them. No connection to this guard beyond
+the author and the conviction all three share — trust what was verified,
+never what was reported. The masked push at the top of this page is what
+that looks like when it fails.
+
 ## License
 
 [MIT](LICENSE).
