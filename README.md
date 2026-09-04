@@ -96,6 +96,7 @@ and uninstalling takes every rule with it.
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
+| `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont run pre-push` |
 
 `stale-base` advises from the start because it refuses nothing and names a
 failure no correcting loop can see: **nothing fails when you build on stale
@@ -103,6 +104,16 @@ code.** The work is correct against the code it can see, and the conflict
 arrives later, from somewhere else. So a session opening in a checkout the
 remote has moved past is told — after a five-second, one-branch fetch that
 never pulls. [Why it never pulls](docs/session-notice.md).
+
+`push-preflight` advises for the same reason. git opens its connection to
+the remote *before* it runs `pre-push` and holds it idle for as long as the
+test gate takes; a remote that closes idle sessions kills the push after the
+gate has already passed, and the model reads "the network" where the cause
+was the gate's placement. With amont ≥ 1.27, `amont run pre-push` runs the
+same gate with no connection open and stamps the tree, so the push that
+follows skips the suite. The rule speaks only when `confirm` finds all three
+facts: amont guards this repository's pushes, a test gate would run for this
+push, and `HEAD`'s tree carries no stamp yet.
 
 ## What it will not do
 

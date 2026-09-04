@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added
+
+- **`push-preflight`**, advising. A `git push` in a repository where amont
+  runs a test gate at push time, on a tree that has not been rehearsed, is
+  told to run `amont run pre-push` first. git opens its connection to the
+  remote before `pre-push` and holds it idle for as long as the gate takes;
+  a remote that closes idle sessions — Forgejo's own git timeout is six
+  minutes — kills the push after the gate has already passed, and the
+  failure reads as network. Measured 2026-09-04: three pushes in a row died
+  that way, each paying the full suite, before a `--no-verify` retry of the
+  already-attested tree went through — the bypass this rule exists to make
+  unnecessary. amont ≥ 1.27 stamps the tree a passed gate ran against and
+  `amont run pre-push` stamps `HEAD` with no connection open, so the push
+  that follows skips the suite. `examine` fires on the shape of a push (not
+  `--dry-run`, not `--no-verify`, not amont's own notes push); `confirm`
+  stays silent unless amont guards the repository (an amont shim in
+  `hooks/pre-push`), `amont list --json --stage pre-push` says a test gate
+  runs, and `refs/notes/amont-gate` carries no `pre-push-*` token for
+  `HEAD`'s tree.
+
 ### Removed
 
 - `packaging/amont-agent.rb`, the seed used once to create the tap's formula.

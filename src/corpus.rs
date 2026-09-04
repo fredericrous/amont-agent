@@ -120,6 +120,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         "stale-base",
         include_str!("../tests/corpus/stale-base.cases"),
     ),
+    (
+        "push-preflight",
+        include_str!("../tests/corpus/push-preflight.cases"),
+    ),
 ];
 
 /// The compiled-in corpus for a rule, if the table has one.
