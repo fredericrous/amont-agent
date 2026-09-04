@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v2.1.0
+
+A new advisory rule for the moment a push is about to run a slow gate
+inside its own connection.
 
 ### Added
 
