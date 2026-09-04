@@ -32,6 +32,7 @@ pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
 pub mod no_verify;
 pub mod pipe_to_tail;
+pub mod push_preflight;
 pub mod stale_base;
 
 // A `fish-glob` rule was written and removed before the first commit. It caught
@@ -228,6 +229,7 @@ pub const RULES: &[Rule] = &[
     no_verify::RULE,
     git_add_broad::RULE,
     stale_base::RULE,
+    push_preflight::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {

@@ -27,10 +27,6 @@ fn check(command: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn fires(command: &str) -> bool {
-    !check(command).starts_with("no rule fires")
-}
-
 fn fires_rule(command: &str, rule: &str) -> bool {
     check(command).lines().any(|l| l.starts_with(rule))
 }
@@ -136,9 +132,15 @@ fn the_benign_corpus_is_silent() {
 /// this test is here so that stays true.
 #[test]
 fn force_with_lease_on_a_branch_is_not_a_force_pushed_tag() {
-    assert!(!fires("git push --force-with-lease origin feat/x"));
-    assert!(!fires(
-        "git push --force-with-lease --no-verify=x origin feat/x"
+    // The rule under test is pipe-to-tail's tag detection; a branch push
+    // has its own rule (push-preflight) and its shape legitimately fires it.
+    assert!(!fires_rule(
+        "git push --force-with-lease origin feat/x",
+        "pipe-to-tail"
+    ));
+    assert!(!fires_rule(
+        "git push --force-with-lease --no-verify=x origin feat/x",
+        "pipe-to-tail"
     ));
 }
 
@@ -197,6 +199,20 @@ fn the_smaller_rules_catch_their_own_shapes() {
     assert!(fires_rule("git worktree add ../x", "stale-base"));
     assert!(fires_rule("git checkout -b feat/y", "stale-base"));
     assert!(fires_rule("git switch -c feat/y main", "stale-base"));
+    assert!(fires_rule("git push -u origin feat/y", "push-preflight"));
+    assert!(fires_rule("git push", "push-preflight"));
+    assert!(!fires_rule(
+        "git push --dry-run origin main",
+        "push-preflight"
+    ));
+    assert!(!fires_rule(
+        "git push --no-verify origin feat/y",
+        "push-preflight"
+    ));
+    assert!(!fires_rule(
+        "git push origin refs/notes/amont-attest:refs/notes/amont-attest",
+        "push-preflight"
+    ));
 }
 
 /// `-n` means `--no-verify` on `git commit` and `--dry-run` on `git push`.

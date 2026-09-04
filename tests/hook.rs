@@ -511,3 +511,76 @@ fn a_marked_block_with_no_amont_installed_says_nothing() {
     let r = send_with_path_only(&session_start(&work), &empty);
     assert_eq!(r.stdout, "", "no amont, no opinion");
 }
+
+/// `push-preflight`, end to end: a push from an amont-guarded checkout whose
+/// tree is not yet stamped is advised to rehearse; the same push once the
+/// tree carries a push stamp is not. Drives the shell-out to `amont list`,
+/// so it supplies its own `amont` stub (unix only, for the same reason as
+/// the guidance test above).
+#[cfg(unix)]
+#[test]
+fn a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not() {
+    let (_, work) = a_stale_clone(); // any real repo with a HEAD will do
+                                     // amont's shim, by its one-word signature.
+    let hooks = work.join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(
+        hooks.join("pre-push"),
+        "#!/bin/sh\nexec amont --hooks-dir . pre-push \"$@\"\n",
+    )
+    .unwrap();
+    // An `amont` whose `list --json --stage pre-push` says a JS suite runs.
+    let bin = home().join("stub-bin-push");
+    std::fs::create_dir_all(&bin).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = bin.join("amont");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\necho '{\"checks\":[{\"id\":\"pre-push-run-tests-js\",\"stage\":\"pre-push\",\"source\":\"builtin\",\"status\":\"runs\"}]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let payload = format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{},
+             "session_id":"sess1234","tool_use_id":"t1","permission_mode":"default",
+             "tool_input":{{"command":"git push -u origin feat/x"}}}}"#,
+        serde_json::Value::String(work.to_string_lossy().into_owned()),
+    );
+    let r = send_with_path(&payload, Some(&bin));
+    let doc = r.json().expect("a decision document");
+    let text = doc["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.starts_with("amont-agent/push-preflight:"), "{doc}");
+    assert!(text.contains("amont run pre-push"), "{text}");
+    assert!(
+        doc["hookSpecificOutput"]["permissionDecision"].is_null(),
+        "advice refuses nothing: {doc}"
+    );
+
+    // Rehearsed: a push stamp on HEAD's tree, as amont ≥ 1.27 writes it.
+    let out = Command::new("git")
+        .args([
+            "-C",
+            work.to_str().unwrap(),
+            "notes",
+            "--ref",
+            "amont-gate",
+            "add",
+            "-f",
+            "-m",
+            "amont-gate-v1 pre-push-run-tests-js",
+            "HEAD^{tree}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let r = send_with_path(&payload, Some(&bin));
+    assert_eq!(r.stdout, "", "a rehearsed tree is not nagged: {}", r.stdout);
+}
