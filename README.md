@@ -97,6 +97,13 @@ and uninstalling takes every rule with it.
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
 | `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
+| `foreground-poll` | `advise` | a polling loop or `gh run watch` in the foreground, where the tool's ten-minute clock will kill it one poll short |
+| `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
+| `kubectl-gitops` | `advise` | an imperative `kubectl` write in a repository Flux or Argo reconciles |
+| `tag-after-commit` | `advise` | `git tag` chained onto a `git commit` that a hook may have refused |
+| `worktree-remove-force` | `advise` | `git worktree remove --force` on a worktree that still holds uncommitted work |
+| `amend-pushed` | `advise` | `git commit --amend` on a commit the remote already has |
+| `branch-force-delete` | `observe` | `git branch -D` on a branch whose commits are on no remote and not merged |
 
 `stale-base` advises from the start because it refuses nothing and names a
 failure no correcting loop can see: **nothing fails when you build on stale
@@ -116,6 +123,15 @@ the push that follows skips the suite (`amont run pre-push` on 1.27). The
 rule speaks only when `confirm` finds all three facts: amont guards this
 repository's pushes, a test gate would run for this push, and `HEAD`'s tree
 carries no stamp yet.
+
+The seven rules added in 2.2.0 came out of the transcripts the same way —
+nineteen thousand Bash calls, sorted by what failed, was killed, or drew a
+correction. Each fires on shape and, where the fact lives in the world,
+confirms it first: whether the call already runs in the background, which
+`sed` is on `PATH`, whether the repository holds a Flux or Argo resource,
+whether the worktree is dirty, whether the remote has the commit, whether
+any other branch has the commits. The one shape-only rule, `tag-after-commit`,
+names a failure every command in the chain reports as success.
 
 ## What it will not do
 

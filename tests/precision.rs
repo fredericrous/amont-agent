@@ -76,7 +76,10 @@ const BENIGN: &[(&str, &str)] = &[
     ("npm publish --dry-run | tail -2", "dry-run"),
     // --- the mutating command is the SINK, so its status is the pipeline's --
     ("echo msg | git commit -F -", "sink"),
-    ("cat manifest.yaml | kubectl apply -f -", "sink"),
+    // (`cat manifest.yaml | kubectl apply -f -` moved to pipe-to-tail's own
+    // corpus: the sink is still not a pipe-to-tail, but `kubectl-gitops` now
+    // has an opinion about the apply itself.)
+    ("cat notes.txt | git notes add -F - HEAD", "sink"),
     // --- scoped, deliberate forms ------------------------------------------
     ("git add -A packages/dbt-duckdb/", "scoped"),
     ("git add -p", "scoped"),
