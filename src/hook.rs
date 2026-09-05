@@ -185,6 +185,7 @@ fn confirmed(rule: &Rule, finding: &Finding, bash: &Bash, parsed: &Parsed) -> bo
     let ctx = Context {
         cwd: &bash.cwd,
         parsed,
+        background: bash.background,
     };
     matches!(confirm(&ctx, finding), Confirmed::Yes)
 }

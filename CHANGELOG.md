@@ -1,5 +1,44 @@
 # Changelog
 
+## v2.2.0
+
+Seven rules mined from the transcripts: nineteen thousand Bash calls across
+forty-two sessions, sorted by what failed, was killed, or drew a correction.
+
+### Added
+
+- **`foreground-poll`**, advising. A polling loop (`until … do sleep 30;
+  done`) or `gh run watch` in the foreground, where the Bash tool's clock
+  kills it — 96 commands died at the ten-minute cap, sixteen hours of
+  waiting for a kill. `confirm` reads `run_in_background` from the payload
+  and stays silent for a call that is already detached.
+- **`sed-in-place`**, advising. `sed -i ''` on GNU sed reads the empty
+  string as the script (40 of 47 uses failed with `can't read s/…`); bare
+  `-i` fails the same way on BSD. `confirm` asks `sed --version` and speaks
+  only when the spelling and the sed disagree.
+- **`kubectl-gitops`**, advising. An imperative `kubectl apply|create|patch|
+  scale|delete …` from a repository that Flux or Argo reconciles: the
+  controller reverts the change or the repository stops describing the
+  cluster. Deleting a pod or a job is a restart, not drift, and stays
+  silent; `confirm` looks for a reconciler's resources among the tracked
+  YAML.
+- **`tag-after-commit`**, advising. `git commit … && git tag vX` in one
+  command: a refused commit leaves the tag on the previous one, and a
+  tag-driven release publishes stale code under a new version — once, to
+  npm, unrecoverably. Shape only.
+- **`worktree-remove-force`**, advising. `--force` deletes whatever the
+  worktree still holds; `confirm` runs `git status` inside it and speaks
+  only when something would be lost.
+- **`amend-pushed`**, advising. `git commit --amend` when a remote-tracking
+  branch already contains HEAD.
+- **`branch-force-delete`**, observing. `git branch -D` on a branch no
+  remote has and the default branch does not contain.
+
+### Changed
+
+- The hook payload now carries `tool_input.run_in_background`, exposed to a
+  rule's `confirm` as `Context::background`.
+
 ## v2.1.1
 
 ### Changed

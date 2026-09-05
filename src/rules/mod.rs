@@ -27,13 +27,20 @@ use std::ops::Range;
 
 use crate::shell::Parsed;
 
+pub mod amend_pushed;
 pub mod bare_stash_pop;
+pub mod branch_force_delete;
+pub mod foreground_poll;
 pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
+pub mod kubectl_gitops;
 pub mod no_verify;
 pub mod pipe_to_tail;
 pub mod push_preflight;
+pub mod sed_in_place;
 pub mod stale_base;
+pub mod tag_after_commit;
+pub mod worktree_remove_force;
 
 // A `fish-glob` rule was written and removed before the first commit. It caught
 // an unquoted glob inside a flag value (`--include=*.py`), which under fish is
@@ -164,6 +171,10 @@ pub struct Rule {
 pub struct Context<'a> {
     pub cwd: &'a std::path::Path,
     pub parsed: &'a Parsed,
+    /// The call runs with `run_in_background: true`. A sibling field of the
+    /// payload rather than part of the command, so only a `confirm` can see
+    /// it — `foreground-poll` is the rule that asks.
+    pub background: bool,
 }
 
 impl Context<'_> {
@@ -230,6 +241,13 @@ pub const RULES: &[Rule] = &[
     git_add_broad::RULE,
     stale_base::RULE,
     push_preflight::RULE,
+    foreground_poll::RULE,
+    sed_in_place::RULE,
+    kubectl_gitops::RULE,
+    tag_after_commit::RULE,
+    worktree_remove_force::RULE,
+    amend_pushed::RULE,
+    branch_force_delete::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {
@@ -276,6 +294,7 @@ mod tests {
         let ctx = Context {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
+            background: false,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -289,6 +308,7 @@ mod tests {
         let ctx = Context {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
+            background: false,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -302,6 +322,7 @@ mod tests {
         let ctx = Context {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
+            background: false,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -317,6 +338,7 @@ mod tests {
             let ctx = Context {
                 cwd: std::path::Path::new("/session"),
                 parsed: &parsed,
+                background: false,
             };
             assert_eq!(
                 ctx.cwd_at(at_of(&parsed, "stash")),
@@ -332,6 +354,7 @@ mod tests {
         let ctx = Context {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
+            background: false,
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));

@@ -124,6 +124,34 @@ const EMBEDDED: &[(&str, &str)] = &[
         "push-preflight",
         include_str!("../tests/corpus/push-preflight.cases"),
     ),
+    (
+        "foreground-poll",
+        include_str!("../tests/corpus/foreground-poll.cases"),
+    ),
+    (
+        "sed-in-place",
+        include_str!("../tests/corpus/sed-in-place.cases"),
+    ),
+    (
+        "kubectl-gitops",
+        include_str!("../tests/corpus/kubectl-gitops.cases"),
+    ),
+    (
+        "tag-after-commit",
+        include_str!("../tests/corpus/tag-after-commit.cases"),
+    ),
+    (
+        "worktree-remove-force",
+        include_str!("../tests/corpus/worktree-remove-force.cases"),
+    ),
+    (
+        "amend-pushed",
+        include_str!("../tests/corpus/amend-pushed.cases"),
+    ),
+    (
+        "branch-force-delete",
+        include_str!("../tests/corpus/branch-force-delete.cases"),
+    ),
 ];
 
 /// The compiled-in corpus for a rule, if the table has one.

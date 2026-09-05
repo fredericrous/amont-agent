@@ -35,6 +35,9 @@ pub struct Bash {
     /// could reason about. Recording it is how you would notice if that ever
     /// stopped being true.
     pub permission_mode: String,
+    /// `tool_input.run_in_background`: the call is detached and the tool's
+    /// timeout does not apply. Read by `foreground-poll`'s `confirm`.
+    pub background: bool,
 }
 
 pub struct Session {
@@ -94,11 +97,17 @@ pub fn parse(raw: &str) -> Event {
             if command.trim().is_empty() {
                 return Event::NotOurs;
             }
+            let background = v
+                .get("tool_input")
+                .and_then(|i| i.get("run_in_background"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
             Event::PreBash(Box::new(Bash {
                 command,
                 cwd,
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
+                background,
             }))
         }
         _ => Event::NotOurs,
