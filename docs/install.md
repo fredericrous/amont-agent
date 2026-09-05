@@ -62,10 +62,11 @@ amont-agent install --write --project   # .claude/settings.json instead
 amont-agent install --write --local     # .claude/settings.local.json
 ```
 
-Two entries are written: the guard on `PreToolUse`, and a `SessionStart` entry
-that leaves a heartbeat and states where the checkout stands against the
-remote. Without the heartbeat, `doctor` cannot tell "nothing fired this week"
-from "the guard has been dead since Tuesday".
+Three entries are written: the guard on `PreToolUse`; the assertions on
+`PostToolUse`, which check what a command that reported success actually did;
+and a `SessionStart` entry that leaves a heartbeat and states where the checkout
+stands against the remote. Without the heartbeat, `doctor` cannot tell "nothing
+fired this week" from "the guard has been dead since Tuesday".
 
 Your `settings.json` keeps the mode it already had, and a file created here
 starts at `0600`: it can hold MCP environment blocks, and those hold

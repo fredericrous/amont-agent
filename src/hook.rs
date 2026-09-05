@@ -23,6 +23,7 @@
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
+use crate::assertions::{self, Assertion, Claim, Verdict};
 use crate::decision::{self, Decision};
 use crate::journal;
 use crate::payload::{self, Bash, Event, Session};
@@ -68,6 +69,7 @@ fn decide(raw: &str) -> Decision {
         }
         Event::NotOurs => Decision::Silent,
         Event::PreBash(bash) => on_bash(&bash),
+        Event::PostBash(bash) => on_post_bash(&bash),
     }
 }
 
@@ -171,6 +173,77 @@ fn on_bash(bash: &Bash) -> Decision {
     } else {
         Decision::Silent
     }
+}
+
+/// A call that has already run and reported success.
+///
+/// The shape mirrors `on_bash` deliberately — lex, pure prefilter, and only
+/// then anything that touches the world — because this fires after EVERY
+/// successful Bash call, of every session on the machine. A user-scope hook is
+/// not per-project: two other sessions' commands arrive here too, which is also
+/// why every answer is taken from the payload's `cwd` and never from this
+/// process's own.
+///
+/// There is nothing left to refuse, so `deny` speaks like `advise`, the same
+/// way it does at a session opening.
+fn on_post_bash(bash: &Bash) -> Decision {
+    let parsed = shell::lex(&bash.command);
+    if matches!(parsed, Parsed::Opaque(_)) {
+        return Decision::Silent;
+    }
+    if bash.background {
+        // Detached: the tool call returned a task id, not a result. Whatever it
+        // claimed has not finished happening.
+        return Decision::Silent;
+    }
+
+    let claimed = assertions::examine_all(&parsed);
+    if claimed.is_empty() {
+        // The whole no-claim path: one lex, no processes, no files.
+        return Decision::Silent;
+    }
+
+    let ctx = Context {
+        cwd: &bash.cwd,
+        parsed: &parsed,
+        background: bash.background,
+    };
+
+    let mut spoken: Vec<String> = Vec::new();
+    for (assertion, claim) in &claimed {
+        let stance = crate::stance::resolve_assertion(assertion);
+        match (assertion.verify)(&ctx, claim) {
+            Verdict::Unknown(why) => {
+                note_claim(assertion, "unverified", why, bash, claim);
+            }
+            Verdict::Held => note_claim(assertion, stance.as_str(), "held", bash, claim),
+            Verdict::Broken { reason, remedy } => {
+                note_claim(assertion, stance.as_str(), "broken", bash, claim);
+                if stance != Stance::Observe {
+                    spoken.push(decision::phrase(assertion.id, &reason, &remedy));
+                }
+            }
+        }
+    }
+
+    if spoken.is_empty() {
+        Decision::Silent
+    } else {
+        Decision::Assert(spoken.join("\n\n"))
+    }
+}
+
+fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, claim: &Claim) {
+    let excerpt = crate::backtest::excerpt(&bash.command, claim.span.start, claim.span.end);
+    journal::record(&journal::Entry {
+        rule: assertion.id,
+        stance,
+        outcome,
+        session: &bash.session,
+        repo: &repo_name(&bash.cwd),
+        mode: &bash.permission_mode,
+        excerpt: &excerpt,
+    });
 }
 
 /// A rule with no `confirm` is confirmed. A `confirm` that cannot answer is
