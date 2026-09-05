@@ -96,7 +96,7 @@ and uninstalling takes every rule with it.
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
-| `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont run pre-push` |
+| `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
 
 `stale-base` advises from the start because it refuses nothing and names a
 failure no correcting loop can see: **nothing fails when you build on stale
@@ -109,11 +109,13 @@ never pulls. [Why it never pulls](docs/session-notice.md).
 the remote *before* it runs `pre-push` and holds it idle for as long as the
 test gate takes; a remote that closes idle sessions kills the push after the
 gate has already passed, and the model reads "the network" where the cause
-was the gate's placement. With amont ≥ 1.27, `amont run pre-push` runs the
-same gate with no connection open and stamps the tree, so the push that
-follows skips the suite. The rule speaks only when `confirm` finds all three
-facts: amont guards this repository's pushes, a test gate would run for this
-push, and `HEAD`'s tree carries no stamp yet.
+was the gate's placement. With amont ≥ 1.28, `amont rehearse --wait` runs the
+same gate on a snapshot of `HEAD` with no connection open — or follows the
+rehearsal `amont.rehearseOnCommit` already started — and stamps the tree, so
+the push that follows skips the suite (`amont run pre-push` on 1.27). The
+rule speaks only when `confirm` finds all three facts: amont guards this
+repository's pushes, a test gate would run for this push, and `HEAD`'s tree
+carries no stamp yet.
 
 ## What it will not do
 

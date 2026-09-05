@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.1.1
+
+### Changed
+
+- **`push-preflight`** now points at `amont rehearse --wait` (amont ≥ 1.28):
+  it runs the push gate on a snapshot of `HEAD`, or follows the rehearsal a
+  commit already started in the background, and stamps the tree. `amont run
+  pre-push` remains the spelling on 1.27, and the remedy says so.
+
 ## v2.1.0
 
 A new advisory rule for the moment a push is about to run a slow gate

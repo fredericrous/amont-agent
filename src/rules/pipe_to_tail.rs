@@ -178,7 +178,7 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
             ),
             span: Range {
                 start: cmd.at,
-                end: sink.end.min(usize::MAX),
+                end: sink.end,
             },
         });
     }
