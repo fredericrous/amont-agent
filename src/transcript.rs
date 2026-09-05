@@ -173,10 +173,8 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = e.path();
         match e.file_type() {
             Ok(t) if t.is_dir() => collect(&path, out),
-            Ok(t) if t.is_file() => {
-                if path.extension().is_some_and(|x| x == "jsonl") {
-                    out.push(path);
-                }
+            Ok(t) if t.is_file() && path.extension().is_some_and(|x| x == "jsonl") => {
+                out.push(path);
             }
             _ => {}
         }

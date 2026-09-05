@@ -554,7 +554,7 @@ fn a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not() {
         .as_str()
         .unwrap_or_default();
     assert!(text.starts_with("amont-agent/push-preflight:"), "{doc}");
-    assert!(text.contains("amont run pre-push"), "{text}");
+    assert!(text.contains("amont rehearse --wait"), "{text}");
     assert!(
         doc["hookSpecificOutput"]["permissionDecision"].is_null(),
         "advice refuses nothing: {doc}"

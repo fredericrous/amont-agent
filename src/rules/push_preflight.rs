@@ -93,10 +93,11 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
                  sessions (Forgejo's git timeout is 6 minutes) kills the push after \
                  the gate has already passed."
             .to_string(),
-        remedy: "Rehearse first: `amont run pre-push` runs the same gate with no \
-                 connection open and stamps the tree, so this push then skips the \
-                 suite and holds the remote for seconds. Run the rehearsal, read its \
-                 verdict, then push."
+        remedy: "Rehearse first: `amont rehearse --wait` runs the same gate on a \
+                 snapshot of HEAD with no connection open and stamps the tree — or \
+                 follows the rehearsal a commit already started — so this push then \
+                 skips the suite and holds the remote for seconds (`amont run \
+                 pre-push` on amont 1.27). Run it, read its verdict, then push."
             .to_string(),
         span: cmd.at..cmd.end,
     })
