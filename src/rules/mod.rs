@@ -70,12 +70,13 @@ pub mod worktree_remove_force;
 /// So: `Observe` is where every rule ships and where the baseline is measured.
 /// `Advise` answers "does it correct itself when told?" — and if the answer is
 /// yes, `Deny` is never needed.
-// `Advise` and `Deny` are declared here and constructed by nothing yet: the
-// build order deliberately ships the backtester and the rules BEFORE the hook
-// that can act on them, so that no rule can block until its rate has been
-// looked at. The ladder is the design; the rungs above `Observe` come with the
-// hook path.
-#[allow(dead_code)]
+// All three rungs are now occupied, and the build order that got them here is
+// the argument for trusting them: the backtester and the rules shipped BEFORE
+// the hook that could act on them, so no rule blocked until its rate had been
+// looked at. `pipe-to-tail` ships `Deny` on seven flat weeks of evidence;
+// `stale-base` and `push-preflight` ship `Advise` because each speaks only
+// after a `confirm` has established a fact. Everything else still ships
+// `Observe`, which is where a rule goes to earn its case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stance {
     Observe,

@@ -179,10 +179,27 @@ fn main() -> ExitCode {
     // scrub has to happen here. This is the same failure the test harness's
     // `strip_git_env` exists to prevent; it committed to the wrong repository
     // once.
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            std::env::remove_var(&key);
-        }
+    //
+    // NAMED, not a `GIT_` prefix sweep. The sweep took `GIT_CONFIG_GLOBAL`
+    // and `GIT_CONFIG_SYSTEM` with it, and those two say where config LIVES
+    // rather than which repository this is — so a person who keeps their git
+    // config somewhere other than `~/.gitconfig` had every stance they set
+    // silently ignored, and this crate's own tests could not point the
+    // reader at a fixture. amont's `rehearsal::strip_repo_env` draws the
+    // line in the same place and for the same reason.
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_REFLOG_ACTION",
+        "GIT_EXEC_PATH",
+    ] {
+        std::env::remove_var(key);
     }
 
     match parse(std::env::args_os().skip(1).collect()) {

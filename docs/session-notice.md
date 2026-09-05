@@ -74,5 +74,5 @@ error. A session-opening notice that cries wolf is worse than one that
 occasionally says nothing.
 
 ```sh
-git config amont.agent.agentsMdNotice false   # silence this half
+git config --global amont.agent.agentsMdNotice false   # silence this half
 ```

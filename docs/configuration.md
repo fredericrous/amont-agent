@@ -36,8 +36,12 @@ Most specific wins. See [stances](stances.md).
 
 ## What is deliberately not configurable
 
-**Which file a stance can be set in.** Only your own git config, never a
-committed one — see [stances](stances.md#why-git-config-and-not-a-committed-file).
+**Which file any of these keys can be set in.** `--global`, then `--system`,
+and nothing else. Not a committed file, and not the `--local`/`--worktree`
+config of the repository you happen to be standing in — see
+[stances](stances.md#why-git-config-and-not-a-committed-file). Write them with
+`git config --global`; a bare `git config` inside a repository writes
+`--local`, where this tool will not look.
 
 **Whether a failure is silent.** It always is. See
 [what it will not do](refusals.md).

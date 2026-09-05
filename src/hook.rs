@@ -233,8 +233,15 @@ fn heartbeat() {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    journal::private(&dir, 0o700);
     let tmp = dir.join("heartbeat.new");
     if std::fs::write(&tmp, format!("{now} {}\n", env!("CARGO_PKG_VERSION"))).is_ok() {
+        // Narrowed BEFORE the rename, so no window exists in which the
+        // finished file is readable by anyone but its owner. It carries only
+        // a timestamp and a version, but it sits in the same directory as the
+        // journal and there is no reason for the two to disagree about who
+        // may read them.
+        journal::private(&tmp, 0o600);
         let _ = std::fs::rename(&tmp, dir.join("heartbeat"));
     }
 }

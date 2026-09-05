@@ -124,6 +124,20 @@ fn drifted(root: &Path) -> Option<Vec<String>> {
 /// Spawned rather than `output()`-ed so the budget can be enforced: a hung
 /// amont must not hold a session open. The child is killed on expiry and the
 /// answer discarded.
+///
+/// # The pipe is drained WHILE the child runs
+///
+/// An earlier shape polled `try_wait` to completion and only then read the
+/// pipe. That is the classic deadlock and it is silent: a child whose stderr
+/// exceeds the pipe buffer — 64 KB on Linux, less on macOS — blocks in
+/// `write`, never exits, and the budget above kills it. The notice would then
+/// go missing precisely when amont had the most to say. Today amont prints
+/// two sentences, so it never bit; a reader thread costs one `spawn` on a
+/// path that already spawns a process, and removes the shape rather than
+/// betting on the child staying quiet.
+///
+/// Killing the child closes its end of the pipe, so the reader always
+/// finishes and the join cannot hang either.
 fn ask(root: &Path) -> Option<String> {
     let mut child = Command::new("amont")
         .arg("agents-md")
@@ -135,28 +149,31 @@ fn ask(root: &Path) -> Option<String> {
         .spawn()
         .ok()?;
 
-    // Poll rather than block: `wait_with_output` has no timeout, and adding
-    // a reader thread to bound one short-lived child is more machinery than
-    // the notice is worth.
+    let mut pipe = child.stderr.take()?;
+    let reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let _ = pipe.read_to_string(&mut buf);
+        buf
+    });
+
     let deadline = std::time::Instant::now() + BUDGET;
-    loop {
+    let finished = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => break true,
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(25));
             }
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                break false;
             }
-            Err(_) => return None,
+            Err(_) => break false,
         }
-    }
-    let mut buf = String::new();
-    use std::io::Read;
-    child.stderr.take()?.read_to_string(&mut buf).ok()?;
-    Some(buf)
+    };
+    let buf = reader.join().ok()?;
+    finished.then_some(buf)
 }
 
 #[cfg(test)]
