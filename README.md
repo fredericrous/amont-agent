@@ -148,8 +148,10 @@ names a failure every command in the chain reports as success.
 - **It does not phone home.** No telemetry, no update checks. Every firing is
   journalled to `~/.claude/amont-agent/journal.log`, redacted, and it only
   counts — nothing in it may participate in a decision.
-- **A cloned repository cannot change a stance.** Promotion power lives in your
-  own git config, never in a committed file.
+- **No repository can change a stance.** Stances are read from `--global` and
+  `--system` git config only — never from a committed file, and never from the
+  `.git/config` of the repository the agent is standing in, which is a file
+  that agent could write.
 
 [The reasoning in full](docs/refusals.md).
 

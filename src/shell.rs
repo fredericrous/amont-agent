@@ -566,6 +566,13 @@ const WRAPPERS: &[&str] = &[
     "sudo", "command", "builtin", "nice", "time", "timeout", "env",
 ];
 
+/// `90`, `1.5m`, `30s` — what `timeout` and `nice` take before the program.
+/// A unit suffix is optional and singular; `git` and `main` are not durations.
+fn is_duration(t: &str) -> bool {
+    let body = t.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or(t);
+    !body.is_empty() && body.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+}
+
 /// git's own options, which sit before the subcommand.
 const GIT_GLOBAL_VALUED: &[&str] = &["-C", "-c", "--git-dir", "--work-tree", "--exec-path"];
 const GIT_GLOBAL_BARE: &[&str] = &[
@@ -580,6 +587,18 @@ impl Simple {
     /// argv0, with leading `VAR=value` assignments and wrapper commands peeled
     /// off. Returns `None` when the command is only assignments or is empty.
     pub fn program(&self) -> Option<&str> {
+        self.program_at().map(|(_, t)| t)
+    }
+
+    /// The same answer with its INDEX, which is what every caller that needs
+    /// to read past the program actually wants.
+    ///
+    /// Derived together rather than re-found by name: searching the words for
+    /// the first one equal to the program name finds the wrong occurrence
+    /// whenever the name appears earlier as somebody's argument — `sudo -u git
+    /// git push` is the honest example — and a wrong program index is a wrong
+    /// subcommand, which is a wrong rule.
+    fn program_at(&self) -> Option<(usize, &str)> {
         let mut idx = 0;
         loop {
             let w = self.words.get(idx)?;
@@ -593,28 +612,90 @@ impl Simple {
                     continue;
                 }
             }
-            if WRAPPERS.contains(&t) {
-                idx += 1;
-                // `timeout 90 git push`: skip a bare numeric argument.
-                if t == "timeout" || t == "nice" {
-                    while self
-                        .words
-                        .get(idx)
-                        .is_some_and(|w| w.text.bytes().all(|c| c.is_ascii_digit() || c == b'.'))
-                        && self.words.get(idx).is_some_and(|w| !w.text.is_empty())
-                    {
-                        idx += 1;
-                    }
-                }
+            if !w.quoted && WRAPPERS.contains(&t) {
+                idx = self.past_wrapper_args(t, idx + 1);
                 continue;
             }
-            return Some(t);
+            return Some((idx, t));
         }
     }
 
+    /// Index of the first word after `wrapper`'s OWN options.
+    ///
+    /// Without this, `nice -n 10 git push` had a program of `-n`: only bare
+    /// numeric arguments were skipped, so the flag stopped the walk and every
+    /// rule keyed on `git` went silent. Same for `sudo -u root git push`,
+    /// `timeout -k 5 90 git push` and `env -i git push` — the ordinary
+    /// spellings of three of the six wrappers this table exists to see past.
+    ///
+    /// Unknown options are skipped: a program name never starts with `-`, so
+    /// a flag we do not recognise cannot be the thing we are looking for. The
+    /// per-wrapper lists below are only for the options that take a SEPARATE
+    /// value, since that value is the one word in the run that does not
+    /// announce itself with a dash.
+    fn past_wrapper_args(&self, wrapper: &str, mut idx: usize) -> usize {
+        let valued: &[&str] = match wrapper {
+            "sudo" => &[
+                "-u",
+                "--user",
+                "-g",
+                "--group",
+                "-p",
+                "--prompt",
+                "-C",
+                "--close-from",
+                "-h",
+                "--host",
+                "-R",
+                "--chroot",
+                "-D",
+                "--chdir",
+                "-T",
+                "--command-timeout",
+                "-U",
+                "--other-user",
+                "-r",
+                "--role",
+                "-t",
+                "--type",
+            ],
+            "env" => &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+            "timeout" => &["-k", "--kill-after", "-s", "--signal"],
+            "nice" => &["-n", "--adjustment"],
+            "time" => &["-o", "--output", "-f", "--format"],
+            _ => &[],
+        };
+        while let Some(w) = self.words.get(idx) {
+            let t = w.text.as_str();
+            // A quoted word is never a flag — the same rule `has_flag` obeys.
+            if w.quoted || !t.starts_with('-') || t.len() < 2 {
+                break;
+            }
+            if t == "--" {
+                return idx + 1;
+            }
+            idx += 1;
+            // `--flag=value` carries its value; `--flag value` takes the next
+            // word, which would otherwise read as the program.
+            if !t.contains('=') && valued.contains(&t) {
+                idx += 1;
+            }
+        }
+        // `timeout 90 …` and `nice 10 …` take a bare operand of their own.
+        if matches!(wrapper, "timeout" | "nice") {
+            while self
+                .words
+                .get(idx)
+                .is_some_and(|w| !w.quoted && is_duration(&w.text))
+            {
+                idx += 1;
+            }
+        }
+        idx
+    }
+
     fn program_index(&self) -> Option<usize> {
-        let p = self.program()?;
-        self.words.iter().position(|w| w.text == p)
+        self.program_at().map(|(i, _)| i)
     }
 
     /// The first operand after the program, skipping the program's own global
@@ -648,11 +729,29 @@ impl Simple {
         None
     }
 
+    /// The words that are the PROGRAM'S arguments — everything after argv0.
+    ///
+    /// A wrapper's flags belong to the wrapper, not to what it runs, and
+    /// every accessor below reads this rather than `words`. Without it,
+    /// `nice -n 10 git push | tail -2` was silent: `has_short('n')` found
+    /// nice's `-n`, `pipe-to-tail` read it as `git push -n`, and a dry run
+    /// disarms every rule that is about mutation. `sudo -n` (non-interactive)
+    /// and `timeout -s KILL` are the same shape.
+    ///
+    /// Empty when there is no program at all — a clause of only assignments
+    /// has no flags to ask about.
+    fn args(&self) -> &[Word] {
+        match self.program_index() {
+            Some(i) => self.words.get(i + 1..).unwrap_or_default(),
+            None => &[],
+        }
+    }
+
     /// Whole-token flag test. Stops at `--`, and **skips quoted words** — which
     /// is the single highest-leverage precision decision in this crate. It is
     /// what makes `gh pr create --body "…use --auto…"` not a `--auto`.
     pub fn has_flag(&self, flag: &str) -> bool {
-        for w in &self.words {
+        for w in self.args() {
             if !w.quoted && w.text == "--" {
                 return false;
             }
@@ -668,7 +767,7 @@ impl Simple {
 
     /// A letter inside a short cluster: `-Au` contains `u`. Stops at `--`.
     pub fn has_short(&self, c: char) -> bool {
-        for w in &self.words {
+        for w in self.args() {
             if !w.quoted && w.text == "--" {
                 return false;
             }
@@ -687,7 +786,8 @@ impl Simple {
     #[allow(dead_code)]
     pub fn flag_value(&self, flag: &str) -> Option<&str> {
         let eq = format!("{flag}=");
-        for (i, w) in self.words.iter().enumerate() {
+        let args = self.args();
+        for (i, w) in args.iter().enumerate() {
             if !w.quoted && w.text == "--" {
                 return None;
             }
@@ -698,7 +798,7 @@ impl Simple {
                 return Some(v);
             }
             if w.text == flag {
-                return self.words.get(i + 1).map(|w| w.text.as_str());
+                return args.get(i + 1).map(|w| w.text.as_str());
             }
         }
         None
@@ -726,7 +826,7 @@ impl Simple {
     /// Any form of `--dry-run`. A dry run mutates nothing, so it disarms every
     /// rule that is about mutation.
     pub fn is_dry_run(&self) -> bool {
-        self.words
+        self.args()
             .iter()
             .any(|w| !w.quoted && (w.text == "--dry-run" || w.text.starts_with("--dry-run=")))
     }
@@ -924,6 +1024,73 @@ mod tests {
             let c = clauses(src);
             assert_eq!(c[0].program(), Some("git"), "{src}");
             assert_eq!(c[0].subcommand(), Some("push"), "{src}");
+        }
+    }
+
+    /// A wrapper's own FLAGS are not the program either. Only bare numeric
+    /// arguments used to be skipped, so `nice -n 10 git push` had a program
+    /// of `-n` and every git rule went quiet on the ordinary spelling of
+    /// three of these wrappers.
+    #[test]
+    fn a_wrappers_own_options_are_not_the_program() {
+        for src in [
+            "nice -n 10 git push",
+            "timeout -k 5 90 git push",
+            "timeout --signal=TERM 90 git push",
+            "timeout 1.5m git push",
+            "env -i git push",
+            "env -u GIT_DIR git push",
+            "sudo -u root git push",
+            "sudo -n -u root git push",
+            "time -p git push",
+            "env -- git push",
+        ] {
+            let c = clauses(src);
+            assert_eq!(c[0].program(), Some("git"), "{src}");
+            assert_eq!(c[0].subcommand(), Some("push"), "{src}");
+        }
+    }
+
+    /// The index must come from the same walk as the name. Re-finding the
+    /// program by searching for its text lands on the `git` that is somebody
+    /// ELSE'S argument, and reads `push` as the subcommand of the wrong word.
+    #[test]
+    fn the_program_index_is_not_re_found_by_name() {
+        let c = clauses("sudo -u git git push origin main");
+        assert_eq!(c[0].program(), Some("git"));
+        assert_eq!(c[0].subcommand(), Some("push"));
+        let ops: Vec<&str> = c[0].operands().iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(ops, vec!["push", "origin", "main"]);
+    }
+
+    /// A wrapper's flags are the WRAPPER'S. Reading them as the program's is
+    /// how resolving `nice -n 10 git push` correctly made `pipe-to-tail` go
+    /// quiet: `-n` on `git push` is `--dry-run`, and a dry run disarms every
+    /// rule about mutation.
+    #[test]
+    fn a_wrappers_flags_are_not_the_programs_flags() {
+        let c = clauses("nice -n 10 git push origin main");
+        assert!(!c[0].has_short('n'), "nice's -n read as `git push -n`");
+        let c = clauses("sudo -n git push origin main");
+        assert!(!c[0].has_short('n'), "sudo's -n read as `git push -n`");
+        let c = clauses("timeout -s KILL 90 git push origin main");
+        assert!(!c[0].has_flag("-s"));
+        // The program's OWN flags still read, wrapper or not.
+        let c = clauses("sudo git push -n origin main");
+        assert!(c[0].has_short('n'));
+        let c = clauses("nice -n 10 git push --dry-run");
+        assert!(c[0].is_dry_run());
+        let c = clauses("nice -n 10 git push");
+        assert!(!c[0].is_dry_run());
+    }
+
+    #[test]
+    fn a_duration_is_a_number_with_an_optional_unit() {
+        for yes in ["90", "1.5", "30s", "5m", "2h", "1d"] {
+            assert!(is_duration(yes), "{yes}");
+        }
+        for no in ["git", "main", "s", "", "v1.2.3", "-n"] {
+            assert!(!is_duration(no), "{no}");
         }
     }
 

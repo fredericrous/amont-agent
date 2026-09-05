@@ -53,6 +53,51 @@ pub fn dir() -> Option<PathBuf> {
     Some(crate::settings::config_dir()?.join("amont-agent"))
 }
 
+/// Open the journal for appending, creating it 0600 rather than 0644.
+///
+/// The mode is set AT CREATION, not afterwards: a file that exists
+/// world-readable for the instant between `open` and `set_permissions` is a
+/// file somebody's backup agent can have read. `OpenOptions::mode` applies
+/// only when the open creates the file, so an existing journal keeps
+/// whatever mode it has — the same rule `atomic::carry_mode` follows for
+/// `settings.json`, and for the same reason: our writes never change who can
+/// read a file that already existed. [`private`] is what widens nothing and
+/// narrows an old journal in place.
+fn open_private(path: &std::path::Path) -> Option<fs::File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let f = opts.open(path).ok()?;
+    // An older amont-agent created this file at 0644 under the default
+    // umask, and it is still holding the command text it wrote then. Narrow
+    // it once, here, rather than leaving the upgrade to a release note
+    // nobody reads.
+    private(path, 0o600);
+    Some(f)
+}
+
+/// Narrow `path` to `mode` when it is wider than that. Never widens, and
+/// never complains: a journal that could not be chmod'ed is still a journal,
+/// and this module may not fail the hook.
+#[cfg(unix)]
+pub(crate) fn private(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::metadata(path) else { return };
+    let now = meta.permissions().mode() & 0o777;
+    if now & !mode != 0 {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(now & mode));
+    }
+}
+
+/// Windows has no mode bits to narrow; the file inherits the ACL of
+/// `%USERPROFILE%\.claude`, which is where its settings already live.
+#[cfg(not(unix))]
+pub(crate) fn private(_path: &std::path::Path, _mode: u32) {}
+
 pub fn path() -> Option<PathBuf> {
     Some(dir()?.join("journal.log"))
 }
@@ -98,13 +143,10 @@ fn try_record(entry: &Entry) -> Option<()> {
     let path = path()?;
     let dir = path.parent()?;
     fs::create_dir_all(dir).ok()?;
+    private(dir, 0o700);
 
     let fresh = !path.exists();
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok()?;
+    let mut f = open_private(&path)?;
     if fresh {
         f.write_all(format!("{FORMAT}\n").as_bytes()).ok()?;
     }
@@ -177,10 +219,60 @@ pub fn redact_and_trim(text: &str) -> String {
 /// secret on disk.
 pub fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
+    // Whether the PREVIOUS word said that this one is a credential.
+    // `--password=x` is one word and `redact_word` handles it alone;
+    // `--password x` and `Authorization: Bearer <jwt>` are two, and a
+    // word-at-a-time redactor could not see the second half of either.
+    let mut announced = false;
     for word in text.split_inclusive(char::is_whitespace) {
+        let trimmed = word.trim_end();
+        if announced && !trimmed.is_empty() && !trimmed.starts_with('-') {
+            // Keep whatever CLOSES the word — a quote, a comma — attached
+            // rather than swallowed, exactly as `redact_query` does. A
+            // redactor that turns `-H "Authorization: Bearer x"` into
+            // unbalanced quotes makes its own output unreadable, which is
+            // the bug the corpus already caught once.
+            let closing: String = trimmed
+                .chars()
+                .rev()
+                .take_while(|c| !c.is_alphanumeric() && !matches!(c, '-' | '_' | '.'))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            out.push_str("***");
+            out.push_str(&closing);
+            out.push_str(&word[trimmed.len()..]);
+            announced = false;
+            continue;
+        }
+        announced = announces_a_secret(trimmed);
         out.push_str(&redact_word(word));
     }
     out
+}
+
+/// Does this word say "the NEXT one is a credential"?
+///
+/// A flag whose name reads like a secret and carries no `=` of its own, or
+/// an HTTP authentication scheme. Blunt in the same direction as the rest of
+/// this module: `--api-key-file config.json` loses the filename, which costs
+/// a less readable sample, and the alternative costs a token on disk.
+///
+/// `-p` is deliberately absent. It is `--password` to mysql and `--patch` to
+/// git, and `git add -p .` is far commoner here than the other one.
+fn announces_a_secret(word: &str) -> bool {
+    if word.eq_ignore_ascii_case("bearer") || word.eq_ignore_ascii_case("basic") {
+        return true;
+    }
+    let Some(name) = word.strip_prefix('-') else {
+        return false;
+    };
+    if word.contains('=') {
+        return false; // `--password=x` — one word, already handled
+    }
+    let name = name.strip_prefix('-').unwrap_or(name);
+    !name.is_empty() && secret_named(name)
 }
 
 fn redact_word(word: &str) -> String {
@@ -432,5 +524,92 @@ mod tests {
     fn a_field_never_contains_a_space() {
         assert!(!field("two words").contains(' '));
         assert_eq!(field(""), "-");
+    }
+
+    /// The half a word-at-a-time redactor could not see: the credential is
+    /// the NEXT word, not the one carrying the `=`.
+    #[test]
+    fn a_credential_in_the_following_word_is_redacted_too() {
+        for (raw, secret) in [
+            ("curl --password s3cr3t https://x", "s3cr3t"),
+            (
+                "gh auth login --with-token gitlab-abcdefghij",
+                "gitlab-abcdefghij",
+            ),
+            (
+                r#"curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.body.sig" https://x"#,
+                "eyJhbGciOiJIUzI1NiJ9.body.sig",
+            ),
+            (
+                "vault write secret/x api_key=zzz --token hvs.CAESIJx",
+                "hvs.CAESIJx",
+            ),
+        ] {
+            let got = redact(raw);
+            assert!(
+                !got.contains(secret),
+                "leaked {secret:?} from {raw:?} → {got}"
+            );
+        }
+    }
+
+    /// …and it must not eat the quote that closes the word, or the sample
+    /// stops being a command anybody can read. Same rule `redact_query`
+    /// already follows for a secret query parameter.
+    #[test]
+    fn the_following_word_keeps_what_closes_it() {
+        let got = redact(r#"curl -H "Authorization: Bearer abcdefghij" https://x"#);
+        assert!(
+            got.contains(r#"***""#),
+            "the closing quote was swallowed: {got}"
+        );
+        assert!(
+            !matches!(crate::shell::lex(&got), crate::shell::Parsed::Opaque(_)),
+            "redaction made this unreadable: {got}"
+        );
+    }
+
+    /// A flag is not a value. `--token --verbose` must not redact the second
+    /// flag and then let the real value through unredacted behind it.
+    #[test]
+    fn a_flag_after_an_announcement_is_not_the_value() {
+        let got = redact("curl --token --verbose https://x");
+        assert!(got.contains("--verbose"), "{got}");
+    }
+
+    /// The file holds command text. It is created 0600, not 0644 — and an
+    /// older one, written before this was true, is narrowed in place.
+    #[cfg(unix)]
+    #[test]
+    fn the_journal_is_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("amont-agent-mode-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let fresh = dir.join("journal.log");
+        open_private(&fresh).expect("open");
+        let mode = fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a journal we create is ours alone");
+
+        let old = dir.join("legacy.log");
+        fs::write(&old, "F 1 x\n").unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+        open_private(&old).expect("open");
+        let mode = fs::metadata(&old).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "an existing 0644 journal is narrowed, not left"
+        );
+
+        // …but never WIDENED: 0400 is stricter than we ask for and stays.
+        let strict = dir.join("strict.log");
+        fs::write(&strict, "F 1 x\n").unwrap();
+        fs::set_permissions(&strict, fs::Permissions::from_mode(0o400)).unwrap();
+        private(&strict, 0o600);
+        let mode = fs::metadata(&strict).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o400, "narrowing must never widen");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

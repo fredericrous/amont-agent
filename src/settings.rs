@@ -363,19 +363,30 @@ pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
         else {
             continue;
         };
-        for block in list.iter_mut() {
+        // Which blocks we emptied, by position. The old shape dropped every
+        // block with an empty `hooks` array, which is not the same set: a
+        // block the AUTHOR left empty — a matcher they are still deciding
+        // about — was swept away by an uninstall that had nothing to do with
+        // it. "We remove exactly what we added" is the promise at the top of
+        // this module, and an empty block we never touched is not ours.
+        let mut emptied: Vec<usize> = Vec::new();
+        for (i, block) in list.iter_mut().enumerate() {
             if let Some(handlers) = block.get_mut("hooks").and_then(|h| h.as_array_mut()) {
                 let before = handlers.len();
                 handlers.retain(|h| !is_ours(h));
-                removed |= handlers.len() != before;
+                if handlers.len() != before {
+                    removed = true;
+                    if handlers.is_empty() {
+                        emptied.push(i);
+                    }
+                }
             }
         }
-        // Drop only what became empty because of us.
-        list.retain(|b| {
-            b.get("hooks")
-                .and_then(|h| h.as_array())
-                .map(|l| !l.is_empty())
-                .unwrap_or(true)
+        let mut at = 0;
+        list.retain(|_| {
+            let keep = !emptied.contains(&at);
+            at += 1;
+            keep
         });
         if list.is_empty() {
             if let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut()) {

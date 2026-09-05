@@ -208,3 +208,41 @@ fn a_dry_run_prints_the_block_and_writes_nothing() {
     assert!(out.contains("PreToolUse"), "{out}");
     assert!(!h.settings().exists(), "a dry run created the file");
 }
+
+/// An empty hook block the AUTHOR left behind is theirs, not litter for us to
+/// sweep up. `uninstall` used to drop every block whose `hooks` array was
+/// empty — the set of blocks WE emptied is not the same set, and "we remove
+/// exactly what we added" has to mean exactly.
+#[test]
+fn uninstall_leaves_an_empty_block_the_author_wrote() {
+    let h = Home::new("empty-block");
+    h.write(
+        r#"{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": []
+      }
+    ]
+  }
+}
+"#,
+    );
+    let (code, _, err) = h.run(&["install", "--write"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, _, err) = h.run(&["uninstall", "--write"]);
+    assert_eq!(code, 0, "{err}");
+
+    let after = hooks_of(&h.read());
+    let blocks = after["PreToolUse"]
+        .as_array()
+        .expect("the author's event survived");
+    assert_eq!(blocks.len(), 1, "our block went, theirs stayed: {after}");
+    assert_eq!(blocks[0]["matcher"], "Read");
+    assert_eq!(
+        blocks[0]["hooks"].as_array().map(Vec::len),
+        Some(0),
+        "the author's empty block was rewritten"
+    );
+}

@@ -25,6 +25,13 @@
 //! the reader rather than through the parser, and outranking `global`
 //! while they did it. Vendoring the reader without the ladder closes it.
 //!
+//! A THIRD door stayed open until this reader named its scopes. Git's own
+//! search order ends at `--local` and `--worktree`, and the last file wins —
+//! so a `.git/config` in the repository the agent is standing in outranked
+//! the machine's answer without any of amont's machinery being involved, and
+//! the agent could write one. [`read`] reads `--global` and `--system` only,
+//! and says there why.
+//!
 //! # Git parses the values, not us
 //!
 //! The founding argument of the module this came from, and the reason
@@ -56,14 +63,55 @@ pub enum Value<T> {
     Bad { why: String },
 }
 
-/// `git config [--type=<ty>] --get <key>`, with the three exits kept apart.
+/// This crate's settings, from the MACHINE's config and nowhere else.
+///
+/// `--global`, then `--system` — git's own precedence with one file removed:
+/// the repository's. A bare `git config --get` searches system, global, local
+/// and worktree, and the last one wins; `--local` and `--worktree` are both
+/// files a repository can carry or a process standing in it can write. That
+/// is one scope too many for a guard whose whole job is to refuse commands a
+/// coding agent is about to run:
+///
+///   * the agent that just had a command refused can write
+///     `git config amont.agent.pipe-to-tail.stance observe` into `.git/config`
+///     — an ordinary command no rule here objects to — and the next call is
+///     allowed. A guard a guarded process can switch off is decoration.
+///   * `amont-agent graduate` and `demote` write `--global` (see `graduate`),
+///     so a stale `--local` key silently outranked the very command that
+///     exists to move a stance. A stance you believe you set and did not is
+///     the failure this crate is about.
+///   * `git clone` does not copy `.git/config`, but a restored backup, a
+///     copied working copy and a linked worktree all do.
+///
+/// The module docs above already claimed this ("a stance answers to the
+/// user's own git config and to nothing a `git clone` can carry"); dropping
+/// the policy ladder closed the door amont's own reader left open, and this
+/// closes the one git's search order left open.
+///
+/// Precedence between the two that remain is git's: `--global` wins, and
+/// `--system` answers only when the user's own file is silent. A value the
+/// user's file sets to something git refuses is reported as [`Value::Bad`]
+/// rather than falling through to the machine's — a mistake in the file you
+/// edited must not be answered by a file you have never seen.
+fn read(key: &str, ty: Option<&str>) -> Value<String> {
+    match read_in("--global", key, ty) {
+        Value::Set(v) => Value::Set(v),
+        Value::Bad { why } => Value::Bad { why },
+        Value::Unset => read_in("--system", key, ty),
+    }
+}
+
+/// `git config <scope> [--type=<ty>] --get <key>`, with the three exits kept
+/// apart.
 ///
 /// Git failing to run at all is reported as `Unset`: this crate's standing
 /// posture is that an unanswerable question takes the default rather than
-/// interfering with what the agent is doing.
-fn read(key: &str, ty: Option<&str>) -> Value<String> {
+/// interfering with what the agent is doing. A scope whose file does not
+/// exist at all exits 1, the same as a key nobody set — which is the answer
+/// we want for a machine with no `/etc/gitconfig`.
+fn read_in(scope: &str, key: &str, ty: Option<&str>) -> Value<String> {
     let type_flag = ty.map(|t| format!("--type={t}"));
-    let mut args: Vec<&str> = vec!["config"];
+    let mut args: Vec<&str> = vec!["config", scope];
     if let Some(tf) = &type_flag {
         args.push(tf);
     }
