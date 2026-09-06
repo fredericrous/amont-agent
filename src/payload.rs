@@ -48,6 +48,15 @@ pub struct Session {
 pub enum Event {
     /// A Bash tool call we can have an opinion about.
     PreBash(Box<Bash>),
+    /// A Bash tool call that has already run, and SUCCEEDED.
+    ///
+    /// Claude Code routes a failed call to `PostToolUseFailure`, a different
+    /// event this crate deliberately ignores: a command that returned an error
+    /// is already in front of the model, and there is nothing invisible left to
+    /// point out. Everything this event carries claimed to work. That is the
+    /// whole reason the tier exists — `git push` exiting 0 without the push
+    /// landing is not a failure anyone can see.
+    PostBash(Box<Bash>),
     /// A session opening. The guard leaves proof that it ran, and — this being
     /// the one moment a fetch is worth its cost — says where the checkout
     /// stands against the remote.
@@ -82,7 +91,7 @@ pub fn parse(raw: &str) -> Event {
             cwd,
             session: str_at("session_id"),
         }),
-        Some("PreToolUse") => {
+        Some(stage @ ("PreToolUse" | "PostToolUse")) => {
             // Exact, not a prefix. An MCP server may expose a tool whose name
             // merely starts with `Bash`, and that tool is not this one.
             if v.get("tool_name").and_then(|x| x.as_str()) != Some("Bash") {
@@ -97,18 +106,31 @@ pub fn parse(raw: &str) -> Event {
             if command.trim().is_empty() {
                 return Event::NotOurs;
             }
+            // Two spellings of the same fact, and after a call has run only
+            // the second one is reliable: a detached call reports success the
+            // moment it is handed a task id, with empty output and the command
+            // still going. Asserting anything about it would be asserting about
+            // work that has not happened yet.
             let background = v
                 .get("tool_input")
                 .and_then(|i| i.get("run_in_background"))
                 .and_then(|b| b.as_bool())
-                .unwrap_or(false);
-            Event::PreBash(Box::new(Bash {
+                .unwrap_or(false)
+                || v.get("tool_response")
+                    .and_then(|r| r.get("backgroundTaskId"))
+                    .is_some();
+            let bash = Box::new(Bash {
                 command,
                 cwd,
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
                 background,
-            }))
+            });
+            if stage == "PreToolUse" {
+                Event::PreBash(bash)
+            } else {
+                Event::PostBash(bash)
+            }
         }
         _ => Event::NotOurs,
     }
@@ -149,6 +171,12 @@ mod tests {
             "{",
             "null",
             "[]",
+            // Was `PostToolUse` until that became an event we answer. Kept as a
+            // case, with an event that is still none of our business — the list
+            // exists to prove an UNKNOWN event is silence, and it would stop
+            // proving anything if every entry in it were one we handle.
+            r#"{"hook_event_name":"PreCompact","tool_name":"Bash"}"#,
+            r#"{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","error":"Exit code 3"}"#,
             r#"{"hook_event_name":"PostToolUse","tool_name":"Bash"}"#,
             r#"{"hook_event_name":"PreToolUse","tool_name":"Read"}"#,
             r#"{"hook_event_name":"PreToolUse","tool_name":"BashOutput"}"#,
@@ -159,6 +187,45 @@ mod tests {
                 matches!(parse(raw), Event::NotOurs),
                 "expected silence for {raw:?}"
             );
+        }
+    }
+
+    /// A successful call is the one we may assert about.
+    #[test]
+    fn a_finished_bash_call_is_its_own_event() {
+        let raw = r#"{"hook_event_name":"PostToolUse","tool_name":"Bash",
+                      "tool_input":{"command":"git push"},
+                      "tool_response":{"stdout":"","stderr":"","interrupted":false}}"#;
+        match parse(raw) {
+            Event::PostBash(b) => {
+                assert_eq!(b.command, "git push");
+                assert!(!b.background);
+            }
+            _ => panic!("expected a finished Bash call"),
+        }
+    }
+
+    /// A failure is already in front of the model. `PostToolUseFailure` carries
+    /// no `tool_response` at all — the exit code lives in an `error` string —
+    /// and this crate has nothing to add to a command that already said it
+    /// failed.
+    #[test]
+    fn a_failed_call_is_not_ours() {
+        let raw = r#"{"hook_event_name":"PostToolUseFailure","tool_name":"Bash",
+                      "tool_input":{"command":"git push"},
+                      "error":"Exit code 128\nfatal: could not read from remote"}"#;
+        assert!(matches!(parse(raw), Event::NotOurs));
+    }
+
+    /// A detached call reports success the instant it is handed a task id.
+    #[test]
+    fn a_backgrounded_call_is_marked_even_without_the_input_flag() {
+        let raw = r#"{"hook_event_name":"PostToolUse","tool_name":"Bash",
+                      "tool_input":{"command":"git push"},
+                      "tool_response":{"stdout":"","backgroundTaskId":"bjkvph22n"}}"#;
+        match parse(raw) {
+            Event::PostBash(b) => assert!(b.background, "a task id means it is still running"),
+            _ => panic!("expected a finished Bash call"),
         }
     }
 

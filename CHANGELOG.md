@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+Every rule so far reads a command before it runs. That catches a mistake you
+can see in the command string, and misses the other half: a command that ran,
+exited 0, and did not do the thing.
+
+### Added
+
+- **A second tier: assertions, on `PostToolUse`.** An assertion checks what a
+  command that reported success actually did. The first one is `push-landed`:
+  after `git push` exits 0, it asks the remote whether the branch is there, at
+  the commit you have, and states the two SHAs when they differ. That is the
+  2026-08-20 incident — several pushes reported exit 0 and had never left the
+  machine — and denying `pipe-to-tail` removed one cause of it, not the class.
+  `Everything up-to-date` is also exit 0.
+- **`install` now writes three settings entries, not two.** The new one is
+  `PostToolUse` on `Bash`. Re-run `amont-agent install --write` to add it;
+  `doctor` warns until you do. **Nothing else changes if you don't** — the
+  existing two entries keep working exactly as before.
+- **`backtest` and `explain` accept an assertion id**, replaying its pure
+  `examine` like any rule's. Read the rate correctly: for a rule a firing is a
+  mistake caught, for an assertion it is a question asked. `push-landed` fires
+  on about one Bash call in twenty-six — that is the cost of one
+  `git ls-remote`, not the cost of speaking, and the new `routine` trend label
+  says so rather than pretending a habit is failing to improve.
+- **`docs/assertions.md`**, and `rules` lists assertions beside the rules.
+
+### Notes
+
+- **An assertion cannot refuse** — the tool has already run, so `deny` speaks
+  exactly like `advise`, as it does at a session opening.
+- **`PostToolUseFailure` is ignored on purpose.** A failed command is already
+  in front of the model; there is nothing invisible left to point out.
+- **Assertions ship at `observe`**, like everything else here: they journal and
+  say nothing until you promote them with
+  `git config --global amont.agent.push-landed.stance advise`.
+- **A `verify` can never prompt.** `GIT_TERMINAL_PROMPT=0`, askpass disabled,
+  ssh in `BatchMode`, five-second deadline. Hooks have no controlling terminal,
+  so a credential prompt would hang the session rather than fail.
+
 ## v2.3.0
 
 A stance is a statement by the person at the keyboard. Until now the

@@ -154,6 +154,15 @@ pub enum Trend {
     Improving,
     /// Too rare to trend, kept for cost-of-a-miss rather than frequency.
     Rare,
+    /// Not a mistake at all — the rate is how often the CLAIM is made, not how
+    /// often somebody got something wrong.
+    ///
+    /// Only an assertion can carry this. `push-landed` fires on roughly one
+    /// Bash call in twenty-six, and that number is the cost of ASKING (one
+    /// `git ls-remote`), not the cost of speaking: it speaks only when the
+    /// remote disagrees with the local branch. Reading it as "flat" would say a
+    /// habit is not improving, and there is no habit here.
+    Routine,
 }
 
 pub struct Rule {

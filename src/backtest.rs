@@ -9,6 +9,7 @@
 //! including subagents' — the hook fires for those too.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use crate::json;
 
@@ -40,8 +41,54 @@ pub struct Bucket {
     pub fires: Vec<u32>,
 }
 
+/// What a backtest replays.
+///
+/// A rule and an assertion answer different questions, but both do it with a
+/// PURE `examine` over the command string, and that is the only half history
+/// can be replayed against — `confirm` and `verify` touch the world, and the
+/// world has moved. So the backtester takes either.
+#[derive(Clone, Copy)]
+pub enum Subject {
+    Rule(&'static Rule),
+    /// An assertion's rate is measured against every Bash call, while it only
+    /// ever RUNS after a successful one. That makes the number a slight
+    /// under-estimate of how often it fires in practice — the right direction
+    /// for a figure used to decide whether something is too intrusive.
+    Assertion(&'static crate::assertions::Assertion),
+}
+
+impl Subject {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Subject::Rule(r) => r.id,
+            Subject::Assertion(a) => a.id,
+        }
+    }
+
+    pub fn default_stance(&self) -> crate::rules::Stance {
+        match self {
+            Subject::Rule(r) => r.default_stance,
+            Subject::Assertion(a) => a.default_stance,
+        }
+    }
+
+    pub fn evidence(&self) -> crate::rules::Evidence {
+        match self {
+            Subject::Rule(r) => r.evidence,
+            Subject::Assertion(a) => a.evidence,
+        }
+    }
+
+    fn span(&self, parsed: &shell::Parsed) -> Option<Range<usize>> {
+        match self {
+            Subject::Rule(r) => (r.examine)(parsed).map(|f| f.span),
+            Subject::Assertion(a) => (a.examine)(parsed).map(|c| c.span),
+        }
+    }
+}
+
 pub struct Report {
-    pub rules: Vec<&'static Rule>,
+    pub rules: Vec<Subject>,
     pub weeks: BTreeMap<Day, Bucket>,
     pub totals: Vec<u32>,
     pub samples: Vec<Vec<Sample>>,
@@ -49,11 +96,7 @@ pub struct Report {
     pub opaque: u64,
 }
 
-pub fn run(
-    scan: &Scan,
-    rules: &[&'static Rule],
-    samples_per_rule: usize,
-) -> Result<Report, ScanError> {
+pub fn run(scan: &Scan, rules: &[Subject], samples_per_rule: usize) -> Result<Report, ScanError> {
     let mut weeks: BTreeMap<Day, Bucket> = BTreeMap::new();
     let mut totals = vec![0u32; rules.len()];
     let mut samples: Vec<Vec<Sample>> = rules.iter().map(|_| Vec::new()).collect();
@@ -78,7 +121,7 @@ pub fn run(
             // `examine` only. `confirm` touches the world, and the world has
             // moved since these commands ran — replaying it would produce a
             // number that describes today rather than then.
-            if let Some(found) = (rule.examine)(&parsed) {
+            if let Some(span) = rule.span(&parsed) {
                 bucket.fires[i] += 1;
                 totals[i] += 1;
                 if samples[i].len() < samples_per_rule {
@@ -86,7 +129,7 @@ pub fn run(
                         day: call.day,
                         cwd: short_cwd(call.cwd),
                         command: crate::journal::redact(call.command),
-                        excerpt: excerpt(call.command, found.span.start, found.span.end),
+                        excerpt: excerpt(call.command, span.start, span.end),
                     });
                 }
             }
@@ -202,10 +245,10 @@ impl Report {
 
         // Wide enough for the longest id plus a separating space. A fixed
         // width let `gh-pr-merge-auto` run into its neighbour's header.
-        let width = self.rules.iter().map(|r| r.id.len()).max().unwrap_or(8) + 2;
+        let width = self.rules.iter().map(|r| r.id().len()).max().unwrap_or(8) + 2;
         s.push_str(&format!("{:<14}{:>8}", "week starting", "calls"));
         for r in &self.rules {
-            s.push_str(&format!("{:>width$}", r.id));
+            s.push_str(&format!("{:>width$}", r.id()));
         }
         s.push('\n');
         for (week, b) in &self.weeks {
@@ -230,15 +273,16 @@ impl Report {
             let series = self.series(i);
             s.push_str(&format!(
                 "{:<18}{:>8}{:>11.1}{:>13}  {}\n",
-                r.id,
+                r.id(),
                 self.totals[i],
                 p95(&series),
-                match r.evidence.trend {
+                match r.evidence().trend {
                     rules::Trend::Flat(w) => format!("flat {w}w"),
                     rules::Trend::Improving => "improving".to_string(),
                     rules::Trend::Rare => "rare".to_string(),
+                    rules::Trend::Routine => "routine".to_string(),
                 },
-                r.default_stance.as_str(),
+                r.default_stance().as_str(),
             ));
         }
 
@@ -246,7 +290,7 @@ impl Report {
             if self.samples[i].is_empty() {
                 continue;
             }
-            s.push_str(&format!("\n{} — samples\n", r.id));
+            s.push_str(&format!("\n{} — samples\n", r.id()));
             for sample in &self.samples[i] {
                 s.push_str(&format!(
                     "  {}  {}\n      {}\n",
@@ -281,9 +325,9 @@ impl Report {
                     })
                     .collect();
                 json::object(&[
-                    json::string_field("id", r.id),
+                    json::string_field("id", r.id()),
                     json::int_field("total", i64::from(self.totals[i])),
-                    json::string_field("stance", r.default_stance.as_str()),
+                    json::string_field("stance", r.default_stance().as_str()),
                     json::string_field("p95_per_1000", &format!("{:.1}", p95(&self.series(i)))),
                     format!("\"weeks\":{}", json::array(&weeks)),
                 ])

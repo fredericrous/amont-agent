@@ -18,6 +18,7 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
+mod assertions;
 mod atomic;
 mod backtest;
 mod civil;
@@ -308,16 +309,34 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
     Ok(f)
 }
 
-fn selected(only: &[String]) -> Result<Vec<&'static rules::Rule>, String> {
+/// Which rules and assertions a backtest replays.
+///
+/// Both kinds answer to an id, and somebody asking "how often would this have
+/// fired" does not care which list it came from.
+fn selected(only: &[String]) -> Result<Vec<backtest::Subject>, String> {
+    let everything = || {
+        rules::RULES
+            .iter()
+            .map(backtest::Subject::Rule)
+            .chain(
+                assertions::ASSERTIONS
+                    .iter()
+                    .map(backtest::Subject::Assertion),
+            )
+            .collect::<Vec<_>>()
+    };
     if only.is_empty() {
-        return Ok(rules::RULES.iter().collect());
+        return Ok(everything());
     }
     only.iter()
         .map(|id| {
-            rules::by_id(id).ok_or_else(|| {
-                let known: Vec<&str> = rules::RULES.iter().map(|r| r.id).collect();
-                format!("no rule `{id}` — known rules: {}", known.join(", "))
-            })
+            rules::by_id(id)
+                .map(backtest::Subject::Rule)
+                .or_else(|| assertions::by_id(id).map(backtest::Subject::Assertion))
+                .ok_or_else(|| {
+                    let known: Vec<&str> = everything().iter().map(|s| s.id()).collect();
+                    format!("no rule `{id}` — known rules: {}", known.join(", "))
+                })
         })
         .collect()
 }
@@ -449,6 +468,18 @@ fn run_rules() -> ExitCode {
             r.default_stance.as_str(),
             r.evidence.per_1000,
             r.evidence.measured
+        );
+    }
+    // Listed apart, because they answer a different question: a rule judges a
+    // command before it runs, an assertion checks what a command that already
+    // reported success actually did.
+    for a in assertions::ASSERTIONS {
+        println!(
+            "{:<18} {:<8} {:>6.1}/1000  measured {}  (assertion)",
+            a.id,
+            a.default_stance.as_str(),
+            a.evidence.per_1000,
+            a.evidence.measured
         );
     }
     ExitCode::SUCCESS

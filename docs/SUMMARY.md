@@ -7,6 +7,7 @@
 - [Installing](install.md)
 - [Stances](stances.md)
 - [The rules](rules.md)
+- [The assertions](assertions.md)
 - [Measuring and graduating](measuring.md)
 - [The session notice](session-notice.md)
 - [Configuration](configuration.md)

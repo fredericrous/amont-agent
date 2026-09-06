@@ -74,6 +74,24 @@ pub fn resolve(rule: &Rule) -> Stance {
     Stance::parse(mine).unwrap_or(rule.default_stance)
 }
 
+/// The same ladder for an assertion.
+///
+/// Deliberately the same config keys — `amont.agent.<id>.stance`, global or
+/// system only — because "which of these is speaking" is one question, and
+/// splitting it into two vocabularies would mean two places to look when
+/// something is too loud. `deny` resolves like any other stance here; the hook
+/// is where it speaks instead of refusing, since an assertion has nothing left
+/// to refuse.
+pub fn resolve_assertion(assertion: &crate::assertions::Assertion) -> Stance {
+    if switched_off() || !config::boolean_or(KEY_ENABLED, true) {
+        return Stance::Observe;
+    }
+    let floor = config::enumerated_or(KEY_STANCE, ALLOWED, assertion.default_stance.as_str());
+    let key = format!("amont.agent.{}.stance", assertion.id);
+    let mine = config::enumerated_or(&key, ALLOWED, floor);
+    Stance::parse(mine).unwrap_or(assertion.default_stance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

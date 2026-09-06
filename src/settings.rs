@@ -83,10 +83,10 @@ impl Change {
     pub fn describe(&self, path: &Path) -> String {
         let p = path.display();
         match self {
-            Change::Add => format!("added the PreToolUse hook to {p}"),
-            Change::Update => format!("updated the PreToolUse hook in {p}"),
+            Change::Add => format!("added our hooks to {p}"),
+            Change::Update => format!("updated our hooks in {p}"),
             Change::AlreadyCurrent => format!("{p} is already current — nothing written"),
-            Change::Remove => format!("removed the PreToolUse hook from {p}"),
+            Change::Remove => format!("removed our hooks from {p}"),
             Change::NothingToRemove => format!("no amont-agent hook in {p} — nothing written"),
             Change::WouldReformat => format!(
                 "{p} uses formatting this program cannot reproduce — writing it back would \
@@ -247,8 +247,16 @@ fn read(path: &Path) -> Result<(Value, String), MergeError> {
 /// apart from "the guard has been dead since Tuesday". Writing that heartbeat
 /// from `PreToolUse` instead would put a filesystem write on the path that runs
 /// before every shell command — the one path this crate promises to keep free.
-pub const TARGETS: &[(&str, Option<&str>)] =
-    &[("PreToolUse", Some("Bash")), ("SessionStart", None)];
+/// `PostToolUse` is the assertion tier: a call that has already run and
+/// reported success. It is a legitimate place for work the pre-command path
+/// refuses to do — the command is over, so nothing is waiting on us — but it
+/// still fires on every successful Bash call, so the pure prefilter runs first
+/// there exactly as it does before one.
+pub const TARGETS: &[(&str, Option<&str>)] = &[
+    ("PreToolUse", Some("Bash")),
+    ("PostToolUse", Some("Bash")),
+    ("SessionStart", None),
+];
 
 /// Add our handler to one event, joining an existing block rather than adding a
 /// competing one. Returns whether anything changed.

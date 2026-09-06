@@ -42,6 +42,16 @@ pub enum Decision {
     /// `Advise`, on a different event — and there is nothing to refuse at a
     /// session opening, so this is the only shape that event can take.
     Context(String),
+    /// A fact about a call that has already run and reported success.
+    ///
+    /// `additionalContext` was measured, not assumed: a `PostToolUse` command
+    /// hook emitting it reaches the model as
+    /// `PostToolUse:Bash hook additional context: <text>`, while a
+    /// `systemMessage` on the same event reaches the USER and never the model.
+    /// Exit 2 would also work — on this event it shows stderr without blocking,
+    /// since the tool has already run — but it would be a second channel for
+    /// one decision, which the module note above rejects. So: JSON, exit 0.
+    Assert(String),
 }
 
 impl Decision {
@@ -70,6 +80,18 @@ impl Decision {
                             json::string_field("hookEventName", "PreToolUse"),
                             json::string_field("permissionDecision", "deny"),
                             json::string_field("permissionDecisionReason", &clamp(text)),
+                        ])
+                    )])
+                );
+            }
+            Decision::Assert(text) => {
+                println!(
+                    "{}",
+                    json::object(&[format!(
+                        "\"hookSpecificOutput\":{}",
+                        json::object(&[
+                            json::string_field("hookEventName", "PostToolUse"),
+                            json::string_field("additionalContext", &clamp(text)),
                         ])
                     )])
                 );
