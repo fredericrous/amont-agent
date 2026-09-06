@@ -8,6 +8,7 @@
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
+| `poll-blank-verdict` | `observe` | a wait that stops on any value but the one it names, so a failed lookup's empty string reads as the answer |
 
 `amont-agent rules` prints this with each rule's measured firing rate.
 

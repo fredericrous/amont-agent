@@ -104,6 +104,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/pipe-to-tail.cases"),
     ),
     (
+        "poll-blank-verdict",
+        include_str!("../tests/corpus/poll-blank-verdict.cases"),
+    ),
+    (
         "bare-stash-pop",
         include_str!("../tests/corpus/bare-stash-pop.cases"),
     ),
