@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **`poll-blank-verdict`** — a polling loop that stops on any value other than
+  the one it names, so a failed lookup's empty string ends the wait and gets
+  reported as the answer. Measured live on 2026-09-06: a laptop woke from a
+  four-hour sleep, the loop resumed 3.6 seconds later before the resolver had
+  settled, `curl` printed `Could not resolve host`, and the loop announced a CI
+  state of "" as fact — twenty-seven seconds later the same name resolved in
+  40 ms. It is `pipe-to-tail`'s failure in a different costume: the absence of
+  an answer treated as one. 33 firings in 30,486 calls, all reviewed into the
+  corpus; ships at `observe`, and the corpus already clears the graduation gate
+  if you want `advise`.
+
+
 Every rule so far reads a command before it runs. That catches a mistake you
 can see in the command string, and misses the other half: a command that ran,
 exited 0, and did not do the thing.

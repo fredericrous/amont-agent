@@ -36,6 +36,7 @@ pub mod git_add_broad;
 pub mod kubectl_gitops;
 pub mod no_verify;
 pub mod pipe_to_tail;
+pub mod poll_blank_verdict;
 pub mod push_preflight;
 pub mod sed_in_place;
 pub mod stale_base;
@@ -258,6 +259,7 @@ pub const RULES: &[Rule] = &[
     worktree_remove_force::RULE,
     amend_pushed::RULE,
     branch_force_delete::RULE,
+    poll_blank_verdict::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {
