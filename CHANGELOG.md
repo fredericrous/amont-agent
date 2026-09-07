@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v2.4.0
+
+A guard that only ever read commands before they ran now also checks what a
+command that reported success actually did. `git push` exiting 0 without the
+push landing, `gh run watch --exit-status` returning 0 for a run that concluded
+`failure`, a `v*` tag on stale HEAD: all of them report success, and none of
+them leaves anything behind for a correcting loop to notice. The same session
+that built this produced a fresh example of the class — a polling loop that read
+`Could not resolve host` as a CI verdict and announced it as fact — which is the
+other half of this release.
+
 
 ### Added
 
