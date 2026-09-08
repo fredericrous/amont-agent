@@ -40,6 +40,7 @@ pub mod poll_blank_verdict;
 pub mod push_preflight;
 pub mod sed_in_place;
 pub mod stale_base;
+pub mod stdin_hang;
 pub mod tag_after_commit;
 pub mod worktree_isolation;
 pub mod worktree_remove_force;
@@ -262,6 +263,7 @@ pub const RULES: &[Rule] = &[
     branch_force_delete::RULE,
     poll_blank_verdict::RULE,
     worktree_isolation::RULE,
+    stdin_hang::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {
