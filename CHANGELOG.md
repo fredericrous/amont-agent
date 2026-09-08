@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`worktree-isolation`**, observing. A working directory has one HEAD. When
+  an agent and a person are both in the primary checkout, a branch created or a
+  `--hard` reset by one moves the ground under the other: uncommitted edits ride
+  onto a branch they were never meant for, or are reverted outright. Git prints
+  nothing unusual — the checkout succeeds — so no correcting loop forms from the
+  outcome; the first sign is a file that "went missing", found much later.
+  `examine` fires on shape at 5.6 per thousand, flat across four full weeks of
+  31,119 calls. `confirm` supplies the two facts that make it a finding: the
+  command runs in the **primary** checkout (`--git-dir` equals
+  `--git-common-dir` only there), and that repository **already has linked
+  worktrees**, which is the evidence that someone is there to collide with.
+  Most matched shapes are `cd <repo>-wt-<slug> && git checkout -b …` — the
+  convention being followed — and `confirm` silences every one of them.
+  Navigating back to the default branch, and `git worktree add -b` itself, are
+  never matched: the second is the remedy, and a rule its own advice trips is
+  unobeyable.
+
 ## v2.4.0
 
 A guard that only ever read commands before they ran now also checks what a
