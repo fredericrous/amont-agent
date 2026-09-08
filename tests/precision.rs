@@ -92,11 +92,6 @@ const BENIGN: &[(&str, &str)] = &[
         "git fetch origin -q && git worktree add ../x-wt-y -b feat/y origin/main",
         "remote-base",
     ),
-    (
-        "git fetch forgejo main -q && git checkout -B fix/x forgejo/main 2>&1 | tail -1",
-        "remote-base",
-    ),
-    ("git switch -c feat/y upstream/main", "remote-base"),
     ("git checkout -t origin/feat/y", "remote-base"),
     ("git worktree add ../x feat/existing", "remote-base"),
     ("git worktree add --detach ../x", "remote-base"),
@@ -202,6 +197,24 @@ fn the_smaller_rules_catch_their_own_shapes() {
     assert!(fires_rule("git worktree add ../x", "stale-base"));
     assert!(fires_rule("git checkout -b feat/y", "stale-base"));
     assert!(fires_rule("git switch -c feat/y main", "stale-base"));
+
+    // These two were collected as `remote-base` false positives of
+    // `stale-base`, and that family's claim — "a branch started from the
+    // remote is the remedy, not the mistake" — is about the START POINT. They
+    // are asserted against that rule rather than against every rule, because
+    // `worktree-isolation` judges a different axis: WHERE the branch is being
+    // created, which no start point can make safe. Whether either command is
+    // actually a mistake depends on the repository it runs in, and only that
+    // rule's `confirm` may go and look.
+    for benign_base in [
+        "git fetch forgejo main -q && git checkout -B fix/x forgejo/main 2>&1 | tail -1",
+        "git switch -c feat/y upstream/main",
+    ] {
+        assert!(
+            !fires_rule(benign_base, "stale-base"),
+            "a remote start point is the remedy: {benign_base}"
+        );
+    }
     assert!(fires_rule("git push -u origin feat/y", "push-preflight"));
     assert!(fires_rule("git push", "push-preflight"));
     assert!(!fires_rule(

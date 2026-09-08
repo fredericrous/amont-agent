@@ -104,6 +104,7 @@ and uninstalling takes every rule with it.
 | `worktree-remove-force` | `advise` | `git worktree remove --force` on a worktree that still holds uncommitted work |
 | `amend-pushed` | `advise` | `git commit --amend` on a commit the remote already has |
 | `branch-force-delete` | `observe` | `git branch -D` on a branch whose commits are on no remote and not merged |
+| `worktree-isolation` | `observe` | a branch created, or `git reset --hard`, in the primary checkout of a repository that already has linked worktrees |
 
 `stale-base` advises from the start because it refuses nothing and names a
 failure no correcting loop can see: **nothing fails when you build on stale

@@ -41,6 +41,7 @@ pub mod push_preflight;
 pub mod sed_in_place;
 pub mod stale_base;
 pub mod tag_after_commit;
+pub mod worktree_isolation;
 pub mod worktree_remove_force;
 
 // A `fish-glob` rule was written and removed before the first commit. It caught
@@ -260,6 +261,7 @@ pub const RULES: &[Rule] = &[
     amend_pushed::RULE,
     branch_force_delete::RULE,
     poll_blank_verdict::RULE,
+    worktree_isolation::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {

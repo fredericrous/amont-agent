@@ -156,6 +156,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         "branch-force-delete",
         include_str!("../tests/corpus/branch-force-delete.cases"),
     ),
+    (
+        "worktree-isolation",
+        include_str!("../tests/corpus/worktree-isolation.cases"),
+    ),
 ];
 
 /// The compiled-in corpus for a rule, if the table has one.
