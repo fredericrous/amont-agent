@@ -15,6 +15,27 @@
 
 use std::sync::OnceLock;
 
+/// Width of the id column in every listing this crate prints.
+///
+/// Measured from the ids themselves rather than written down. A literal was
+/// written down once — `{:<18}` in four places — and `worktree-remove-force`
+/// is 21 characters, so it pushed every later column out of line; an id of
+/// exactly 18 fared worse still, running into the next column with no space
+/// at all (`worktree-isolationobserve`). That is not only ugly: the columns
+/// are what `tests/stance_scope.rs` reads a stance out of, by whitespace
+/// position, so a glued line hands back the wrong field.
+///
+/// `+ 2` keeps at least one space after the longest id.
+pub fn id_column() -> usize {
+    crate::rules::RULES
+        .iter()
+        .map(|r| r.id.len())
+        .chain(crate::assertions::ASSERTIONS.iter().map(|a| a.id.len()))
+        .max()
+        .unwrap_or(0)
+        + 2
+}
+
 /// Base ANSI, deliberately. See the module docs.
 const GREEN: &str = "32";
 const RED: &str = "31";
