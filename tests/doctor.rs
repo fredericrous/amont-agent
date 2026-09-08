@@ -118,6 +118,12 @@ fn a_fresh_install_is_healthy() {
     let (code, out) = h.run(&["doctor"]);
     assert_eq!(code, 0, "a fresh install should be healthy:\n{out}");
     assert!(out.contains("pipe-to-tail"), "names what is armed: {out}");
+    // A rule that ships `observe` is live and journaling from its first
+    // release. A line that named only what refuses read as if it were absent.
+    assert!(
+        out.contains("observing") && out.contains("worktree-isolation"),
+        "names what is observing too: {out}"
+    );
 }
 
 /// Installing writes BOTH entries. Without the SessionStart one no heartbeat is

@@ -102,6 +102,106 @@ pub fn path() -> Option<PathBuf> {
     Some(dir()?.join("journal.log"))
 }
 
+/// What one rule has seen, read back out of the journal.
+///
+/// This is the other half of the loop the crate is built around. A rule ships
+/// `observe`, and the question that decides whether it may advise is not how
+/// often its `examine` fires — the backtester answers that — but how often its
+/// `confirm` agreed. The backtester cannot answer that: it replays commands
+/// against a world that has moved, so it never runs `confirm`. The journal is
+/// the only record of what `confirm` actually said, and until this reader
+/// existed the only way to ask was `awk` on the file.
+///
+/// Still under the module rule: this counts, and nothing reads it to decide.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Seen {
+    pub denied: u32,
+    pub advised: u32,
+    pub watched: u32,
+    /// `examine` fired and `confirm` said no. For an assertion, the claim
+    /// could not be checked.
+    pub unconfirmed: u32,
+    /// Why `confirm` said no, by reason, so the leading one can be shown. A
+    /// reason is one whitespace-free token as [`field`] wrote it.
+    pub reasons: std::collections::BTreeMap<String, u32>,
+}
+
+impl Seen {
+    pub fn total(&self) -> u32 {
+        self.denied + self.advised + self.watched + self.unconfirmed
+    }
+
+    /// The most frequent reason `confirm` declined, if any.
+    pub fn top_reason(&self) -> Option<(&str, u32)> {
+        self.reasons
+            .iter()
+            .max_by_key(|(_, n)| **n)
+            .map(|(r, n)| (r.as_str(), *n))
+    }
+}
+
+/// Every rule's [`Seen`] for records no older than `since` seconds.
+pub fn tally(since: u64) -> std::collections::BTreeMap<String, Seen> {
+    match path() {
+        Some(p) => tally_at(&p, since, now()),
+        None => Default::default(),
+    }
+}
+
+/// [`tally`] against a named file and a fixed clock, so it can be tested
+/// without touching the machine's journal.
+///
+/// Reads the way [`compact`] does: only `F ` lines, and a line that does not
+/// carry its fixed fields is a torn write and is dropped, never counted
+/// wrong. The eight fixed fields are exactly what [`line_for`] emits; the
+/// excerpt after them is free text and is not parsed.
+pub fn tally_at(
+    path: &std::path::Path,
+    since: u64,
+    now: u64,
+) -> std::collections::BTreeMap<String, Seen> {
+    let mut out: std::collections::BTreeMap<String, Seen> = Default::default();
+    let Ok(text) = fs::read_to_string(path) else {
+        return out;
+    };
+    let floor = now.saturating_sub(since);
+    for line in text.lines() {
+        if !line.starts_with("F ") {
+            continue;
+        }
+        let mut f = line.split_whitespace();
+        let (Some(_), Some(ts), Some(rule), Some(stance), Some(outcome)) =
+            (f.next(), f.next(), f.next(), f.next(), f.next())
+        else {
+            continue;
+        };
+        let Ok(ts) = ts.parse::<u64>() else {
+            continue;
+        };
+        if ts < floor {
+            continue;
+        }
+        let seen = out.entry(rule.to_string()).or_default();
+        match (stance, outcome) {
+            // A `confirm` that declined, or an assertion that could not check
+            // its claim. The outcome field carries the reason; older records
+            // wrote the literal `skipped` there, which counts as a reason
+            // nobody stated.
+            ("unconfirmed" | "unverified", why) => {
+                seen.unconfirmed += 1;
+                *seen.reasons.entry(why.to_string()).or_default() += 1;
+            }
+            (_, "denied") => seen.denied += 1,
+            (_, "advised") => seen.advised += 1,
+            (_, "watched") => seen.watched += 1,
+            // An outcome this reader does not know. Counted as seen, because
+            // it was, but not as any of the four it can name.
+            _ => {}
+        }
+    }
+    out
+}
+
 /// One thing that happened.
 pub struct Entry<'a> {
     pub rule: &'a str,
@@ -409,6 +509,58 @@ mod tests {
             mode: "default",
             excerpt,
         }
+    }
+
+    /// The reader counts what the writer wrote, drops what it cannot read,
+    /// and never invents a reason for a record that stated none.
+    #[test]
+    fn the_tally_reads_what_was_written_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("amont-agent-tally-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("journal.log");
+        let now = 2_000_000u64;
+        let text = format!(
+            "{FORMAT}\n\
+             F {} pipe-to-tail deny denied sess repo default git push | tail -1\n\
+             F {} stale-base advise advised sess repo default git checkout -b x\n\
+             F {} stale-base unconfirmed the_start_point_is_not_behind_origin sess repo default git checkout -b y\n\
+             F {} stale-base unconfirmed the_start_point_is_not_behind_origin sess repo default git checkout -b z\n\
+             F {} stale-base unconfirmed skipped sess repo default git checkout -b w\n\
+             F {} branch-force-delete observe watched sess repo default git branch -D q\n\
+             F {} branch-force-delete observe watched sess repo default git branch -D old\n\
+             F {} pipe-to-tail deny denied\n\
+             F notatime pipe-to-tail deny denied sess repo default x\n\
+             this line is torn and has no F\n",
+            now - 10,
+            now - 20,
+            now - 30,
+            now - 40,
+            now - 50,
+            now - 60,
+            now - 400_000, // outside a 100_000-second window
+            now - 5,       // fixed fields present, no excerpt: still a record
+        );
+        fs::write(&path, text).expect("write journal");
+
+        let seen = tally_at(&path, 100_000, now);
+
+        let pipe = &seen["pipe-to-tail"];
+        assert_eq!((pipe.denied, pipe.total()), (2, 2), "{pipe:?}");
+
+        let stale = &seen["stale-base"];
+        assert_eq!(stale.advised, 1);
+        assert_eq!(stale.unconfirmed, 3);
+        assert_eq!(
+            stale.top_reason(),
+            Some(("the_start_point_is_not_behind_origin", 2)),
+            "the leading reason, not the legacy `skipped`"
+        );
+
+        let bfd = &seen["branch-force-delete"];
+        assert_eq!(bfd.watched, 1, "the old record is outside the window");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Interleaving is only safe if a record is one line with no interior

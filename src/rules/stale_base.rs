@@ -79,7 +79,12 @@ pub fn detect(parsed: &Parsed) -> Option<(&Simple, Creation)> {
         if cmd.is_dry_run() {
             continue;
         }
-        let creation = match cmd.subcommand()? {
+        // `let else`, not `?`: a bare `git` mid-script must skip this
+        // clause, not abandon the scan of the ones after it.
+        let Some(sub) = cmd.subcommand() else {
+            continue;
+        };
+        let creation = match sub {
             "worktree" => worktree_add(cmd),
             "checkout" => checkout_or_switch(cmd, &["-b", "-B"], &[]),
             "switch" => checkout_or_switch(cmd, &["-c", "-C"], &["--create", "--force-create"]),
@@ -292,6 +297,12 @@ mod tests {
         ] {
             assert_eq!(start_of(c), None, "{c}");
         }
+    }
+
+    /// A `git` with no subcommand must not abandon the rest of the script.
+    #[test]
+    fn a_bare_git_does_not_end_the_scan() {
+        assert_eq!(start_of("git; git checkout -b feat/after"), Some(None));
     }
 
     #[test]

@@ -556,24 +556,71 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     }
 }
 
+/// How far back `status` reads the journal. Long enough for a rule that
+/// fires a few times a week to show a shape; short enough that a rule fixed a
+/// month ago stops being judged on what it did before.
+const SEEN_WINDOW: u64 = 30 * 24 * 60 * 60;
+
 fn run_status() -> ExitCode {
     let w = ui::id_column();
-    println!("{:<w$}{:<10}{:<10}  evidence", "rule", "ships as", "now");
+    let seen = journal::tally(SEEN_WINDOW);
+    println!(
+        "{:<w$}{:<10}{:<10}  {:<31}  seen, last 30 days",
+        "rule", "ships as", "now", "evidence"
+    );
     for r in rules::RULES {
         let now = stance::resolve(r);
         println!(
-            "{:<w$}{:<10}{:<10}  {:.1}/1000 measured {}",
+            "{:<w$}{:<10}{:<10}  {:<31}  {}",
             r.id,
             r.default_stance.as_str(),
             now.as_str(),
-            r.evidence.per_1000,
-            r.evidence.measured
+            format!(
+                "{:.1}/1000 measured {}",
+                r.evidence.per_1000, r.evidence.measured
+            ),
+            describe_seen(seen.get(r.id))
         );
     }
     if let Some(p) = journal::path() {
         println!("\njournal: {}", p.display());
     }
     ExitCode::SUCCESS
+}
+
+/// One cell of the `seen` column.
+///
+/// The counts are what happened; the reason is why it did not. A rule whose
+/// `confirm` declined a hundred times for `already in a linked worktree` is a
+/// rule watching a convention being followed, and that is the sentence that
+/// tells a reader whether the rule is precise or merely quiet.
+fn describe_seen(seen: Option<&journal::Seen>) -> String {
+    let Some(s) = seen.filter(|s| s.total() > 0) else {
+        return "-".to_string();
+    };
+    let mut parts = Vec::new();
+    for (n, what) in [
+        (s.denied, "denied"),
+        (s.advised, "advised"),
+        (s.watched, "watched"),
+    ] {
+        if n > 0 {
+            parts.push(format!("{n} {what}"));
+        }
+    }
+    if s.unconfirmed > 0 {
+        match s.top_reason() {
+            // Records written before the reason was carried say `skipped`,
+            // which is not a reason. Show the count and nothing invented.
+            Some((why, n)) if why != "skipped" => parts.push(format!(
+                "{} unconfirmed ({} \u{d7}{n})",
+                s.unconfirmed,
+                why.replace('_', " ")
+            )),
+            _ => parts.push(format!("{} unconfirmed", s.unconfirmed)),
+        }
+    }
+    parts.join(", ")
 }
 
 fn run_corpus(args: &[OsString]) -> ExitCode {

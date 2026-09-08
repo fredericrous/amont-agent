@@ -428,11 +428,17 @@ fn stances() -> Finding {
             "unset it to arm the guard".to_string(),
         );
     }
-    let armed: Vec<&str> = rules::RULES
+    let (armed, observing): (Vec<&str>, Vec<&str>) = rules::RULES
         .iter()
-        .filter(|r| stance::resolve(r) != rules::Stance::Observe)
-        .map(|r| r.id)
-        .collect();
+        .map(|r| (r.id, stance::resolve(r)))
+        .fold((Vec::new(), Vec::new()), |(mut a, mut o), (id, st)| {
+            if st == rules::Stance::Observe {
+                o.push(id)
+            } else {
+                a.push(id)
+            }
+            (a, o)
+        });
     if armed.is_empty() {
         return Finding::warn(
             "every rule is observing — nothing will be refused",
@@ -440,7 +446,19 @@ fn stances() -> Finding {
                 .to_string(),
         );
     }
-    Finding::good(format!("acting on {}", armed.join(", ")))
+    // Both halves, because "installed" was being mistaken for "armed" in the
+    // other direction too: a rule that ships `observe` is live and journaling
+    // from its first release, and a line that names only what refuses reads
+    // as if it were not there at all.
+    if observing.is_empty() {
+        Finding::good(format!("acting on {}", armed.join(", ")))
+    } else {
+        Finding::good(format!(
+            "acting on {}; observing {}",
+            armed.join(", "),
+            observing.join(", ")
+        ))
+    }
 }
 
 fn now() -> u64 {
