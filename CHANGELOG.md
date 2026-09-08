@@ -2,7 +2,32 @@
 
 ## Unreleased
 
+### Added
+
+- **`status` reads the journal.** It always promised to — *"every rule, its
+  stance, and what it has seen"* — but every function in `journal.rs` wrote and
+  none read; the only way to ask was `awk` on the file. A `seen, last 30 days`
+  column now counts, per rule, what was denied, advised, watched, and how often
+  `confirm` declined — with the leading reason. That last number is the one the
+  observe-then-graduate loop runs on and the one nothing else can supply: the
+  backtester replays `examine` against a world that has moved, so it never runs
+  `confirm`. First read of the real journal: `push-preflight` 2 advised against
+  143 unconfirmed, `foreground-poll` 24 against 120, `branch-force-delete` 0
+  against 19 — rules whose precision lives entirely in `confirm`, now visible.
+- **The journal records why `confirm` said no**, in the rule's own words, where
+  it used to write the literal `skipped`. A rule declined a thousand times for
+  `already in a linked worktree` is a rule watching a convention being followed,
+  and that sentence is what tells a reader whether it is precise or merely quiet.
+  Older records still count; they show no reason rather than an invented one.
+- **`doctor` names the observing rules** beside the acting ones. A rule that
+  ships `observe` is live and journaling from its first release, and a line that
+  listed only what refuses read as if it were not installed at all.
+
 ### Fixed
+
+- **`stale-base` no longer abandons a script at a bare `git`.** Its clause loop
+  used `?` on `cmd.subcommand()`, so `git; git checkout -b feat/x` ended the scan
+  before reaching the checkout. `let else` skips the clause instead.
 
 - **The id column in `status`, `rules` and `corpus check` is now measured from
   the ids, not written down.** It was the literal `18` in four places.

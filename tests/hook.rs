@@ -584,3 +584,65 @@ fn a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not() {
     let r = send_with_path(&payload, Some(&bin));
     assert_eq!(r.stdout, "", "a rehearsed tree is not nagged: {}", r.stdout);
 }
+
+/// A `confirm` that declines writes WHY, in the rule's words, and `status`
+/// reads it back. This is the loop the crate runs on: a rule ships `observe`,
+/// and the number that decides whether it may advise is how often `confirm`
+/// agreed — a number the backtester cannot produce, because it never runs
+/// `confirm`. Until this, the only reader of that number was `awk`.
+#[test]
+fn a_declined_confirm_records_why_and_status_reads_it_back() {
+    // A primary checkout with no linked worktrees: `worktree-isolation`'s
+    // `examine` fires on the shape and its `confirm` declines, naming why.
+    let repo = home().join("solo-repo");
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("scratch repo");
+    let init = Command::new("git")
+        .args(["init", "-q", "--initial-branch=main", "."])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+    assert!(init.status.success());
+
+    let payload = format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{},
+             "session_id":"seen1234","tool_use_id":"t1","permission_mode":"default",
+             "tool_input":{{"command":"git checkout -b feat/why"}}}}"#,
+        serde_json::Value::String(repo.display().to_string())
+    );
+    let reply = send(&payload);
+    assert_eq!(reply.code, 0);
+
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    let line = journal
+        .lines()
+        .find(|l| l.contains("worktree-isolation unconfirmed"))
+        .unwrap_or_else(|| panic!("no unconfirmed record in:\n{journal}"));
+    assert!(
+        line.contains("nothing_else_is_checked_out_from_this_repository"),
+        "the reason, in the rule's own words: {line}"
+    );
+    assert!(
+        !line.contains(" skipped "),
+        "`skipped` is not a reason: {line}"
+    );
+
+    let status = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("status")
+        .env("CLAUDE_CONFIG_DIR", home())
+        .env_remove("AMONT_AGENT_OFF")
+        .output()
+        .expect("the binary runs");
+    let text = String::from_utf8_lossy(&status.stdout);
+    let row = text
+        .lines()
+        .find(|l| l.starts_with("worktree-isolation"))
+        .unwrap_or_else(|| panic!("no status row in:\n{text}"));
+    assert!(
+        row.contains("1 unconfirmed (nothing else is checked out from this repository \u{d7}1)"),
+        "status reads the journal back, reason and all: {row}"
+    );
+}

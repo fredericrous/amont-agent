@@ -146,8 +146,13 @@ fn on_bash(bash: &Bash) -> Decision {
 
     for (rule, finding) in &fired {
         let stance = crate::stance::resolve(rule);
-        if !confirmed(rule, finding, bash, &parsed) {
-            note(rule, "unconfirmed", "skipped", bash, finding);
+        if let Err(why) = confirmed(rule, finding, bash, &parsed) {
+            // The reason is the record. `status` tallies these, and "why did
+            // confirm say no" is the number that decides whether an observing
+            // rule may ever advise — a rule declined for `already in a linked
+            // worktree` a thousand times is a rule being obeyed, not one that
+            // is wrong.
+            note(rule, "unconfirmed", why, bash, finding);
             continue;
         }
         let text = decision::phrase(rule.id, &finding.reason, &finding.remedy);
@@ -248,19 +253,28 @@ fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, c
 
 /// A rule with no `confirm` is confirmed. A `confirm` that cannot answer is
 /// NOT — failing to establish the fact is silence, like everything else here.
-fn confirmed(rule: &Rule, finding: &Finding, bash: &Bash, parsed: &Parsed) -> bool {
+/// The `Err` names why, in the words the rule chose, for the journal.
+fn confirmed(
+    rule: &Rule,
+    finding: &Finding,
+    bash: &Bash,
+    parsed: &Parsed,
+) -> Result<(), &'static str> {
     let Some(confirm) = rule.confirm else {
-        return true;
+        return Ok(());
     };
     if !bash.cwd.is_dir() {
-        return false;
+        return Err("the working directory does not exist");
     }
     let ctx = Context {
         cwd: &bash.cwd,
         parsed,
         background: bash.background,
     };
-    matches!(confirm(&ctx, finding), Confirmed::Yes)
+    match confirm(&ctx, finding) {
+        Confirmed::Yes => Ok(()),
+        Confirmed::No(why) => Err(why),
+    }
 }
 
 fn note(rule: &Rule, stance: &str, outcome: &str, bash: &Bash, finding: &Finding) {
