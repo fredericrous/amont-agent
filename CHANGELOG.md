@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The id column in `status`, `rules` and `corpus check` is now measured from
+  the ids, not written down.** It was the literal `18` in four places.
+  `worktree-remove-force` is 21 characters and pushed the later columns out of
+  line; `worktree-isolation` is exactly 18 and ran into the next column with no
+  space at all, which is how `worktree-isolationobserve` reached a release. Not
+  only cosmetic: `tests/stance_scope.rs` reads a stance out of those columns by
+  whitespace position, so a glued line hands back the wrong field — latent only
+  because the fixtures ask about short ids. A test now walks every listing and
+  asserts the first word of each row is an id the binary actually declares.
+
 ## v2.5.0
 
 ### Added

@@ -461,9 +461,10 @@ fn run_check(args: &[OsString]) -> ExitCode {
 }
 
 fn run_rules() -> ExitCode {
+    let w = ui::id_column();
     for r in rules::RULES {
         println!(
-            "{:<18} {:<8} {:>6.1}/1000  measured {}",
+            "{:<w$}{:<8} {:>6.1}/1000  measured {}",
             r.id,
             r.default_stance.as_str(),
             r.evidence.per_1000,
@@ -475,7 +476,7 @@ fn run_rules() -> ExitCode {
     // reported success actually did.
     for a in assertions::ASSERTIONS {
         println!(
-            "{:<18} {:<8} {:>6.1}/1000  measured {}  (assertion)",
+            "{:<w$}{:<8} {:>6.1}/1000  measured {}  (assertion)",
             a.id,
             a.default_stance.as_str(),
             a.evidence.per_1000,
@@ -556,11 +557,12 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
 }
 
 fn run_status() -> ExitCode {
-    println!("{:<18}{:<10}{:<10}  evidence", "rule", "ships as", "now");
+    let w = ui::id_column();
+    println!("{:<w$}{:<10}{:<10}  evidence", "rule", "ships as", "now");
     for r in rules::RULES {
         let now = stance::resolve(r);
         println!(
-            "{:<18}{:<10}{:<10}  {:.1}/1000 measured {}",
+            "{:<w$}{:<10}{:<10}  {:.1}/1000 measured {}",
             r.id,
             r.default_stance.as_str(),
             now.as_str(),
@@ -590,10 +592,11 @@ fn run_corpus(args: &[OsString]) -> ExitCode {
         }
     }
     let mut healthy = true;
+    let w = ui::id_column();
     for rule in rules::RULES {
         let score = corpus::score(rule);
         if score.reviewed == 0 && score.unreviewed == 0 {
-            println!("{:<18} no cases yet", rule.id);
+            println!("{:<w$}no cases yet", rule.id);
             continue;
         }
         let precision = match score.precision() {
@@ -601,7 +604,7 @@ fn run_corpus(args: &[OsString]) -> ExitCode {
             None => "unmeasured".to_string(),
         };
         println!(
-            "{:<18} {} reviewed ({} negative), {} unreviewed, precision {precision}",
+            "{:<w$}{} reviewed ({} negative), {} unreviewed, precision {precision}",
             rule.id, score.reviewed, score.negatives, score.unreviewed
         );
         for d in &score.disagreements {

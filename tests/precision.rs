@@ -259,3 +259,57 @@ fn every_finding_carries_a_remedy() {
         );
     }
 }
+
+/// Every listing keeps its columns separated, whatever the ids are called.
+///
+/// The width used to be the literal `18` in four places. `worktree-remove-force`
+/// is 21 characters and pushed the later columns out of line; `worktree-isolation`
+/// is exactly 18 and ran straight into the next column with no space at all, which
+/// is how `worktree-isolationobserve` reached a release. That is not merely ugly —
+/// `tests/stance_scope.rs` reads a stance out of these columns by whitespace
+/// position, so a glued line hands back the wrong field.
+#[test]
+fn every_listing_keeps_its_columns_apart() {
+    for verb in [vec!["status"], vec!["rules"], vec!["corpus", "check"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .args(&verb)
+            .output()
+            .expect("the binary runs");
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        for line in text.lines() {
+            if line.starts_with("rule ") {
+                continue; // the header names the columns, not a rule
+            }
+            let Some(first) = line.split_whitespace().next() else {
+                continue;
+            };
+            // Every id is lowercase-kebab; a column that swallowed the next
+            // one shows up as an id nobody declared.
+            if !first.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+                continue;
+            }
+            assert!(
+                known_id(first),
+                "columns collided in `{}`: {line}",
+                verb.join(" ")
+            );
+        }
+    }
+}
+
+/// The ids the binary itself declares, read back out of `rules`.
+fn known_id(word: &str) -> bool {
+    static IDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("rules")
+            .output()
+            .expect("the binary runs");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+            .collect()
+    })
+    .iter()
+    .any(|id| id == word)
+}
