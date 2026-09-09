@@ -30,9 +30,12 @@ use crate::shell::Parsed;
 pub mod amend_pushed;
 pub mod bare_stash_pop;
 pub mod branch_force_delete;
+pub mod equals_separator;
 pub mod foreground_poll;
 pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
+pub mod glob_in_flag_value;
+pub mod glob_no_match;
 pub mod kubectl_gitops;
 pub mod no_verify;
 pub mod pipe_to_tail;
@@ -42,26 +45,26 @@ pub mod sed_in_place;
 pub mod stale_base;
 pub mod stdin_hang;
 pub mod tag_after_commit;
+pub mod tool_shell;
 pub mod worktree_isolation;
 pub mod worktree_remove_force;
 
-// A `fish-glob` rule was written and removed before the first commit. It caught
-// an unquoted glob inside a flag value (`--include=*.py`), which under fish is
-// a hard error rather than the literal passthrough bash gives you.
+// A `fish-glob` rule was written and removed before the first commit, on the
+// argument that a zero-match glob "aborts the command loudly and names the
+// glob, which is the best feedback a person or a model can get", and that the
+// rate was falling on its own (12.9 per thousand in early July, 3.4 by
+// mid-August). Both halves were measured from command SHAPE.
 //
-// It failed this crate's own admission test. A rule earns a guard when the
-// failure it prevents is SILENT — `pipe-to-tail` qualifies because the pipeline
-// reports success whatever the mutating command did, so no correcting loop can
-// form. A zero-match glob under fish aborts the command loudly and names the
-// glob, which is the best feedback a person or a model can get; the measured
-// rate was falling on its own accordingly (12.9 per thousand in early July,
-// 3.4 by mid-August).
+// Measured from what the shell actually printed (2026-09-09, 32,555 calls),
+// neither survives. The Bash tool runs zsh, not fish; the abort names the glob
+// on stderr, but the tool's error flag follows the exit status of the LAST
+// clause, and in 86–95% of real cases that was 0 — an empty result labelled
+// success, which no correcting loop can see. And the rate was flat across five
+// weeks, not falling. `glob-no-match`, `glob-in-flag-value` and
+// `equals-separator` are that rule, rebuilt on the measurement: the shape in
+// `examine`, and the one fact that ties it to a shell — which shell the tool
+// runs — read in `confirm`, where an impure question belongs (`tool_shell`).
 //
-// It was also the only rule that needed to know which shell was running, which
-// meant either reading the environment inside a pure `examine` or coupling a
-// tool published to crates.io, npm and Homebrew to one shell's semantics.
-// Neither is worth a rule that should almost never fire.
-
 /// What a rule is allowed to DO when it fires.
 ///
 /// Three states, not two, and the middle one is the point. `Observe` and
@@ -264,6 +267,9 @@ pub const RULES: &[Rule] = &[
     poll_blank_verdict::RULE,
     worktree_isolation::RULE,
     stdin_hang::RULE,
+    glob_in_flag_value::RULE,
+    glob_no_match::RULE,
+    equals_separator::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {

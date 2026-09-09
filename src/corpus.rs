@@ -121,6 +121,18 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/stdin-hang.cases"),
     ),
     (
+        "glob-in-flag-value",
+        include_str!("../tests/corpus/glob-in-flag-value.cases"),
+    ),
+    (
+        "glob-no-match",
+        include_str!("../tests/corpus/glob-no-match.cases"),
+    ),
+    (
+        "equals-separator",
+        include_str!("../tests/corpus/equals-separator.cases"),
+    ),
+    (
         "git-add-broad",
         include_str!("../tests/corpus/git-add-broad.cases"),
     ),
