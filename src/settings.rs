@@ -254,6 +254,10 @@ fn read(path: &Path) -> Result<(Value, String), MergeError> {
 /// there exactly as it does before one.
 pub const TARGETS: &[(&str, Option<&str>)] = &[
     ("PreToolUse", Some("Bash")),
+    // The file tier: a Read, Edit or Write is not a shell command, but the
+    // question "was this file already read this session" can only be answered
+    // if the hook sees every one of them.
+    ("PreToolUse", Some("Read|Edit|Write|MultiEdit")),
     ("PostToolUse", Some("Bash")),
     ("SessionStart", None),
 ];

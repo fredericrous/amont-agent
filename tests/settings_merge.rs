@@ -83,7 +83,8 @@ fn an_unrelated_hook_survives_install_and_uninstall() {
     assert_eq!(code, 0, "install failed: {err}");
     let after = hooks_of(&h.read());
     let pre = after.get("PreToolUse").unwrap().as_array().unwrap();
-    assert_eq!(pre.len(), 2, "ours was added beside theirs");
+    // Theirs, then our Bash block, then our Read|Edit|Write block.
+    assert_eq!(pre.len(), 3, "ours were added beside theirs");
     assert_eq!(pre[0]["matcher"], "Write");
     assert!(after.get("Stop").is_some(), "an unrelated event survived");
 
@@ -109,8 +110,11 @@ fn we_join_an_existing_bash_block_rather_than_adding_a_second() {
     h.run(&["install", "--write"]);
     let after = hooks_of(&h.read());
     let pre = after.get("PreToolUse").unwrap().as_array().unwrap();
-    assert_eq!(pre.len(), 1, "still one Bash block");
+    // Still one Bash block, joined; the file-tier block is ours alone.
+    assert_eq!(pre.len(), 2, "one Bash block, one Read|Edit|Write block");
+    assert_eq!(pre[0]["matcher"], "Bash");
     assert_eq!(pre[0]["hooks"].as_array().unwrap().len(), 2, "two handlers");
+    assert_eq!(pre[1]["matcher"], "Read|Edit|Write|MultiEdit");
 }
 
 #[test]

@@ -168,8 +168,9 @@ fn configured(installs: &[Install]) -> Finding {
     if events < want {
         return Finding::warn(
             format!("installed for {events} of {want} events"),
-            "the SessionStart entry is what proves the guard is alive; \
-             re-run `amont-agent install --write`"
+            "re-run `amont-agent install --write`: the SessionStart entry is what \
+             proves the guard is alive, and the Read|Edit|Write entry is what lets \
+             `file-reread` see a file opened twice"
                 .to_string(),
         );
     }

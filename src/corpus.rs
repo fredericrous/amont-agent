@@ -141,6 +141,18 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/stat-bsd-format.cases"),
     ),
     (
+        "whole-file-dump",
+        include_str!("../tests/corpus/whole-file-dump.cases"),
+    ),
+    (
+        "persisted-output-dump",
+        include_str!("../tests/corpus/persisted-output-dump.cases"),
+    ),
+    (
+        "file-reread",
+        include_str!("../tests/corpus/file-reread.cases"),
+    ),
+    (
         "git-add-broad",
         include_str!("../tests/corpus/git-add-broad.cases"),
     ),
