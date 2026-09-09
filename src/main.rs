@@ -719,7 +719,7 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
             corpus::path_for(rule.id).display().to_string()
         } else {
             format!(
-                "crates/amont-agent/tests/corpus/{}.cases   # in a checkout of amont",
+                "tests/corpus/{}.cases   # in a checkout of amont-agent",
                 rule.id
             )
         };
