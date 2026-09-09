@@ -109,6 +109,8 @@ and uninstalling takes every rule with it.
 | `glob-in-flag-value` | `advise` | an unquoted glob inside a flag value (`--include=*.ts`), which zsh expands — or fails on — before the program sees it |
 | `glob-no-match` | `advise` | an unquoted glob operand that matches nothing, which under zsh aborts the clause before it starts while a later clause reports success |
 | `equals-separator` | `observe` | a bare word beginning with `=` (`echo ===`, `[ x == y ]`), which zsh reads as a command lookup and whose failure aborts the whole command list |
+| `path-operand-missing` | `advise` | a read of a path that is not there — under the grep shim a warning in mid-stream, for the coreutils one line and carry on — which the chain then reports as success |
+| `stat-bsd-format` | `advise` | `stat -f '%…'` on GNU stat (or `-c` on BSD), which prints a filesystem report where a timestamp was wanted |
 
 `stale-base` advises from the start because it refuses nothing and names a
 failure no correcting loop can see: **nothing fails when you build on stale

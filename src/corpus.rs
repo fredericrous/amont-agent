@@ -133,6 +133,14 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/equals-separator.cases"),
     ),
     (
+        "path-operand-missing",
+        include_str!("../tests/corpus/path-operand-missing.cases"),
+    ),
+    (
+        "stat-bsd-format",
+        include_str!("../tests/corpus/stat-bsd-format.cases"),
+    ),
+    (
         "git-add-broad",
         include_str!("../tests/corpus/git-add-broad.cases"),
     ),
