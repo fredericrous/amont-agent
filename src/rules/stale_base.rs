@@ -72,7 +72,7 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
 
 /// The first clause that creates a branch from a local start point.
 pub fn detect(parsed: &Parsed) -> Option<(&Simple, Creation)> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         if cmd.program() != Some("git") {
             continue;
         }

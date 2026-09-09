@@ -50,7 +50,7 @@ fn detect(cmd: &Simple) -> Option<String> {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         let Some(path) = detect(cmd) else { continue };
         return Some(Finding {
             reason: format!(

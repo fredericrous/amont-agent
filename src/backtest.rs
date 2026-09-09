@@ -94,6 +94,10 @@ pub struct Report {
     pub samples: Vec<Vec<Sample>>,
     pub stats: Stats,
     pub opaque: u64,
+    /// Commands where SOME pipeline could not be read, and the rest was
+    /// judged. The measurement of per-pipeline opacity: how much the guard
+    /// now sees that whole-command opacity used to throw away.
+    pub partly: u64,
 }
 
 pub fn run(scan: &Scan, rules: &[Subject], samples_per_rule: usize) -> Result<Report, ScanError> {
@@ -101,6 +105,7 @@ pub fn run(scan: &Scan, rules: &[Subject], samples_per_rule: usize) -> Result<Re
     let mut totals = vec![0u32; rules.len()];
     let mut samples: Vec<Vec<Sample>> = rules.iter().map(|_| Vec::new()).collect();
     let mut opaque = 0u64;
+    let mut partly = 0u64;
 
     let stats = transcript::for_each_call(scan, |call| {
         let bucket = weeks.entry(week_start(call.day)).or_insert_with(|| Bucket {
@@ -116,6 +121,10 @@ pub fn run(scan: &Scan, rules: &[Subject], samples_per_rule: usize) -> Result<Re
         if matches!(parsed, shell::Parsed::Opaque(_)) {
             opaque += 1;
             return;
+        }
+        if !parsed.fully_read() {
+            // Counted, and then judged: the readable pipelines still run.
+            partly += 1;
         }
         for (i, rule) in rules.iter().enumerate() {
             // `examine` only. `confirm` touches the world, and the world has
@@ -143,6 +152,7 @@ pub fn run(scan: &Scan, rules: &[Subject], samples_per_rule: usize) -> Result<Re
         samples,
         stats,
         opaque,
+        partly,
     })
 }
 
@@ -240,8 +250,14 @@ impl Report {
             self.stats.duplicates,
         ));
         s.push_str(
-            "UTC weeks. Sessions run on the web are not on this machine and cannot be counted.\n\n",
+            "UTC weeks. Sessions run on the web are not on this machine and cannot be counted.\n",
         );
+        // What the guard could not read. `opaque` was counted and never
+        // printed; `partly` is the measurement of per-pipeline opacity.
+        s.push_str(&format!(
+            "unreadable: {} command(s) could not be read at all; {} more had a pipeline hidden.\n\n",
+            self.opaque, self.partly,
+        ));
 
         // Wide enough for the longest id plus a separating space. A fixed
         // width let `gh-pr-merge-auto` run into its neighbour's header.
@@ -346,6 +362,7 @@ impl Report {
             json::int_field("calls", self.stats.calls as i64),
             json::int_field("duplicates", self.stats.duplicates as i64),
             json::int_field("opaque", self.opaque as i64),
+            json::int_field("partly", self.partly as i64),
             format!("\"rules\":{}", json::array(&rules)),
             json::string_field(
                 "note",

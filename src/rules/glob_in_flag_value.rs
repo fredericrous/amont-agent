@@ -38,7 +38,7 @@ pub const RULE: Rule = Rule {
 };
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         for w in cmd.args() {
             // `rc=$?` is not a glob: the lexer blanks `$(…)` and `${…}` but a
             // bare `$?` or `$VAR` stays, and nothing here can expand it.

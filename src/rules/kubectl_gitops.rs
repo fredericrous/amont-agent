@@ -150,7 +150,7 @@ fn detect(cmd: &Simple) -> bool {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    let cmd = parsed.clauses().iter().find(|c| detect(c))?;
+    let cmd = parsed.judgeable().find(|c| detect(c))?;
     Some(Finding {
         reason: "this cluster is reconciled from git: a resource changed by hand is drift \
                  — the controller reverts it on its next sync and the fix evaporates, or \

@@ -120,7 +120,7 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     // ordinary conditional and none of this crate's business.
     let head = clauses
         .iter()
-        .position(|c| c.program().is_some_and(|p| LOOPS.contains(&p)))?;
+        .position(|c| c.opaque.is_none() && c.program().is_some_and(|p| LOOPS.contains(&p)))?;
     let polls = clauses.iter().skip(head).any(|c| {
         c.words
             .iter()

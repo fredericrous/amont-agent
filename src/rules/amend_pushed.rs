@@ -29,7 +29,7 @@ pub const RULE: Rule = Rule {
 };
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    let cmd = parsed.clauses().iter().find(|c| {
+    let cmd = parsed.judgeable().find(|c| {
         c.program() == Some("git") && c.subcommand() == Some("commit") && c.has_flag("--amend")
     })?;
     Some(Finding {

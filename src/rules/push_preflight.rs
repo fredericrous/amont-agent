@@ -58,7 +58,7 @@ pub const RULE: Rule = Rule {
 
 /// The push clause, if this command has one worth judging.
 fn detect(parsed: &Parsed) -> Option<&Simple> {
-    parsed.clauses().iter().find(|cmd| {
+    parsed.judgeable().find(|cmd| {
         cmd.program() == Some("git")
             && cmd.subcommand() == Some("push")
             && !cmd.has_flag("--dry-run")

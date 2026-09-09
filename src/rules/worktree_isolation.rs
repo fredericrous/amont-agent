@@ -100,7 +100,7 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
 
 /// The first clause that creates a branch or resets the working tree.
 pub fn detect(parsed: &Parsed) -> Option<(&Simple, Move)> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         if cmd.program() != Some("git") || cmd.is_dry_run() {
             continue;
         }

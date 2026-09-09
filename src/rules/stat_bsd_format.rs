@@ -65,7 +65,7 @@ fn detect(cmd: &Simple) -> Option<Spelling> {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         let Some(spelling) = detect(cmd) else {
             continue;
         };

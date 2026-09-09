@@ -59,9 +59,12 @@ fn is_sleep(cmd: &Simple) -> bool {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
+    // Indexed over ALL clauses so `head` and the `skip`s below stay true to
+    // what ran; an unreadable clause is simply never the head of a loop we
+    // claim to have understood.
     let clauses = parsed.clauses();
     // `gh run watch` polls on its own, for as long as the run takes.
-    for cmd in clauses {
+    for cmd in parsed.judgeable() {
         if cmd.program() == Some("gh")
             && cmd.subcommand() == Some("run")
             && cmd.operands().get(1).is_some_and(|w| w.text == "watch")
@@ -71,7 +74,7 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     }
     let head = clauses
         .iter()
-        .position(|c| c.program().is_some_and(|p| LOOPS.contains(&p)))?;
+        .position(|c| c.opaque.is_none() && c.program().is_some_and(|p| LOOPS.contains(&p)))?;
     // The loop body must actually sleep: `for f in *; do echo $f; done` is
     // not a wait, it is a loop.
     let sleep = clauses.iter().skip(head + 1).find(|c| is_sleep(c))?;

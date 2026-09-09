@@ -24,7 +24,7 @@ pub const RULE: Rule = Rule {
 };
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         if cmd.program() != Some("git") || cmd.subcommand() != Some("stash") {
             continue;
         }
