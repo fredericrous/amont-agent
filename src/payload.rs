@@ -38,6 +38,21 @@ pub struct Bash {
     /// `tool_input.run_in_background`: the call is detached and the tool's
     /// timeout does not apply. Read by `foreground-poll`'s `confirm`.
     pub background: bool,
+    /// `tool_input.timeout`, in milliseconds, when the call sets one. The
+    /// tool's own default is two minutes; `foreground-poll` compares a loop's
+    /// budget against it.
+    pub timeout_ms: Option<u64>,
+}
+
+/// A Read, Edit or Write tool call: one path, and whether it reads or writes.
+pub struct FileOp {
+    pub path: PathBuf,
+    pub writes: bool,
+    /// `offset:limit` as the Read tool was given, or `full`.
+    pub window: String,
+    pub cwd: PathBuf,
+    pub session: String,
+    pub permission_mode: String,
 }
 
 pub struct Session {
@@ -61,6 +76,10 @@ pub enum Event {
     /// the one moment a fetch is worth its cost — says where the checkout
     /// stands against the remote.
     SessionStart(Session),
+    /// A Read, Edit, Write or MultiEdit about to run. The file tier: nothing
+    /// here is a shell command, and the only rule that reads it is the one
+    /// about reading the same file twice.
+    PreFile(Box<FileOp>),
     NotOurs,
 }
 
@@ -91,6 +110,48 @@ pub fn parse(raw: &str) -> Event {
             cwd,
             session: str_at("session_id"),
         }),
+        Some("PreToolUse")
+            if matches!(
+                v.get("tool_name").and_then(|x| x.as_str()),
+                Some("Read" | "Edit" | "Write" | "MultiEdit")
+            ) =>
+        {
+            let tool = v
+                .get("tool_name")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default();
+            let input = v.get("tool_input");
+            let Some(path) = input
+                .and_then(|i| i.get("file_path"))
+                .and_then(|p| p.as_str())
+                .filter(|p| !p.trim().is_empty())
+            else {
+                return Event::NotOurs;
+            };
+            let path = PathBuf::from(path);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
+            };
+            let num = |key: &str| input.and_then(|i| i.get(key)).and_then(|n| n.as_u64());
+            let window = match (num("offset"), num("limit")) {
+                (None, None) => "full".to_string(),
+                (o, l) => format!(
+                    "{}:{}",
+                    o.unwrap_or(0),
+                    l.map_or("-".to_string(), |l| l.to_string())
+                ),
+            };
+            Event::PreFile(Box::new(FileOp {
+                path,
+                writes: tool != "Read",
+                window,
+                cwd,
+                session: str_at("session_id"),
+                permission_mode: str_at("permission_mode"),
+            }))
+        }
         Some(stage @ ("PreToolUse" | "PostToolUse")) => {
             // Exact, not a prefix. An MCP server may expose a tool whose name
             // merely starts with `Bash`, and that tool is not this one.
@@ -119,12 +180,17 @@ pub fn parse(raw: &str) -> Event {
                 || v.get("tool_response")
                     .and_then(|r| r.get("backgroundTaskId"))
                     .is_some();
+            let timeout_ms = v
+                .get("tool_input")
+                .and_then(|i| i.get("timeout"))
+                .and_then(|t| t.as_u64());
             let bash = Box::new(Bash {
                 command,
                 cwd,
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
                 background,
+                timeout_ms,
             });
             if stage == "PreToolUse" {
                 Event::PreBash(bash)

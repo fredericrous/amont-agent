@@ -65,9 +65,11 @@ fn decide(raw: &str) -> Decision {
             // fired" apart from "the guard is dead". Written first, so a slow
             // fetch below can never cost the heartbeat.
             heartbeat();
+            crate::session_state::sweep();
             on_session_start(&session)
         }
         Event::NotOurs => Decision::Silent,
+        Event::PreFile(op) => on_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
         Event::PostBash(bash) => on_post_bash(&bash),
     }
@@ -139,13 +141,49 @@ fn on_bash(bash: &Bash) -> Decision {
     }
 
     let fired = rules::examine_all(&parsed);
-    if fired.is_empty() {
+    let dumped = rules::dump::dumps(&parsed);
+    if fired.is_empty() && dumped.is_empty() {
         // The whole no-fire path: one lex, no processes, no files.
         return Decision::Silent;
     }
 
     let mut deny: Vec<String> = Vec::new();
     let mut advise: Vec<String> = Vec::new();
+
+    // A `cat`-shaped dump is a read the session should remember, and may be
+    // one it already made.
+    if !bash.background {
+        for d in &dumped {
+            let ctx = Context {
+                cwd: &bash.cwd,
+                parsed: &parsed,
+                background: bash.background,
+                timeout_ms: bash.timeout_ms,
+            };
+            let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
+            let window = match d.extent {
+                rules::dump::Extent::Whole => "full".to_string(),
+                rules::dump::Extent::Lines(n) => format!("0:{n}"),
+                rules::dump::Extent::Bytes(n) => format!("bytes:{n}"),
+            };
+            if let Some(text) = reread_verdict(
+                &bash.session,
+                &path,
+                &window,
+                &bash.permission_mode,
+                &bash.cwd,
+                &d.path,
+            ) {
+                match crate::stance::resolve(&rules::file_reread::RULE) {
+                    Stance::Deny => deny.push(text),
+                    Stance::Advise => advise.push(text),
+                    Stance::Observe => {}
+                }
+            }
+            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            crate::session_state::record(&bash.session, "read", &path, bytes, &window);
+        }
+    }
 
     for (rule, finding) in &fired {
         let stance = crate::stance::resolve(rule);
@@ -215,6 +253,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
         cwd: &bash.cwd,
         parsed: &parsed,
         background: bash.background,
+        timeout_ms: bash.timeout_ms,
     };
 
     let mut spoken: Vec<String> = Vec::new();
@@ -257,6 +296,126 @@ fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, c
 /// A rule with no `confirm` is confirmed. A `confirm` that cannot answer is
 /// NOT — failing to establish the fact is silence, like everything else here.
 /// The `Err` names why, in the words the rule chose, for the journal.
+/// A Read, Edit, Write or MultiEdit about to run: remember it, and before a
+/// Read, say whether the session already has that file.
+fn on_file(op: &crate::payload::FileOp) -> Decision {
+    if op.writes {
+        crate::session_state::record(&op.session, "write", &op.path, 0, "full");
+        return Decision::Silent;
+    }
+    let mut advise: Vec<String> = Vec::new();
+    let mut deny: Vec<String> = Vec::new();
+    let shown = op.path.to_string_lossy().into_owned();
+
+    if op.window == "full" && rules::persisted_output_dump::is_persisted(&shown) {
+        let rule = &rules::persisted_output_dump::RULE;
+        let stance = crate::stance::resolve(rule);
+        let text = decision::phrase(
+            rule.id,
+            &rules::persisted_output_dump::reason(),
+            &rules::persisted_output_dump::remedy(),
+        );
+        note_file(rule, stance, op, &shown);
+        match stance {
+            Stance::Deny => deny.push(text),
+            Stance::Advise => advise.push(text),
+            Stance::Observe => {}
+        }
+    }
+    if let Some(text) = reread_verdict(
+        &op.session,
+        &op.path,
+        &op.window,
+        &op.permission_mode,
+        &op.cwd,
+        &shown,
+    ) {
+        match crate::stance::resolve(&rules::file_reread::RULE) {
+            Stance::Deny => deny.push(text),
+            Stance::Advise => advise.push(text),
+            Stance::Observe => {}
+        }
+    }
+    let bytes = std::fs::metadata(&op.path).map(|m| m.len()).unwrap_or(0);
+    crate::session_state::record(&op.session, "read", &op.path, bytes, &op.window);
+
+    if !deny.is_empty() {
+        Decision::Deny(deny.join("\n\n"))
+    } else if !advise.is_empty() {
+        Decision::Advise(advise.join("\n\n"))
+    } else {
+        Decision::Silent
+    }
+}
+
+/// The `file-reread` question, asked and journalled the same way for a Read
+/// and for a `cat`. `Some(text)` when the session already has this file and
+/// the rule may speak; the journal records the watched case too.
+fn reread_verdict(
+    session: &str,
+    path: &std::path::Path,
+    window: &str,
+    mode: &str,
+    cwd: &std::path::Path,
+    shown: &str,
+) -> Option<String> {
+    let seen = crate::session_state::last_read(session, path)?;
+    // A different window of a file read before is a different read; only a
+    // repeat of a whole read, or of the same window, is a re-read.
+    if seen.window != "full" && seen.window != window {
+        return None;
+    }
+    let rule = &rules::file_reread::RULE;
+    let stance = crate::stance::resolve(rule);
+    let (reason, remedy) = rules::file_reread::phrase(shown, &seen);
+    let outcome = match stance {
+        Stance::Observe => "watched",
+        Stance::Advise => "advised",
+        Stance::Deny => "denied",
+    };
+    journal::record(&journal::Entry {
+        rule: rule.id,
+        stance: stance.as_str(),
+        outcome,
+        session,
+        repo: &repo_name(cwd),
+        mode,
+        excerpt: shown,
+    });
+    match stance {
+        Stance::Observe => None,
+        _ => Some(decision::phrase(rule.id, &reason, &remedy)),
+    }
+}
+
+fn note_file(rule: &Rule, stance: Stance, op: &crate::payload::FileOp, shown: &str) {
+    journal::record(&journal::Entry {
+        rule: rule.id,
+        stance: stance.as_str(),
+        outcome: match stance {
+            Stance::Observe => "watched",
+            Stance::Advise => "advised",
+            Stance::Deny => "denied",
+        },
+        session: &op.session,
+        repo: &repo_name(&op.cwd),
+        mode: &op.permission_mode,
+        excerpt: shown,
+    });
+}
+
+fn resolve_path(cwd: &std::path::Path, text: &str) -> std::path::PathBuf {
+    if text.starts_with('/') {
+        std::path::PathBuf::from(text)
+    } else if let Some(rest) = text.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(rest))
+            .unwrap_or_else(|| cwd.join(text))
+    } else {
+        cwd.join(text)
+    }
+}
+
 fn confirmed(
     rule: &Rule,
     finding: &Finding,
@@ -273,6 +432,7 @@ fn confirmed(
         cwd: &bash.cwd,
         parsed,
         background: bash.background,
+        timeout_ms: bash.timeout_ms,
     };
     match confirm(&ctx, finding) {
         Confirmed::Yes => Ok(()),

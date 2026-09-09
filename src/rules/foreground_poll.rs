@@ -103,11 +103,105 @@ fn finding(at: usize, end: usize) -> Finding {
     }
 }
 
+/// Seconds a `sleep` word means: `30`, `0.5`, `2m`.
+fn seconds(t: &str) -> Option<u64> {
+    let (body, unit) = match t.chars().last() {
+        Some(u @ ('s' | 'm' | 'h' | 'd')) => (&t[..t.len() - 1], u),
+        _ => (t, 's'),
+    };
+    let n: f64 = body.parse().ok()?;
+    let mult = match unit {
+        'm' => 60.0,
+        'h' => 3600.0,
+        'd' => 86400.0,
+        _ => 1.0,
+    };
+    Some((n * mult).ceil() as u64)
+}
+
+/// The longest the loop can run on its own terms, in seconds, or `None`
+/// when nothing bounds it (`while true`, `until <condition>` with no
+/// counter, `gh run watch`).
+///
+/// Read from the raw text: `$(seq 1 36)` is a substitution the lexer blanks
+/// in `text`, and the count is exactly what is wanted here.
+pub fn budget(parsed: &Parsed) -> Option<u64> {
+    let clauses = parsed.clauses();
+    let raw: String = clauses
+        .iter()
+        .flat_map(|c| c.words.iter().map(|w| w.raw.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // A deadline in seconds beats a counter: `end=$((SECONDS+540))`.
+    if let Some(i) = raw.find("SECONDS+") {
+        let digits: String = raw[i + 8..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(n) = digits.parse::<u64>() {
+            return Some(n);
+        }
+    }
+    if let Some(i) = raw.find("--timeout=") {
+        let t: String = raw[i + 10..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+            .collect();
+        if let Some(n) = seconds(&t) {
+            return Some(n);
+        }
+    }
+    let sleep = clauses.iter().find(|c| is_sleep(c)).and_then(|c| {
+        c.words
+            .iter()
+            .filter(|w| !w.quoted)
+            .map(|w| w.text.as_str())
+            .skip_while(|t| *t != "sleep")
+            .nth(1)
+            .and_then(seconds)
+    })?;
+    let iterations = count(&raw)?;
+    Some(iterations.saturating_mul(sleep))
+}
+
+/// How many times the loop can go round: `seq 1 36`, `seq 40`, `{1..20}`,
+/// `-lt 40`, `-ge 16`, `-le 30`.
+fn count(raw: &str) -> Option<u64> {
+    let mut words = raw.split_whitespace().peekable();
+    while let Some(w) = words.next() {
+        let number = |s: &str| s.trim_end_matches([')', ']', ';']).parse::<u64>().ok();
+        match w.trim_start_matches("$(") {
+            "seq" => {
+                let a = words.next().and_then(number)?;
+                return match words.peek().and_then(|b| number(b)) {
+                    Some(b) => Some(b.saturating_sub(a) + 1),
+                    None => Some(a),
+                };
+            }
+            "-lt" | "-le" | "-ge" | "-gt" => {
+                let n = words.next().and_then(number)?;
+                return Some(if w == "-le" || w == "-gt" { n + 1 } else { n });
+            }
+            t if t.starts_with('{') && t.contains("..") => {
+                let inner = t.trim_matches(['{', '}']);
+                let (a, b) = inner.split_once("..")?;
+                return Some(b.parse::<u64>().ok()?.saturating_sub(a.parse().ok()?) + 1);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn confirm(ctx: &Context, _f: &Finding) -> Confirmed {
     if ctx.background {
-        Confirmed::No("the call already runs in the background")
-    } else {
-        Confirmed::Yes
+        return Confirmed::No("the call already runs in the background");
+    }
+    match budget(ctx.parsed) {
+        Some(secs) if secs * 1000 <= ctx.timeout_ms() => {
+            Confirmed::No("the loop's own budget fits inside the call's timeout")
+        }
+        _ => Confirmed::Yes,
     }
 }
 
@@ -162,13 +256,79 @@ mod tests {
             cwd: std::path::Path::new("/"),
             parsed: &parsed,
             background: true,
+            timeout_ms: None,
         };
         assert!(matches!(confirm(&ctx, &f), Confirmed::No(_)));
         let ctx = Context {
             background: false,
+            timeout_ms: None,
             ..ctx
         };
         assert!(matches!(confirm(&ctx, &f), Confirmed::Yes));
+    }
+
+    #[test]
+    fn a_loop_that_fits_its_timeout_is_not_confirmed() {
+        let src =
+            "for i in $(seq 1 6); do gh pr checks 1 | grep -q pending || break; sleep 10; done";
+        let parsed = lex(src);
+        assert_eq!(budget(&parsed), Some(60));
+        let f = examine(&parsed).expect("fires");
+        let ctx = Context {
+            cwd: std::path::Path::new("/"),
+            parsed: &parsed,
+            background: false,
+            timeout_ms: None,
+        };
+        assert!(matches!(confirm(&ctx, &f), Confirmed::No(_)));
+        // Thirty-six rounds of fifteen seconds is nine minutes: over the
+        // default two, under an explicit ten.
+        let parsed = lex("for i in $(seq 1 36); do sleep 15; done");
+        assert_eq!(budget(&parsed), Some(540));
+        let f = examine(&parsed).unwrap();
+        let ctx = Context {
+            parsed: &parsed,
+            ..ctx
+        };
+        assert!(matches!(confirm(&ctx, &f), Confirmed::Yes));
+        let ctx = Context {
+            timeout_ms: Some(600_000),
+            ..ctx
+        };
+        assert!(matches!(confirm(&ctx, &f), Confirmed::No(_)));
+    }
+
+    #[test]
+    fn the_budget_reads_counters_deadlines_and_nothing() {
+        assert_eq!(
+            budget(&lex(
+                "i=0; until [ $i -ge 16 ]; do sleep 30; i=$((i+1)); done"
+            )),
+            Some(480)
+        );
+        assert_eq!(
+            budget(&lex("while [ $i -lt 40 ]; do sleep 20; done")),
+            Some(800)
+        );
+        // `{1..20}` is grouping to the lexer and never reaches a word; the
+        // loop reads as unbounded, which errs toward speaking.
+        assert_eq!(budget(&lex("for i in {1..20}; do sleep 5; done")), None);
+        assert_eq!(
+            budget(&lex("end=$((SECONDS+540)); until x; do sleep 5; done")),
+            Some(540)
+        );
+        assert_eq!(
+            budget(&lex(
+                "kubectl wait --for=condition=Ready pod/x --timeout=180s"
+            )),
+            Some(180)
+        );
+        assert_eq!(budget(&lex("while true; do sleep 5; done")), None);
+        assert_eq!(
+            budget(&lex("until grep -q done f; do sleep 30; done")),
+            None
+        );
+        assert_eq!(budget(&lex("gh run watch 1 --exit-status")), None);
     }
 
     #[test]

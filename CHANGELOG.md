@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The file tier.** `install --write` now adds a `PreToolUse` entry for
+  `Read|Edit|Write|MultiEdit` beside the Bash one (`doctor` says so until it
+  is re-run), and the hook keeps one small record per session under
+  `<config>/amont-agent/sessions/`: every Read, every `cat`-shaped dump, and
+  every Edit or Write, by path. Nothing else in the crate remembers anything
+  between calls; this is the narrowest state that answers one question.
+- **`file-reread`**, advising: a Read — or a `cat`, `sed -n`, `head` — of a
+  file this session already read, with nothing written to it since. Measured
+  over 41,700 tool calls: 3,381 such re-reads in two sessions of every three,
+  15% of every byte the tools returned. A write in between makes the re-read
+  right, and the rule says nothing; a different `offset`/`limit` window is a
+  different read. `examine` never fires — the backtester has no session to
+  consult — so its evidence is the transcript measurement.
+- **`whole-file-dump`**, advising: a file poured whole into the tool result
+  (`cat FILE`, `sed -n '1,400p'`, `head -200`) where the Read tool would have
+  given line numbers, a cap and a window. Files opened this way were 31.5% of
+  all tool-result bytes. `confirm` looks at the file: a whole dump under 4 KB,
+  a window under a hundred lines, a pipe or a redirect are all left alone.
+- **`persisted-output-dump`**, advising: reading back whole a tool result the
+  harness saved to a file for being too large — 31 of 83 were, within five
+  calls — when `grep`, `head -c` or a windowed Read would take the part that
+  was wanted.
+
+### Changed
+
+- **`foreground-poll` compares the loop's budget with the call's timeout.**
+  `confirm` now reads the counter (`seq 1 36`, `{1..20}`, `-lt 40`), the
+  deadline (`SECONDS+540`, `--timeout=180s`) and the `sleep`, and stays silent
+  when the loop's own budget fits inside `tool_input.timeout` (two minutes
+  when unset). What is left is a loop that can outlast its clock — the shape
+  behind all 110 ten-minute kills measured, every one in the foreground. That
+  is the precision a `deny` needs.
+- The payload now carries `tool_input.timeout`, and a `Context` its
+  `timeout_ms()`.
+
 ## v2.9.0
 
 ### Added

@@ -30,7 +30,9 @@ use crate::shell::Parsed;
 pub mod amend_pushed;
 pub mod bare_stash_pop;
 pub mod branch_force_delete;
+pub mod dump;
 pub mod equals_separator;
+pub mod file_reread;
 pub mod foreground_poll;
 pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
@@ -39,6 +41,7 @@ pub mod glob_no_match;
 pub mod kubectl_gitops;
 pub mod no_verify;
 pub mod path_operand_missing;
+pub mod persisted_output_dump;
 pub mod pipe_to_tail;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
@@ -48,6 +51,7 @@ pub mod stat_bsd_format;
 pub mod stdin_hang;
 pub mod tag_after_commit;
 pub mod tool_shell;
+pub mod whole_file_dump;
 pub mod worktree_isolation;
 pub mod worktree_remove_force;
 
@@ -193,9 +197,17 @@ pub struct Context<'a> {
     /// payload rather than part of the command, so only a `confirm` can see
     /// it — `foreground-poll` is the rule that asks.
     pub background: bool,
+    /// `tool_input.timeout` in milliseconds, when the call set one. The
+    /// tool's default is two minutes.
+    pub timeout_ms: Option<u64>,
 }
 
 impl Context<'_> {
+    /// The clock the call actually runs against.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms.unwrap_or(120_000)
+    }
+
     /// The directory the clause at byte offset `at` actually runs in.
     ///
     /// The payload's `cwd` is the SESSION's directory. A third of real
@@ -274,6 +286,9 @@ pub const RULES: &[Rule] = &[
     equals_separator::RULE,
     path_operand_missing::RULE,
     stat_bsd_format::RULE,
+    whole_file_dump::RULE,
+    persisted_output_dump::RULE,
+    file_reread::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {
@@ -321,6 +336,7 @@ mod tests {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
+            timeout_ms: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -335,6 +351,7 @@ mod tests {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
+            timeout_ms: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -349,6 +366,7 @@ mod tests {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
+            timeout_ms: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -365,6 +383,7 @@ mod tests {
                 cwd: std::path::Path::new("/session"),
                 parsed: &parsed,
                 background: false,
+                timeout_ms: None,
             };
             assert_eq!(
                 ctx.cwd_at(at_of(&parsed, "stash")),
@@ -381,6 +400,7 @@ mod tests {
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
+            timeout_ms: None,
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));

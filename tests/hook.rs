@@ -646,3 +646,104 @@ fn a_declined_confirm_records_why_and_status_reads_it_back() {
         "status reads the journal back, reason and all: {row}"
     );
 }
+
+/// The file tier. A Read is remembered; a second Read of the same path with
+/// nothing written to it since is advised against; an Edit in between makes
+/// the next Read silent again; and a `cat` of the same file is the same
+/// question asked from the shell.
+#[test]
+fn a_file_read_twice_is_advised_and_an_edit_between_resets_it() {
+    let dir = home().join("reread-repo");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let file = dir.join("big.rs");
+    std::fs::write(&file, "x".repeat(6000)).expect("a file worth reading");
+    let cwd = serde_json::Value::String(dir.display().to_string());
+    let path = serde_json::Value::String(file.display().to_string());
+    let read = |session: &str| {
+        send(&format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default",
+                 "tool_input":{{"file_path":{path}}}}}"#
+        ))
+    };
+
+    let first = read("rr-1");
+    assert_eq!(first.code, 0);
+    assert_eq!(first.stdout, "", "a first read is not commented on");
+
+    let second = read("rr-1");
+    assert!(
+        second.reason().contains("file-reread") && second.reason().contains("already read"),
+        "second read: {}",
+        second.stdout
+    );
+    assert_eq!(
+        second.decision(),
+        None,
+        "advise, not deny: {}",
+        second.stdout
+    );
+
+    // Another session has its own record.
+    assert_eq!(read("rr-2").stdout, "");
+
+    let edit = send(&format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":{cwd},
+             "session_id":"rr-1","permission_mode":"default",
+             "tool_input":{{"file_path":{path},"old_string":"x","new_string":"y"}}}}"#
+    ));
+    assert_eq!(edit.stdout, "", "a write is remembered silently");
+    assert_eq!(read("rr-1").stdout, "", "a read after an edit is right");
+
+    // From the shell: a dump of the file the session just read.
+    let cat = send(&format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+             "session_id":"rr-1","permission_mode":"default",
+             "tool_input":{{"command":"cat big.rs"}}}}"#
+    ));
+    let said = cat.reason();
+    assert!(
+        said.contains("file-reread"),
+        "cat after Read: {}",
+        cat.stdout
+    );
+    assert!(
+        said.contains("whole-file-dump"),
+        "a 6 KB cat is a dump too: {}",
+        cat.stdout
+    );
+}
+
+/// A poll whose budget fits the call's timeout is left alone; one that can
+/// outlast it is what the rule is about.
+#[test]
+fn a_poll_is_judged_against_the_calls_timeout() {
+    // A directory that exists on every platform: `confirm` declines in one
+    // that does not, and `/tmp` is not one on Windows.
+    let cwd = serde_json::Value::String(home().display().to_string());
+    let payload = |timeout: &str, cmd: &str| {
+        send(&format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+                 "session_id":"poll-1","permission_mode":"default",
+                 "tool_input":{{"command":"{cmd}"{timeout}}}}}"#
+        ))
+    };
+    let loop_ =
+        "for i in $(seq 1 36); do gh pr checks 1 | grep -q pending || break; sleep 15; done";
+    assert!(
+        payload("", loop_).reason().contains("foreground-poll"),
+        "nine minutes against a two-minute default"
+    );
+    assert_eq!(
+        payload(r#","timeout":600000"#, loop_).stdout,
+        "",
+        "nine minutes inside an explicit ten"
+    );
+    assert!(
+        payload(r#","timeout":600000"#, "while true; do sleep 5; done")
+            .reason()
+            .contains("foreground-poll"),
+        "unbounded is over any clock"
+    );
+}

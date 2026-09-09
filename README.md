@@ -111,6 +111,9 @@ and uninstalling takes every rule with it.
 | `equals-separator` | `observe` | a bare word beginning with `=` (`echo ===`, `[ x == y ]`), which zsh reads as a command lookup and whose failure aborts the whole command list |
 | `path-operand-missing` | `advise` | a read of a path that is not there — under the grep shim a warning in mid-stream, for the coreutils one line and carry on — which the chain then reports as success |
 | `stat-bsd-format` | `advise` | `stat -f '%…'` on GNU stat (or `-c` on BSD), which prints a filesystem report where a timestamp was wanted |
+| `whole-file-dump` | `advise` | a file poured whole into the tool result by `cat`/`sed -n`/`head` — 31% of all result bytes measured — where the Read tool would have windowed it |
+| `file-reread` | `advise` | a Read, or a `cat`, of a file this session already has in context with nothing written to it since — answered from the session's own record, not the command |
+| `persisted-output-dump` | `advise` | reading back whole a tool result the harness saved to a file for being too large, paying for it twice |
 
 `stale-base` advises from the start because it refuses nothing and names a
 failure no correcting loop can see: **nothing fails when you build on stale

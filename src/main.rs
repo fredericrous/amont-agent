@@ -34,6 +34,7 @@ mod journal;
 mod json;
 mod payload;
 mod rules;
+mod session_state;
 mod settings;
 mod shell;
 mod shim;
