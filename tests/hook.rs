@@ -719,9 +719,12 @@ fn a_file_read_twice_is_advised_and_an_edit_between_resets_it() {
 /// outlast it is what the rule is about.
 #[test]
 fn a_poll_is_judged_against_the_calls_timeout() {
+    // A directory that exists on every platform: `confirm` declines in one
+    // that does not, and `/tmp` is not one on Windows.
+    let cwd = serde_json::Value::String(home().display().to_string());
     let payload = |timeout: &str, cmd: &str| {
         send(&format!(
-            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/tmp",
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
                  "session_id":"poll-1","permission_mode":"default",
                  "tool_input":{{"command":"{cmd}"{timeout}}}}}"#
         ))
