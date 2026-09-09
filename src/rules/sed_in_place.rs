@@ -46,7 +46,10 @@ fn detect(cmd: &Simple) -> Option<Spelling> {
     if cmd.program() != Some("sed") {
         return None;
     }
-    let words = &cmd.words;
+    // `args()`, not `words`: a wrapper's flags belong to the wrapper. Reading
+    // the whole word list found `env`'s own `-i` in `env -i sed s/a/b/ f` and
+    // advised about a `sed -i` that was never written.
+    let words = cmd.args();
     let idx = words.iter().position(|w| !w.quoted && w.text == "-i")?;
     match words.get(idx + 1) {
         Some(next) if next.quoted && next.text.is_empty() => Some(Spelling::Bsd),
@@ -116,6 +119,21 @@ mod tests {
 
     fn spelling(command: &str) -> Option<Spelling> {
         lex(command).clauses().iter().find_map(detect)
+    }
+
+    #[test]
+    fn a_wrappers_own_dash_i_is_not_seds() {
+        // `env -i` clears the environment. Scanning every word for `-i` read
+        // it as sed's suffix flag and advised about a spelling nobody wrote.
+        assert_eq!(spelling("env -i sed 's/a/b/' f.txt"), None);
+        assert_eq!(
+            spelling("env -i sed -i '' 's/a/b/' f.txt"),
+            Some(Spelling::Bsd)
+        );
+        assert_eq!(
+            spelling("env -i sed -i 's/a/b/' f.txt"),
+            Some(Spelling::Gnu)
+        );
     }
 
     #[test]

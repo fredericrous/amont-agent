@@ -78,8 +78,11 @@ const GLOBAL_VALUED: &[&str] = &[
 /// The verb and the first operand after it, with kubectl's global options
 /// peeled off. `None` when the verb cannot be told.
 fn verb_of(cmd: &Simple) -> Option<(&str, Option<&str>)> {
-    let program = cmd.program()?;
-    let start = cmd.words.iter().position(|w| w.text == program)? + 1;
+    // The index comes from the same walk as the name. Re-finding the program
+    // by text lands on the `kubectl` that is `sudo -u kubectl`'s argument —
+    // the hazard `program_at` documents and `the_program_index_is_not_re_found_by_name`
+    // pins for the lexer.
+    let start = cmd.program_index()? + 1;
     let words: Vec<&crate::shell::Word> = cmd.words.iter().skip(start).collect();
     let mut i = 0;
     let verb = loop {
@@ -199,6 +202,19 @@ mod tests {
 
     fn fires(command: &str) -> bool {
         examine(&lex(command)).is_some()
+    }
+
+    /// The lexer's own hazard, at the rule level: `sudo -u kubectl` puts the
+    /// program's NAME in front of the program, and re-finding it by text
+    /// landed on the flag's value — so the verb read as `kubectl` and the
+    /// rule went quiet on an imperative write.
+    #[test]
+    fn a_wrapper_flag_valued_with_the_programs_name_is_not_the_program() {
+        assert!(fires("sudo -u kubectl kubectl apply -f x.yaml"));
+        assert_eq!(
+            verb_of(&lex("sudo -u kubectl kubectl apply -f x.yaml").clauses()[0]),
+            Some(("apply", None))
+        );
     }
 
     #[test]

@@ -733,7 +733,14 @@ impl Simple {
         idx
     }
 
-    fn program_index(&self) -> Option<usize> {
+    /// Where [`Self::program`] sits in `words`.
+    ///
+    /// `pub(crate)` because a rule that needs to read past the program must
+    /// ask for this rather than re-derive it: `position(|w| w.text == program)`
+    /// finds the wrong occurrence whenever the name appears earlier as
+    /// somebody's argument, which is exactly how `kubectl-gitops` came to miss
+    /// `sudo -u kubectl kubectl apply`.
+    pub(crate) fn program_index(&self) -> Option<usize> {
         self.program_at().map(|(i, _)| i)
     }
 
