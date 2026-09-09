@@ -23,3 +23,7 @@ nomatch	sed 's/\x1b\[[0-9;]*m//g' /tmp/v2.log | tail -20
 nomatch	grep -rn "sed -i ''" docs/ | head
 nomatch	perl -pi -e 's/a/b/' f.txt
 nomatch	sed -n "$(grep -n 'risk-text' app/styles/risk.css | head -1 | cut -d: -f1),+20p" app/styles/risk.css
+# --- reviewed 2026-09-09: three more real spellings, for the graduation gate
+match	cd /Users/fredericrous/Developer/Perso/homelab-preview-operator-wt-forgejo && sed -i '' 's/^go 1\.25\.12$/go 1.25.13/' go.mod && head -3 go.mod
+match	sed -i '' 's/get_add_broad/git_add_broad/g' crates/amont-agent/src/rules/mod.rs && grep -n "git_add_broad" crates/amont-agent/src/rules/mod.rs
+match	cd /Users/fredericrous/Developer/Perso/homelab/homelab-worktrees/cloud-vault-http/bootstrap && sed -i 's|^\tscheme := "https://"$|\tscheme := "https://" // sabotage|' pkg/vault/controller.go && go test ./pkg/vault/ -count=1 2>&1 | tail -2
