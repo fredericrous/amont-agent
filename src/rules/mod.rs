@@ -38,11 +38,13 @@ pub mod glob_in_flag_value;
 pub mod glob_no_match;
 pub mod kubectl_gitops;
 pub mod no_verify;
+pub mod path_operand_missing;
 pub mod pipe_to_tail;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
 pub mod sed_in_place;
 pub mod stale_base;
+pub mod stat_bsd_format;
 pub mod stdin_hang;
 pub mod tag_after_commit;
 pub mod tool_shell;
@@ -270,6 +272,8 @@ pub const RULES: &[Rule] = &[
     glob_in_flag_value::RULE,
     glob_no_match::RULE,
     equals_separator::RULE,
+    path_operand_missing::RULE,
+    stat_bsd_format::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {

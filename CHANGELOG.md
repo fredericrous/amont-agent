@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`path-operand-missing`**, advising. A read of a path that is not there —
+  `grep -rn X app e2e docs` after `e2e` was renamed, `wc -l` over a file that
+  moved, `cat` of a package not installed here. At a terminal that is the
+  loudest failure there is; under the Bash tool it is not: `grep` is Claude
+  Code's function over ugrep, where a missing path is a `warning:` in
+  mid-stream while matches from the other operands print normally, and the
+  coreutils print one line and carry on, with the chain's last clause holding
+  the exit status. Measured over 32,710 calls: 206 such reads, 71% reported
+  as success, the path never mentioned again in two of three. `examine`
+  fires on a reader with a literal path operand; `confirm` asks the
+  filesystem. Probes (`2>/dev/null`, `||`, `[ -f`), sequences that may have
+  just created the path, and anything inside `ssh`/`kubectl exec` are left
+  alone.
+- **`stat-bsd-format`**, advising. `stat -f '%Sm' file` on GNU coreutils
+  reads `-f` as `--file-system`, takes the format as a filename, and prints
+  the filesystem report for the real file — six lines and exit 1, which a
+  `$(stat -f …)` substitutes where a timestamp was wanted. The mirror of
+  `sed-in-place`: `confirm` runs `stat --version`. Rare, and the last spelling
+  on a GNU-first Mac that succeeds into the wrong answer. Known gap: a
+  `stat` inside `$( )` is a substitution the lexer blanks, so the most
+  common real shape is invisible to it.
+- **The session notice names the grep shim.** Claude Code's shell snapshot
+  runs `grep` as ugrep with `--ignore-files`, so a recursive grep skips every
+  .gitignored path silently — 3,128 recursive greps measured, and
+  `--no-ignore-files` used zero times. Undetectable per call (the shape is
+  one call in ten), so it is said once at session start, only where a
+  snapshot defines the function.
+
+### Measured, not built
+
+The GNU-versus-BSD hypothesis for `awk`, `xargs`, `tar`, `column`, `date`,
+`base64` and the coreutils: 85 mismatches in 32,710 calls, 70 of them
+`sed -i ''`, everything else 0 or 1. Claude Code's `find` is bfs, which
+implements every GNU primary tried.
+
 ## v2.8.0
 
 ### Added

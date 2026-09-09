@@ -36,6 +36,7 @@ mod payload;
 mod rules;
 mod settings;
 mod shell;
+mod shim;
 mod stale;
 mod stance;
 mod term;

@@ -79,7 +79,6 @@ const BENIGN: &[(&str, &str)] = &[
     // (`cat manifest.yaml | kubectl apply -f -` moved to pipe-to-tail's own
     // corpus: the sink is still not a pipe-to-tail, but `kubectl-gitops` now
     // has an opinion about the apply itself.)
-    ("cat notes.txt | git notes add -F - HEAD", "sink"),
     // --- scoped, deliberate forms ------------------------------------------
     ("git add -A packages/dbt-duckdb/", "scoped"),
     ("git add -p", "scoped"),
@@ -215,6 +214,15 @@ fn the_smaller_rules_catch_their_own_shapes() {
             "a remote start point is the remedy: {benign_base}"
         );
     }
+    // `cat notes.txt | git notes add -F - HEAD` was a `sink` negative of
+    // `pipe-to-tail`: the pipe feeds git, it does not trim it. It is asserted
+    // against that rule alone, because `path-operand-missing` reads the same
+    // command on a different axis — is `notes.txt` there? — and only its
+    // `confirm` may go and look.
+    assert!(!fires_rule(
+        "cat notes.txt | git notes add -F - HEAD",
+        "pipe-to-tail"
+    ));
     assert!(fires_rule("git push -u origin feat/y", "push-preflight"));
     assert!(fires_rule("git push", "push-preflight"));
     assert!(!fires_rule(
