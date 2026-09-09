@@ -117,6 +117,10 @@ const EMBEDDED: &[(&str, &str)] = &[
     ),
     ("no-verify", include_str!("../tests/corpus/no-verify.cases")),
     (
+        "stdin-hang",
+        include_str!("../tests/corpus/stdin-hang.cases"),
+    ),
+    (
         "git-add-broad",
         include_str!("../tests/corpus/git-add-broad.cases"),
     ),

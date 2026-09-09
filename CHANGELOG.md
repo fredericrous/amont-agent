@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`stdin-hang`**, observing. A command that will read standard input with
+  nothing on it — `cat > file`, a bare `python3`, `tee` outside a pipe, `sort`
+  with no file — does not fail under the Bash tool: stdin is open and never
+  closes, so it blocks silently until the tool's ten-minute clock moves it to
+  the background, where it blocks some more. The crate's admission test, met
+  exactly: nothing names the cause, so no correcting loop can form. Fed is a
+  pipe, any `<` redirect, a heredoc, a here-string or a process substitution.
+  Measured over 32,401 real commands: one firing, the `cat >` that cost its
+  author ten minutes the night it was written, and no false positive once
+  `--version`/`-v` were understood as exiting before reading.
+
+### Fixed
+
+- **The lexer reads `<<< word` as a here-string.** It was read as a heredoc
+  with no terminator, which made the whole command opaque — every rule said
+  "no opinion" on `bc <<< "1+1"` and `python3 <<< 'print(1)'`.
+- **A process substitution after a redirect is the redirect's target.** In
+  `grep x < <(cmd)` the `(` ended the clause and the `<` was lost, so the
+  command read as fed by nothing. `cat <(sort a)` was the same shape.
+- **A clause remembers that it carried a heredoc.** The operator, tag and body
+  are all consumed by the lexer; `Simple::heredoc` now records that stdin was
+  fed, which `stdin-hang` needs and nothing else could see.
+
 ## v2.6.0
 
 ### Added

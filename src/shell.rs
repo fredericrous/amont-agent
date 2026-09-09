@@ -91,6 +91,10 @@ pub struct Simple {
     /// Redirect targets, deliberately kept OUT of `words` so that
     /// `git push > --force` can never be read as a `--force` flag.
     pub redirects: Vec<(String, Word)>,
+    /// The clause carries a `<<TAG` heredoc. The operator and tag are consumed
+    /// by the lexer and the body is skipped as data, so nothing else records
+    /// that stdin is fed — and `stdin-hang` needs to know.
+    pub heredoc: bool,
     /// Byte range of this clause within the original source.
     pub at: usize,
     pub end: usize,
@@ -329,6 +333,15 @@ pub fn lex(src: &str) -> Parsed {
                 w.text.extend(std::iter::repeat_n(b' ', end - i + 1));
                 i = end + 1;
             }
+            b'<' if i + 2 < n && b[i + 1] == b'<' && b[i + 2] == b'<' => {
+                // A here-string: `bc <<< '1+1'`. Read as a heredoc this was an
+                // "unterminated heredoc", which made the whole command opaque
+                // to every rule. It is a redirect whose target is the next
+                // word, and it feeds stdin.
+                end_word!();
+                redirect = Some("<<<".into());
+                i += 3;
+            }
             b'<' if i + 1 < n && b[i + 1] == b'<' => {
                 // A heredoc. The BODY is data and starts on the next line, but
                 // the rest of THIS line is still command — `git commit -F-
@@ -356,6 +369,7 @@ pub fn lex(src: &str) -> Parsed {
                     }
                     i += 1;
                 }
+                cur.heredoc = true;
                 heredocs.push(tag);
             }
             b'>' | b'<' => {
@@ -385,7 +399,32 @@ pub fn lex(src: &str) -> Parsed {
                     ));
                     continue;
                 }
-                redirect = Some(String::from_utf8_lossy(&b[start..i]).into_owned());
+                let op = String::from_utf8_lossy(&b[start..i]).into_owned();
+                // A process substitution as the target — `< <(sort a)`,
+                // `cat <(cmd)`: the balanced `(…)` is one expanded word. Left
+                // to the grouping branch, `(` ended the clause and the redirect
+                // was lost, which read `cmd < <(…)` as a command fed by nothing.
+                let mut j = i;
+                while j < n && (b[j] == b' ' || b[j] == b'\t') {
+                    j += 1;
+                }
+                if j < n && b[j] == b'(' {
+                    if let Some(close) = balanced(b, j, b'(', b')') {
+                        cur.redirects.push((
+                            op,
+                            Word {
+                                text: " ".repeat(close - j + 1),
+                                raw: String::from_utf8_lossy(&b[j..=close]).into_owned(),
+                                quoted: false,
+                                expanded: true,
+                                at: j,
+                            },
+                        ));
+                        i = close + 1;
+                        continue;
+                    }
+                }
+                redirect = Some(op);
             }
             b'0'..=b'9'
                 if word.is_none()
@@ -740,7 +779,7 @@ impl Simple {
     ///
     /// Empty when there is no program at all — a clause of only assignments
     /// has no flags to ask about.
-    fn args(&self) -> &[Word] {
+    pub fn args(&self) -> &[Word] {
         match self.program_index() {
             Some(i) => self.words.get(i + 1..).unwrap_or_default(),
             None => &[],

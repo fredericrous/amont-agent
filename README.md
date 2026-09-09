@@ -105,6 +105,7 @@ and uninstalling takes every rule with it.
 | `amend-pushed` | `advise` | `git commit --amend` on a commit the remote already has |
 | `branch-force-delete` | `observe` | `git branch -D` on a branch whose commits are on no remote and not merged |
 | `worktree-isolation` | `observe` | a branch created, or `git reset --hard`, in the primary checkout of a repository that already has linked worktrees |
+| `stdin-hang` | `observe` | a command that will read standard input, with nothing on it — `cat > file`, a bare interpreter, `tee` outside a pipe — which blocks silently until the tool's clock runs out |
 
 `stale-base` advises from the start because it refuses nothing and names a
 failure no correcting loop can see: **nothing fails when you build on stale
