@@ -50,7 +50,7 @@ fn branches_of(cmd: &Simple) -> Vec<String> {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         let branches = branches_of(cmd);
         if branches.is_empty() {
             continue;

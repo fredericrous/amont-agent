@@ -19,7 +19,22 @@ becomes "no opinion", not a parse error somebody would be tempted to treat as
 an opinion.
 
 **It does not judge what it cannot read.** Heredocs without terminators,
-`eval`, `sh -c`, unbalanced quotes — all opaque, and opaque never fires.
+unbalanced quotes, `eval` — all opaque, and opaque never fires.
+
+The unit of that is the **pipeline**, not the line. `|` chains one command's
+output into the next, so a stage we cannot read makes the whole run
+unreadable. `&&`, `||` and `;` do not: a command there is as independent of an
+unreadable neighbour as of any other clause, and treating the whole line as
+opaque cost every rule on it — measured over 33,774 real commands, 218 had a
+readable pipeline thrown away. Those are judged now, and `check` names the run
+it could not read beneath the verdict.
+
+Two things keep that honest. `eval`, `source` and `.` run in THIS shell and
+can move it, so one of them still hides the whole line — otherwise a later
+`confirm` would resolve a path against a directory we can no longer vouch for.
+And a finding from a partly-read command never refuses: it advises, whatever
+stance the rule carries. Total opacity would have let the command run, so
+blocking on half a reading is the worst outcome available.
 
 **It does not phone home.** No telemetry, no update checks, no fetches — with
 one exception, which is `git fetch` against your own remote for the

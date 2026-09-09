@@ -147,6 +147,25 @@ fn on_bash(bash: &Bash) -> Decision {
         return Decision::Silent;
     }
 
+    // A pipeline we could not read is recorded even when nothing fires: a
+    // guard that says nothing must stay distinguishable from a guard that
+    // could not look, and this is the only place that difference is written
+    // down.
+    for cmd in parsed.hidden() {
+        if let Some(why) = &cmd.opaque {
+            journal::record(&journal::Entry {
+                rule: "-",
+                stance: "-",
+                outcome: "partial",
+                session: &bash.session,
+                repo: &repo_name(&bash.cwd),
+                mode: &bash.permission_mode,
+                excerpt: &why.why(),
+            });
+            break;
+        }
+    }
+
     let mut deny: Vec<String> = Vec::new();
     let mut advise: Vec<String> = Vec::new();
 
@@ -180,8 +199,14 @@ fn on_bash(bash: &Bash) -> Decision {
                     Stance::Observe => {}
                 }
             }
-            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            crate::session_state::record(&bash.session, "read", &path, bytes, &window);
+            // The one write that outlives this command, so it needs the whole
+            // command. A path recorded from a half-read line would have
+            // `file-reread` advise, later, about a file the session may never
+            // have read.
+            if parsed.fully_read() {
+                let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                crate::session_state::record(&bash.session, "read", &path, bytes, &window);
+            }
         }
     }
 
@@ -197,6 +222,16 @@ fn on_bash(bash: &Bash) -> Decision {
             continue;
         }
         let text = decision::phrase(rule.id, &finding.reason, &finding.remedy);
+        // Never refuse on half a reading. A `deny` derived from a command we
+        // only partly understood is the worst outcome available here: total
+        // opacity would have let it run. It still advises, and it is still
+        // journalled under its configured stance, so the evidence for lifting
+        // this cap accumulates in the usual place.
+        let stance = if parsed.fully_read() {
+            stance
+        } else {
+            stance.min(Stance::Advise)
+        };
         match stance {
             Stance::Observe => note(rule, "observe", "watched", bash, finding),
             Stance::Advise => {

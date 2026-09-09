@@ -98,6 +98,17 @@ pub struct Simple {
     /// Byte range of this clause within the original source.
     pub at: usize,
     pub end: usize,
+    /// Why this clause could not be read, when it could not.
+    ///
+    /// Marked in place rather than removed, and marked across the WHOLE
+    /// pipeline the unreadable clause sits in. Removing it would be the one
+    /// mistake this crate must never make: in
+    /// `git push origin main | xargs -0 foo | tail -2`, dropping the `xargs`
+    /// leaves `git push`'s `next` still saying `Pipe` while the next element
+    /// is now `tail` — inventing a `git push | tail` in the only rule that
+    /// refuses. Keeping every clause keeps `prev`, `next` and every
+    /// positional walk true.
+    pub opaque: Option<Opaque>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,17 +139,52 @@ pub enum Parsed {
 }
 
 impl Parsed {
+    /// Every clause, readable or not.
+    ///
+    /// The truth about what RAN. `cwd_at` and `path-operand-missing`'s
+    /// `excused` want this: a `cd` or a directory-creating clause counts
+    /// whether or not we understood it.
     pub fn clauses(&self) -> &[Simple] {
         match self {
             Parsed::Clear(c) => c,
             Parsed::Opaque(_) => &[],
         }
     }
+
+    /// The clauses a rule may have an opinion about.
+    ///
+    /// The truth about what we UNDERSTOOD. Every rule wants this.
+    pub fn judgeable(&self) -> impl Iterator<Item = &Simple> {
+        self.clauses().iter().filter(|c| c.opaque.is_none())
+    }
+
+    /// The pipelines that were not read, if any.
+    pub fn hidden(&self) -> impl Iterator<Item = &Simple> {
+        self.clauses().iter().filter(|c| c.opaque.is_some())
+    }
+
+    /// Was the whole command read? False when a pipeline was skipped.
+    ///
+    /// Anything that acts BEYOND the command in front of it — an assertion
+    /// about the world, a write to session state — must ask this first. A
+    /// half-read command is not grounds for either.
+    pub fn fully_read(&self) -> bool {
+        matches!(self, Parsed::Clear(c) if c.iter().all(|s| s.opaque.is_none()))
+    }
 }
 
 /// Commands whose arguments are themselves a program we would have to be a
-/// shell to read.
-const INDIRECT: &[&str] = &["eval", "xargs", "source", "."];
+/// shell to read, and which run in THIS shell.
+///
+/// They can `cd`, export, and rewrite the environment every later clause on
+/// the line depends on, so one of them makes the whole command unreadable —
+/// not because we cannot parse what follows, but because we no longer know
+/// where it runs. `cwd_at` and every `confirm` that resolves a path depend
+/// on that.
+const INDIRECT_IN_PROCESS: &[&str] = &["eval", "source", "."];
+/// The same problem in a child process. `xargs` and `sh -c` cannot move this
+/// shell or touch its environment, so only their own pipeline is unreadable.
+const INDIRECT_FORKING: &[&str] = &["xargs"];
 /// These are only indirect when handed `-c`; `bash script.sh` is readable.
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "fish", "dash", "ksh"];
 
@@ -532,17 +578,63 @@ pub fn lex(src: &str) -> Parsed {
     }
     end_clause!(None, n);
 
+    // One clause that could move this shell makes the whole line unreadable.
     for cmd in &out {
-        if let Some(why) = indirect(cmd) {
+        if let Some(why) = indirect_in_process(cmd) {
             return Parsed::Opaque(Opaque::IndirectExecution(why));
         }
+    }
+    hide_forking_pipelines(out)
+}
+
+/// Mark the pipelines we cannot read; leave the rest to be judged.
+///
+/// The unit is the PIPELINE, not the line. `|` chains one command's output
+/// into the next, so a stage we cannot read makes the whole run unreadable —
+/// we do not know what reached the sink, and that is exactly `pipe-to-tail`'s
+/// question. `&&`, `||` and `;` start a command as independent of an
+/// unreadable neighbour as of any other clause, and treating the whole line as
+/// opaque cost every rule on it: measured over 33,638 real commands, 262 had a
+/// readable pipeline thrown away, 218 of them beside a `sh -c` or an `xargs`.
+fn hide_forking_pipelines(mut out: Vec<Simple>) -> Parsed {
+    let mut i = 0;
+    while i < out.len() {
+        // The pipeline running from `i`: a clause whose `next` is a pipe is
+        // never the last of its run.
+        let mut end = i;
+        while end + 1 < out.len() && out[end].next.is_some_and(Connector::is_pipe) {
+            end += 1;
+        }
+        if let Some(why) = out[i..=end].iter().find_map(indirect_forking) {
+            for cmd in &mut out[i..=end] {
+                cmd.opaque = Some(Opaque::IndirectExecution(why));
+            }
+        }
+        i = end + 1;
+    }
+    // Nothing survived: this is the old whole-command opacity, and every
+    // caller that stayed silent before stays silent now.
+    if let Some(why) = out
+        .iter()
+        .all(|c| c.opaque.is_some())
+        .then(|| out.first().and_then(|c| c.opaque.clone()))
+        .flatten()
+    {
+        return Parsed::Opaque(why);
     }
     Parsed::Clear(out)
 }
 
-fn indirect(cmd: &Simple) -> Option<&'static str> {
+/// Runs a command we cannot read, in THIS shell.
+fn indirect_in_process(cmd: &Simple) -> Option<&'static str> {
     let p = cmd.program()?;
-    if let Some(hit) = INDIRECT.iter().find(|k| **k == p) {
+    INDIRECT_IN_PROCESS.iter().find(|k| **k == p).copied()
+}
+
+/// Runs a command we cannot read, in a child.
+fn indirect_forking(cmd: &Simple) -> Option<&'static str> {
+    let p = cmd.program()?;
+    if let Some(hit) = INDIRECT_FORKING.iter().find(|k| **k == p) {
         return Some(hit);
     }
     if SHELLS.contains(&p) && cmd.has_flag("-c") {
@@ -733,7 +825,14 @@ impl Simple {
         idx
     }
 
-    fn program_index(&self) -> Option<usize> {
+    /// Where [`Self::program`] sits in `words`.
+    ///
+    /// `pub(crate)` because a rule that needs to read past the program must
+    /// ask for this rather than re-derive it: `position(|w| w.text == program)`
+    /// finds the wrong occurrence whenever the name appears earlier as
+    /// somebody's argument, which is exactly how `kubectl-gitops` came to miss
+    /// `sudo -u kubectl kubectl apply`.
+    pub(crate) fn program_index(&self) -> Option<usize> {
         self.program_at().map(|(i, _)| i)
     }
 
@@ -983,6 +1082,84 @@ mod tests {
         ));
         // A shell running a FILE is readable; only `-c` hides a command.
         assert_eq!(clauses("bash deploy.sh")[0].program(), Some("bash"));
+    }
+
+    /// A pipeline we cannot read costs us that pipeline, not the line.
+    #[test]
+    fn opacity_is_per_pipeline_not_per_line() {
+        let src = "cd /r && git status -s | xargs git add && git commit -m x 2>&1 | tail -1";
+        let c = clauses(src);
+        let programs: Vec<Option<&str>> = c.iter().map(|s| s.program()).collect();
+        assert_eq!(
+            programs,
+            vec![
+                Some("cd"),
+                Some("git"),
+                Some("xargs"),
+                Some("git"),
+                Some("tail")
+            ],
+            "every clause is kept, readable or not"
+        );
+        let unread: Vec<Option<&str>> = c
+            .iter()
+            .filter(|s| s.opaque.is_some())
+            .map(|s| s.program())
+            .collect();
+        assert_eq!(
+            unread,
+            vec![Some("git"), Some("xargs")],
+            "the WHOLE pipeline the xargs sits in is marked, and nothing else"
+        );
+    }
+
+    /// The invariant that makes dropping unnecessary: a pipe never points at a
+    /// clause from some other run, because whole pipelines are marked together.
+    #[test]
+    fn a_pipe_never_crosses_into_a_pipeline_we_could_not_read() {
+        for src in [
+            "cd /r && git status -s | xargs git add && git commit -m x 2>&1 | tail -1",
+            "a | xargs b && c | tail -1",
+            "git push | xargs -0 foo | tail -2 && ls",
+        ] {
+            let c = clauses(src);
+            for (i, cmd) in c.iter().enumerate() {
+                if cmd.next.is_some_and(Connector::is_pipe) {
+                    assert_eq!(
+                        cmd.opaque.is_some(),
+                        c[i + 1].opaque.is_some(),
+                        "a pipe joins two clauses of different readability in {src:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Nothing readable survived, so this is the whole-command opacity it
+    /// always was — and every caller that stayed silent stays silent.
+    #[test]
+    fn a_command_that_is_all_indirect_is_still_wholly_opaque() {
+        for src in [
+            "git status --short | xargs git add",
+            "eval \"$cmd\"",
+            "sh -c 'git push | tail'",
+        ] {
+            assert!(matches!(opaque(src), Opaque::IndirectExecution(_)), "{src}");
+        }
+    }
+
+    /// `eval`, `source` and `.` run in THIS shell, so they can move it. The
+    /// line stays wholly opaque rather than judging clauses whose directory we
+    /// can no longer vouch for.
+    #[test]
+    fn an_in_process_indirect_still_hides_the_whole_line() {
+        for src in [
+            "source setup.sh && cat data.txt",
+            ". ./.env && kubectl apply -f x.yaml",
+            "eval \"$(direnv export bash)\" && git push | tail -1",
+        ] {
+            assert!(matches!(opaque(src), Opaque::IndirectExecution(_)), "{src}");
+        }
     }
 
     /// A substitution's contents are blanked, not deleted, so byte offsets into

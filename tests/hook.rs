@@ -747,3 +747,54 @@ fn a_poll_is_judged_against_the_calls_timeout() {
         "unbounded is over any clock"
     );
 }
+
+/// A pipeline we cannot read costs us that pipeline, not the line.
+///
+/// The `xargs` run is unreadable; the `git commit … | tail -1` beside it is
+/// not, and it is the shape the only blocking rule exists for. Before
+/// per-pipeline opacity the whole command was silence.
+#[test]
+fn a_hidden_pipeline_does_not_silence_the_rest_of_the_line() {
+    let dir = home();
+    let cwd = serde_json::Value::String(dir.display().to_string());
+    let cmd = serde_json::Value::String(
+        "git status -s | xargs git add && git commit -q -m x 2>&1 | tail -1".to_string(),
+    );
+    let reply = send(&format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+             "session_id":"partial-1","permission_mode":"default",
+             "tool_input":{{"command":{cmd}}}}}"#
+    ));
+    assert_eq!(reply.code, 0);
+    let said = reply.reason();
+    assert!(
+        said.contains("pipe-to-tail"),
+        "the readable pipeline was not judged: {}",
+        reply.stdout
+    );
+    // Capped: a command we only partly read may advise, never refuse.
+    assert_eq!(
+        reply.decision(),
+        None,
+        "a half-read command produced a refusal: {}",
+        reply.stdout
+    );
+}
+
+/// Nothing readable survived, so the guard stays as silent as it always was.
+#[test]
+fn a_wholly_unreadable_command_is_still_not_judged() {
+    let cwd = serde_json::Value::String(home().display().to_string());
+    for command in [
+        "git status --short | xargs git add",
+        "source ./setup.sh && git push origin main 2>&1 | tail -1",
+    ] {
+        let cmd = serde_json::Value::String(command.to_string());
+        let reply = send(&format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+                 "session_id":"partial-2","permission_mode":"default",
+                 "tool_input":{{"command":{cmd}}}}}"#
+        ));
+        assert_eq!(reply.stdout, "", "{command} was judged: {}", reply.stdout);
+    }
+}

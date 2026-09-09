@@ -141,7 +141,7 @@ fn detect(cmd: &Simple) -> Vec<Dump> {
 /// Every dump in the command, in order.
 pub fn dumps(parsed: &Parsed) -> Vec<Dump> {
     let mut out = Vec::new();
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         // `cat f; …` where the clause before pipes INTO cat is a pipeline
         // sink, not a dump of `f`.
         if cmd.prev == Some(Connector::Pipe) {

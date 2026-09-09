@@ -459,7 +459,31 @@ fn run_check(args: &[OsString]) -> ExitCode {
             backtest::excerpt(src, finding.span.start, finding.span.end)
         );
     }
+    name_the_unread(src, &parsed);
     ExitCode::SUCCESS
+}
+
+/// Say which pipelines went unread, after the verdict.
+///
+/// The verdict stays on the first line so that "no rule fires" and "no
+/// opinion" keep meaning what they meant. What follows is the difference
+/// between having looked and having been able to look.
+fn name_the_unread(src: &str, parsed: &shell::Parsed) {
+    let clauses = parsed.clauses();
+    for (i, cmd) in clauses.iter().enumerate() {
+        let Some(why) = &cmd.opaque else { continue };
+        // One line per unreadable PIPELINE: a clause whose predecessor pipes
+        // into it is a later stage of a run already named.
+        if cmd.prev.is_some_and(|c| c.is_pipe()) {
+            continue;
+        }
+        let mut end = i;
+        while clauses[end].next.is_some_and(|c| c.is_pipe()) && end + 1 < clauses.len() {
+            end += 1;
+        }
+        println!("  ⋯ not read: {}", why.why());
+        println!("    {}", backtest::excerpt(src, cmd.at, clauses[end].end));
+    }
 }
 
 fn run_rules() -> ExitCode {

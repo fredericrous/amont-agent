@@ -154,7 +154,11 @@ names a failure every command in the chain reports as success.
   `settings.json`, which switches off every rule at once; one that fails toward
   silence loses a single firing.
 - **It does not judge what it cannot read.** Heredocs without terminators,
-  `eval`, `sh -c`, unbalanced quotes — opaque never fires.
+  unbalanced quotes, `eval` — opaque never fires. The unit is the PIPELINE:
+  `git status -s | xargs git add && git commit … | tail -1` has one run we
+  cannot read and one we can, and the second is still judged. `eval`,
+  `source` and `.` are the exception — they run in this shell and can move it,
+  so they hide the whole line.
 - **It does not phone home.** No telemetry, no update checks. Every firing is
   journalled to `~/.claude/amont-agent/journal.log`, redacted, and it only
   counts — nothing in it may participate in a decision.

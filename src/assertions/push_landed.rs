@@ -60,6 +60,15 @@ const REWRITES_THE_QUESTION: &[&str] = &[
 ];
 
 fn read_push(parsed: &Parsed) -> Option<Push<'_>> {
+    // The whole command, or nothing. An assertion is a claim about the WORLD
+    // after the fact, and a clause we could not read may have moved the branch
+    // this one is about — `git push … && eval "$(direnv export bash)" && git
+    // checkout main` would have us compare the wrong branch's SHA and accuse
+    // a push that landed. A wrong assertion costs the channel its credibility,
+    // and the channel is the point.
+    if !parsed.fully_read() {
+        return None;
+    }
     let Parsed::Clear(clauses) = parsed else {
         return None;
     };

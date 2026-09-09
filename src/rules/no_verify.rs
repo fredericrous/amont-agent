@@ -32,7 +32,7 @@ pub const RULE: Rule = Rule {
 };
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         // git only. `--no-verify` belongs to other programs too and means
         // other things; this rule is about the commit gate.
         if cmd.program() != Some("git") {

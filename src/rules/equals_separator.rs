@@ -38,7 +38,7 @@ pub const RULE: Rule = Rule {
 };
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         // `[[ … ]]` is parsed by the shell, not expanded, so a `==` inside it
         // is the comparison it looks like. (`(( a == b ))` is the same, but the
         // lexer strips grouping, so it cannot be told apart here — and it did

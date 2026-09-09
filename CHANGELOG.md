@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Opacity is per pipeline, not per line.** One `xargs` or `sh -c` anywhere
+  used to make the whole command unreadable, so every rule went silent for
+  every other clause on it. Measured over 33,774 real commands: 369 were
+  opaque and 218 of those had a readable pipeline thrown away — the recurring
+  shape being `git status -s | xargs git add && git commit … | tail -1`, whose
+  second run is exactly what the only blocking rule exists for. The unit is
+  the pipeline because `|` chains one command's output into the next, so a
+  stage we cannot read makes that run unreadable; `&&`, `||` and `;` do not.
+  Unreadable clauses are marked in place and never removed: dropping them
+  would leave a clause's `next` still saying `Pipe` while the neighbour is now
+  some other run's, inventing a `git push | tail` in the rule that refuses.
+- **`eval`, `source` and `.` still hide the whole line.** They run in this
+  shell and can move it, and every `confirm` that resolves a path depends on
+  knowing where the command runs. Excluding them removes that entire class by
+  construction rather than defending against it, at a cost of 44 commands.
+- **A partly-read command never refuses.** Findings from one are capped at
+  advise whatever stance the rule carries, and journalled under their real
+  stance so the evidence accumulates. Total opacity would have let the command
+  run; blocking on half a reading is the worst outcome available.
+- **`backtest` prints what it could not read** — `opaque` was counted and
+  never shown — and `check` names the unread run beneath the verdict.
+
+### Fixed
+
+- **Two rules re-derived what the lexer had already decided.** `sed-in-place`
+  scanned every word for `-i`, so `env -i sed s/a/b/ f` found `env`'s flag and
+  advised about a spelling nobody wrote. `kubectl-gitops` re-found the program
+  by name, which lands on the flag's value in `sudo -u kubectl kubectl apply`,
+  so an imperative write went unremarked. `program_index` is `pub(crate)` now:
+  a rule that reads past the program asks rather than walks the words itself.
+
 ## v2.10.0
 
 ### Added

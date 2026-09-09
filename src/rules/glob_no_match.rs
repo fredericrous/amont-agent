@@ -62,7 +62,7 @@ fn globs(cmd: &Simple) -> Vec<&Word> {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         let Some(program) = cmd.program() else {
             continue;
         };
@@ -111,6 +111,18 @@ fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
     let Some(cmd) = ctx.parsed.clauses().iter().find(|c| c.at == f.span.start) else {
         return Confirmed::No("the clause could not be found again");
     };
+    // An earlier pipeline we could not read may be what fills this directory —
+    // `bash -c 'npm run build' && ls dist/*.js`. Expanding the pattern now
+    // would call it empty because the thing that populates it is a command we
+    // did not understand.
+    if ctx
+        .parsed
+        .clauses()
+        .iter()
+        .any(|c| c.at < cmd.at && c.opaque.is_some())
+    {
+        return Confirmed::No("an earlier clause could not be read");
+    }
     let mut budget = Budget(4_000);
     for w in globs(cmd) {
         match expand(&cwd, &w.text, &mut budget) {

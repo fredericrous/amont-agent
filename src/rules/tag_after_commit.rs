@@ -58,8 +58,15 @@ fn creates_tag(cmd: &Simple) -> bool {
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
     let clauses = parsed.clauses();
-    let commit = clauses.iter().position(is_commit)?;
-    let tag = clauses.iter().skip(commit + 1).find(|c| creates_tag(c))?;
+    // Positional over ALL clauses so "after" means what it says, but neither
+    // end of the claim may be a clause we could not read.
+    let commit = clauses
+        .iter()
+        .position(|c| c.opaque.is_none() && is_commit(c))?;
+    let tag = clauses
+        .iter()
+        .skip(commit + 1)
+        .find(|c| c.opaque.is_none() && creates_tag(c))?;
     Some(Finding {
         reason: "`git tag` names whatever HEAD is when it runs; if the commit before it \
                  is refused by a hook, the shell carries on (or the retry runs `git tag` \

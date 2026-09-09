@@ -256,7 +256,7 @@ fn has_flag_prefix(cmd: &Simple, flag: &str) -> bool {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.clauses() {
+    for cmd in parsed.judgeable() {
         if has_stdin_source(cmd) || !reads_stdin(cmd) {
             continue;
         }

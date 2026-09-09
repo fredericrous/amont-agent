@@ -144,8 +144,15 @@ fn tag_creates(cmd: &Simple) -> bool {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
+    // Indexed over ALL clauses, including any we could not read: `pipeline_sink`
+    // walks by position, and a vector with holes in it would let this rule
+    // invent a sink that was never there. An unreadable clause marks its whole
+    // pipeline, so skipping it here skips the run it belongs to.
     let clauses = parsed.clauses();
     for (i, cmd) in clauses.iter().enumerate() {
+        if cmd.opaque.is_some() {
+            continue;
+        }
         // Only a command that feeds a pipe can have its status swallowed. This
         // is also what exempts `echo msg | git commit -F -`: there git is the
         // SINK, so the pipeline's status is git's status and nothing is hidden.

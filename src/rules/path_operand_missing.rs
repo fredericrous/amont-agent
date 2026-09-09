@@ -294,6 +294,15 @@ fn excused(parsed: &Parsed, idx: usize) -> bool {
         return true;
     }
     for earlier in &clauses[..idx] {
+        // A pipeline we could not read is an unbounded creator. `bash -c
+        // 'mkdir -p dist'` and `… | xargs -I{} protoc --go_out=gen {}` both
+        // make the files the next clause reads, and neither names a program
+        // this rule could put in CREATORS. Advising that the output "does not
+        // exist" because we did not read the thing that wrote it is the false
+        // positive this crate calls unrecoverable.
+        if earlier.opaque.is_some() {
+            return true;
+        }
         let Some(program) = earlier.program() else {
             continue;
         };
@@ -313,7 +322,12 @@ fn excused(parsed: &Parsed, idx: usize) -> bool {
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
+    // Enumerated over ALL clauses so `excused` can look back at everything
+    // that ran, readable or not.
     for (idx, cmd) in parsed.clauses().iter().enumerate() {
+        if cmd.opaque.is_some() {
+            continue;
+        }
         let found = paths(cmd);
         let Some(first) = found.first() else {
             continue;
