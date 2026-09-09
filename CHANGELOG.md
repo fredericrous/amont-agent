@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Three rules for the shell the Bash tool actually runs.** It is zsh, not
+  the login shell, and two of zsh's defaults turn ordinary bash habits into
+  silent failures. `glob-no-match` (advising, with a `confirm` that expands
+  the pattern against the directory the clause runs in): an unquoted glob
+  operand that matches nothing aborts the clause before it starts, the
+  `2>/dev/null` beside it cannot hide the shell's own message, and a later
+  clause carries the exit status — measured, 86% of 212 real cases came back
+  reporting success, and in 170 of them files that did exist went unread too.
+  `glob-in-flag-value` (advising): `--include=*.ts` is expanded, or fails,
+  before grep sees it — 95% of 132 reported success. `equals-separator`
+  (observing): a word beginning with `=` is a command lookup under zsh's
+  `EQUALS`, so `echo ===` and `[ "$a" == "b" ]` fail and take every later
+  clause with them — loud in 91% of 78 cases, which is why it only watches.
+  All three confirm the tool's shell first (`tool_shell`) and stay silent for
+  bash, which passes an unmatched glob through as text. This revisits the
+  `fish-glob` rule deleted before 1.0: its "fails loudly" argument was made
+  from command shape, and the shell's diagnostics say otherwise.
+
 ## v2.7.0
 
 ### Added
