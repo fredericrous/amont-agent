@@ -1,0 +1,12 @@
+amont-attest-v2
+tree bacb4c3c1f701670a0ef308eccf253a1bd9da644
+gates pre-push-branch-protect pre-push-branch-pattern pre-push-secrets pre-push-pull-rebase pre-push-audit-rust pre-push-cargo-test
+platform x86_64-macos
+amont 1.30.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAMYW1vbnQtYXR0ZXN0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3Nz
+aC1lZDI1NTE5AAAAQKDOG2jMQfuYu4mJfhc+mcUZRSkS0eJMzv483HoGwcxYbEt1NOghW6
+SQ37RCYHvvcMVGiHA1tgYdhlbu2tmabA0=
+-----END SSH SIGNATURE-----
