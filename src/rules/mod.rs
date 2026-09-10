@@ -46,6 +46,7 @@ pub mod persisted_output_dump;
 pub mod pipe_to_tail;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
+pub mod release_tag_push;
 pub mod sed_in_place;
 pub mod stale_base;
 pub mod stat_bsd_format;
@@ -277,6 +278,7 @@ pub const RULES: &[Rule] = &[
     sed_in_place::RULE,
     kubectl_gitops::RULE,
     tag_after_commit::RULE,
+    release_tag_push::RULE,
     worktree_remove_force::RULE,
     amend_pushed::RULE,
     branch_force_delete::RULE,
