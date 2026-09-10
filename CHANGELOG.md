@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`forge-status-stale-row`** — reducing a commit's append-only `/statuses`
+  list by position. The endpoint returns every TRANSITION, newest first, one
+  row per context per change, so it has to be deduped — and the obvious
+  reduction, keep the first row seen, is wrong. A job that starts and is
+  skipped inside one second emits `pending` and `success` with the SAME
+  timestamp, and the API returns the pending row first, so that check reads
+  `pending` for as long as anyone asks.
+
+  The failure is silent and shaped like patience: an `until` loop on top of
+  that reduction never exits, the run is green, the PR is mergeable, and the
+  output prints `pending` — exactly what a not-yet-finished check prints. It is
+  the mirror of `poll-blank-verdict`, which fires when a wait stops TOO EARLY
+  because a blank read as a verdict; this one is a wait that never stops
+  because a stale row read as the present.
+
+  Measured over 35,165 calls and five weeks: 5 matches, all inside ONE day —
+  0.8 per 1,000 that week, 0.0 in the four before. That shape is the point. The
+  reduction had been written into a skill the day before as "keep the FIRST
+  (newest) entry", so every later poll copied it, and one of them pinned a
+  homelab deploy PR at `pending` while all 22 of its checks were green. A
+  defect that arrives by being written down does not trend; it appears at full
+  rate the moment the instruction lands. Ships `observe`.
+
 ## v2.12.0
 
 ### Added

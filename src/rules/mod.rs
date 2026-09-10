@@ -35,6 +35,7 @@ pub mod equals_separator;
 pub mod file_reread;
 pub mod foreground_poll;
 pub mod forge_merge_by_hand;
+pub mod forge_status_stale_row;
 pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
 pub mod glob_in_flag_value;
@@ -270,6 +271,7 @@ pub const RULES: &[Rule] = &[
     bare_stash_pop::RULE,
     gh_pr_merge_auto::RULE,
     forge_merge_by_hand::RULE,
+    forge_status_stale_row::RULE,
     no_verify::RULE,
     git_add_broad::RULE,
     stale_base::RULE,
