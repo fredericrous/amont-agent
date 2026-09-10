@@ -1,5 +1,53 @@
 # Changelog
 
+## v2.12.0
+
+### Added
+
+- **`forge-merge-by-hand`** — merging a pull request by POSTing to the forge
+  API. `POST /repos/{owner}/{repo}/pulls/{n}/merge` merges; it does not consult
+  check runs, and answers `200` identically whether the run concluded success,
+  concluded failure, or never started. The web UI greys the button out, the API
+  does not, and neither does a shell. Silent by this crate's admission test: a
+  merge onto red is indistinguishable at the call site from a merge onto green,
+  so no correcting loop can form from the outcome — it is found later, in
+  `main`, by someone else.
+
+  Measured over 34,905 calls and five weeks, per 1,000: `0.3 → 4.7 → 4.9 →
+  13.8 → 7.1`, 221 matches. That inverts the shapes this crate deliberately
+  leaves alone. `--no-verify` fell 25.9 → 5.4 and `git add -A` 42.5 → 5.4 once
+  they had consequences a loop could see; this one climbs roughly twentyfold,
+  because improvising the procedure **works** — the merge succeeds, the session
+  continues, and the shape gets repeated for every later merge rather than the
+  instruction naming a skill being re-read.
+
+- **`release-tag-push`** — pushing a version tag, which publishes. A `v*` tag
+  drives the build-and-publish workflow, and that workflow reporting `success`
+  means only that no step exited non-zero: the artefact can still be stale, or
+  built from the wrong commit if the tag landed on the previous HEAD.
+  `tag-after-commit` catches that when commit and tag are chained; typed as
+  separate commands, nothing did. On an immutable registry the mistake cannot
+  be withdrawn, only superseded.
+
+  178 matches over 34,950 calls, per 1,000: `6.9, 4.6, 6.3, 3.8` — noisy, not
+  climbing. Ships at `Observe`, and the reason is what it matches: pushing a
+  version tag is not a mistake, it is the correct final step of a release, and
+  this fires on every one of them. `Advise` would put a paragraph in front of
+  an action that is usually right. Kept for cost-of-a-miss rather than
+  frequency, with a real rate underneath it for a later graduation.
+
+  The first rule aimed at skill bypass rather than at a wrong command, and the
+  first to ship at `Advise` without serving time at `Observe`: the backtester
+  supplies the baseline retroactively, which is what it is for, and `Advise` is
+  the untried rung — this had never been said at the moment it happened, only
+  written down somewhere read hours earlier. Not `Deny`, because an API merge
+  is legitimate when the checks really were read first.
+
+  Matches only the raw numbered endpoint, never `gh pr merge` — that is the
+  documented last step of the procedure, so firing on it would fire on correct
+  use. Requiring the `merge` child of a numbered pull request keeps `/pulls`,
+  `/pulls/10` and `/commits/{sha}/status` silent.
+
 ## v2.11.0
 
 ### Changed
