@@ -9,6 +9,7 @@
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
 | `poll-blank-verdict` | `observe` | a wait that stops on any value but the one it names, so a failed lookup's empty string reads as the answer |
+| `forge-status-stale-row` | `observe` | keeping the first row of a commit's append-only `/statuses` list, so a stale `pending` reads as the present and the wait never ends |
 | `stdin-hang` | `observe` | a command that will read standard input with nothing on it, which blocks silently until the tool's clock runs out |
 | `glob-in-flag-value` | `advise` | an unquoted glob inside a flag value (`--include=*.ts`), which zsh expands — or fails on — before the program sees it |
 | `glob-no-match` | `advise` | an unquoted glob operand that matches nothing, which under zsh aborts the clause before it starts while a later clause reports success |
