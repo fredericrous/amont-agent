@@ -169,6 +169,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/foreground-poll.cases"),
     ),
     (
+        "forge-merge-by-hand",
+        include_str!("../tests/corpus/forge-merge-by-hand.cases"),
+    ),
+    (
         "sed-in-place",
         include_str!("../tests/corpus/sed-in-place.cases"),
     ),
