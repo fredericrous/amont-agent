@@ -41,3 +41,7 @@ nomatch	echo 'app/lib/db/migrations/*.sql'
 # Opaque, or another rule's shape.
 nomatch	bash -c 'cat .claude/*.md' 2>/dev/null | head
 nomatch	grep -rn "value-streams" app/ --include=*.tsx | head
+# A pattern behind the keyword that introduces its clause is still a test
+# (live false positive 2026-09-14: the bare form was silent, this fired).
+nomatch	if [[ "$ic" == *cdi-checkpoint-reconcile* ]] && [ "$rule" = "1" ]; then echo APPLIED; break; fi
+nomatch	until [[ "$st" == *completed* ]]; do sleep 30; done

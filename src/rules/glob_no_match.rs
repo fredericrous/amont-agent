@@ -61,14 +61,38 @@ fn globs(cmd: &Simple) -> Vec<&Word> {
         .collect()
 }
 
+/// The word a clause's own keyword introduces: `if [[ $f == *.rs ]]` is a
+/// `[[`, once the `if` is stepped over.
+///
+/// `program()` answers `if` for that clause — correctly, that is the first
+/// word — but the exemption below is about what the shell does with the
+/// pattern, and the shell does the same thing after `if`, `while`, `until`,
+/// `elif` and `!` as it does bare. Measured live 2026-09-14: `if [[ "$ic"
+/// == *cdi-checkpoint-reconcile* ]]` was advised twice; the bare form is,
+/// and was, silent.
+fn introduced(cmd: &Simple) -> Option<&str> {
+    let mut idx = 0;
+    loop {
+        let w = cmd.words.get(idx)?;
+        if w.quoted {
+            return None;
+        }
+        match w.text.as_str() {
+            "if" | "elif" | "while" | "until" | "!" | "then" | "else" | "do" => idx += 1,
+            t => return Some(t),
+        }
+    }
+}
+
 fn examine(parsed: &Parsed) -> Option<Finding> {
     for cmd in parsed.judgeable() {
         let Some(program) = cmd.program() else {
             continue;
         };
         // A pattern the shell MATCHES AGAINST rather than expands: `case … in
-        // completed*)` and `[[ $f == *.rs ]]`.
-        if program == "case" || program == "[[" {
+        // completed*)` and `[[ $f == *.rs ]]` — bare, or after the keyword
+        // that introduces the clause.
+        if matches!(introduced(cmd).unwrap_or(program), "case" | "[[") {
             continue;
         }
         let patterns = globs(cmd);
@@ -303,6 +327,29 @@ mod tests {
             "case \"$st\" in completed*) break;; *) sleep 5;; esac"
         ));
         assert!(!fires("[[ $f == *.rs ]] && echo rust"));
+    }
+
+    /// `if [[ … ]]` is the same test as `[[ … ]]`: the keyword in front does
+    /// not make the shell expand the pattern. The bug this pins was live:
+    /// the bare form was silent and the introduced form fired.
+    #[test]
+    fn a_pattern_test_behind_its_keyword_is_still_a_test() {
+        assert!(!fires(
+            "if [[ \"$ic\" == *cdi-checkpoint-reconcile* ]] && [ \"$rule\" = \"1\" ]; then echo APPLIED; break; fi"
+        ));
+        assert!(!fires("while [[ $out == *pending* ]]; do sleep 30; done"));
+        assert!(!fires("until [[ $st == *completed* ]]; do sleep 30; done"));
+        assert!(!fires(
+            "if [ -n \"$x\" ]; then :; elif [[ $x == *.rs ]]; then echo rust; fi"
+        ));
+        assert!(!fires("! [[ $f == *.rs ]] && echo not-rust"));
+        assert!(!fires(
+            "if true; then case \"$st\" in completed*) break;; esac; fi"
+        ));
+        // The keyword exempts a TEST, not an expansion: `if ls *.log` still
+        // hands the pattern to zsh.
+        assert!(fires("if grep -q x src/nothere/*.rs; then echo found; fi"));
+        assert!(fires("while true; do cat logs/*.out; sleep 5; done"));
     }
 
     #[test]

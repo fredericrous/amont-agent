@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **`glob-no-match` fired on `if [[ $x == *pat* ]]`.** The `[[` and `case`
+  exemption looked at the clause's first word, and after `if`, `while`,
+  `until`, `elif` or `!` that word is the keyword — so the bare test was
+  silent and the introduced one was advised, twice in one live session
+  (2026-09-14). The exemption now steps over the keyword. `if grep -q x
+  dir/*.rs` still fires: the keyword exempts a test, not an expansion.
+
+- **`file-reread` on a background task's output file** — Read while still
+  empty, then read again once the task had written to it — is the shape the
+  size-and-mtime fingerprint below was missing live; pinned by a test of its
+  own.
+
+- **`worktree-remove-force` corpus topped up to 14 reviewed** (three dirty
+  force-removals from the 30-day journal, two `--force`-on-another-verb
+  negatives) so `graduate … --to deny` clears its 12-case gate.
+
 - **A stance kept in a file your global config `include`s was invisible.**
   `git config --global --get` does not follow `include` or `includeIf` unless
   told to (measured on git 2.55), so a stance in the file a work identity or a

@@ -831,6 +831,37 @@ fn a_file_changed_behind_the_sessions_back_is_read_again_without_comment() {
     );
 }
 
+/// The shape that was advised live on 2026-09-14: a background task's output
+/// file, Read while still EMPTY, then read again once the task had written
+/// to it. Nothing in the session wrote it, so the record alone says
+/// "unchanged"; the file says otherwise, and the file wins. An empty read is
+/// also the one case where "what it says is already in context" is exactly
+/// nothing — worth pinning on its own, apart from the rewrite above.
+#[test]
+fn a_file_read_while_empty_and_filled_by_a_background_task_is_read_again() {
+    let f = ReadFixture::new("reread-empty-then-written");
+    std::fs::write(&f.file, "").expect("an empty output file");
+    assert_eq!(f.read("bg-1").stdout, "");
+    f.read_done("bg-1");
+    assert!(
+        f.read("bg-1").reason().contains("file-reread"),
+        "still empty, still what the session saw: advised against"
+    );
+
+    // Nothing the hook sees writes it — a background process appends.
+    let mut out = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&f.file)
+        .expect("append to the output file");
+    std::io::Write::write_all(&mut out, b"21:07:41 state=success\n").expect("append");
+    drop(out);
+    assert_eq!(
+        f.read("bg-1").stdout,
+        "",
+        "the task wrote to it since: read again without comment"
+    );
+}
+
 /// A poll whose budget fits the call's timeout is left alone; one that can
 /// outlast it is what the rule is about.
 #[test]
