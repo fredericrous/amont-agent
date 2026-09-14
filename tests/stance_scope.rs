@@ -191,10 +191,15 @@ fn a_file_the_global_config_includes_for_this_repository_is_read() {
         "amont.agent.pipe-to-tail.stance",
         "observe",
     ]);
-    // Git matches `gitdir:` against the real path, so a scratch dir reached
-    // through a symlink (`/var` on macOS) must be resolved first.
-    let repo = std::fs::canonicalize(f.repo()).expect("the repo exists");
-    let condition = format!("includeIf.gitdir:{}/.path", repo.display());
+    // A pattern that names no root: git prepends `**/` to one that starts
+    // with neither `/`, `~/` nor `./`, so this matches the fixture's repo
+    // wherever the scratch dir is — behind macOS's `/var` symlink, or under
+    // the `\\?\` prefix a canonicalised Windows path carries, which git's
+    // matcher does not read.
+    let condition = format!(
+        "includeIf.gitdir:amont-agent-scope-{}-include-if/repo/.path",
+        std::process::id()
+    );
     f.set("--global", &condition, &extra);
     assert_eq!(f.stance_of("pipe-to-tail"), "observe");
 
