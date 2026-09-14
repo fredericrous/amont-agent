@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A stance kept in a file your global config `include`s was invisible.**
+  `git config --global --get` does not follow `include` or `includeIf` unless
+  told to (measured on git 2.55), so a stance in the file a work identity or a
+  personal one usually lives in read as unset, and the rule kept refusing. The
+  reader now passes `--includes`; the scope stays what it was — the global and
+  system files, and only what THEY name.
+
+- **A Read was remembered before it happened.** The record was written on
+  `PreToolUse`, even on the way to a refusal, so a Read that was refused or
+  that failed on a path that is not there was on record, and the retry was
+  told its contents were already in context. A Read, and a `cat`, are now
+  remembered on `PostToolUse` — once the tool has reported it ran. This adds a
+  `PostToolUse` entry for Read to the install; re-run
+  `amont-agent install --write` (`doctor` says so).
+
+- **`file-reread` trusted the session record over the file.** The Edit and
+  Write tools were the only writes it knew about, so a file changed by
+  `sed -i`, a formatter, `git checkout` or another session was still "unchanged
+  since". A read is now recorded with the file's size and modification time,
+  and a file that no longer matches is read again without comment.
+
+- **`push-landed` asked `origin` about a push that went to a fork.** A `git
+  push` that names no remote goes where `branch.<name>.pushRemote`, then
+  `remote.pushDefault`, then `branch.<name>.remote` says; the assertion read
+  only the last of those and accused a push that had landed. It now resolves
+  the destination in git's own order.
+
 ## v2.13.0
 
 ### Added

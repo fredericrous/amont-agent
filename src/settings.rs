@@ -259,6 +259,12 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // if the hook sees every one of them.
     ("PreToolUse", Some("Read|Edit|Write|MultiEdit")),
     ("PostToolUse", Some("Bash")),
+    // A Read is remembered only once it has run: a Read that was refused, or
+    // that failed on a path that is not there, put nothing in context, and
+    // `file-reread` must not later say it did. Its own block rather than
+    // `Bash|Read`, so an install joins the Bash block a user already has
+    // instead of adding a second one that fires beside it.
+    ("PostToolUse", Some("Read")),
     ("SessionStart", None),
 ];
 

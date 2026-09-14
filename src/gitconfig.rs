@@ -101,8 +101,16 @@ fn read(key: &str, ty: Option<&str>) -> Value<String> {
     }
 }
 
-/// `git config <scope> [--type=<ty>] --get <key>`, with the three exits kept
-/// apart.
+/// `git config <scope> --includes [--type=<ty>] --get <key>`, with the three
+/// exits kept apart.
+///
+/// `--includes` is not the default for a scoped read. Measured on git 2.55:
+/// `[include] path = extra` in `~/.gitconfig` was invisible to
+/// `git config --global --get`, and so was an `includeIf "gitdir:…"` — the
+/// shape a person with a work and a personal identity keeps their config
+/// in. A stance kept in a file the user's own config names is still the
+/// user's own choice, and the scope argument stays: only the global and
+/// system files, and what THEY include, are ever opened.
 ///
 /// Git failing to run at all is reported as `Unset`: this crate's standing
 /// posture is that an unanswerable question takes the default rather than
@@ -111,7 +119,7 @@ fn read(key: &str, ty: Option<&str>) -> Value<String> {
 /// we want for a machine with no `/etc/gitconfig`.
 fn read_in(scope: &str, key: &str, ty: Option<&str>) -> Value<String> {
     let type_flag = ty.map(|t| format!("--type={t}"));
-    let mut args: Vec<&str> = vec!["config", scope];
+    let mut args: Vec<&str> = vec!["config", scope, "--includes"];
     if let Some(tf) = &type_flag {
         args.push(tf);
     }

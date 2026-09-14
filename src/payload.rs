@@ -80,6 +80,10 @@ pub enum Event {
     /// here is a shell command, and the only rule that reads it is the one
     /// about reading the same file twice.
     PreFile(Box<FileOp>),
+    /// A Read that has run and succeeded — the one moment the file is known
+    /// to be in context. Only then is it remembered: a Read that was refused,
+    /// or that failed on a path that is not there, is not a read.
+    PostFile(Box<FileOp>),
     NotOurs,
 }
 
@@ -110,7 +114,7 @@ pub fn parse(raw: &str) -> Event {
             cwd,
             session: str_at("session_id"),
         }),
-        Some("PreToolUse")
+        Some(stage @ ("PreToolUse" | "PostToolUse"))
             if matches!(
                 v.get("tool_name").and_then(|x| x.as_str()),
                 Some("Read" | "Edit" | "Write" | "MultiEdit")
@@ -143,14 +147,24 @@ pub fn parse(raw: &str) -> Event {
                     l.map_or("-".to_string(), |l| l.to_string())
                 ),
             };
-            Event::PreFile(Box::new(FileOp {
+            let op = Box::new(FileOp {
                 path,
                 writes: tool != "Read",
                 window,
                 cwd,
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
-            }))
+            });
+            if stage == "PreToolUse" {
+                Event::PreFile(op)
+            } else if !op.writes {
+                Event::PostFile(op)
+            } else {
+                // A write is remembered before it runs: recording one that
+                // then failed only makes the next read of that file
+                // uncommented, which is the safe direction.
+                Event::NotOurs
+            }
         }
         Some(stage @ ("PreToolUse" | "PostToolUse")) => {
             // Exact, not a prefix. An MCP server may expose a tool whose name
@@ -269,6 +283,26 @@ mod tests {
             }
             _ => panic!("expected a finished Bash call"),
         }
+    }
+
+    /// A Read that ran is the one moment the file is known to be in context;
+    /// a write that ran was already remembered before it did.
+    #[test]
+    fn a_finished_read_is_its_own_event_and_a_finished_write_is_not() {
+        let read = r#"{"hook_event_name":"PostToolUse","tool_name":"Read","cwd":"/tmp",
+                       "tool_input":{"file_path":"a.rs","offset":10,"limit":20},
+                       "tool_response":{"type":"text","file":{"filePath":"/tmp/a.rs"}}}"#;
+        match parse(read) {
+            Event::PostFile(op) => {
+                assert_eq!(op.path, PathBuf::from("/tmp/a.rs"));
+                assert_eq!(op.window, "10:20");
+                assert!(!op.writes);
+            }
+            _ => panic!("expected a finished Read"),
+        }
+        let write = r#"{"hook_event_name":"PostToolUse","tool_name":"Write","cwd":"/tmp",
+                        "tool_input":{"file_path":"a.rs","content":""}}"#;
+        assert!(matches!(parse(write), Event::NotOurs));
     }
 
     /// A failure is already in front of the model. `PostToolUseFailure` carries

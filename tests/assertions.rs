@@ -204,6 +204,43 @@ fn a_push_that_landed_says_nothing() {
     assert_eq!(reply.code, 0);
 }
 
+/// A triangular setup: fetch from `origin`, push to a fork. `git push` with no
+/// remote named goes where `remote.pushDefault` (or `branch.<name>.pushRemote`)
+/// says, and that is the remote to ask. Asking `origin` would accuse a push
+/// that landed.
+#[test]
+fn a_push_to_the_configured_push_remote_is_judged_there() {
+    let (work, _origin) = repo_with_remote("push-default");
+    let fork = work.parent().unwrap().join("fork.git");
+    Command::new("git")
+        .args(["init", "-q", "--bare", "--template="])
+        .arg(&fork)
+        .output()
+        .expect("git init --bare");
+    git(
+        &work,
+        &["remote", "add", "fork", &fork.display().to_string()],
+    );
+    git(&work, &["config", "remote.pushDefault", "fork"]);
+    git(&work, &["push", "-q", "fork", "main"]);
+
+    let reply = send_speaking(&post_bash("git push", &work));
+    assert_eq!(
+        reply.stdout, "",
+        "the push went to fork and is there; origin was never the question"
+    );
+
+    // The per-branch key outranks the blanket one, and it points somewhere the
+    // branch was never pushed.
+    git(&work, &["config", "branch.main.pushRemote", "origin"]);
+    let reply = send_speaking(&post_bash("git push", &work));
+    let text = reply.context();
+    assert!(
+        text.contains("push-landed") && text.contains("origin has no refs/heads/main"),
+        "expected origin to be asked now, got: {text:?}"
+    );
+}
+
 /// The remote moved on without us: local ahead of what the remote holds.
 #[test]
 fn a_stale_remote_is_reported_with_both_shas() {

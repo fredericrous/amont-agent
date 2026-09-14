@@ -647,30 +647,69 @@ fn a_declined_confirm_records_why_and_status_reads_it_back() {
     );
 }
 
+/// A scratch file worth reading, and the two halves of a Read on it: the
+/// `PreToolUse` that asks whether the session already has the file, and the
+/// `PostToolUse` that says the read happened.
+struct ReadFixture {
+    dir: PathBuf,
+    file: PathBuf,
+}
+
+impl ReadFixture {
+    fn new(name: &str) -> ReadFixture {
+        let dir = home().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let file = dir.join("big.rs");
+        std::fs::write(&file, "x".repeat(6000)).expect("a file worth reading");
+        ReadFixture { dir, file }
+    }
+
+    fn file_event(&self, event: &str, tool: &str, session: &str, input: &str) -> Reply {
+        let cwd = serde_json::Value::String(self.dir.display().to_string());
+        let path = serde_json::Value::String(self.file.display().to_string());
+        send(&format!(
+            r#"{{"hook_event_name":"{event}","tool_name":"{tool}","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default",
+                 "tool_input":{{"file_path":{path}{input}}}}}"#
+        ))
+    }
+
+    /// About to Read.
+    fn read(&self, session: &str) -> Reply {
+        self.file_event("PreToolUse", "Read", session, "")
+    }
+
+    /// Read, and it worked.
+    fn read_done(&self, session: &str) -> Reply {
+        let done = self.file_event("PostToolUse", "Read", session, "");
+        assert_eq!(done.stdout, "", "a finished read is remembered silently");
+        done
+    }
+
+    fn bash_event(&self, event: &str, session: &str, command: &str) -> Reply {
+        let cwd = serde_json::Value::String(self.dir.display().to_string());
+        send(&format!(
+            r#"{{"hook_event_name":"{event}","tool_name":"Bash","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default",
+                 "tool_input":{{"command":"{command}"}}}}"#
+        ))
+    }
+}
+
 /// The file tier. A Read is remembered; a second Read of the same path with
 /// nothing written to it since is advised against; an Edit in between makes
 /// the next Read silent again; and a `cat` of the same file is the same
 /// question asked from the shell.
 #[test]
 fn a_file_read_twice_is_advised_and_an_edit_between_resets_it() {
-    let dir = home().join("reread-repo");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    let file = dir.join("big.rs");
-    std::fs::write(&file, "x".repeat(6000)).expect("a file worth reading");
-    let cwd = serde_json::Value::String(dir.display().to_string());
-    let path = serde_json::Value::String(file.display().to_string());
-    let read = |session: &str| {
-        send(&format!(
-            r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
-                 "session_id":"{session}","permission_mode":"default",
-                 "tool_input":{{"file_path":{path}}}}}"#
-        ))
-    };
+    let f = ReadFixture::new("reread-repo");
+    let read = |session: &str| f.read(session);
 
     let first = read("rr-1");
     assert_eq!(first.code, 0);
     assert_eq!(first.stdout, "", "a first read is not commented on");
+    f.read_done("rr-1");
 
     let second = read("rr-1");
     assert!(
@@ -688,20 +727,18 @@ fn a_file_read_twice_is_advised_and_an_edit_between_resets_it() {
     // Another session has its own record.
     assert_eq!(read("rr-2").stdout, "");
 
-    let edit = send(&format!(
-        r#"{{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":{cwd},
-             "session_id":"rr-1","permission_mode":"default",
-             "tool_input":{{"file_path":{path},"old_string":"x","new_string":"y"}}}}"#
-    ));
+    let edit = f.file_event(
+        "PreToolUse",
+        "Edit",
+        "rr-1",
+        r#","old_string":"x","new_string":"y""#,
+    );
     assert_eq!(edit.stdout, "", "a write is remembered silently");
     assert_eq!(read("rr-1").stdout, "", "a read after an edit is right");
+    f.read_done("rr-1");
 
     // From the shell: a dump of the file the session just read.
-    let cat = send(&format!(
-        r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
-             "session_id":"rr-1","permission_mode":"default",
-             "tool_input":{{"command":"cat big.rs"}}}}"#
-    ));
+    let cat = f.bash_event("PreToolUse", "rr-1", "cat big.rs");
     let said = cat.reason();
     assert!(
         said.contains("file-reread"),
@@ -712,6 +749,85 @@ fn a_file_read_twice_is_advised_and_an_edit_between_resets_it() {
         said.contains("whole-file-dump"),
         "a 6 KB cat is a dump too: {}",
         cat.stdout
+    );
+}
+
+/// A Read is remembered once it has HAPPENED. One that was refused, or that
+/// failed on a path that is not there, put nothing in context — and a retry
+/// told "its contents are already in context" is a retry that never learns
+/// what the file says. The same for a `cat`: only the `PostToolUse` that
+/// reports it ran is the read.
+#[test]
+fn a_read_that_never_completed_is_not_remembered() {
+    let f = ReadFixture::new("reread-incomplete");
+
+    assert_eq!(
+        f.read("ri-1").stdout,
+        "",
+        "a first read is not commented on"
+    );
+    assert_eq!(
+        f.read("ri-1").stdout,
+        "",
+        "no PostToolUse came back, so the first Read is not on record"
+    );
+
+    let cat = f.bash_event("PreToolUse", "ri-2", "cat big.rs");
+    assert!(
+        !cat.reason().contains("file-reread"),
+        "nothing read yet: {}",
+        cat.stdout
+    );
+    let again = f.bash_event("PreToolUse", "ri-2", "cat big.rs");
+    assert!(
+        !again.reason().contains("file-reread"),
+        "the first cat never ran, so it is not a read: {}",
+        again.stdout
+    );
+    assert_eq!(
+        f.bash_event("PostToolUse", "ri-2", "cat big.rs").stdout,
+        "",
+        "a finished cat is remembered silently"
+    );
+    let third = f.bash_event("PreToolUse", "ri-2", "cat big.rs");
+    assert!(
+        third.reason().contains("file-reread"),
+        "now it has run once: {}",
+        third.stdout
+    );
+}
+
+/// The Edit tool is not the only thing that writes a file: `sed -i`, a
+/// formatter, `git checkout`, another session in the same checkout. A file
+/// that changed on disk since it was read is read again without comment —
+/// the record is checked against the file, not trusted on its own.
+#[test]
+fn a_file_changed_behind_the_sessions_back_is_read_again_without_comment() {
+    let f = ReadFixture::new("reread-changed");
+    assert_eq!(f.read("rc-1").stdout, "");
+    f.read_done("rc-1");
+    assert!(
+        f.read("rc-1").reason().contains("file-reread"),
+        "unchanged, so the second read is advised against"
+    );
+
+    std::fs::write(&f.file, "y".repeat(6001)).expect("rewrite the file");
+    assert_eq!(
+        f.read("rc-1").stdout,
+        "",
+        "the file is not what the session read any more"
+    );
+    f.read_done("rc-1");
+    assert!(
+        f.read("rc-1").reason().contains("file-reread"),
+        "read again and unchanged since: advised again"
+    );
+
+    std::fs::remove_file(&f.file).expect("remove the file");
+    assert_eq!(
+        f.read("rc-1").stdout,
+        "",
+        "a file that is gone is not in context"
     );
 }
 

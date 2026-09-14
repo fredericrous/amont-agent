@@ -8,9 +8,10 @@
 //!
 //! This rule cannot be answered from a command string. It is answered from
 //! the session's own record ([`crate::session_state`]): the hook records
-//! every Read, every `cat`-shaped dump, and every Edit or Write, and asks
-//! before a read whether the same path was read earlier with nothing written
-//! to it since. A write in between makes the re-read correct, and the rule
+//! every Read and every `cat`-shaped dump once it has actually run, and every
+//! Edit or Write, and asks before a read whether the same path was read
+//! earlier and is unchanged on disk since. A write in between — the Edit
+//! tool's, or anything else's — makes the re-read correct, and the rule
 //! stays silent. So `examine` here never fires — the backtester has no
 //! session to consult — and the rule lives in the hook's file path; its
 //! evidence is the transcript measurement, and its stance is honoured the
@@ -47,7 +48,7 @@ pub fn phrase(path: &str, seen: &Seen) -> (String, String) {
     (
         format!(
             "`{path}` was already read {} file operation{} ago in this session ({window}, \
-             {} bytes) and nothing has written to it since — what it says is already in \
+             {} bytes) and is unchanged on disk since — what it says is already in \
              context.",
             seen.calls_ago,
             if seen.calls_ago == 1 { "" } else { "s" },
