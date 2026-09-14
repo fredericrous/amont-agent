@@ -22,3 +22,11 @@ nomatch	git worktree prune; git worktree list
 nomatch	git worktree add ../x-wt-y -b feat/y origin/main
 nomatch	git worktree list --porcelain | grep -c '^worktree '
 nomatch	rm -rf ../x-wt-y
+# Added 2026-09-15 from the 30-day journal — the two `advised` rows were dirty
+# worktrees (confirm looked), the third had node_modules + .env by its own echo.
+match	cd /Users/fredericrous/Developer/Perso/trade-agents && git worktree remove --force ../trade-agents-wt-validate && git worktree list | grep -c wt-
+match	git worktree remove --force ../amont-wt-review-p1-base && git worktree list
+match	cd /Users/fredericrous/Developer/Perso/application-landscape && git worktree remove --force ../application-landscape-wt-aval && echo "worktree removed (had node_modules + .env)"
+# `--force` on another worktree verb, or on no worktree verb at all.
+nomatch	git worktree add --force ../homelab-wt-retry -b fix/retry origin/main
+nomatch	git worktree remove ../sre-agent-wt-adr 2>&1 && echo "worktree removed"; git worktree list
