@@ -53,7 +53,9 @@ This is enforced three times, because neither of the first two was enough.
    `--system`, and nothing else.**
 
 A stance answers to your own git config and to nothing a repository carries or
-a process standing in one can write. `graduate` and `demote` write `--global`
+a process standing in one can write. A file your global config `include`s or
+`includeIf`s counts as your own: git skips those for a scoped read unless asked,
+and this reader asks. `graduate` and `demote` write `--global`
 for the same reason.
 
 One consequence worth stating plainly: `git config amont.agent.<rule>.stance`

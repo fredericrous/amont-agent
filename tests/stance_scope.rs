@@ -155,6 +155,63 @@ fn the_blanket_floor_is_the_machines_too() {
     assert_eq!(f.stance_of("git-add-broad"), "advise");
 }
 
+/// A file the user's own config `include`s is the user's own config. Git does
+/// not follow the include for a `--global` read unless asked (git 2.55: the
+/// key below was invisible to `git config --global --get`), and a stance the
+/// user set that reads as unset is the failure this crate exists to prevent.
+#[test]
+fn a_file_the_global_config_includes_is_read() {
+    let f = Fixture::new("include");
+    let extra = f.dir.join("extra");
+    let extra = extra.display().to_string();
+    f.git(&[
+        "config",
+        "--file",
+        &extra,
+        "amont.agent.pipe-to-tail.stance",
+        "observe",
+    ]);
+    f.set("--global", "include.path", &extra);
+    assert_eq!(f.stance_of("pipe-to-tail"), "observe");
+}
+
+/// The conditional form, keyed on the repository — the shape a work identity
+/// and a personal one are usually kept in. The condition needs git to know
+/// which repository it is standing in, which a scoped read does not do on its
+/// own.
+#[test]
+fn a_file_the_global_config_includes_for_this_repository_is_read() {
+    let f = Fixture::new("include-if");
+    let extra = f.dir.join("extra");
+    let extra = extra.display().to_string();
+    f.git(&[
+        "config",
+        "--file",
+        &extra,
+        "amont.agent.pipe-to-tail.stance",
+        "observe",
+    ]);
+    // Git matches `gitdir:` against the real path, so a scratch dir reached
+    // through a symlink (`/var` on macOS) must be resolved first.
+    let repo = std::fs::canonicalize(f.repo()).expect("the repo exists");
+    let condition = format!("includeIf.gitdir:{}/.path", repo.display());
+    f.set("--global", &condition, &extra);
+    assert_eq!(f.stance_of("pipe-to-tail"), "observe");
+
+    // And a condition on some OTHER repository does not reach this one.
+    let f = Fixture::new("include-if-elsewhere");
+    let extra = f.dir.join("extra").display().to_string();
+    f.git(&[
+        "config",
+        "--file",
+        &extra,
+        "amont.agent.pipe-to-tail.stance",
+        "observe",
+    ]);
+    f.set("--global", "includeIf.gitdir:/nowhere/.path", &extra);
+    assert_eq!(f.stance_of("pipe-to-tail"), "deny");
+}
+
 /// `GIT_CONFIG_GLOBAL` says where the user's config LIVES; it does not say
 /// which repository this is. Stripping it with the rest of `GIT_*` made every
 /// stance in a relocated config invisible — and made this whole file

@@ -70,6 +70,7 @@ fn decide(raw: &str) -> Decision {
         }
         Event::NotOurs => Decision::Silent,
         Event::PreFile(op) => on_file(&op),
+        Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
         Event::PostBash(bash) => on_post_bash(&bash),
     }
@@ -180,11 +181,7 @@ fn on_bash(bash: &Bash) -> Decision {
                 timeout_ms: bash.timeout_ms,
             };
             let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
-            let window = match d.extent {
-                rules::dump::Extent::Whole => "full".to_string(),
-                rules::dump::Extent::Lines(n) => format!("0:{n}"),
-                rules::dump::Extent::Bytes(n) => format!("bytes:{n}"),
-            };
+            let window = dump_window(&d.extent);
             if let Some(text) = reread_verdict(
                 &bash.session,
                 &path,
@@ -199,14 +196,9 @@ fn on_bash(bash: &Bash) -> Decision {
                     Stance::Observe => {}
                 }
             }
-            // The one write that outlives this command, so it needs the whole
-            // command. A path recorded from a half-read line would have
-            // `file-reread` advise, later, about a file the session may never
-            // have read.
-            if parsed.fully_read() {
-                let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                crate::session_state::record(&bash.session, "read", &path, bytes, &window);
-            }
+            // The read itself is remembered by `on_post_bash`, once the
+            // command has actually run: a `cat` that is refused below, or that
+            // fails on a path that is not there, put nothing in context.
         }
     }
 
@@ -278,18 +270,29 @@ fn on_post_bash(bash: &Bash) -> Decision {
         return Decision::Silent;
     }
 
-    let claimed = assertions::examine_all(&parsed);
-    if claimed.is_empty() {
-        // The whole no-claim path: one lex, no processes, no files.
-        return Decision::Silent;
-    }
-
     let ctx = Context {
         cwd: &bash.cwd,
         parsed: &parsed,
         background: bash.background,
         timeout_ms: bash.timeout_ms,
     };
+
+    // A `cat`-shaped dump that has now run is a read the session should
+    // remember. It needs the whole command: a path recorded from a half-read
+    // line would have `file-reread` advise, later, about a file the session
+    // may never have read.
+    if parsed.fully_read() {
+        for d in rules::dump::dumps(&parsed) {
+            let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
+            crate::session_state::record(&bash.session, "read", &path, &dump_window(&d.extent));
+        }
+    }
+
+    let claimed = assertions::examine_all(&parsed);
+    if claimed.is_empty() {
+        // The whole no-claim, no-dump path: one lex, no processes, no files.
+        return Decision::Silent;
+    }
 
     let mut spoken: Vec<String> = Vec::new();
     for (assertion, claim) in &claimed {
@@ -331,11 +334,12 @@ fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, c
 /// A rule with no `confirm` is confirmed. A `confirm` that cannot answer is
 /// NOT — failing to establish the fact is silence, like everything else here.
 /// The `Err` names why, in the words the rule chose, for the journal.
-/// A Read, Edit, Write or MultiEdit about to run: remember it, and before a
-/// Read, say whether the session already has that file.
+/// A Read, Edit, Write or MultiEdit about to run: remember a write, and
+/// before a Read, say whether the session already has that file. The Read
+/// itself is remembered by [`on_post_file`], once it has happened.
 fn on_file(op: &crate::payload::FileOp) -> Decision {
     if op.writes {
-        crate::session_state::record(&op.session, "write", &op.path, 0, "full");
+        crate::session_state::record(&op.session, "write", &op.path, "full");
         return Decision::Silent;
     }
     let mut advise: Vec<String> = Vec::new();
@@ -371,15 +375,33 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
             Stance::Observe => {}
         }
     }
-    let bytes = std::fs::metadata(&op.path).map(|m| m.len()).unwrap_or(0);
-    crate::session_state::record(&op.session, "read", &op.path, bytes, &op.window);
-
     if !deny.is_empty() {
         Decision::Deny(deny.join("\n\n"))
     } else if !advise.is_empty() {
         Decision::Advise(advise.join("\n\n"))
     } else {
         Decision::Silent
+    }
+}
+
+/// A Read that has run and succeeded: the file is in context now, so this is
+/// the moment to remember it. Recording before the call did the wrong thing
+/// twice over — a Read refused above, or one that failed on a path that is
+/// not there, was still on record, and a retry was told its contents were
+/// already in context.
+fn on_post_file(op: &crate::payload::FileOp) -> Decision {
+    if !op.writes {
+        crate::session_state::record(&op.session, "read", &op.path, &op.window);
+    }
+    Decision::Silent
+}
+
+/// The window a `cat`-shaped dump covers, in the Read tool's own spelling.
+fn dump_window(extent: &rules::dump::Extent) -> String {
+    match extent {
+        rules::dump::Extent::Whole => "full".to_string(),
+        rules::dump::Extent::Lines(n) => format!("0:{n}"),
+        rules::dump::Extent::Bytes(n) => format!("bytes:{n}"),
     }
 }
 

@@ -152,11 +152,21 @@ fn verify(ctx: &Context, _claim: &Claim) -> Verdict {
         return Verdict::Unknown("the pushed ref is not a local branch");
     };
 
+    // Where a `git push` that names no remote actually goes, in git's own
+    // order: `branch.<name>.pushRemote`, then `remote.pushDefault`, then
+    // `branch.<name>.remote`, then `origin`. A triangular setup — fetch from
+    // upstream, push to a fork — sets the first two, and asking upstream
+    // about a push that went to the fork would accuse a push that landed.
     let remote = match push.remote {
         Some(r) => r.to_string(),
-        None => read_briefly(&dir, &["config", &format!("branch.{branch}.remote")])
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| "origin".to_string()),
+        None => [
+            format!("branch.{branch}.pushRemote"),
+            "remote.pushDefault".to_string(),
+            format!("branch.{branch}.remote"),
+        ]
+        .iter()
+        .find_map(|key| read_briefly(&dir, &["config", "--get", key]).filter(|r| !r.is_empty()))
+        .unwrap_or_else(|| "origin".to_string()),
     };
     // `git push /some/path` and `git push git@host:repo` are both legal. Only a
     // configured remote NAME is worth asking about by name.
