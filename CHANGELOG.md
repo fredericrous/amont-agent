@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The inside of a command substitution is read.** `$(…)`, backticks and
+  `<(…)` were blanked to spaces, so `$(git push | tail -1)` was no
+  pipe-to-tail and `$(stat -f '%Sm' f)` — the example in that rule's own
+  header — fired nothing. Their insides are now clauses of their own,
+  appended after the line's and marked `nested` with the substitution's
+  offset; every rule judges them as it would the bare command. Two things
+  know a subshell is a subshell: a `cd` inside one moves only that
+  substitution's clauses (`cwd_at`), and `X=$(cat f)` is not a dump into
+  the tool result (`whole-file-dump`, `persisted-output-dump`,
+  `file-reread`). An inside that cannot be read — `$(eval …)` — adds nothing,
+  as before. Backtested over 38,611 calls: 7 of 29 totals move, all up and
+  all by a few — `stat-bsd-format` 15 → 23, `forge-merge-by-hand` 306 →
+  318 (merges captured into a variable), `glob-no-match` +18.
+
+- **`stat-bsd-format` stays silent on the portable pair** `stat -c … ||
+  stat -f …`: one spelling tried, then the other, is the form that works on
+  either stat — and, now that substitutions are read, the first thing the
+  rule met was `"$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f")"`, which a
+  deny would have refused.
+
+- **`check` labels a finding with the stance in force**, not the shipped
+  one — `[deny, ships as advise]` for a graduated rule — since a reader took
+  the old `[advise]` for the verdict the hook would give.
+
 ## v2.14.0
 
 ### Fixed

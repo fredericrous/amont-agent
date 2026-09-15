@@ -31,3 +31,5 @@ nomatch	stat -f /var/lib/garage
 nomatch	grep -rn "stat -f" docs/ | head
 nomatch	df -h / /System/Volumes/Data | cat
 nomatch	stat -L Cargo.toml
+# One spelling, then the other: the portable form, tried in turn (real, 2026-08).
+nomatch	printf "%-45s %sB  " "$f" "$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f")"

@@ -22,6 +22,13 @@
 //! inside a commit message, because that word is marked [`Word::quoted`] and
 //! `has_flag` skips it.
 //!
+//! A blanked substitution is not a lost one. The inside of `$(…)`, of
+//! backticks and of `<(…)` is a command too, and it is read as clauses of its
+//! own — appended after the line's, marked [`Simple::nested`] — so that
+//! `$(git push | tail -1)` is the pipe-to-tail it is, and a `stat -f` inside
+//! a `$( )` is the BSD spelling it is. The word that holds the substitution
+//! stays blank: to the clause around it, the value is still unknowable.
+//!
 //! The blanking discipline is lifted from
 //! amont's `ban_terms::blank_non_code`: blank rather than delete,
 //! so byte offsets stay meaningful and a reported span still points at the
@@ -98,6 +105,18 @@ pub struct Simple {
     /// Byte range of this clause within the original source.
     pub at: usize,
     pub end: usize,
+    /// This clause ran inside a command substitution — `$(…)`, backticks,
+    /// `<(…)` — and this is the byte offset of the substitution that holds
+    /// it, in the original source. `None` for a clause of the line itself.
+    ///
+    /// A substitution is a subshell: what it prints goes to the shell, not
+    /// to the tool result, and a `cd` inside it moves nothing outside it.
+    /// The two places that care — `dump` and `cwd_at` — read this; every
+    /// other rule judges a nested clause as it would any other, because
+    /// `$(git push | tail -1)` hides a failed push exactly as the bare form
+    /// does. Measured before this field existed: a `stat -f` inside `$( )`
+    /// was invisible to the rule whose own header uses it as the example.
+    pub nested: Option<usize>,
     /// Why this clause could not be read, when it could not.
     ///
     /// Marked in place rather than removed, and marked across the WHOLE
@@ -238,6 +257,10 @@ pub fn lex(src: &str) -> Parsed {
     let mut redirect: Option<String> = None;
     // Heredoc tags awaiting their body, which begins at the next newline.
     let mut heredocs: Vec<Vec<u8>> = Vec::new();
+    // Command substitutions met on the way: (offset of the opener, inner
+    // byte range). Their insides are read as clauses of their own once the
+    // line is done — see the end of this function.
+    let mut subs: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
 
     macro_rules! end_word {
         () => {
@@ -324,6 +347,7 @@ pub fn lex(src: &str) -> Parsed {
                             w.expanded = true;
                             w.raw.extend_from_slice(&b[i..=close]);
                             w.text.extend(std::iter::repeat_n(b' ', close - i + 1));
+                            subs.push((i, i + 2..close));
                             i = close + 1;
                         }
                         other => {
@@ -362,6 +386,7 @@ pub fn lex(src: &str) -> Parsed {
                 w.expanded = true;
                 w.raw.extend_from_slice(&b[i..=j]);
                 w.text.extend(std::iter::repeat_n(b' ', j - i + 1));
+                subs.push((i, i + 1..j));
                 i = j + 1;
             }
             b'$' if i + 1 < n && (b[i + 1] == b'(' || b[i + 1] == b'{') => {
@@ -377,6 +402,10 @@ pub fn lex(src: &str) -> Parsed {
                 w.expanded = true;
                 w.raw.extend_from_slice(&b[i..=end]);
                 w.text.extend(std::iter::repeat_n(b' ', end - i + 1));
+                // `${…}` is a parameter, not a command.
+                if open == b'(' {
+                    subs.push((i, i + 2..end));
+                }
                 i = end + 1;
             }
             b'<' if i + 2 < n && b[i + 1] == b'<' && b[i + 2] == b'<' => {
@@ -466,6 +495,7 @@ pub fn lex(src: &str) -> Parsed {
                                 at: j,
                             },
                         ));
+                        subs.push((j, j + 1..close));
                         i = close + 1;
                         continue;
                     }
@@ -584,7 +614,61 @@ pub fn lex(src: &str) -> Parsed {
             return Parsed::Opaque(Opaque::IndirectExecution(why));
         }
     }
-    hide_forking_pipelines(out)
+    let mut parsed = hide_forking_pipelines(out);
+    if let Parsed::Clear(clauses) = &mut parsed {
+        for (opener, inner) in subs {
+            read_substitution(src, opener, inner, clauses);
+        }
+    }
+    parsed
+}
+
+/// Read the inside of one command substitution as clauses of its own, and
+/// append them — AFTER every clause of the line, never between two of them.
+///
+/// Appended, not interleaved: `pipe-to-tail` walks from a clause whose
+/// `next` is a pipe to the element that follows it in this list, and a
+/// substitution sitting inside `git push $(…) | tail -1` would otherwise
+/// land between the push and the `tail`, inventing a gap where the pipe is.
+/// Every offset is shifted into the original source, so a finding's span and
+/// `cwd_at` still point at the right bytes; a nested substitution inside this
+/// one has already been shifted into `inner` by the recursive read and is
+/// shifted once more here.
+///
+/// An inside this reader cannot claim to understand — `$(eval …)`, an
+/// unbalanced quote — adds nothing: the word stays blank, as it was before
+/// substitutions were read at all. Descending can only lose a fire, never
+/// invent one, and the line around it is judged as it always was. The one
+/// thing a substitution cannot do is move THIS shell, so an `eval` inside it
+/// is not the in-process opacity it would be on the line.
+fn read_substitution(
+    src: &str,
+    opener: usize,
+    inner: std::ops::Range<usize>,
+    clauses: &mut Vec<Simple>,
+) {
+    let Some(text) = src.get(inner.clone()) else {
+        return;
+    };
+    let Parsed::Clear(found) = lex(text) else {
+        return;
+    };
+    let shift = inner.start;
+    for mut cmd in found {
+        cmd.at += shift;
+        cmd.end += shift;
+        for w in &mut cmd.words {
+            w.at += shift;
+        }
+        for (_, w) in &mut cmd.redirects {
+            w.at += shift;
+        }
+        cmd.nested = Some(match cmd.nested {
+            Some(deeper) => deeper + shift,
+            None => opener,
+        });
+        clauses.push(cmd);
+    }
 }
 
 /// Mark the pipelines we cannot read; leave the rest to be judged.
@@ -1167,11 +1251,100 @@ mod tests {
     #[test]
     fn a_substitution_is_blanked_and_the_word_keeps_its_length() {
         let c = clauses("echo $(git push | tail -1)");
-        assert_eq!(c.len(), 1, "a pipe inside a substitution is not our pipe");
         let w = &c[0].words[1];
         assert!(w.expanded);
         assert_eq!(w.text.len(), w.raw.len(), "blanking preserves length");
         assert!(w.text.trim().is_empty());
+        assert_eq!(c[0].next, None, "the pipe inside is not the echo's pipe");
+    }
+
+    /// The inside of a substitution is a command, read as clauses of its own:
+    /// after the line's clauses, marked with the offset of the substitution,
+    /// every byte offset pointing into the original source. `$(git push |
+    /// tail -1)` was invisible to every rule before this — including the one
+    /// whose own header uses `$(stat -f …)` as its example.
+    #[test]
+    fn a_substitution_is_read_as_clauses_of_its_own() {
+        let src = "echo $(git push | tail -1)";
+        let c = clauses(src);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0].program(), Some("echo"));
+        assert_eq!(c[0].nested, None);
+        assert_eq!(c[1].program(), Some("git"));
+        assert_eq!(c[1].nested, Some(5), "the offset of the `$(`");
+        assert_eq!(c[1].next, Some(Connector::Pipe));
+        assert_eq!(c[2].program(), Some("tail"));
+        assert_eq!(c[2].nested, Some(5));
+        assert!(
+            src[c[1].at..].starts_with("git push"),
+            "offsets are the source's"
+        );
+        assert!(src[c[2].words[0].at..].starts_with("tail"));
+        assert_eq!(src[c[2].at..c[2].end].trim(), "tail -1");
+
+        let c = clauses("echo `stat -f '%Sm' x`");
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[1].program(), Some("stat"));
+        assert_eq!(c[1].nested, Some(5));
+        assert!(c[1].has_flag("-f"));
+
+        let c = clauses(r#"echo "mtime: $(stat -f '%Sm' "$LOG")""#);
+        assert_eq!(c.len(), 2, "inside double quotes too");
+        assert_eq!(c[1].program(), Some("stat"));
+
+        let c = clauses("diff <(sort a) <(sort b)");
+        assert_eq!(c.len(), 3, "a process substitution is a command too");
+        assert_eq!(c[1].program(), Some("sort"));
+        assert_ne!(c[1].nested, c[2].nested, "two substitutions, two ids");
+
+        let c = clauses("echo ${HOME} $VAR");
+        assert_eq!(c.len(), 1, "a parameter is not a command");
+    }
+
+    /// Appended after the line, never between two of its clauses: the pipe
+    /// walk from `git push` must still land on `tail`.
+    #[test]
+    fn a_substitutions_clauses_never_sit_between_the_lines() {
+        let c = clauses("git push $(cat v) | tail -1");
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0].program(), Some("git"));
+        assert_eq!(c[0].next, Some(Connector::Pipe));
+        assert_eq!(c[1].program(), Some("tail"));
+        assert_eq!(c[2].program(), Some("cat"));
+        assert!(c[2].nested.is_some());
+    }
+
+    /// A substitution inside a substitution: read by the recursive call,
+    /// shifted twice, id pointing at ITS opener.
+    #[test]
+    fn a_nested_substitution_is_read_and_shifted_twice() {
+        let src = "echo $(echo $(git push | tail -1))";
+        let c = clauses(src);
+        assert_eq!(c.len(), 4);
+        let push = c.iter().find(|s| s.program() == Some("git")).expect("push");
+        assert!(src[push.at..].starts_with("git push"));
+        assert_eq!(push.nested, Some(12), "the inner `$(`");
+        assert_eq!(push.next, Some(Connector::Pipe));
+        let inner_echo = &c[1];
+        assert_eq!(inner_echo.program(), Some("echo"));
+        assert_eq!(inner_echo.nested, Some(5), "the outer `$(`");
+    }
+
+    /// An inside we cannot read adds nothing and costs nothing: the word
+    /// stays blank as before, and the line is judged as it always was. An
+    /// `eval` in a subshell cannot move this shell, so it is not the whole-
+    /// line opacity it would be on the line.
+    #[test]
+    fn an_unreadable_substitution_adds_nothing() {
+        let c = clauses("echo $(eval \"$x\") && git push | tail -1");
+        assert_eq!(c.len(), 3);
+        assert!(c.iter().all(|s| s.nested.is_none()));
+        assert_eq!(c[1].program(), Some("git"));
+        assert_eq!(c[1].next, Some(Connector::Pipe));
+        assert!(matches!(
+            opaque("echo $(git push | tail -1"),
+            Opaque::UnterminatedSubstitution
+        ));
     }
 
     #[test]
