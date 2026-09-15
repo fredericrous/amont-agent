@@ -18,7 +18,7 @@
 //! that will run it — the mirror of `sed-in-place`.
 
 use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
-use crate::shell::{Parsed, Simple};
+use crate::shell::{Connector, Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "stat-bsd-format",
@@ -64,11 +64,34 @@ fn detect(cmd: &Simple) -> Option<Spelling> {
     None
 }
 
+/// `stat -c %s f || stat -f %z f` — one spelling, then the other — is the
+/// portable form, not the mistake: whichever stat runs, one of the two is
+/// its own. Found in the transcripts the day substitutions became readable,
+/// as `"$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f")"`; a deny there
+/// would refuse the one spelling that works everywhere.
+fn has_fallback(clauses: &[Simple], i: usize, spelling: Spelling) -> bool {
+    let other = |j: usize| {
+        clauses
+            .get(j)
+            .and_then(detect)
+            .is_some_and(|s| s != spelling)
+    };
+    (clauses[i].next == Some(Connector::OrOr) && other(i + 1))
+        || (clauses[i].prev == Some(Connector::OrOr) && i > 0 && other(i - 1))
+}
+
 fn examine(parsed: &Parsed) -> Option<Finding> {
-    for cmd in parsed.judgeable() {
+    let clauses = parsed.clauses();
+    for (i, cmd) in clauses.iter().enumerate() {
+        if cmd.opaque.is_some() {
+            continue;
+        }
         let Some(spelling) = detect(cmd) else {
             continue;
         };
+        if has_fallback(clauses, i, spelling) {
+            continue;
+        }
         let (reason, remedy) = match spelling {
             Spelling::Bsd => (
                 "`stat -f` is the BSD format flag, but on GNU coreutils `-f` means \
@@ -142,7 +165,28 @@ mod tests {
             spelling("stat -f '%Sm %N' -t '%Y-%m-%d' x.log"),
             Some(Spelling::Bsd)
         );
-        assert_eq!(spelling("echo \"m: $(stat -f '%Sm' x)\""), None); // inside $( ): blanked
+        // Inside `$( )`: the header's own example, read since the lexer
+        // started reading substitutions. It was `None` before that.
+        assert_eq!(
+            spelling("echo \"m: $(stat -f '%Sm' x)\""),
+            Some(Spelling::Bsd)
+        );
+    }
+
+    /// One spelling tried, then the other: portable, and silent — bare or
+    /// inside a substitution. A fallback to something that is not a stat is
+    /// no fallback.
+    #[test]
+    fn a_fallback_pair_is_the_portable_form() {
+        let fires = |c: &str| examine(&lex(c)).is_some();
+        assert!(!fires("stat -c %s f 2>/dev/null || stat -f %z f"));
+        assert!(!fires("stat -f '%Sm' f 2>/dev/null || stat -c '%y' f"));
+        assert!(!fires(
+            "printf '%10d %s\\n' \"$(stat -c %s \"$f\" 2>/dev/null || stat -f %z \"$f\")\" \"$f\""
+        ));
+        assert!(fires("stat -c %s f || echo 0"));
+        assert!(fires("stat -f '%Sm' f && echo ok"));
+        assert!(fires("stat -c %s f; stat -f %z f"));
         assert_eq!(spelling("stat -c '%s %n' a.tsx"), Some(Spelling::Gnu));
         assert_eq!(
             spelling("stat --format='%s' /tmp/sw.js"),

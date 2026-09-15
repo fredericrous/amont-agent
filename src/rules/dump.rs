@@ -147,6 +147,12 @@ pub fn dumps(parsed: &Parsed) -> Vec<Dump> {
         if cmd.prev == Some(Connector::Pipe) {
             continue;
         }
+        // `X=$(cat f)`, `echo "$(cat f)"`: the output goes to the shell, not
+        // to the tool result. Not a dump — and not a read the session should
+        // remember, either.
+        if cmd.nested.is_some() {
+            continue;
+        }
         out.extend(detect(cmd));
     }
     out
@@ -213,5 +219,9 @@ mod tests {
         assert!(of("cat *.rs").is_empty());
         assert!(of("git log | head -5").is_empty());
         assert!(of("ls").is_empty());
+        // Into the shell, not into the result.
+        assert!(of("X=$(cat notes.md)").is_empty());
+        assert!(of("echo \"$(cat notes.md)\"").is_empty());
+        assert!(of("diff <(cat a.txt) <(cat b.txt)").is_empty());
     }
 }

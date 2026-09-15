@@ -451,7 +451,21 @@ fn run_check(args: &[OsString]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     for (rule, finding) in found {
-        println!("{} [{}]", rule.id, rule.default_stance.as_str());
+        // The stance in force on THIS machine, which is what the hook would
+        // do — with the shipped one beside it when they differ. Printing
+        // only the default read `[advise]` for a rule long graduated to deny,
+        // and the reader took it for the verdict.
+        let now = stance::resolve(rule);
+        if now == rule.default_stance {
+            println!("{} [{}]", rule.id, now.as_str());
+        } else {
+            println!(
+                "{} [{}, ships as {}]",
+                rule.id,
+                now.as_str(),
+                rule.default_stance.as_str()
+            );
+        }
         println!("  {}", finding.reason);
         println!("  → {}", finding.remedy);
         println!(

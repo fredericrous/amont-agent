@@ -227,11 +227,26 @@ impl Context<'_> {
     /// cwd than a guess. A bare `cd` is `$HOME`; `cd -` is unknowable.
     pub fn cwd_at(&self, at: usize) -> std::path::PathBuf {
         let mut dir = self.cwd.to_path_buf();
+        // A `cd` inside a substitution moves that subshell and nothing
+        // else: it counts for the clauses of the SAME substitution and for
+        // no other. The clauses of a substitution sit after every clause of
+        // the line, so this is `continue`, not `break`: a nested clause's own
+        // earlier `cd` is further down the list than clauses that follow it
+        // in the source.
+        let asking = self
+            .parsed
+            .clauses()
+            .iter()
+            .find(|c| c.at == at)
+            .and_then(|c| c.nested);
         for cmd in self.parsed.clauses() {
             if cmd.at >= at {
-                break;
+                continue;
             }
             if cmd.program() != Some("cd") {
+                continue;
+            }
+            if cmd.nested.is_some() && cmd.nested != asking {
                 continue;
             }
             // The raw word after `cd`, not `operands()`: that helper drops a
@@ -333,6 +348,29 @@ mod tests {
             .find(|c| c.words.iter().any(|w| w.text == needle))
             .map(|c| c.at)
             .expect("clause")
+    }
+
+    #[test]
+    fn a_cd_inside_a_substitution_moves_only_that_substitution() {
+        let parsed = lex(
+            "cd /tmp/here && echo $(cd /tmp/sub && git status) && git worktree add ../x -b feat/y",
+        );
+        let ctx = Context {
+            cwd: std::path::Path::new("/session"),
+            parsed: &parsed,
+            background: false,
+            timeout_ms: None,
+        };
+        assert_eq!(
+            ctx.cwd_at(at_of(&parsed, "worktree")),
+            std::path::PathBuf::from("/tmp/here"),
+            "the subshell's cd did not leak out"
+        );
+        assert_eq!(
+            ctx.cwd_at(at_of(&parsed, "status")),
+            std::path::PathBuf::from("/tmp/sub"),
+            "the line's cd reached in, then the subshell's own applied"
+        );
     }
 
     #[test]
