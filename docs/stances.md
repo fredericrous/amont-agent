@@ -15,6 +15,13 @@ rule that talks is intervening.** That is why the two are named differently
 and why `backtest` numbers from an `advise` rule are not comparable with the
 numbers that justified promoting it.
 
+That contamination is also what makes it measurable. `amont-agent backtest
+--compliance` reads the two stances against each other: what a model did
+after an `advise` fired, beside what it did after an `observe` fired and
+said nothing. The second is the rate the habit corrects on its own, and an
+`advise` that does not beat it is costing context tokens for nothing. See
+[measuring and graduating](measuring.md).
+
 ## Changing one
 
 Takes effect on the next command; nothing to restart.
