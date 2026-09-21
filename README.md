@@ -69,12 +69,34 @@ talks is intervening.**
 So a rule is promoted from your own transcripts, not from an argument:
 
 ```sh
-amont-agent backtest --since 2026-07-06         # firings per 1,000 tool calls, weekly
+amont-agent mine --since 2026-08-15              # shapes that failed or drew a correction
+amont-agent backtest --since 2026-07-06          # firings per 1,000 tool calls, weekly
 amont-agent explain pipe-to-tail --format cases >> tests/corpus/pipe-to-tail.cases
 $EDITOR tests/corpus/pipe-to-tail.cases          # each `?` becomes match or nomatch
 amont-agent corpus check                         # and this runs in the test suite
+amont-agent backtest --compliance                # did saying it change anything?
 amont-agent graduate pipe-to-tail --to deny
 ```
+
+`mine` is the step before a rule exists. It groups every Bash call by command
+*shape* — the parse with the branch, the path and the message masked out —
+and ranks the shapes that failed or drew a near-identical follow-up within a
+few tool calls, which is what a model does when its first attempt did not
+land. It proposes nothing and writes nothing: the rule that ships is still
+written by hand, with its reason and its remedy, because a guard that refuses
+a command because a clustering run found it suspicious cannot explain itself
+to the person whose work it just refused.
+
+`--compliance` closes the other end. `advise` costs context tokens every
+session forever, so for each firing it asks what the model did next: if the
+next equivalent command no longer matches, the habit changed. Per model, per
+week, with the `observe` rules as the control — they say nothing, so their
+share is the rate the habit corrects on its own, and advice is worth its
+tokens only where it beats that.
+
+`amont-agent explain <rule> --sample 20 --rank novelty` picks the twenty
+matches least like each other and least like the cases already reviewed, so
+an hour of labelling moves the precision estimate as far as an hour can.
 
 `pipe-to-tail` is the only rule that blocks, and it blocks because seven
 consecutive weeks of measurement showed no downward trend while every other

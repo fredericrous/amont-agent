@@ -22,6 +22,7 @@ mod assertions;
 mod atomic;
 mod backtest;
 mod civil;
+mod compliance;
 mod corpus;
 mod decision;
 mod doctor;
@@ -32,10 +33,12 @@ mod guidance;
 mod hook;
 mod journal;
 mod json;
+mod mine;
 mod payload;
 mod rules;
 mod session_state;
 mod settings;
+mod shape;
 mod shell;
 mod shim;
 mod stale;
@@ -59,6 +62,7 @@ usage: amont-agent <command>
   corpus check          replay every reviewed judgement through the rules
   graduate <rule> --to advise|deny
   demote <rule>         back to observing, no questions asked
+  mine [flags]          shapes the model got wrong that no rule names yet
   backtest [flags]      replay your transcripts through the rules
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
@@ -70,13 +74,25 @@ install/uninstall flags:
   --project             .claude/settings.json instead of ~/.claude
   --local               .claude/settings.local.json
 
-backtest/explain flags:
+backtest/explain/mine flags:
   --transcripts <dir>   where the .jsonl transcripts live
   --since <YYYY-MM-DD>  ignore entries before this day
   --rule <id>           restrict to one rule (repeatable)
   --sample <n>          sample matches to print per rule
-  --format cases        emit matches as reviewable case lines (explain only)
+  --format cases        emit matches as reviewable case lines (explain, mine)
   --json                machine-readable output
+
+mine flags:
+  --window <n>          tool calls a correction may arrive within (default 3)
+  --min-support <n>     calls a shape needs before it is proposed (default 5)
+  --min-rate <0..1>     share of them that must have gone wrong (default 0.3)
+
+explain flags:
+  --rank novelty        label the matches least like the ones already reviewed
+
+backtest flags:
+  --compliance          per model, per week: what the model did NEXT after a
+                        rule fired — did the advice change anything?
 ";
 
 enum Sub {
@@ -90,11 +106,12 @@ enum Sub {
     Demote,
     Backtest,
     Explain,
+    Mine,
     Check,
     Rules,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 12] = [
+const SUBCOMMANDS: [(&str, Sub); 13] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -105,6 +122,7 @@ const SUBCOMMANDS: [(&str, Sub); 12] = [
     ("demote", Sub::Demote),
     ("backtest", Sub::Backtest),
     ("explain", Sub::Explain),
+    ("mine", Sub::Mine),
     ("check", Sub::Check),
     ("rules", Sub::Rules),
 ];
@@ -246,6 +264,7 @@ fn main() -> ExitCode {
             Sub::Demote => run_graduate(&args, false),
             Sub::Backtest => run_backtest(&args, false),
             Sub::Explain => run_backtest(&args, true),
+            Sub::Mine => run_mine(&args),
             Sub::Check => run_check(&args),
             Sub::Rules => run_rules(),
         },
@@ -266,6 +285,11 @@ struct Flags {
     format: Option<String>,
     to: Option<String>,
     force: bool,
+    window: Option<usize>,
+    min_support: Option<u32>,
+    min_rate: Option<f64>,
+    rank: Option<String>,
+    compliance: bool,
     rest: Vec<String>,
 }
 
@@ -295,6 +319,32 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                         .map_err(|_| format!("--sample: `{v}` is not a number"))?,
                 );
             }
+            "--window" => {
+                let v = value(&mut i, &a)?;
+                f.window = Some(
+                    v.parse()
+                        .map_err(|_| format!("--window: `{v}` is not a number"))?,
+                );
+            }
+            "--min-support" => {
+                let v = value(&mut i, &a)?;
+                f.min_support = Some(
+                    v.parse()
+                        .map_err(|_| format!("--min-support: `{v}` is not a number"))?,
+                );
+            }
+            "--min-rate" => {
+                let v = value(&mut i, &a)?;
+                let rate: f64 = v
+                    .parse()
+                    .map_err(|_| format!("--min-rate: `{v}` is not a number"))?;
+                if !(0.0..=1.0).contains(&rate) {
+                    return Err(format!("--min-rate: `{v}` is not a share between 0 and 1"));
+                }
+                f.min_rate = Some(rate);
+            }
+            "--rank" => f.rank = Some(value(&mut i, &a)?),
+            "--compliance" => f.compliance = true,
             "--json" => f.json = true,
             "--format" => f.format = Some(value(&mut i, &a)?),
             "--to" => f.to = Some(value(&mut i, &a)?),
@@ -386,17 +436,41 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    let novelty = match f.rank.as_deref() {
+        None => false,
+        Some("novelty") if explain => true,
+        Some("novelty") => {
+            eprintln!("amont-agent: --rank novelty is for `explain`, which prints the matches");
+            return ExitCode::from(2);
+        }
+        Some(other) => {
+            eprintln!("amont-agent: --rank takes `novelty`, not `{other}`");
+            return ExitCode::from(2);
+        }
+    };
+    if f.compliance {
+        return run_compliance(&f, &roots, &scan, &chosen);
+    }
     // A review dump wants everything, not a sample: the point is to look at
-    // each match once and decide.
-    let samples = f.sample.unwrap_or(if as_cases {
+    // each match once and decide. Novelty ranking is the exception — it
+    // answers "which twenty are worth an hour", and ordering every match by
+    // novelty is quadratic in a number that runs to thousands.
+    let samples = if novelty {
         usize::MAX
-    } else if explain {
-        40
     } else {
-        2
-    });
+        f.sample.unwrap_or(if as_cases {
+            usize::MAX
+        } else if explain {
+            40
+        } else {
+            2
+        })
+    };
     match backtest::run(&scan, &chosen, samples) {
-        Ok(report) => {
+        Ok(mut report) => {
+            if novelty {
+                rank_by_novelty(&mut report, f.sample.unwrap_or(20));
+            }
             if as_cases {
                 // Every line starts unreviewed. The file this is appended to is
                 // the same format the reviewer edits in place — one format, so
@@ -411,6 +485,141 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
                                 corpus::line_for(corpus::Verdict::Unreviewed, &sample.command)
                             );
                         }
+                    }
+                }
+            } else if f.json {
+                println!("{}", report.to_json(&roots));
+            } else {
+                print!("{}", report.render(&roots));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("amont-agent: {}", e.explain());
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Keep the `n` matches least like the cases already reviewed, and least like
+/// each other.
+///
+/// The default sample is the first `n` matches the walk met, which is the
+/// oldest project, the oldest session, and — because a habit repeats — very
+/// often twenty spellings of one command. Labelling those costs the same
+/// hour and moves the precision estimate by almost nothing. This picks the
+/// hour's worth that moves it most.
+fn rank_by_novelty(report: &mut backtest::Report, n: usize) {
+    for (i, subject) in report.rules.iter().enumerate() {
+        // Already-labelled cases are seeds: they are the neighbourhoods the
+        // corpus already covers, and a second review pass should not hand
+        // back the first pass's cases.
+        let seeds: Vec<shape::Shape> = corpus::read(subject.id())
+            .iter()
+            .map(|c| shape::Shape::of_command(&c.command))
+            .collect();
+        let candidates: Vec<shape::Shape> = report.samples[i]
+            .iter()
+            .map(|s| shape::Shape::of_command(&s.command))
+            .collect();
+        let picked = shape::pick_novel(&candidates, &seeds, n);
+        // In the greedy order, which is "most novel first": a reviewer who
+        // stops halfway has still labelled the half that was worth most.
+        let mut held: Vec<Option<backtest::Sample>> =
+            report.samples[i].drain(..).map(Some).collect();
+        report.samples[i] = picked.iter().filter_map(|&j| held[j].take()).collect();
+    }
+}
+
+fn run_compliance(
+    f: &Flags,
+    roots: &transcript::Roots,
+    scan: &transcript::Scan,
+    chosen: &[backtest::Subject],
+) -> ExitCode {
+    // Assertions check what a command that already ran actually did, so
+    // "what did the model do next" is a different question with a different
+    // answer. Named rather than silently dropped.
+    let rules: Vec<&'static rules::Rule> = chosen
+        .iter()
+        .filter_map(|s| match s {
+            backtest::Subject::Rule(r) => Some(*r),
+            backtest::Subject::Assertion(_) => None,
+        })
+        .collect();
+    if rules.is_empty() {
+        eprintln!("amont-agent: --compliance is about rules, and none were selected");
+        return ExitCode::from(2);
+    }
+    let options = compliance::Options {
+        window: f.window.unwrap_or(compliance::Options::default().window),
+    };
+    match compliance::run(scan, &rules, options) {
+        Ok(report) => {
+            if f.json {
+                println!("{}", report.to_json(roots));
+            } else {
+                print!("{}", report.render(roots));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("amont-agent: {}", e.explain());
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_mine(args: &[OsString]) -> ExitCode {
+    let f = match flags(args) {
+        Ok(f) => f,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    if !f.only.is_empty() {
+        eprintln!("amont-agent: mine looks for what no rule names yet, so --rule means nothing");
+        return ExitCode::from(2);
+    }
+    let as_cases = f.format.as_deref() == Some("cases");
+    if let Some(other) = f.format.as_deref() {
+        if other != "cases" {
+            eprintln!("amont-agent: --format takes `cases`, not `{other}`");
+            return ExitCode::from(2);
+        }
+    }
+    let roots = match transcript::roots(&f.transcripts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("amont-agent: {}", e.explain());
+            return ExitCode::from(2);
+        }
+    };
+    let scan = transcript::Scan {
+        roots: &roots,
+        tool: "Bash",
+        since: f.since,
+    };
+    let default = mine::Options::default();
+    let options = mine::Options {
+        window: f.window.unwrap_or(default.window),
+        min_support: f.min_support.unwrap_or(default.min_support),
+        min_rate: f.min_rate.unwrap_or(default.min_rate),
+        samples: f.sample.unwrap_or(default.samples),
+    };
+    match mine::run(&scan, options) {
+        Ok(report) => {
+            if as_cases {
+                // The same file `explain --format cases` writes, and the same
+                // one `corpus check` reads — so a shape mined today is a
+                // reviewable case today, before anybody has written the rule
+                // it might become.
+                println!("{}", corpus::HEADER);
+                let mut seen = std::collections::BTreeSet::new();
+                for command in report.sample_commands() {
+                    if seen.insert(command.to_string()) {
+                        print!("{}", corpus::line_for(corpus::Verdict::Unreviewed, command));
                     }
                 }
             } else if f.json {

@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`amont-agent mine` — the step before a rule exists.** `backtest` can only
+  price a rule somebody already thought of. `mine` replays the same
+  transcripts, groups every Bash call by command SHAPE — the parse with the
+  branch, the path, the number and the commit message masked out, the
+  program, its verbs and its flag set kept — and ranks the shapes that went
+  wrong. Wrong means one of two things the transcript itself records: the
+  tool result carried `is_error`, or a near-identical command followed within
+  a few tool calls, which is what a model does when its first attempt did not
+  land. Only the HEAD of a run of near-identical calls counts, because a
+  polling loop is one decision repeated and not nineteen mistakes — without
+  that, the top line of the real report was `echo waiting` at 1,088 calls and
+  a rate of 0.99. Shapes an existing rule already fires on are listed apart
+  as `covered by <rule>` rather than proposed. `--min-support` (5),
+  `--min-rate` (0.3), `--window` (3), `--json`, and `--format cases`, which
+  writes the same file `explain --format cases` does, so a shape mined today
+  is a reviewable case today. Nothing mined reaches the hook: the rule that
+  ships is still written by hand.
+
+- **`amont-agent explain <rule> --sample N --rank novelty`.** The default
+  sample is the first N matches the walk met, which is the oldest project,
+  the oldest session and — because a habit repeats — very often N spellings
+  of one command. Novelty picks the N least like each other and least like
+  the cases already in `tests/corpus/<rule>.cases`, by greedy max-min over
+  the shape distance. Deterministic, and a second review pass does not hand
+  back the first pass's cases. Default behaviour is unchanged.
+
+- **`amont-agent backtest --compliance` — what the advice buys.** `advise`
+  costs context tokens every session forever and the backtest only prices the
+  cost. For every firing this asks what the model did NEXT: when the next
+  equivalent command — same shape, within `--window` (20) tool calls — no
+  longer matches, the habit changed; when it matches again, the advice was
+  ignored or never arrived; when nothing equivalent followed, the firing is
+  unanswered and counts towards neither. Per model id and per week, because
+  models differ and a pooled figure hides which one is listening. `observe`
+  rules are reported beside them as the control — they said nothing, so their
+  share is the rate the habit corrects on its own. `deny` rules are left out:
+  a refused command never ran, so there is no next command. Measured over
+  44,750 Bash calls: `glob-in-flag-value` 93% complied against
+  `equals-separator`'s silent 72%, and `path-operand-missing` 6%, which is an
+  advise that is not earning its tokens.
+
+### Changed
+
+- **The transcript reader can say what became of a call.** A second walk
+  (`for_each_transcript`) buffers a transcript, joins each `tool_result` back
+  to its `tool_use` by id, and hands the file's calls over in order with the
+  outcome and the issuing model attached — none of which the streaming walk
+  could see, because both live on later lines than the call itself. Result
+  lines are read with substring scans rather than a JSON parse: a result
+  carries the whole output of the command, which is where all the bytes in a
+  transcript are, and the two facts wanted are an id and a boolean. The
+  backtester's own walk is untouched.
+
 ## v2.15.0
 
 ### Changed
