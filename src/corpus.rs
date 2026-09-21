@@ -133,6 +133,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/glob-no-match.cases"),
     ),
     (
+        "unsplit-expansion",
+        include_str!("../tests/corpus/unsplit-expansion.cases"),
+    ),
+    (
         "equals-separator",
         include_str!("../tests/corpus/equals-separator.cases"),
     ),
