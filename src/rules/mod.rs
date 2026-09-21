@@ -54,6 +54,7 @@ pub mod stat_bsd_format;
 pub mod stdin_hang;
 pub mod tag_after_commit;
 pub mod tool_shell;
+pub mod unsplit_expansion;
 pub mod whole_file_dump;
 pub mod worktree_isolation;
 pub mod worktree_remove_force;
@@ -305,6 +306,7 @@ pub const RULES: &[Rule] = &[
     glob_in_flag_value::RULE,
     glob_no_match::RULE,
     equals_separator::RULE,
+    unsplit_expansion::RULE,
     path_operand_missing::RULE,
     stat_bsd_format::RULE,
     whole_file_dump::RULE,

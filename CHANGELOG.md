@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`unsplit-expansion` — the zsh trap that never errors.** bash splits an
+  unquoted `$var` on `IFS`; zsh does not, so `set -- $rp` sets `$1` to the
+  whole string and `$2` to nothing, and `for f in $files` runs once with every
+  path glued into one name. Nothing fails: the command runs with the wrong
+  arguments and reports success — six PR merges on 2026-09-21 went to
+  `…/repos/fredericrous/sre-agent 41/pulls//merge` (URL rejected), and a
+  Prometheus query the same day fed an empty window into `increase(…[0s])`.
+  The rule reads only the two idioms whose sole purpose is splitting — `set
+  [--] $var` and `for x in $var` — and stays silent on `"$var"`, `$@`, `$*`,
+  positionals, `$dir/x` and `$(cmd)` (zsh DOES split a command substitution).
+  Ships observing.
+
 ## v2.16.0
 
 ### Added
