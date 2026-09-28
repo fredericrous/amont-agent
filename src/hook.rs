@@ -66,9 +66,27 @@ fn decide(raw: &str) -> Decision {
             // fetch below can never cost the heartbeat.
             heartbeat();
             crate::session_state::sweep();
+            crate::preview::sweep();
             on_session_start(&session)
         }
         Event::NotOurs => Decision::Silent,
+        Event::Prompt(prompt) => {
+            crate::preview::on_prompt(&prompt);
+            Decision::Silent
+        }
+        Event::PreAsk(ask) => {
+            let stance = crate::stance::resolve(&rules::push_preview::RULE);
+            match crate::preview::on_pre_ask(&ask, stance) {
+                Some(why) => {
+                    Decision::Deny(decision::phrase(rules::push_preview::RULE.id, &why, ""))
+                }
+                None => Decision::Silent,
+            }
+        }
+        Event::PostAsk(ask) => {
+            crate::preview::on_post_ask(&ask);
+            Decision::Silent
+        }
         Event::PreFile(op) => on_file(&op),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
@@ -179,6 +197,7 @@ fn on_bash(bash: &Bash) -> Decision {
                 parsed: &parsed,
                 background: bash.background,
                 timeout_ms: bash.timeout_ms,
+                tool_use_id: &bash.tool_use_id,
             };
             let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
             let window = dump_window(&d.extent);
@@ -237,6 +256,13 @@ fn on_bash(bash: &Bash) -> Decision {
         }
     }
 
+    // Where each branch destination stands before the push, for
+    // `push-published` to compare against once it has run. Only a push that
+    // is going to run is worth remembering.
+    if deny.is_empty() {
+        crate::preview::record_before(bash, &parsed);
+    }
+
     // A refusal outranks advice: there is no point advising about a command
     // that is not going to run. The advisory findings are still journalled.
     if !deny.is_empty() {
@@ -275,6 +301,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
         parsed: &parsed,
         background: bash.background,
         timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
     };
 
     // A `cat`-shaped dump that has now run is a read the session should
@@ -287,6 +314,10 @@ fn on_post_bash(bash: &Bash) -> Decision {
             crate::session_state::record(&bash.session, "read", &path, &dump_window(&d.extent));
         }
     }
+
+    // A `preview register` that ran on its own is bound to this session and
+    // prompt here, from its printed output.
+    crate::preview::bind(bash, &parsed);
 
     let claimed = assertions::examine_all(&parsed);
     if claimed.is_empty() {
@@ -302,6 +333,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
                 note_claim(assertion, "unverified", why, bash, claim);
             }
             Verdict::Held => note_claim(assertion, stance.as_str(), "held", bash, claim),
+            Verdict::Noted(outcome) => note_claim(assertion, stance.as_str(), outcome, bash, claim),
             Verdict::Broken { reason, remedy } => {
                 note_claim(assertion, stance.as_str(), "broken", bash, claim);
                 if stance != Stance::Observe {
@@ -490,6 +522,7 @@ fn confirmed(
         parsed,
         background: bash.background,
         timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
     };
     match confirm(&ctx, finding) {
         Confirmed::Yes => Ok(()),

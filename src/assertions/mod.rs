@@ -54,6 +54,7 @@ use crate::rules::{Context, Evidence, Stance};
 use crate::shell::Parsed;
 
 pub mod push_landed;
+pub mod push_published;
 
 /// What the command said it did. Produced by a pure `examine`.
 pub struct Claim {
@@ -73,6 +74,10 @@ pub enum Verdict {
     Broken { reason: String, remedy: String },
     /// Could not establish either way. Silence, with a reason for the journal.
     Unknown(&'static str),
+    /// A fact recorded, not a claim judged: the outcome is journalled under
+    /// the assertion's stance and nothing is said. `push-published` is the
+    /// one assertion that only keeps a record.
+    Noted(&'static str),
 }
 
 pub struct Assertion {
@@ -85,7 +90,7 @@ pub struct Assertion {
     pub verify: fn(&Context, &Claim) -> Verdict,
 }
 
-pub const ASSERTIONS: &[Assertion] = &[push_landed::ASSERTION];
+pub const ASSERTIONS: &[Assertion] = &[push_landed::ASSERTION, push_published::ASSERTION];
 
 /// Consumed by `explain` and `graduate` once this tier has a measured rate;
 /// kept beside `ASSERTIONS` so the lookup has one spelling from the start.

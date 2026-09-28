@@ -266,6 +266,12 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // instead of adding a second one that fires beside it.
     ("PostToolUse", Some("Read")),
     ("SessionStart", None),
+    // Preview approval (ADR-0023). A typed approval arrives as a prompt; an
+    // answered marked question arrives after `AskUserQuestion`, and whether
+    // its answers were pre-filled by the model can only be seen before it.
+    ("UserPromptSubmit", None),
+    ("PreToolUse", Some("AskUserQuestion")),
+    ("PostToolUse", Some("AskUserQuestion")),
 ];
 
 /// Add our handler to one event, joining an existing block rather than adding a
