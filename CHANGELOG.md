@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.19.0
 
 ### Changed
 
