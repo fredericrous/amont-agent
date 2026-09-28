@@ -638,7 +638,7 @@ fn preview_journal_lines_name_the_repository_pushed_not_the_sessions() {
     let record = w.root.join("attest.md");
     std::fs::write(&record, "x\n").unwrap();
     let unbound = format!(
-        "cd {}; amont-agent preview register --url http://localhost:1/ --attestation {}",
+        "cd '{}'; amont-agent preview register --url http://localhost:1/ --attestation '{}'",
         w.work.display(),
         record.display()
     );
