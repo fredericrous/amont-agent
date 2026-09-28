@@ -51,10 +51,30 @@ pub const REQUEST_CHANGES: &str = "Request changes";
 pub const HOLD: &str = "Hold";
 
 fn now() -> u64 {
+    now_ms() / 1000
+}
+
+fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// How long the person took to answer, as the journal spells it:
+/// `<secs>s,dur=<duration_ms>ms`. The seconds are ours — PostToolUse time
+/// minus the PreToolUse time recorded in `asks/<tool_use_id>` — because the
+/// payload's `duration_ms` is not the person's answer time (a minutes-long
+/// approval arrived as 0). The raw `duration_ms` rides along for comparison.
+fn latency(asked_ms: Option<u64>, answered_ms: u64, duration_ms: Option<u64>) -> String {
+    let secs = asked_ms
+        .filter(|&a| a > 0 && a <= answered_ms)
+        .map(|a| format!("{}s", (answered_ms - a) / 1000))
+        .unwrap_or_else(|| "-".to_string());
+    let dur = duration_ms
+        .map(|d| format!("{d}ms"))
+        .unwrap_or_else(|| "-".to_string());
+    format!("{secs},dur={dur}")
 }
 
 fn dir() -> Option<PathBuf> {
@@ -846,11 +866,12 @@ pub fn on_pre_ask(ask: &crate::payload::Ask, stance: Stance) -> Option<String> {
             let _ = crate::atomic::write_atomic(
                 &d.join(&ask.tool_use_id),
                 &format!(
-                    "{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\n",
                     clean(&ask.session),
                     clean(&ask.prompt_id),
                     ask.prefilled,
-                    ids.join(",")
+                    ids.join(","),
+                    now_ms()
                 ),
             );
         }
@@ -915,10 +936,13 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
         }
         return;
     };
+    let answered_ms = now_ms();
     let f: Vec<&str> = recorded.trim_end().split('\t').collect();
-    if f.len() != 4 || f[0] != ask.session || f[2] != "false" {
+    // Four fields: written by a release that did not yet time the ask.
+    if !(f.len() == 4 || f.len() == 5) || f[0] != ask.session || f[2] != "false" {
         return;
     }
+    let asked_ms = f.get(4).and_then(|t| t.parse::<u64>().ok());
     for question in &ask.questions {
         let Some(ids) = marker(question) else {
             continue;
@@ -929,10 +953,7 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
             .find(|(q, _)| q == question)
             .map(|(_, l)| l.as_str())
             .unwrap_or("");
-        let latency = ask
-            .duration_ms
-            .map(|d| format!("{}s", d / 1000))
-            .unwrap_or_else(|| "-".to_string());
+        let latency = latency(asked_ms, answered_ms, ask.duration_ms);
         let mut regs = registrations();
         let (mine, rest): (Vec<Registration>, Vec<Registration>) = regs.drain(..).partition(|r| {
             r.session == ask.session && r.asked == ask.tool_use_id && ids.contains(&r.id)
@@ -1313,6 +1334,13 @@ index 15750da..2770014 100644
         assert!(!package_is_ui(r#"{"name":"eslint-plugin"}"#));
         // Unreadable: doubt counts.
         assert!(package_is_ui("{not json"));
+    }
+
+    #[test]
+    fn latency_is_measured_by_the_hook_and_duration_ms_rides_along() {
+        assert_eq!(latency(Some(1_000), 185_400, Some(0)), "184s,dur=0ms");
+        assert_eq!(latency(None, 185_400, Some(30_997)), "-,dur=30997ms");
+        assert_eq!(latency(Some(9_000), 5_000, None), "-,dur=-");
     }
 
     #[test]

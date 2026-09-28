@@ -76,7 +76,9 @@ pub struct Ask {
     /// After the call: question text → the label the person picked, from
     /// `tool_response.answers`. Empty when nobody answered.
     pub answers: Vec<(String, String)>,
-    /// `duration_ms`: how long the person took. The soak's latency signal.
+    /// `duration_ms`, raw. NOT the person's answer time: a minutes-long
+    /// approval arrived as 0 on 2026-09-28. The latency is measured by the
+    /// hook itself (`crate::preview`); this is journalled beside it.
     pub duration_ms: Option<u64>,
 }
 

@@ -659,3 +659,23 @@ fn preview_journal_lines_name_the_repository_pushed_not_the_sessions() {
         assert!(!fields.contains(&"elsewhere"), "{l}");
     }
 }
+
+#[test]
+fn the_answer_latency_is_measured_not_read_from_duration_ms() {
+    // Seen 2026-09-28: an approval that took minutes was journalled
+    // `option,0s` from the payload's `duration_ms`.
+    let w = World::new("latency");
+    w.commit("app/a.tsx", "export const a = 1\n");
+    let id = w.register("s", "p1");
+    let q = format!("[preview {id}] Ship {}?", w.label());
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    // The payload says 4200 ms; the person took just over a second.
+    let journal = w.journal();
+    let at = journal.find("by option,").expect("an approval line") + "by option,".len();
+    let (secs, rest) = journal[at..].split_once("s,").expect("<secs>s,");
+    let secs: u64 = secs.parse().expect("whole seconds");
+    assert!((1..=3).contains(&secs), "{journal}");
+    assert!(rest.starts_with("dur=4200ms"), "{journal}");
+}
