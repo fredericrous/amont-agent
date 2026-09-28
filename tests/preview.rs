@@ -132,9 +132,22 @@ impl World {
         command: &str,
         stdout: &str,
     ) -> String {
+        self.post_bash_in(&self.work, session, prompt, tool_use_id, command, stdout)
+    }
+
+    /// A PostToolUse Bash payload whose session cwd is `cwd`.
+    fn post_bash_in(
+        &self,
+        cwd: &Path,
+        session: &str,
+        prompt: &str,
+        tool_use_id: &str,
+        command: &str,
+        stdout: &str,
+    ) -> String {
         self.hook(serde_json::json!({
             "hook_event_name": "PostToolUse", "tool_name": "Bash",
-            "cwd": self.work, "session_id": session, "prompt_id": prompt,
+            "cwd": cwd, "session_id": session, "prompt_id": prompt,
             "tool_use_id": tool_use_id, "permission_mode": "default",
             "tool_input": {"command": command},
             "tool_response": {"stdout": stdout, "stderr": "", "interrupted": false}
@@ -411,6 +424,73 @@ fn a_chained_register_is_not_bound() {
     w.answer("s", "p1", &id, Some("Approve"));
     assert!(w.push_advised("s"));
     assert!(w.journal().contains("not a standalone command"));
+}
+
+/// Run `preview register` in the worktree and return (id, printed JSON,
+/// attestation path).
+fn validated(w: &World) -> (String, String, PathBuf) {
+    let record = w.root.join("attest.md");
+    std::fs::write(&record, "x\n").unwrap();
+    let (code, out, err) = w.run(
+        &[
+            "preview",
+            "register",
+            "--url",
+            "http://localhost:1/",
+            "--attestation",
+            &record.display().to_string(),
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{err}");
+    let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (id, out, record)
+}
+
+#[test]
+fn a_register_after_leading_cds_is_bound_in_the_repository_they_reach() {
+    // Seen 2026-09-28: `cd /path/to/worktree && amont-agent preview register …`
+    // from a session whose cwd was another directory was `unbound`.
+    let w = World::new("cd-chained");
+    w.commit("app/a.tsx", "1\n");
+    let (id, out, record) = validated(&w);
+    let command = format!(
+        "cd {} && cd app && amont-agent preview register --url http://localhost:1/ --attestation {}",
+        w.root.display(),
+        record.display()
+    );
+    // The session sits in the claude dir, not in the repository.
+    w.post_bash_in(&w.root.join("claude"), "s", "p1", "reg", &command, &out);
+    assert!(w.journal().contains("registered"), "{}", w.journal());
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_cd_chain_with_anything_else_stays_unbound() {
+    let w = World::new("cd-other");
+    w.commit("app/a.tsx", "1\n");
+    let (id, out, record) = validated(&w);
+    let tail = format!(
+        "amont-agent preview register --url http://localhost:1/ --attestation {}",
+        record.display()
+    );
+    let work = w.work.display();
+    for command in [
+        format!("cd {work}; {tail}"),
+        format!("cd {work} && npm test && {tail}"),
+        format!("cd {work} || {tail}"),
+        format!("cd $(git rev-parse --show-toplevel) && {tail}"),
+        format!("cd {work} && {tail} | tee /dev/null"),
+    ] {
+        w.post_bash_in(&w.root, "s", "p1", "reg", &command, &out);
+    }
+    assert!(!w.journal().contains("registered"), "{}", w.journal());
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(w.push_advised("s"));
 }
 
 #[test]

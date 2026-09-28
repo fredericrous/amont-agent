@@ -476,16 +476,25 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
     if bash.background {
         return refuse("ran in the background");
     }
-    if clauses.len() != 1 || !parsed.fully_read() || cmd.prev.is_some() || cmd.next.is_some() {
+    if !parsed.fully_read() || !standalone(clauses, cmd.at) {
         return refuse("not a standalone command");
     }
     let Some(printed) = bash.stdout.as_deref().and_then(Registered::from_json) else {
         return refuse("its output is not the expected JSON");
     };
+    // Where the leading `cd`s left the shell, with `cwd_at`'s semantics.
+    let ctx = crate::rules::Context {
+        cwd: &bash.cwd,
+        parsed,
+        background: bash.background,
+        timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
+    };
+    let here = ctx.cwd_at(cmd.at);
     let dir = match cmd.flag_value("--repo") {
         Some(d) if d.starts_with('/') => PathBuf::from(d),
-        Some(d) => bash.cwd.join(d),
-        None => bash.cwd.clone(),
+        Some(d) => here.join(d),
+        None => here,
     };
     let Some(repo) = push_target::toplevel(&dir) else {
         return refuse("the repository it names is gone");
@@ -524,6 +533,44 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
     );
     regs.push(reg);
     save_registrations(&regs);
+}
+
+/// The register clause at `at` is the last clause of the line, and every
+/// clause before it is a `cd <literal path>` joined by `&&`: no pipe, no
+/// `;`- or `||`-sequenced program, no background, no substitution.
+fn standalone(clauses: &[crate::shell::Simple], at: usize) -> bool {
+    use crate::shell::Connector;
+    let Some(last) = clauses.last() else {
+        return false;
+    };
+    if last.at != at || last.next.is_some() || last.nested.is_some() {
+        return false;
+    }
+    let lead = &clauses[..clauses.len() - 1];
+    if lead.is_empty() {
+        return last.prev.is_none();
+    }
+    if last.prev != Some(Connector::AndAnd) {
+        return false;
+    }
+    lead.iter().enumerate().all(|(i, c)| {
+        let literal = c.words.len() == 2
+            && c.words[0].text == "cd"
+            && !c.words[0].quoted
+            && !c.words[1].expanded
+            && !c.words[1].text.trim().is_empty()
+            && !c.words[1].text.starts_with('-');
+        literal
+            && c.nested.is_none()
+            && c.redirects.is_empty()
+            && !c.heredoc
+            && c.next == Some(Connector::AndAnd)
+            && (if i == 0 {
+                c.prev.is_none()
+            } else {
+                c.prev == Some(Connector::AndAnd)
+            })
+    })
 }
 
 fn is_register(cmd: &crate::shell::Simple) -> bool {
