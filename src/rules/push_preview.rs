@@ -19,8 +19,9 @@
 //! would publish (`crate::push_target`, a documented subset), and fires only
 //! when all hold: the repository has a user interface (a `dev` script, or
 //! `git config amont.agent.push-preview.ui true`), a pushed branch carries a
-//! file under `app/`, `src/`, `web/` or a `.tsx/.jsx/.css/.html`, and that
-//! commit has no approval. A push this guard cannot read is journalled with
+//! file under `app/`, `src/`, `web/` or a `.tsx/.jsx/.css/.html` whose
+//! nearest `package.json` looks like an interface and whose diff is not
+//! comments only (`crate::preview`), and that commit has no approval. A push this guard cannot read is journalled with
 //! its shape and passes — except under `deny`, where it is held so that
 //! `--all` is not the way around the gate.
 //!

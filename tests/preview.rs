@@ -116,9 +116,14 @@ impl World {
     }
 
     fn pre_bash(&self, session: &str, tool_use_id: &str, command: &str) -> String {
+        self.pre_bash_in(&self.work, session, tool_use_id, command)
+    }
+
+    /// A PreToolUse Bash payload whose session cwd is `cwd`.
+    fn pre_bash_in(&self, cwd: &Path, session: &str, tool_use_id: &str, command: &str) -> String {
         self.hook(serde_json::json!({
             "hook_event_name": "PreToolUse", "tool_name": "Bash",
-            "cwd": self.work, "session_id": session, "prompt_id": "p1",
+            "cwd": cwd, "session_id": session, "prompt_id": "p1",
             "tool_use_id": tool_use_id, "permission_mode": "default",
             "tool_input": {"command": command}
         }))
@@ -132,9 +137,22 @@ impl World {
         command: &str,
         stdout: &str,
     ) -> String {
+        self.post_bash_in(&self.work, session, prompt, tool_use_id, command, stdout)
+    }
+
+    /// A PostToolUse Bash payload whose session cwd is `cwd`.
+    fn post_bash_in(
+        &self,
+        cwd: &Path,
+        session: &str,
+        prompt: &str,
+        tool_use_id: &str,
+        command: &str,
+        stdout: &str,
+    ) -> String {
         self.hook(serde_json::json!({
             "hook_event_name": "PostToolUse", "tool_name": "Bash",
-            "cwd": self.work, "session_id": session, "prompt_id": prompt,
+            "cwd": cwd, "session_id": session, "prompt_id": prompt,
             "tool_use_id": tool_use_id, "permission_mode": "default",
             "tool_input": {"command": command},
             "tool_response": {"stdout": stdout, "stderr": "", "interrupted": false}
@@ -236,6 +254,83 @@ fn an_unapproved_ui_push_is_advised_and_a_docs_only_one_is_not() {
         "docs-only pushes carry nothing to preview"
     );
     w.commit("app/routes/home.tsx", "export default 1\n");
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn a_change_is_judged_by_its_nearest_package_not_the_repository() {
+    // Seen 2026-09-28 in duro-design-system: the root has a `dev` script, a
+    // push touched only `packages/cli/src/**` (a CLI) and was advised.
+    let w = World::new("per-package");
+    w.commit(
+        "packages/cli/package.json",
+        r#"{"name":"cli","bin":{"x":"dist/bin.js"},
+            "devDependencies":{"@duro-app/ui":"workspace:^"},
+            "peerDependencies":{"@duro-app/ui":"workspace:^"},
+            "peerDependenciesMeta":{"@duro-app/ui":{"optional":true}}}"#,
+    );
+    w.commit(
+        "packages/ui/package.json",
+        r#"{"name":"ui","peerDependencies":{"react":"^19"}}"#,
+    );
+    w.commit(
+        "packages/cli/src/commands/doctor.ts",
+        "export const x = 1\n",
+    );
+    assert!(!w.push_advised("s"), "{}", w.journal());
+
+    w.commit(
+        "packages/ui/src/Button.tsx",
+        "export const B = () => null\n",
+    );
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn the_package_is_read_from_the_pushed_commit_not_the_worktree() {
+    let w = World::new("per-package-commit");
+    w.commit("packages/cli/package.json", r#"{"name":"cli"}"#);
+    w.commit("packages/cli/src/a.ts", "export const x = 1\n");
+    // The worktree now claims a dev script the commit does not carry.
+    std::fs::write(
+        w.work.join("packages/cli/package.json"),
+        r#"{"scripts":{"dev":"vite"}}"#,
+    )
+    .unwrap();
+    assert!(!w.push_advised("s"));
+}
+
+#[test]
+fn a_comment_only_change_is_not_an_interface_change() {
+    // Seen 2026-09-28: application-landscape #301 changed only comments
+    // under app/ and was advised.
+    let w = World::new("comment-only");
+    w.commit(
+        "app/routes/graph.tsx",
+        "/* graph (plan-90d C). */\nexport default () => <p>Graph</p>\n",
+    );
+    git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
+    w.commit(
+        "app/routes/graph.tsx",
+        "/* graph (90-day-table-stakes-plan C). */\nexport default () => <p>Graph</p>\n",
+    );
+    assert!(!w.push_advised("s"), "{}", w.journal());
+
+    w.commit(
+        "app/routes/graph.tsx",
+        "/* graph (90-day-table-stakes-plan C). */\nexport default () => <p>The graph</p>\n",
+    );
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn a_comment_only_change_on_a_new_branch_is_judged_commit_by_commit() {
+    // No tracking ref and no `origin/HEAD`: the files come from `git log`.
+    let w = World::new("comment-only-log");
+    w.commit("app/a.tsx", "// one\n");
+    w.commit("app/a.tsx", "// two\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    w.commit("app/a.tsx", "// two\nexport const a = 1\n");
     assert!(w.push_advised("s"));
 }
 
@@ -413,6 +508,73 @@ fn a_chained_register_is_not_bound() {
     assert!(w.journal().contains("not a standalone command"));
 }
 
+/// Run `preview register` in the worktree and return (id, printed JSON,
+/// attestation path).
+fn validated(w: &World) -> (String, String, PathBuf) {
+    let record = w.root.join("attest.md");
+    std::fs::write(&record, "x\n").unwrap();
+    let (code, out, err) = w.run(
+        &[
+            "preview",
+            "register",
+            "--url",
+            "http://localhost:1/",
+            "--attestation",
+            &record.display().to_string(),
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{err}");
+    let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (id, out, record)
+}
+
+#[test]
+fn a_register_after_leading_cds_is_bound_in_the_repository_they_reach() {
+    // Seen 2026-09-28: `cd /path/to/worktree && amont-agent preview register …`
+    // from a session whose cwd was another directory was `unbound`.
+    let w = World::new("cd-chained");
+    w.commit("app/a.tsx", "1\n");
+    let (id, out, record) = validated(&w);
+    let command = format!(
+        "cd '{}' && cd app && amont-agent preview register --url http://localhost:1/ --attestation '{}'",
+        w.root.display(),
+        record.display()
+    );
+    // The session sits in the claude dir, not in the repository.
+    w.post_bash_in(&w.root.join("claude"), "s", "p1", "reg", &command, &out);
+    assert!(w.journal().contains("registered"), "{}", w.journal());
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_cd_chain_with_anything_else_stays_unbound() {
+    let w = World::new("cd-other");
+    w.commit("app/a.tsx", "1\n");
+    let (id, out, record) = validated(&w);
+    let tail = format!(
+        "amont-agent preview register --url http://localhost:1/ --attestation {}",
+        record.display()
+    );
+    let work = w.work.display();
+    for command in [
+        format!("cd {work}; {tail}"),
+        format!("cd {work} && npm test && {tail}"),
+        format!("cd {work} || {tail}"),
+        format!("cd $(git rev-parse --show-toplevel) && {tail}"),
+        format!("cd {work} && {tail} | tee /dev/null"),
+    ] {
+        w.post_bash_in(&w.root, "s", "p1", "reg", &command, &out);
+    }
+    assert!(!w.journal().contains("registered"), "{}", w.journal());
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(w.push_advised("s"));
+}
+
 #[test]
 fn under_deny_an_unreadable_push_to_a_ui_repository_is_held() {
     let w = World::new("deny");
@@ -453,4 +615,69 @@ fn a_real_push_is_recorded_as_published_with_its_approval() {
     git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
     w.post_bash("s", "p1", "push10", command, "");
     assert!(w.journal().contains("already-present"), "{}", w.journal());
+}
+
+#[test]
+fn preview_journal_lines_name_the_repository_pushed_not_the_sessions() {
+    // Seen 2026-09-28: an application-landscape push was journalled under
+    // the name of the worktree the session sat in.
+    let w = World::new("attribution");
+    let elsewhere = w.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    git(&elsewhere, &["init", "-q", "--template=", "."]);
+    w.commit("app/a.tsx", "export const a = 1\n");
+
+    // Quoted as a session writes it: an unquoted Windows path's backslashes
+    // are shell escapes.
+    let push = format!("cd '{}' && git push -q -u origin feat/x", w.work.display());
+    let out = w.pre_bash_in(&elsewhere, "s", "push1", &push);
+    assert!(out.contains("amont-agent/push-preview"), "{out}");
+    git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
+    w.post_bash_in(&elsewhere, "s", "p1", "push1", &push, "");
+
+    let record = w.root.join("attest.md");
+    std::fs::write(&record, "x\n").unwrap();
+    let unbound = format!(
+        "cd '{}'; amont-agent preview register --url http://localhost:1/ --attestation '{}'",
+        w.work.display(),
+        record.display()
+    );
+    w.post_bash_in(&elsewhere, "s", "p1", "reg", &unbound, "{}");
+
+    let journal = w.journal();
+    let lines: Vec<&str> = journal
+        .lines()
+        .filter(|l| l.contains("push-preview") || l.contains("push-published"))
+        .collect();
+    for needle in ["advised", "published-unapproved", "unbound"] {
+        assert!(
+            lines.iter().any(|l| l.contains(needle)),
+            "{needle} missing:\n{journal}"
+        );
+    }
+    for l in &lines {
+        let fields: Vec<&str> = l.split_whitespace().collect();
+        assert!(fields.contains(&"app"), "{l}");
+        assert!(!fields.contains(&"elsewhere"), "{l}");
+    }
+}
+
+#[test]
+fn the_answer_latency_is_measured_not_read_from_duration_ms() {
+    // Seen 2026-09-28: an approval that took minutes was journalled
+    // `option,0s` from the payload's `duration_ms`.
+    let w = World::new("latency");
+    w.commit("app/a.tsx", "export const a = 1\n");
+    let id = w.register("s", "p1");
+    let q = format!("[preview {id}] Ship {}?", w.label());
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    // The payload says 4200 ms; the person took just over a second.
+    let journal = w.journal();
+    let at = journal.find("by option,").expect("an approval line") + "by option,".len();
+    let (secs, rest) = journal[at..].split_once("s,").expect("<secs>s,");
+    let secs: u64 = secs.parse().expect("whole seconds");
+    assert!((1..=3).contains(&secs), "{journal}");
+    assert!(rest.starts_with("dur=4200ms"), "{journal}");
 }

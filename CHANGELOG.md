@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.20.0
+
+### Fixed
+
+Findings from the first day of the preview-approval soak (ADR-0023).
+
+- **`cd <worktree> && amont-agent preview register …` binds.** It was
+  journalled `unbound: not a standalone command`. Leading `cd <literal
+  path>` clauses joined by `&&` are now accepted, and the repository is
+  resolved through them; it must still be the printed repository at the
+  printed `HEAD`. Every other chain stays unbound.
+- **Interface changes are judged per package.** A push touching only
+  duro-design-system's `packages/cli` was advised because the repository
+  root has a `dev` script. A changed file now counts only when its nearest
+  `package.json`, read from the pushed commit, has a `dev` script or a UI
+  package (`react`, `react-dom`, `react-native`, `react-strict-dom`,
+  `@duro-app/ui`) in `dependencies` or as a required peer.
+- **Comment-only diffs are not interface changes.** application-landscape
+  #301 changed only comments under `app/` and was advised. A `.ts`, `.tsx`,
+  `.js`, `.jsx` or `.css` file whose every changed non-blank line is a
+  comment no longer counts; any doubt still does.
+- **Journal lines name the repository pushed.** `push-preview`,
+  `push-published` and preview events were recorded under the session
+  cwd's repository; they now name the push target's or the registration's.
+- **Answer latency is measured by the hook.** `duration_ms` in the
+  `AskUserQuestion` payload is not the person's answer time (a minutes-long
+  approval was journalled `option,0s`). The latency is now PostToolUse time
+  minus the PreToolUse time recorded for the question, journalled as
+  `option,<secs>s,dur=<duration_ms>ms`.
+
 ## v2.19.0
 
 ### Changed

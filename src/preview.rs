@@ -51,10 +51,30 @@ pub const REQUEST_CHANGES: &str = "Request changes";
 pub const HOLD: &str = "Hold";
 
 fn now() -> u64 {
+    now_ms() / 1000
+}
+
+fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// How long the person took to answer, as the journal spells it:
+/// `<secs>s,dur=<duration_ms>ms`. The seconds are ours — PostToolUse time
+/// minus the PreToolUse time recorded in `asks/<tool_use_id>` — because the
+/// payload's `duration_ms` is not the person's answer time (a minutes-long
+/// approval arrived as 0). The raw `duration_ms` rides along for comparison.
+fn latency(asked_ms: Option<u64>, answered_ms: u64, duration_ms: Option<u64>) -> String {
+    let secs = asked_ms
+        .filter(|&a| a > 0 && a <= answered_ms)
+        .map(|a| format!("{}s", (answered_ms - a) / 1000))
+        .unwrap_or_else(|| "-".to_string());
+    let dur = duration_ms
+        .map(|d| format!("{d}ms"))
+        .unwrap_or_else(|| "-".to_string());
+    format!("{secs},dur={dur}")
 }
 
 fn dir() -> Option<PathBuf> {
@@ -106,9 +126,16 @@ pub fn is_ui_path(path: &str) -> bool {
         || ext.iter().any(|e| path.ends_with(e))
 }
 
+/// What a branch push would publish: the files, and the base they were
+/// diffed against (`None` when they were listed from `git log` instead).
+struct Published {
+    base: Option<String>,
+    files: Vec<String>,
+}
+
 /// The files a branch push would publish, or `None` when that cannot be
 /// established without guessing.
-fn published_files(repo: &Path, t: &Target) -> Option<Vec<String>> {
+fn published(repo: &Path, t: &Target) -> Option<Published> {
     let short = t.dst.strip_prefix("refs/heads/")?;
     let tracking = format!("refs/remotes/{}/{}", t.remote, short);
     let base = if git(repo, &["rev-parse", "--verify", "--quiet", &tracking]).is_some() {
@@ -123,7 +150,7 @@ fn published_files(repo: &Path, t: &Target) -> Option<Vec<String>> {
             ],
         )
     };
-    let out = match base {
+    let out = match &base {
         Some(b) => {
             crate::git::stdout_in(repo, &["diff", "--name-only", &format!("{b}..{}", t.src)])?
         }
@@ -139,13 +166,241 @@ fn published_files(repo: &Path, t: &Target) -> Option<Vec<String>> {
             ],
         )?,
     };
-    Some(
-        out.lines()
+    Some(Published {
+        base,
+        files: out
+            .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
             .map(str::to_string)
             .collect(),
+    })
+}
+
+/// Whether a branch push carries an interface change, or `None` when its
+/// files cannot be listed. Stops at the first file that counts.
+fn carries_ui(repo: &Path, t: &Target) -> Option<bool> {
+    let p = published(repo, t)?;
+    let mut packages = std::collections::HashMap::new();
+    Some(
+        p.files
+            .iter()
+            .any(|f| counts_as_ui(repo, p.base.as_deref(), t, f, &mut packages)),
     )
+}
+
+// --- what counts as an interface change -----------------------------------
+
+/// One changed file counts when all hold: its path looks like an interface
+/// ([`is_ui_path`]); its nearest `package.json` in the pushed commit looks
+/// like one ([`package_is_ui`]); and its diff is not comments only
+/// ([`comment_only`]). Every doubt — an unreadable manifest, a diff that
+/// cannot be taken — counts.
+fn counts_as_ui(
+    repo: &Path,
+    base: Option<&str>,
+    t: &Target,
+    file: &str,
+    packages: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    let commit = t.src.as_str();
+    if !is_ui_path(file) {
+        return false;
+    }
+    if !nearest_package_is_ui(repo, commit, file, packages) {
+        return false;
+    }
+    let commentable = [".ts", ".tsx", ".js", ".jsx", ".css"]
+        .iter()
+        .any(|e| file.ends_with(e));
+    if !commentable {
+        return true;
+    }
+    let range = base.map(|b| format!("{b}..{commit}"));
+    let not_remote = format!("--remotes={}", t.remote);
+    let args: Vec<&str> = match &range {
+        Some(r) => vec!["diff", "--no-ext-diff", "--no-color", "-U0", r, "--", file],
+        // No single base: every commit the remote lacks, each against its
+        // first parent. Comments-only in each is comments-only in all.
+        None => vec![
+            "log",
+            "-p",
+            "-U0",
+            "--format=",
+            "--no-ext-diff",
+            "--no-color",
+            "--first-parent",
+            "--diff-merges=first-parent",
+            commit,
+            "--not",
+            &not_remote,
+            "--",
+            file,
+        ],
+    };
+    match crate::git::stdout_in(repo, &args) {
+        Some(diff) => !comment_only(&diff),
+        None => true,
+    }
+}
+
+/// Walk up from the file to the repository root, in the pushed commit, and
+/// judge the first `package.json` met. None at all: the path decides.
+fn nearest_package_is_ui(
+    repo: &Path,
+    commit: &str,
+    file: &str,
+    cache: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    let mut dir = Path::new(file).parent();
+    loop {
+        let d = dir
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some(&known) = cache.get(&d) {
+            return known;
+        }
+        let manifest = if d.is_empty() {
+            "package.json".to_string()
+        } else {
+            format!("{d}/package.json")
+        };
+        if let Some(text) = crate::git::stdout_in(repo, &["show", &format!("{commit}:{manifest}")])
+        {
+            let ui = package_is_ui(&text);
+            cache.insert(d, ui);
+            return ui;
+        }
+        if d.is_empty() {
+            cache.insert(d, true);
+            return true;
+        }
+        dir = dir.and_then(Path::parent);
+    }
+}
+
+/// Packages whose presence says "this renders something".
+const UI_PACKAGES: &[&str] = &[
+    "react",
+    "react-dom",
+    "react-native",
+    "react-strict-dom",
+    "@duro-app/ui",
+];
+
+/// A `package.json` that looks like an interface: a `dev` script, or a UI
+/// package among its `dependencies` or its non-optional `peerDependencies`.
+///
+/// `devDependencies` and optional peers do not count: a CLI that reads the
+/// design system's metadata (duro-design-system's `packages/cli`) carries
+/// `@duro-app/ui` exactly there, and renders nothing. Unparseable counts.
+pub fn package_is_ui(text: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return true;
+    };
+    let dev = v
+        .get("scripts")
+        .and_then(|s| s.get("dev"))
+        .and_then(|d| d.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if dev {
+        return true;
+    }
+    let has = |section: &str, name: &str| {
+        v.get(section)
+            .and_then(|d| d.as_object())
+            .is_some_and(|d| d.contains_key(name))
+    };
+    let optional = |name: &str| {
+        v.get("peerDependenciesMeta")
+            .and_then(|m| m.get(name))
+            .and_then(|m| m.get("optional"))
+            .and_then(|o| o.as_bool())
+            .unwrap_or(false)
+    };
+    UI_PACKAGES
+        .iter()
+        .any(|name| has("dependencies", name) || (has("peerDependencies", name) && !optional(name)))
+}
+
+/// Whether a `git diff -U0` of one file changes comments and nothing else:
+/// at least one hunk, and every added or removed line that is not blank is
+/// a comment line ([`is_comment_line`]). No hunk at all (a binary file, a
+/// mode change) is not "comments only".
+pub fn comment_only(diff: &str) -> bool {
+    let mut hunks = false;
+    let mut header = true;
+    for line in diff.lines() {
+        if line.starts_with("diff ") {
+            // A file's header — `index`, `---`, `+++` — until its first hunk.
+            header = true;
+            continue;
+        }
+        if line.starts_with("@@") {
+            hunks = true;
+            header = false;
+            continue;
+        }
+        if header {
+            continue;
+        }
+        let body = match line.as_bytes().first() {
+            Some(b'+') | Some(b'-') => &line[1..],
+            _ => continue,
+        };
+        if body.trim().is_empty() {
+            continue;
+        }
+        if !is_comment_line(body) {
+            return false;
+        }
+    }
+    hunks
+}
+
+/// A line that, on its own, is nothing but a comment. Conservative: a line
+/// that also carries code — `/* x */ foo()`, `*/ bar` — is not, and neither
+/// is a `*` line that reads like code (a CSS `* {` rule, a continued
+/// multiplication ending in `;`).
+pub fn is_comment_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("//") {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("{/*") {
+        // A JSX comment: closed on this line with `*/}`, or not closed yet.
+        return match rest.find("*/") {
+            None => !rest.contains('}'),
+            Some(i) => rest[i..] == *"*/}",
+        };
+    }
+    if let Some(rest) = t.strip_prefix("/*") {
+        return match rest.find("*/") {
+            None => true,
+            Some(i) => rest[i..] == *"*/",
+        };
+    }
+    if let Some(rest) = t.strip_prefix("*/") {
+        // The end of a block comment — `*/`, or a JSX comment's `*/}`.
+        return rest.is_empty() || rest == "}";
+    }
+    if let Some(rest) = t.strip_prefix('*') {
+        // Inside a block comment: `*`, `* text`, `* text */`.
+        if !(rest.is_empty() || rest.starts_with([' ', '\t']) || rest.starts_with("*/")) {
+            return false;
+        }
+        let body = rest.trim();
+        if let Some(i) = body.find("*/") {
+            return &body[i..] == "*/" && !body.contains("/*");
+        }
+        if body.starts_with('@') {
+            // A JSDoc tag: `* @param {string} name`.
+            return true;
+        }
+        // What reads like code: a CSS `* {` rule, a statement's end.
+        return !body.ends_with(['{', '}', ';']) && !body.contains('{');
+    }
+    false
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
@@ -176,14 +431,14 @@ pub fn needs_preview(
             }
             let mut any_ui = false;
             for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
-                let Some(files) = published_files(&repo, t) else {
+                let Some(ui) = carries_ui(&repo, t) else {
                     return if stance == Stance::Deny {
                         Ok(())
                     } else {
                         Err("the published files cannot be listed")
                     };
                 };
-                if files.iter().any(|f| is_ui_path(f)) {
+                if ui {
                     any_ui = true;
                     if !approved(&repo, &t.src) {
                         return Ok(());
@@ -464,30 +719,42 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
     let Some(cmd) = clauses.iter().find(|c| is_register(c)) else {
         return;
     };
+    // Where the leading `cd`s left the shell, with `cwd_at`'s semantics.
+    let ctx = crate::rules::Context {
+        cwd: &bash.cwd,
+        parsed,
+        background: bash.background,
+        timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
+    };
+    let here = ctx.cwd_at(cmd.at);
+    let dir = match cmd.flag_value("--repo") {
+        Some(d) if d.starts_with('/') => PathBuf::from(d),
+        Some(d) => here.join(d),
+        None => here,
+    };
+    let named = push_target::toplevel(&dir);
+    // Even a refusal is journalled under the repository the command named.
+    let shown = named.clone().unwrap_or_else(|| dir.clone());
     let excerpt = "preview register";
     let refuse = |why: &str| {
         note(
             "unbound",
             &bash.session,
-            &bash.cwd.to_string_lossy(),
+            &shown.to_string_lossy(),
             &format!("{excerpt}: {why}"),
         )
     };
     if bash.background {
         return refuse("ran in the background");
     }
-    if clauses.len() != 1 || !parsed.fully_read() || cmd.prev.is_some() || cmd.next.is_some() {
+    if !parsed.fully_read() || !standalone(clauses, cmd.at) {
         return refuse("not a standalone command");
     }
     let Some(printed) = bash.stdout.as_deref().and_then(Registered::from_json) else {
         return refuse("its output is not the expected JSON");
     };
-    let dir = match cmd.flag_value("--repo") {
-        Some(d) if d.starts_with('/') => PathBuf::from(d),
-        Some(d) => bash.cwd.join(d),
-        None => bash.cwd.clone(),
-    };
-    let Some(repo) = push_target::toplevel(&dir) else {
+    let Some(repo) = named else {
         return refuse("the repository it names is gone");
     };
     let head = git(
@@ -526,6 +793,44 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
     save_registrations(&regs);
 }
 
+/// The register clause at `at` is the last clause of the line, and every
+/// clause before it is a `cd <literal path>` joined by `&&`: no pipe, no
+/// `;`- or `||`-sequenced program, no background, no substitution.
+fn standalone(clauses: &[crate::shell::Simple], at: usize) -> bool {
+    use crate::shell::Connector;
+    let Some(last) = clauses.last() else {
+        return false;
+    };
+    if last.at != at || last.next.is_some() || last.nested.is_some() {
+        return false;
+    }
+    let lead = &clauses[..clauses.len() - 1];
+    if lead.is_empty() {
+        return last.prev.is_none();
+    }
+    if last.prev != Some(Connector::AndAnd) {
+        return false;
+    }
+    lead.iter().enumerate().all(|(i, c)| {
+        let literal = c.words.len() == 2
+            && c.words[0].text == "cd"
+            && !c.words[0].quoted
+            && !c.words[1].expanded
+            && !c.words[1].text.trim().is_empty()
+            && !c.words[1].text.starts_with('-');
+        literal
+            && c.nested.is_none()
+            && c.redirects.is_empty()
+            && !c.heredoc
+            && c.next == Some(Connector::AndAnd)
+            && (if i == 0 {
+                c.prev.is_none()
+            } else {
+                c.prev == Some(Connector::AndAnd)
+            })
+    })
+}
+
 fn is_register(cmd: &crate::shell::Simple) -> bool {
     let is_us = cmd
         .program()
@@ -561,11 +866,12 @@ pub fn on_pre_ask(ask: &crate::payload::Ask, stance: Stance) -> Option<String> {
             let _ = crate::atomic::write_atomic(
                 &d.join(&ask.tool_use_id),
                 &format!(
-                    "{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\n",
                     clean(&ask.session),
                     clean(&ask.prompt_id),
                     ask.prefilled,
-                    ids.join(",")
+                    ids.join(","),
+                    now_ms()
                 ),
             );
         }
@@ -574,7 +880,7 @@ pub fn on_pre_ask(ask: &crate::payload::Ask, stance: Stance) -> Option<String> {
         note(
             "prefilled",
             &ask.session,
-            "-",
+            &repo_of(&ask.session, &ids),
             &format!("marked question {}", ids.join(",")),
         );
         if stance == Stance::Deny {
@@ -615,19 +921,28 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
         // No PreToolUse record: the question was never seen before it ran,
         // so nothing proves its answers were not pre-filled.
         if ask.questions.iter().any(|q| marker(q).is_some()) {
+            let ids: Vec<String> = ask
+                .questions
+                .iter()
+                .filter_map(|q| marker(q))
+                .flatten()
+                .collect();
             note(
                 "unrecorded",
                 &ask.session,
-                "-",
+                &repo_of(&ask.session, &ids),
                 "marked question with no PreToolUse record",
             );
         }
         return;
     };
+    let answered_ms = now_ms();
     let f: Vec<&str> = recorded.trim_end().split('\t').collect();
-    if f.len() != 4 || f[0] != ask.session || f[2] != "false" {
+    // Four fields: written by a release that did not yet time the ask.
+    if !(f.len() == 4 || f.len() == 5) || f[0] != ask.session || f[2] != "false" {
         return;
     }
+    let asked_ms = f.get(4).and_then(|t| t.parse::<u64>().ok());
     for question in &ask.questions {
         let Some(ids) = marker(question) else {
             continue;
@@ -638,10 +953,7 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
             .find(|(q, _)| q == question)
             .map(|(_, l)| l.as_str())
             .unwrap_or("");
-        let latency = ask
-            .duration_ms
-            .map(|d| format!("{}s", d / 1000))
-            .unwrap_or_else(|| "-".to_string());
+        let latency = latency(asked_ms, answered_ms, ask.duration_ms);
         let mut regs = registrations();
         let (mine, rest): (Vec<Registration>, Vec<Registration>) = regs.drain(..).partition(|r| {
             r.session == ask.session && r.asked == ask.tool_use_id && ids.contains(&r.id)
@@ -693,6 +1005,22 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
                 save_registrations(&back);
             }
         }
+    }
+}
+
+/// The repository of this session's registrations a marked question names,
+/// for the journal; `-` when it names none (or several repositories).
+fn repo_of(session: &str, ids: &[String]) -> String {
+    let mut repos: Vec<String> = registrations()
+        .into_iter()
+        .filter(|r| r.session == session && ids.contains(&r.id))
+        .map(|r| r.repo)
+        .collect();
+    repos.sort();
+    repos.dedup();
+    match repos.as_slice() {
+        [one] => one.clone(),
+        _ => "-".to_string(),
     }
 }
 
@@ -779,7 +1107,7 @@ pub fn record_before(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed)
             ],
         )
         .unwrap_or_else(|| "-".to_string());
-        let ui = published_files(&repo, t).is_some_and(|f| f.iter().any(|p| is_ui_path(p)));
+        let ui = carries_ui(&repo, t).unwrap_or(false);
         body.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             clean(&repo.to_string_lossy()),
@@ -926,6 +1254,93 @@ mod tests {
         ] {
             assert!(!is_ui_path(not), "{not}");
         }
+    }
+
+    /// application-landscape #301 (2026-09-28), which was advised although
+    /// it changed only comments under app/.
+    const PR_301: &str = "\
+diff --git a/app/.server/observedPipeline.integration.test.ts b/app/.server/observedPipeline.integration.test.ts
+index 15750da..2770014 100644
+--- a/app/.server/observedPipeline.integration.test.ts
++++ b/app/.server/observedPipeline.integration.test.ts
+@@ -8 +8 @@
+- * docs/plan-e4-e5-cluster-connector.md; it needs an authed Pro-org Playwright
++ * docs/plans/2026-07-07-e4-e5-cluster-connector.md; it needs an authed Pro-org Playwright
+";
+
+    #[test]
+    fn comment_only_diffs_from_real_pushes_are_recognised() {
+        assert!(comment_only(PR_301));
+        // Two commits' diffs back to back, as `git log -p` prints them: the
+        // second header is not a changed line.
+        assert!(comment_only(&format!("{PR_301}{PR_301}")));
+        for diff in [
+            "--- a/app/components/board/BoardToolbar.tsx\n+++ b/app/components/board/BoardToolbar.tsx\n\
+             @@ -88 +88 @@ export interface BoardToolbarProps {\n\
+             -  /** Photo mode (plan-90d A): when set, a camera button joins the controls\n\
+             +  /** Photo mode (90-day-table-stakes-plan A): when set, a camera button joins the controls\n",
+            "--- a/app/styles/board.css\n+++ b/app/styles/board.css\n@@ -40 +40 @@\n\
+             -/* ---- PHOTO MODE (plan-90d A) ---- */\n+/* ---- PHOTO MODE (90-day-table-stakes-plan A) ---- */\n",
+            "--- a/app/routes/import.tsx\n+++ b/app/routes/import.tsx\n@@ -3 +3 @@\n\
+             -// Import from a spreadsheet (plan-90d D): an onboarding path\n\
+             +// Import from a spreadsheet (90-day-table-stakes-plan D): an onboarding path\n",
+            "@@ -12,0 +13,2 @@\n+        {/* the header row */}\n+\n",
+            "@@ -5,3 +5,3 @@\n- * Old text.\n- * @param {string} name the name\n-*/\n+ * New text.\n+ * @returns {JSX.Element}\n+ */\n",
+        ] {
+            assert!(comment_only(diff), "{diff}");
+        }
+    }
+
+    #[test]
+    fn any_code_in_the_diff_counts_as_an_interface_change() {
+        for diff in [
+            // A real JSX change.
+            "@@ -20 +20 @@ export function Toolbar() {\n-      <Button>Save</Button>\n+      <Button>Save all</Button>\n",
+            // A comment and a line of code together.
+            "@@ -1,2 +1,2 @@\n-// old\n+// new\n-const gap = 4\n+const gap = 8\n",
+            // Code after a closed block comment, on the same line.
+            "@@ -1 +1 @@\n-/* a */ foo()\n+/* b */ foo()\n",
+            "@@ -3 +3 @@\n- */ export const x = 1\n+ */ export const x = 2\n",
+            // CSS's universal selector starts with `*` and is not a comment.
+            "@@ -1 +1 @@\n-* { margin: 0 }\n+* { margin: 4px }\n",
+            "@@ -1,0 +1 @@\n+* {\n",
+            // No hunk: a binary file or a mode change.
+            "diff --git a/app/logo.png b/app/logo.png\nBinary files a/app/logo.png and b/app/logo.png differ\n",
+            "",
+        ] {
+            assert!(!comment_only(diff), "{diff}");
+        }
+    }
+
+    #[test]
+    fn a_package_json_looks_like_an_interface_by_dev_script_or_ui_dependency() {
+        // duro-design-system/packages/cli: `@duro-app/ui` only as a dev and
+        // an optional peer dependency. A CLI; renders nothing.
+        let cli = r#"{"name":"@duro-app/cli","bin":{"duro":"./dist/bin.js"},
+            "scripts":{"build":"tsc -p tsconfig.build.json"},
+            "peerDependencies":{"@duro-app/ui":"workspace:^"},
+            "peerDependenciesMeta":{"@duro-app/ui":{"optional":true}},
+            "devDependencies":{"@duro-app/ui":"workspace:^","typescript":"^5.7.0"}}"#;
+        assert!(!package_is_ui(cli));
+        // duro-design-system/packages/ui: a required react peer.
+        assert!(package_is_ui(
+            r#"{"peerDependencies":{"react":"^19","react-strict-dom":"*"}}"#
+        ));
+        // An app: react in dependencies.
+        assert!(package_is_ui(r#"{"dependencies":{"react-dom":"^19"}}"#));
+        assert!(package_is_ui(r#"{"dependencies":{"@duro-app/ui":"^3"}}"#));
+        assert!(package_is_ui(r#"{"scripts":{"dev":"vite"}}"#));
+        assert!(!package_is_ui(r#"{"scripts":{"dev":"  "}}"#));
+        assert!(!package_is_ui(r#"{"name":"eslint-plugin"}"#));
+        // Unreadable: doubt counts.
+        assert!(package_is_ui("{not json"));
+    }
+
+    #[test]
+    fn latency_is_measured_by_the_hook_and_duration_ms_rides_along() {
+        assert_eq!(latency(Some(1_000), 185_400, Some(0)), "184s,dur=0ms");
+        assert_eq!(latency(None, 185_400, Some(30_997)), "-,dur=30997ms");
+        assert_eq!(latency(Some(9_000), 5_000, None), "-,dur=-");
     }
 
     #[test]
