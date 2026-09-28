@@ -106,9 +106,16 @@ pub fn is_ui_path(path: &str) -> bool {
         || ext.iter().any(|e| path.ends_with(e))
 }
 
+/// What a branch push would publish: the files, and the base they were
+/// diffed against (`None` when they were listed from `git log` instead).
+struct Published {
+    base: Option<String>,
+    files: Vec<String>,
+}
+
 /// The files a branch push would publish, or `None` when that cannot be
 /// established without guessing.
-fn published_files(repo: &Path, t: &Target) -> Option<Vec<String>> {
+fn published(repo: &Path, t: &Target) -> Option<Published> {
     let short = t.dst.strip_prefix("refs/heads/")?;
     let tracking = format!("refs/remotes/{}/{}", t.remote, short);
     let base = if git(repo, &["rev-parse", "--verify", "--quiet", &tracking]).is_some() {
@@ -123,7 +130,7 @@ fn published_files(repo: &Path, t: &Target) -> Option<Vec<String>> {
             ],
         )
     };
-    let out = match base {
+    let out = match &base {
         Some(b) => {
             crate::git::stdout_in(repo, &["diff", "--name-only", &format!("{b}..{}", t.src)])?
         }
@@ -139,13 +146,241 @@ fn published_files(repo: &Path, t: &Target) -> Option<Vec<String>> {
             ],
         )?,
     };
-    Some(
-        out.lines()
+    Some(Published {
+        base,
+        files: out
+            .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
             .map(str::to_string)
             .collect(),
+    })
+}
+
+/// Whether a branch push carries an interface change, or `None` when its
+/// files cannot be listed. Stops at the first file that counts.
+fn carries_ui(repo: &Path, t: &Target) -> Option<bool> {
+    let p = published(repo, t)?;
+    let mut packages = std::collections::HashMap::new();
+    Some(
+        p.files
+            .iter()
+            .any(|f| counts_as_ui(repo, p.base.as_deref(), t, f, &mut packages)),
     )
+}
+
+// --- what counts as an interface change -----------------------------------
+
+/// One changed file counts when all hold: its path looks like an interface
+/// ([`is_ui_path`]); its nearest `package.json` in the pushed commit looks
+/// like one ([`package_is_ui`]); and its diff is not comments only
+/// ([`comment_only`]). Every doubt — an unreadable manifest, a diff that
+/// cannot be taken — counts.
+fn counts_as_ui(
+    repo: &Path,
+    base: Option<&str>,
+    t: &Target,
+    file: &str,
+    packages: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    let commit = t.src.as_str();
+    if !is_ui_path(file) {
+        return false;
+    }
+    if !nearest_package_is_ui(repo, commit, file, packages) {
+        return false;
+    }
+    let commentable = [".ts", ".tsx", ".js", ".jsx", ".css"]
+        .iter()
+        .any(|e| file.ends_with(e));
+    if !commentable {
+        return true;
+    }
+    let range = base.map(|b| format!("{b}..{commit}"));
+    let not_remote = format!("--remotes={}", t.remote);
+    let args: Vec<&str> = match &range {
+        Some(r) => vec!["diff", "--no-ext-diff", "--no-color", "-U0", r, "--", file],
+        // No single base: every commit the remote lacks, each against its
+        // first parent. Comments-only in each is comments-only in all.
+        None => vec![
+            "log",
+            "-p",
+            "-U0",
+            "--format=",
+            "--no-ext-diff",
+            "--no-color",
+            "--first-parent",
+            "--diff-merges=first-parent",
+            commit,
+            "--not",
+            &not_remote,
+            "--",
+            file,
+        ],
+    };
+    match crate::git::stdout_in(repo, &args) {
+        Some(diff) => !comment_only(&diff),
+        None => true,
+    }
+}
+
+/// Walk up from the file to the repository root, in the pushed commit, and
+/// judge the first `package.json` met. None at all: the path decides.
+fn nearest_package_is_ui(
+    repo: &Path,
+    commit: &str,
+    file: &str,
+    cache: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    let mut dir = Path::new(file).parent();
+    loop {
+        let d = dir
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some(&known) = cache.get(&d) {
+            return known;
+        }
+        let manifest = if d.is_empty() {
+            "package.json".to_string()
+        } else {
+            format!("{d}/package.json")
+        };
+        if let Some(text) = crate::git::stdout_in(repo, &["show", &format!("{commit}:{manifest}")])
+        {
+            let ui = package_is_ui(&text);
+            cache.insert(d, ui);
+            return ui;
+        }
+        if d.is_empty() {
+            cache.insert(d, true);
+            return true;
+        }
+        dir = dir.and_then(Path::parent);
+    }
+}
+
+/// Packages whose presence says "this renders something".
+const UI_PACKAGES: &[&str] = &[
+    "react",
+    "react-dom",
+    "react-native",
+    "react-strict-dom",
+    "@duro-app/ui",
+];
+
+/// A `package.json` that looks like an interface: a `dev` script, or a UI
+/// package among its `dependencies` or its non-optional `peerDependencies`.
+///
+/// `devDependencies` and optional peers do not count: a CLI that reads the
+/// design system's metadata (duro-design-system's `packages/cli`) carries
+/// `@duro-app/ui` exactly there, and renders nothing. Unparseable counts.
+pub fn package_is_ui(text: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return true;
+    };
+    let dev = v
+        .get("scripts")
+        .and_then(|s| s.get("dev"))
+        .and_then(|d| d.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if dev {
+        return true;
+    }
+    let has = |section: &str, name: &str| {
+        v.get(section)
+            .and_then(|d| d.as_object())
+            .is_some_and(|d| d.contains_key(name))
+    };
+    let optional = |name: &str| {
+        v.get("peerDependenciesMeta")
+            .and_then(|m| m.get(name))
+            .and_then(|m| m.get("optional"))
+            .and_then(|o| o.as_bool())
+            .unwrap_or(false)
+    };
+    UI_PACKAGES
+        .iter()
+        .any(|name| has("dependencies", name) || (has("peerDependencies", name) && !optional(name)))
+}
+
+/// Whether a `git diff -U0` of one file changes comments and nothing else:
+/// at least one hunk, and every added or removed line that is not blank is
+/// a comment line ([`is_comment_line`]). No hunk at all (a binary file, a
+/// mode change) is not "comments only".
+pub fn comment_only(diff: &str) -> bool {
+    let mut hunks = false;
+    let mut header = true;
+    for line in diff.lines() {
+        if line.starts_with("diff ") {
+            // A file's header — `index`, `---`, `+++` — until its first hunk.
+            header = true;
+            continue;
+        }
+        if line.starts_with("@@") {
+            hunks = true;
+            header = false;
+            continue;
+        }
+        if header {
+            continue;
+        }
+        let body = match line.as_bytes().first() {
+            Some(b'+') | Some(b'-') => &line[1..],
+            _ => continue,
+        };
+        if body.trim().is_empty() {
+            continue;
+        }
+        if !is_comment_line(body) {
+            return false;
+        }
+    }
+    hunks
+}
+
+/// A line that, on its own, is nothing but a comment. Conservative: a line
+/// that also carries code — `/* x */ foo()`, `*/ bar` — is not, and neither
+/// is a `*` line that reads like code (a CSS `* {` rule, a continued
+/// multiplication ending in `;`).
+pub fn is_comment_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("//") {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("{/*") {
+        // A JSX comment: closed on this line with `*/}`, or not closed yet.
+        return match rest.find("*/") {
+            None => !rest.contains('}'),
+            Some(i) => rest[i..] == *"*/}",
+        };
+    }
+    if let Some(rest) = t.strip_prefix("/*") {
+        return match rest.find("*/") {
+            None => true,
+            Some(i) => rest[i..] == *"*/",
+        };
+    }
+    if let Some(rest) = t.strip_prefix("*/") {
+        // The end of a block comment — `*/`, or a JSX comment's `*/}`.
+        return rest.is_empty() || rest == "}";
+    }
+    if let Some(rest) = t.strip_prefix('*') {
+        // Inside a block comment: `*`, `* text`, `* text */`.
+        if !(rest.is_empty() || rest.starts_with([' ', '\t']) || rest.starts_with("*/")) {
+            return false;
+        }
+        let body = rest.trim();
+        if let Some(i) = body.find("*/") {
+            return &body[i..] == "*/" && !body.contains("/*");
+        }
+        if body.starts_with('@') {
+            // A JSDoc tag: `* @param {string} name`.
+            return true;
+        }
+        // What reads like code: a CSS `* {` rule, a statement's end.
+        return !body.ends_with(['{', '}', ';']) && !body.contains('{');
+    }
+    false
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
@@ -176,14 +411,14 @@ pub fn needs_preview(
             }
             let mut any_ui = false;
             for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
-                let Some(files) = published_files(&repo, t) else {
+                let Some(ui) = carries_ui(&repo, t) else {
                     return if stance == Stance::Deny {
                         Ok(())
                     } else {
                         Err("the published files cannot be listed")
                     };
                 };
-                if files.iter().any(|f| is_ui_path(f)) {
+                if ui {
                     any_ui = true;
                     if !approved(&repo, &t.src) {
                         return Ok(());
@@ -826,7 +1061,7 @@ pub fn record_before(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed)
             ],
         )
         .unwrap_or_else(|| "-".to_string());
-        let ui = published_files(&repo, t).is_some_and(|f| f.iter().any(|p| is_ui_path(p)));
+        let ui = carries_ui(&repo, t).unwrap_or(false);
         body.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             clean(&repo.to_string_lossy()),
@@ -973,6 +1208,86 @@ mod tests {
         ] {
             assert!(!is_ui_path(not), "{not}");
         }
+    }
+
+    /// application-landscape #301 (2026-09-28), which was advised although
+    /// it changed only comments under app/.
+    const PR_301: &str = "\
+diff --git a/app/.server/observedPipeline.integration.test.ts b/app/.server/observedPipeline.integration.test.ts
+index 15750da..2770014 100644
+--- a/app/.server/observedPipeline.integration.test.ts
++++ b/app/.server/observedPipeline.integration.test.ts
+@@ -8 +8 @@
+- * docs/plan-e4-e5-cluster-connector.md; it needs an authed Pro-org Playwright
++ * docs/plans/2026-07-07-e4-e5-cluster-connector.md; it needs an authed Pro-org Playwright
+";
+
+    #[test]
+    fn comment_only_diffs_from_real_pushes_are_recognised() {
+        assert!(comment_only(PR_301));
+        // Two commits' diffs back to back, as `git log -p` prints them: the
+        // second header is not a changed line.
+        assert!(comment_only(&format!("{PR_301}{PR_301}")));
+        for diff in [
+            "--- a/app/components/board/BoardToolbar.tsx\n+++ b/app/components/board/BoardToolbar.tsx\n\
+             @@ -88 +88 @@ export interface BoardToolbarProps {\n\
+             -  /** Photo mode (plan-90d A): when set, a camera button joins the controls\n\
+             +  /** Photo mode (90-day-table-stakes-plan A): when set, a camera button joins the controls\n",
+            "--- a/app/styles/board.css\n+++ b/app/styles/board.css\n@@ -40 +40 @@\n\
+             -/* ---- PHOTO MODE (plan-90d A) ---- */\n+/* ---- PHOTO MODE (90-day-table-stakes-plan A) ---- */\n",
+            "--- a/app/routes/import.tsx\n+++ b/app/routes/import.tsx\n@@ -3 +3 @@\n\
+             -// Import from a spreadsheet (plan-90d D): an onboarding path\n\
+             +// Import from a spreadsheet (90-day-table-stakes-plan D): an onboarding path\n",
+            "@@ -12,0 +13,2 @@\n+        {/* the header row */}\n+\n",
+            "@@ -5,3 +5,3 @@\n- * Old text.\n- * @param {string} name the name\n-*/\n+ * New text.\n+ * @returns {JSX.Element}\n+ */\n",
+        ] {
+            assert!(comment_only(diff), "{diff}");
+        }
+    }
+
+    #[test]
+    fn any_code_in_the_diff_counts_as_an_interface_change() {
+        for diff in [
+            // A real JSX change.
+            "@@ -20 +20 @@ export function Toolbar() {\n-      <Button>Save</Button>\n+      <Button>Save all</Button>\n",
+            // A comment and a line of code together.
+            "@@ -1,2 +1,2 @@\n-// old\n+// new\n-const gap = 4\n+const gap = 8\n",
+            // Code after a closed block comment, on the same line.
+            "@@ -1 +1 @@\n-/* a */ foo()\n+/* b */ foo()\n",
+            "@@ -3 +3 @@\n- */ export const x = 1\n+ */ export const x = 2\n",
+            // CSS's universal selector starts with `*` and is not a comment.
+            "@@ -1 +1 @@\n-* { margin: 0 }\n+* { margin: 4px }\n",
+            "@@ -1,0 +1 @@\n+* {\n",
+            // No hunk: a binary file or a mode change.
+            "diff --git a/app/logo.png b/app/logo.png\nBinary files a/app/logo.png and b/app/logo.png differ\n",
+            "",
+        ] {
+            assert!(!comment_only(diff), "{diff}");
+        }
+    }
+
+    #[test]
+    fn a_package_json_looks_like_an_interface_by_dev_script_or_ui_dependency() {
+        // duro-design-system/packages/cli: `@duro-app/ui` only as a dev and
+        // an optional peer dependency. A CLI; renders nothing.
+        let cli = r#"{"name":"@duro-app/cli","bin":{"duro":"./dist/bin.js"},
+            "scripts":{"build":"tsc -p tsconfig.build.json"},
+            "peerDependencies":{"@duro-app/ui":"workspace:^"},
+            "peerDependenciesMeta":{"@duro-app/ui":{"optional":true}},
+            "devDependencies":{"@duro-app/ui":"workspace:^","typescript":"^5.7.0"}}"#;
+        assert!(!package_is_ui(cli));
+        // duro-design-system/packages/ui: a required react peer.
+        assert!(package_is_ui(
+            r#"{"peerDependencies":{"react":"^19","react-strict-dom":"*"}}"#
+        ));
+        // An app: react in dependencies.
+        assert!(package_is_ui(r#"{"dependencies":{"react-dom":"^19"}}"#));
+        assert!(package_is_ui(r#"{"dependencies":{"@duro-app/ui":"^3"}}"#));
+        assert!(package_is_ui(r#"{"scripts":{"dev":"vite"}}"#));
+        assert!(!package_is_ui(r#"{"scripts":{"dev":"  "}}"#));
+        assert!(!package_is_ui(r#"{"name":"eslint-plugin"}"#));
+        // Unreadable: doubt counts.
+        assert!(package_is_ui("{not json"));
     }
 
     #[test]

@@ -253,6 +253,83 @@ fn an_unapproved_ui_push_is_advised_and_a_docs_only_one_is_not() {
 }
 
 #[test]
+fn a_change_is_judged_by_its_nearest_package_not_the_repository() {
+    // Seen 2026-09-28 in duro-design-system: the root has a `dev` script, a
+    // push touched only `packages/cli/src/**` (a CLI) and was advised.
+    let w = World::new("per-package");
+    w.commit(
+        "packages/cli/package.json",
+        r#"{"name":"cli","bin":{"x":"dist/bin.js"},
+            "devDependencies":{"@duro-app/ui":"workspace:^"},
+            "peerDependencies":{"@duro-app/ui":"workspace:^"},
+            "peerDependenciesMeta":{"@duro-app/ui":{"optional":true}}}"#,
+    );
+    w.commit(
+        "packages/ui/package.json",
+        r#"{"name":"ui","peerDependencies":{"react":"^19"}}"#,
+    );
+    w.commit(
+        "packages/cli/src/commands/doctor.ts",
+        "export const x = 1\n",
+    );
+    assert!(!w.push_advised("s"), "{}", w.journal());
+
+    w.commit(
+        "packages/ui/src/Button.tsx",
+        "export const B = () => null\n",
+    );
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn the_package_is_read_from_the_pushed_commit_not_the_worktree() {
+    let w = World::new("per-package-commit");
+    w.commit("packages/cli/package.json", r#"{"name":"cli"}"#);
+    w.commit("packages/cli/src/a.ts", "export const x = 1\n");
+    // The worktree now claims a dev script the commit does not carry.
+    std::fs::write(
+        w.work.join("packages/cli/package.json"),
+        r#"{"scripts":{"dev":"vite"}}"#,
+    )
+    .unwrap();
+    assert!(!w.push_advised("s"));
+}
+
+#[test]
+fn a_comment_only_change_is_not_an_interface_change() {
+    // Seen 2026-09-28: application-landscape #301 changed only comments
+    // under app/ and was advised.
+    let w = World::new("comment-only");
+    w.commit(
+        "app/routes/graph.tsx",
+        "/* graph (plan-90d C). */\nexport default () => <p>Graph</p>\n",
+    );
+    git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
+    w.commit(
+        "app/routes/graph.tsx",
+        "/* graph (90-day-table-stakes-plan C). */\nexport default () => <p>Graph</p>\n",
+    );
+    assert!(!w.push_advised("s"), "{}", w.journal());
+
+    w.commit(
+        "app/routes/graph.tsx",
+        "/* graph (90-day-table-stakes-plan C). */\nexport default () => <p>The graph</p>\n",
+    );
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn a_comment_only_change_on_a_new_branch_is_judged_commit_by_commit() {
+    // No tracking ref and no `origin/HEAD`: the files come from `git log`.
+    let w = World::new("comment-only-log");
+    w.commit("app/a.tsx", "// one\n");
+    w.commit("app/a.tsx", "// two\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    w.commit("app/a.tsx", "// two\nexport const a = 1\n");
+    assert!(w.push_advised("s"));
+}
+
+#[test]
 fn a_marked_approve_in_the_same_turn_releases_exactly_that_commit() {
     let w = World::new("approve");
     w.commit("app/routes/home.tsx", "1\n");
