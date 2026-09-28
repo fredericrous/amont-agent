@@ -12,41 +12,128 @@ a release.
 
 ## The flow
 
+The person works on several projects at once and does not remember where
+this one stood. A bare "[preview f0223d3] Ship website-builder@f0223d3?"
+gives them nothing to decide with, so a preview reaches them as a **guide**
+(fleet rule `work.preview-is-guided`), three ways at once: the brief in the
+terminal, a local page, and the app already open in their browser.
+
 1. **Verify.** The agent drives the changed route in a real browser, checks the
-   console and network, and takes a screenshot. It writes that down in a file
-   **outside the worktree** — `~/.claude/amont-agent/attestations/<sha>/` by
-   convention — because a record inside it would dirty the commit it
-   describes.
-2. **Serve and register.** From the clean worktree, at the commit to be
+   console and network, and takes before and after screenshots.
+2. **Write the guide** — markdown, **outside the worktree**
+   (`~/.claude/amont-agent/attestations/<sha>/guide.md` by convention, the
+   screenshots beside it), because a file inside it, or the page rendered
+   beside it, would dirty the commit it describes. The format is
+   [below](#the-guide).
+3. **Serve and register.** From the clean worktree, at the commit to be
    pushed:
 
    ```sh
    amont-agent preview register --url http://localhost:5173/settings \
-     --attestation ~/.claude/amont-agent/attestations/abc1234/verify.md
+     --guide ~/.claude/amont-agent/attestations/abc1234/guide.md
    ```
 
    Run it as its own foreground command, optionally after `cd` into the
    worktree:
 
    ```sh
-   cd ~/Developer/app-wt-settings && amont-agent preview register --url … --attestation …
+   cd ~/Developer/app-wt-settings && amont-agent preview register --url … --guide …
    ```
 
-   It refuses a dirty tree, a non-commit `HEAD` and an attestation inside
-   the worktree, and prints one JSON object. The `PostToolUse` hook binds
-   that output to the session and to the person's current prompt, in the
-   repository the command ran in — the leading `cd`s followed — which must
-   still be the printed repository at the printed `HEAD`. The only chaining
+   It refuses a dirty tree, a non-commit `HEAD`, a guide inside the worktree
+   and a guide missing a required section (exit 1; stderr lists exactly what
+   is missing). Otherwise it renders the guide to **`index.html` beside it**
+   and prints one JSON object — `id`, `repo`, `commit`, `url`, `guide`,
+   `page` (absolute) and `page_url` (`file://`). `--open` also hands the page
+   to the platform opener (`open`, `xdg-open`, `cmd /c start`) without
+   waiting; failing to open never fails the command.
+
+   The `PostToolUse` hook binds that output to the session and to the
+   person's current prompt, in the repository the command ran in — the
+   leading `cd`s followed — which must still be the printed repository at
+   the printed `HEAD`; the journal line names the page. The only chaining
    accepted is leading `cd <literal path>` clauses joined by `&&`. A
    registration after any other program, after `;` or `||`, piped, in the
    background or behind a substitution (`cd $(…)`) is not bound; the
    journal says why.
-3. **Ask, in the same turn.** One `AskUserQuestion` whose text carries
-   `[preview <id>]` and lists every `repo@sha` it approves, with options
-   exactly `Approve`, `Request changes`, `Hold` — no "(Recommended)"
-   suffix.
-4. **Push after `Approve`.** The approval covers that commit; a new commit,
+4. **Open the app and the page.** Before asking, the agent opens the app in
+   the person's browser **at the state the first step reaches** (the panel
+   already open, the form already filled) and the rendered page beside it.
+   That is the agent's job — the `worktree-task` skill's F7, with Claude in
+   Chrome — not this binary's: `register` only renders the page and, with
+   `--open`, opens it.
+5. **Ask, in the same turn.** The brief first — the guide's sections, in the
+   terminal — then one `AskUserQuestion` whose text carries `[preview <id>]`
+   and lists every `repo@sha` it approves, with options exactly `Approve`,
+   `Request changes`, `Hold` — no "(Recommended)" suffix. The marked
+   question itself is unchanged.
+6. **Push after `Approve`.** The approval covers that commit; a new commit,
    amend or rebase needs a new preview.
+
+`--attestation <file>` is accepted for 2.21.0 only, as a deprecated alias of
+`--guide`: the file is read as the guide and refused unless it is one.
+
+## The guide
+
+Markdown with these five **H2** sections. Headings match with emoji,
+punctuation and case aside (`## 📍 Where we are:` is `Where we are`); the
+page shows them in this order, then any other section the guide adds.
+
+| section | what it carries | checked |
+|---|---|---|
+| `Where we are` | project, branch and plan, and why the person is asked. Its first line is the page's title | present, not empty |
+| `What you should see` | in their words; "nothing new" when that is the point | present, not empty |
+| `Try it` | numbered steps: the exact URL, each click named by its visible label and position, and after each step what should appear | at least one numbered step (`1.`) and one http(s) URL |
+| `Reference` | before and after screenshots | present, not empty |
+| `Already checked` | what the agent verified, and what to look at especially | present, not empty |
+
+A full example (`guide.md`, with `before.png`, `after.png` and `panel.png`
+beside it):
+
+```markdown
+# Settings: Save moves to the header
+
+## 📍 Where we are
+duro-app, branch `feat/settings-save`, plan **Settings panel** (phase 2 of 3).
+You are asked because the Save button moved; nothing else on the page changed.
+
+## What you should see
+The **Save** button now sits in the header, top right, instead of at the
+bottom of the form. Saving works exactly as before.
+
+## 👉 Try it
+1. Open http://localhost:5173/settings
+   - You should see the Settings form, with **Save** in the header, top right.
+2. Change **Display name** (first field) to anything.
+   - **Save** turns from grey to blue.
+3. Click **Save**, top right.
+   - A green toast "Saved" appears bottom left, and **Save** is grey again.
+
+![the header after step 1](panel.png)
+
+## Reference
+![before](before.png)
+![after](after.png)
+
+## Already checked
+- `/settings` at 1280 and 390 px wide: no console error, no failed request.
+- Keyboard: Tab reaches **Save** right after the page title.
+- Look especially at the narrow window: the button must not cover the title.
+```
+
+The page is one self-contained file: inline CSS readable in light and dark
+(`prefers-color-scheme`), no script, no external asset. Its title is
+`repo@shortsha — <first line of Where we are>`; under it, a large **Open the
+app** link to `--url`, then the sections. Images (`![alt](file.png)`,
+relative to the guide's directory) render inline; a missing one is a warning
+on stderr, not a refusal. When one image's file name says `before` and
+another's says `after`, the two show side by side (`class="pair"`) at the top
+of `Reference`. The converter is hand-rolled for this subset — headings,
+paragraphs, bullet and numbered lists with one nested level, fenced code,
+quotes, **bold**, `code`, links, images and bare URLs — and escapes
+everything else; a link whose scheme is not http(s), mailto or file is text.
+No markdown crate: amont-agent is on a trust path and a page only the person
+reads does not clear `change.dependency-bar`.
 
 ## What approves
 
@@ -143,7 +230,8 @@ each branch destination stood (keyed by `tool_use_id`); after it, one
 
 ## What this is not
 
-A registration is the agent's attestation of worktree, commit and URL.
+A registration is the agent's attestation of worktree, commit and URL, and
+its guide is the agent's account of what it checked.
 Nothing here proves the browser served that commit or that the person
 looked. It covers pushes made through Claude Code, not pushes typed in a
 shell, and it is a workflow aid, not a Git enforcement boundary.

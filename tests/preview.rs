@@ -10,6 +10,33 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// A guide with every section `work.preview-is-guided` asks for.
+const GUIDE: &str = "\
+# Settings panel
+
+## 📍 Where we are
+duro-app, branch `feat/x`, plan **Settings panel**: the Save button moves.
+
+## What you should see
+The **Save** button sits top right instead of at the bottom.
+
+## 👉 Try it
+1. Open http://localhost:5173/settings
+   - You should see the Settings form.
+2. Click **Save**, top right.
+   - A green toast says Saved.
+
+![the open panel](panel.png)
+
+## Reference
+![before](before.png)
+![after](after.png)
+
+## Already checked
+- the console is clean on /settings
+- look especially at the toast on a narrow window
+";
+
 struct World {
     root: PathBuf,
     work: PathBuf,
@@ -111,6 +138,34 @@ impl World {
         )
     }
 
+    /// Write `text` as a guide outside the worktree and return its path.
+    fn guide_with(&self, text: &str) -> PathBuf {
+        let dir = self.root.join("guides");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("guide.md");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn guide(&self) -> PathBuf {
+        self.guide_with(GUIDE)
+    }
+
+    /// `preview register --url <url> --guide <guide>`, in the worktree.
+    fn register_cli(&self, url: &str, guide: &Path) -> (i32, String, String) {
+        self.run(
+            &[
+                "preview",
+                "register",
+                "--url",
+                url,
+                "--guide",
+                &guide.display().to_string(),
+            ],
+            None,
+        )
+    }
+
     fn hook(&self, payload: serde_json::Value) -> String {
         self.run(&["hook"], Some(&payload.to_string())).1
     }
@@ -162,23 +217,14 @@ impl World {
     /// Validate a preview through the CLI and bind it through the hook, the
     /// way a session does. Returns the registration id.
     fn register(&self, session: &str, prompt: &str) -> String {
-        let record = self.root.join("attest.md");
-        std::fs::write(&record, "drove /settings; 0 console errors\n").unwrap();
+        let record = self.guide();
+        // Quoted as a session writes it: an unquoted Windows path's
+        // backslashes are shell escapes.
         let command = format!(
-            "amont-agent preview register --url http://localhost:5173/ --attestation {}",
+            "amont-agent preview register --url http://localhost:5173/ --guide '{}'",
             record.display()
         );
-        let (code, out, err) = self.run(
-            &[
-                "preview",
-                "register",
-                "--url",
-                "http://localhost:5173/",
-                "--attestation",
-                &record.display().to_string(),
-            ],
-            None,
-        );
+        let (code, out, err) = self.register_cli("http://localhost:5173/", &record);
         assert_eq!(code, 0, "register refused: {err}");
         self.post_bash(session, prompt, "reg", &command, &out);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -441,65 +487,34 @@ fn registration_refuses_a_dirty_tree_and_a_record_inside_the_worktree() {
     let w = World::new("refuse");
     w.commit("app/a.tsx", "1\n");
     std::fs::write(w.work.join("app/a.tsx"), "dirty\n").unwrap();
-    let outside = w.root.join("a.md");
-    std::fs::write(&outside, "x\n").unwrap();
-    let (code, _, err) = w.run(
-        &[
-            "preview",
-            "register",
-            "--url",
-            "http://localhost:1/",
-            "--attestation",
-            &outside.display().to_string(),
-        ],
-        None,
-    );
+    let outside = w.guide();
+    let (code, _, err) = w.register_cli("http://localhost:1/", &outside);
     assert_eq!(code, 1);
     assert!(err.contains("not clean"), "{err}");
 
     git(&w.work, &["checkout", "--", "app/a.tsx"]);
-    let inside = w.work.join("attest.md");
-    std::fs::write(&inside, "x\n").unwrap();
-    git(&w.work, &["add", "attest.md"]);
-    git(&w.work, &["commit", "-qm", "attest"]);
-    let (code, _, err) = w.run(
-        &[
-            "preview",
-            "register",
-            "--url",
-            "http://localhost:1/",
-            "--attestation",
-            &inside.display().to_string(),
-        ],
-        None,
-    );
+    let inside = w.work.join("guide.md");
+    std::fs::write(&inside, GUIDE).unwrap();
+    git(&w.work, &["add", "guide.md"]);
+    git(&w.work, &["commit", "-qm", "guide"]);
+    let (code, _, err) = w.register_cli("http://localhost:1/", &inside);
     assert_eq!(code, 1);
     assert!(err.contains("inside the worktree"), "{err}");
+    assert!(!w.work.join("index.html").exists(), "no page was written");
 }
 
 #[test]
 fn a_chained_register_is_not_bound() {
     let w = World::new("chained");
     w.commit("app/a.tsx", "1\n");
-    let record = w.root.join("attest.md");
-    std::fs::write(&record, "x\n").unwrap();
-    let (_, out, _) = w.run(
-        &[
-            "preview",
-            "register",
-            "--url",
-            "http://localhost:1/",
-            "--attestation",
-            &record.display().to_string(),
-        ],
-        None,
-    );
+    let record = w.guide();
+    let (_, out, _) = w.register_cli("http://localhost:1/", &record);
     let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
     let command = format!(
-        "npm test && amont-agent preview register --url http://localhost:1/ --attestation {}",
+        "npm test && amont-agent preview register --url http://localhost:1/ --guide '{}'",
         record.display()
     );
     w.post_bash("s", "p1", "reg", &command, &out);
@@ -509,21 +524,10 @@ fn a_chained_register_is_not_bound() {
 }
 
 /// Run `preview register` in the worktree and return (id, printed JSON,
-/// attestation path).
+/// guide path).
 fn validated(w: &World) -> (String, String, PathBuf) {
-    let record = w.root.join("attest.md");
-    std::fs::write(&record, "x\n").unwrap();
-    let (code, out, err) = w.run(
-        &[
-            "preview",
-            "register",
-            "--url",
-            "http://localhost:1/",
-            "--attestation",
-            &record.display().to_string(),
-        ],
-        None,
-    );
+    let record = w.guide();
+    let (code, out, err) = w.register_cli("http://localhost:1/", &record);
     assert_eq!(code, 0, "{err}");
     let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
         .as_str()
@@ -540,7 +544,7 @@ fn a_register_after_leading_cds_is_bound_in_the_repository_they_reach() {
     w.commit("app/a.tsx", "1\n");
     let (id, out, record) = validated(&w);
     let command = format!(
-        "cd '{}' && cd app && amont-agent preview register --url http://localhost:1/ --attestation '{}'",
+        "cd '{}' && cd app && amont-agent preview register --url http://localhost:1/ --guide '{}'",
         w.root.display(),
         record.display()
     );
@@ -557,16 +561,16 @@ fn a_cd_chain_with_anything_else_stays_unbound() {
     w.commit("app/a.tsx", "1\n");
     let (id, out, record) = validated(&w);
     let tail = format!(
-        "amont-agent preview register --url http://localhost:1/ --attestation {}",
+        "amont-agent preview register --url http://localhost:1/ --guide '{}'",
         record.display()
     );
     let work = w.work.display();
     for command in [
-        format!("cd {work}; {tail}"),
-        format!("cd {work} && npm test && {tail}"),
-        format!("cd {work} || {tail}"),
+        format!("cd '{work}'; {tail}"),
+        format!("cd '{work}' && npm test && {tail}"),
+        format!("cd '{work}' || {tail}"),
         format!("cd $(git rev-parse --show-toplevel) && {tail}"),
-        format!("cd {work} && {tail} | tee /dev/null"),
+        format!("cd '{work}' && {tail} | tee /dev/null"),
     ] {
         w.post_bash_in(&w.root, "s", "p1", "reg", &command, &out);
     }
@@ -635,10 +639,9 @@ fn preview_journal_lines_name_the_repository_pushed_not_the_sessions() {
     git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
     w.post_bash_in(&elsewhere, "s", "p1", "push1", &push, "");
 
-    let record = w.root.join("attest.md");
-    std::fs::write(&record, "x\n").unwrap();
+    let record = w.guide();
     let unbound = format!(
-        "cd '{}'; amont-agent preview register --url http://localhost:1/ --attestation '{}'",
+        "cd '{}'; amont-agent preview register --url http://localhost:1/ --guide '{}'",
         w.work.display(),
         record.display()
     );
@@ -680,4 +683,171 @@ fn the_answer_latency_is_measured_not_read_from_duration_ms() {
     let secs: u64 = secs.parse().expect("whole seconds");
     assert!((1..=3).contains(&secs), "{journal}");
     assert!(rest.starts_with("dur=4200ms"), "{journal}");
+}
+
+// --- the guide (work.preview-is-guided) ------------------------------------
+
+/// The bullet lines of a refusal: exactly what the guide lacks.
+fn lacks(err: &str) -> Vec<String> {
+    err.lines()
+        .filter_map(|l| l.strip_prefix("  - "))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_register_without_a_guide_is_refused() {
+    let w = World::new("no-guide");
+    w.commit("app/a.tsx", "1\n");
+    let (code, out, err) = w.run(
+        &["preview", "register", "--url", "http://localhost:1/"],
+        None,
+    );
+    assert_eq!(code, 2, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("--guide"), "{err}");
+}
+
+#[test]
+fn a_guide_missing_a_section_is_refused_naming_it() {
+    let w = World::new("sections");
+    w.commit("app/a.tsx", "1\n");
+    let headings = [
+        ("Where we are", "## 📍 Where we are"),
+        ("What you should see", "## What you should see"),
+        ("Try it", "## 👉 Try it"),
+        ("Reference", "## Reference"),
+        ("Already checked", "## Already checked"),
+    ];
+    for (name, heading) in headings {
+        assert!(GUIDE.contains(heading), "{heading}");
+        let text = GUIDE.replace(heading, "## Notes");
+        let (code, out, err) = w.register_cli("http://localhost:1/", &w.guide_with(&text));
+        assert_eq!(code, 1, "{name}: {err}");
+        assert!(out.is_empty(), "{out}");
+        assert_eq!(
+            lacks(&err),
+            vec![format!("the section `## {name}`")],
+            "{name}: {err}"
+        );
+    }
+}
+
+#[test]
+fn try_it_needs_a_numbered_step_and_a_url() {
+    let w = World::new("try-it");
+    w.commit("app/a.tsx", "1\n");
+    let unnumbered = GUIDE
+        .replace("1. Open", "- Open")
+        .replace("2. Click", "- Click");
+    let (code, _, err) = w.register_cli("http://localhost:1/", &w.guide_with(&unnumbered));
+    assert_eq!(code, 1, "{err}");
+    let l = lacks(&err);
+    assert_eq!(l.len(), 1, "{err}");
+    assert!(l[0].starts_with("a numbered step"), "{err}");
+
+    let no_url = GUIDE.replace("http://localhost:5173/settings", "the settings page");
+    let (code, _, err) = w.register_cli("http://localhost:1/", &w.guide_with(&no_url));
+    assert_eq!(code, 1, "{err}");
+    let l = lacks(&err);
+    assert_eq!(l.len(), 1, "{err}");
+    assert!(l[0].starts_with("an http(s) URL"), "{err}");
+}
+
+#[test]
+fn the_deprecated_attestation_flag_is_read_as_a_guide() {
+    let w = World::new("attestation-alias");
+    w.commit("app/a.tsx", "1\n");
+    let old = w.root.join("attest.md");
+    std::fs::write(&old, "drove /settings; 0 console errors\n").unwrap();
+    let args = |p: &Path| {
+        vec![
+            "preview".to_string(),
+            "register".to_string(),
+            "--url".to_string(),
+            "http://localhost:1/".to_string(),
+            "--attestation".to_string(),
+            p.display().to_string(),
+        ]
+    };
+    let a = args(&old);
+    let a: Vec<&str> = a.iter().map(String::as_str).collect();
+    let (code, _, err) = w.run(&a, None);
+    assert_eq!(code, 1, "a bare attestation is not a guide: {err}");
+    assert!(err.contains("deprecated"), "{err}");
+    assert_eq!(lacks(&err).len(), 5, "{err}");
+
+    let a = args(&w.guide());
+    let a: Vec<&str> = a.iter().map(String::as_str).collect();
+    let (code, out, err) = w.run(&a, None);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("deprecated"), "{err}");
+    assert!(out.contains("\"page\""), "{out}");
+}
+
+#[test]
+fn a_complete_guide_renders_its_page_beside_it() {
+    let w = World::new("render");
+    w.commit("app/a.tsx", "1\n");
+    let text = GUIDE.replace(
+        "## Already checked\n",
+        "## Already checked\n- a guide that says <script>alert(1)</script> is text\n",
+    );
+    let guide = w.guide_with(&text);
+    let dir = guide.parent().unwrap();
+    for img in ["panel.png", "before.png", "after.png"] {
+        std::fs::write(dir.join(img), b"\x89PNG\r\n\x1a\n").unwrap();
+    }
+    let (code, out, err) = w.register_cli("http://localhost:5173/settings", &guide);
+    assert_eq!(code, 0, "{err}");
+
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let canon = std::fs::canonicalize(&guide).unwrap();
+    let page = canon.parent().unwrap().join("index.html");
+    assert_eq!(v["guide"].as_str(), Some(canon.to_str().unwrap()), "{out}");
+    assert_eq!(v["page"].as_str(), Some(page.to_str().unwrap()), "{out}");
+    let page_url = v["page_url"].as_str().unwrap();
+    assert!(page_url.starts_with("file://"), "{page_url}");
+    assert!(page_url.ends_with("/index.html"), "{page_url}");
+    assert!(Path::new(v["page"].as_str().unwrap()).is_absolute());
+
+    let html = std::fs::read_to_string(&page).unwrap();
+    let sha = git(&w.work, &["rev-parse", "HEAD"]);
+    assert!(
+        html.contains(&format!("<title>app@{} — duro-app", &sha[..7])),
+        "{html}"
+    );
+    assert!(
+        html.contains("class=\"open\" href=\"http://localhost:5173/settings\""),
+        "{html}"
+    );
+    assert!(
+        html.contains("<li>Click <strong>Save</strong>, top right."),
+        "{html}"
+    );
+    assert!(
+        html.contains("<li>A green toast says Saved.</li>"),
+        "{html}"
+    );
+    assert!(html.contains("<img src=\"panel.png\""), "{html}");
+    let pair = html
+        .find("<div class=\"pair\">")
+        .expect("the before/after pair");
+    let reference = html.find("<section id=\"reference\">").unwrap();
+    assert!(pair > reference, "under Reference: {html}");
+    let block = &html[pair..pair + html[pair..].find("</div>").unwrap()];
+    assert!(block.contains("src=\"before.png\""), "{block}");
+    assert!(block.contains("src=\"after.png\""), "{block}");
+    assert_eq!(html.matches("src=\"before.png\"").count(), 1, "{html}");
+    assert!(
+        html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+        "{html}"
+    );
+    assert!(!html.contains("<script"), "{html}");
+    // The sections in the order the person reads them.
+    let at = |id: &str| html.find(&format!("<section id=\"{id}\">")).unwrap();
+    assert!(at("where-we-are") < at("what-you-should-see"));
+    assert!(at("what-you-should-see") < at("try-it"));
+    assert!(at("try-it") < at("reference"));
+    assert!(at("reference") < at("already-checked"));
 }

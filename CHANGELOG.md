@@ -1,5 +1,39 @@
 # Changelog
 
+## v2.21.0
+
+### Changed
+
+- **`preview register` is guide-first** (fleet rule
+  `work.preview-is-guided`). A bare "[preview id] Ship repo@sha?" gave the
+  person nothing to decide with. `--guide <file.md>` is now required: a
+  markdown guide outside the worktree with the H2 sections `Where we are`,
+  `What you should see`, `Try it` (at least one numbered step and one
+  http(s) URL), `Reference` and `Already checked`, emoji and case aside. A
+  guide missing any of them is refused (exit 1) with exactly what is missing
+  on stderr; no guide at all is a usage error (exit 2).
+- **The guide is rendered to `index.html` beside it**: a self-contained page
+  (inline CSS, light and dark, no script) titled `repo@sha` plus the first
+  line of `Where we are`, with a large "Open the app" link, the sections in
+  order, the guide's images inline and a `before`/`after` pair side by side
+  under `Reference`. The converter is hand-rolled for a small markdown
+  subset and escapes everything else; no new dependency.
+- **The JSON gains `guide`, `page` and `page_url`** (`file://`). The hook
+  still reads 2.20.0's shape, and `attestation` is still printed (equal to
+  `guide`) for one release so an older hook binds a newer registration. The
+  journal's `registered` line names the page.
+
+### Added
+
+- `preview register --open` opens the rendered page with the platform opener
+  (`open`, `xdg-open`, `cmd /c start`), fire-and-forget; a failure to open
+  never fails the command.
+
+### Deprecated
+
+- `--attestation` is read as `--guide` for this release and refused unless
+  the file is a complete guide; stderr says so. It goes in the next.
+
 ## v2.20.0
 
 ### Fixed

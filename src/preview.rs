@@ -4,9 +4,10 @@
 //! ## The flow this module keeps honest
 //!
 //! 1. The agent verifies the final commit itself, then runs
-//!    `amont-agent preview register --url … --attestation …` as a standalone
-//!    command. That command only VALIDATES (clean tree, real commit, record
-//!    outside the worktree) and prints JSON; the PostToolUse hook binds that
+//!    `amont-agent preview register --url … --guide …` as a standalone
+//!    command. That command VALIDATES (clean tree, real commit, a complete
+//!    guide outside the worktree), renders the guide to `index.html` beside
+//!    it ([`crate::guide`]) and prints JSON; the PostToolUse hook binds that
 //!    output to the session and the person's prompt ([`bind`]).
 //! 2. In the same turn the agent asks a *marked* question —
 //!    `[preview <id>,…]` in its text, every `repo@sha` listed, options exactly
@@ -464,7 +465,8 @@ struct Registration {
     repo: String,
     commit: String,
     url: String,
-    attestation: String,
+    /// The guide's path (the attestation's, before 2.21.0).
+    guide: String,
     at: u64,
     /// The `tool_use_id` of the marked question that listed it, or `-`.
     asked: String,
@@ -479,7 +481,7 @@ impl Registration {
             &self.repo,
             &self.commit,
             &self.url,
-            &self.attestation,
+            &self.guide,
             &self.at.to_string(),
             &self.asked,
         ]
@@ -498,7 +500,7 @@ impl Registration {
             repo: f[3].into(),
             commit: f[4].into(),
             url: f[5].into(),
-            attestation: f[6].into(),
+            guide: f[6].into(),
             at: f[7].parse().ok()?,
             asked: f[8].into(),
         })
@@ -639,19 +641,32 @@ pub struct Registered {
     pub repo: String,
     pub commit: String,
     pub url: String,
-    pub attestation: String,
+    /// The guide, absolute.
+    pub guide: String,
+    /// `index.html` beside the guide, absolute; empty when read from a
+    /// release that rendered none.
+    pub page: String,
+    /// The page as a `file://` URL.
+    pub page_url: String,
 }
 
 impl Registered {
+    /// `attestation` repeats `guide` for one release, so a hook older than
+    /// the CLI that printed this still binds it.
     pub fn to_json(&self) -> String {
         crate::json::object(&[
             crate::json::string_field("id", &self.id),
             crate::json::string_field("repo", &self.repo),
             crate::json::string_field("commit", &self.commit),
             crate::json::string_field("url", &self.url),
-            crate::json::string_field("attestation", &self.attestation),
+            crate::json::string_field("guide", &self.guide),
+            crate::json::string_field("page", &self.page),
+            crate::json::string_field("page_url", &self.page_url),
+            crate::json::string_field("attestation", &self.guide),
         ])
     }
+    /// Reads 2.21.0's shape, and the older one that carried only
+    /// `attestation`.
     fn from_json(text: &str) -> Option<Registered> {
         let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
         let s = |k: &str| v.get(k)?.as_str().map(str::to_string);
@@ -660,13 +675,16 @@ impl Registered {
             repo: s("repo")?,
             commit: s("commit")?,
             url: s("url")?,
-            attestation: s("attestation")?,
+            guide: s("guide").or_else(|| s("attestation"))?,
+            page: s("page").unwrap_or_default(),
+            page_url: s("page_url").unwrap_or_default(),
         })
     }
 }
 
-/// Validate a preview for registration. Pure of any store: the hook binds.
-pub fn validate(repo_dir: &Path, url: &str, attestation: &Path) -> Result<Registered, String> {
+/// Validate a preview for registration and render its guide to `index.html`
+/// beside it. Touches no store: the hook binds.
+pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(format!("`{url}` is not an http(s) URL"));
     }
@@ -685,16 +703,22 @@ pub fn validate(repo_dir: &Path, url: &str, attestation: &Path) -> Result<Regist
             short(&commit)
         ));
     }
-    let record = std::fs::canonicalize(attestation)
-        .map_err(|_| format!("the attestation {} does not exist", attestation.display()))?;
+    let record = std::fs::canonicalize(guide)
+        .map_err(|_| format!("the guide {} does not exist", guide.display()))?;
     let size = std::fs::metadata(&record).map(|m| m.len()).unwrap_or(0);
     if size == 0 {
-        return Err(format!("the attestation {} is empty", record.display()));
+        return Err(format!("the guide {} is empty", record.display()));
+    }
+    if size > crate::guide::MAX_BYTES {
+        return Err(format!(
+            "the guide {} is {size} bytes; a guide is a page, not a log",
+            record.display()
+        ));
     }
     let canon_repo = std::fs::canonicalize(&repo).unwrap_or_else(|_| repo.clone());
     if record.starts_with(&canon_repo) {
         return Err(format!(
-            "the attestation {} is inside the worktree; writing it there dirties the commit it describes. Keep it under {}",
+            "the guide {} is inside the worktree; writing it there (and its page beside it) dirties the commit it describes. Keep it under {}",
             record.display(),
             dir()
                 .and_then(|d| d.parent().map(|p| p.join("attestations")))
@@ -702,13 +726,57 @@ pub fn validate(repo_dir: &Path, url: &str, attestation: &Path) -> Result<Regist
                 .unwrap_or_else(|| "the amont-agent state directory".to_string())
         ));
     }
+    let text = std::fs::read_to_string(&record)
+        .map_err(|_| format!("the guide {} is not UTF-8 text", record.display()))?;
+    let missing = crate::guide::check(&text);
+    if !missing.is_empty() {
+        return Err(format!(
+            "the guide {} lacks what the person needs to decide with (work.preview-is-guided):\n{}\nRequired H2 sections, in order: {}.",
+            record.display(),
+            missing
+                .iter()
+                .map(|m| format!("  - {m}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            crate::guide::SECTIONS
+                .iter()
+                .map(|s| format!("`## {s}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let name = repo
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let label = format!("{name}@{}", short(&commit));
+    let html = crate::guide::render(
+        &text,
+        &crate::guide::Page {
+            label: &label,
+            commit: &commit,
+            url,
+        },
+    );
+    let folder = record.parent().unwrap_or(Path::new("/"));
+    for img in crate::guide::missing_images(&text, folder) {
+        eprintln!(
+            "amont-agent: warning: the guide references {img}, which is not beside it in {}",
+            folder.display()
+        );
+    }
+    let page = folder.join("index.html");
+    crate::atomic::write_atomic(&page, &html)
+        .map_err(|e| format!("the page {} could not be written: {e}", page.display()))?;
     let id = format!("{}{:x}", short(&commit), now() & 0xfff_ffff);
     Ok(Registered {
         id,
         repo: repo.to_string_lossy().into_owned(),
         commit,
         url: url.to_string(),
-        attestation: record.to_string_lossy().into_owned(),
+        guide: record.to_string_lossy().into_owned(),
+        page_url: crate::guide::file_url(&page),
+        page: page.to_string_lossy().into_owned(),
     })
 }
 
@@ -779,7 +847,7 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
         repo: printed.repo.clone(),
         commit: printed.commit.clone(),
         url: printed.url.clone(),
-        attestation: printed.attestation.clone(),
+        guide: printed.guide.clone(),
         at: now(),
         asked: "-".to_string(),
     };
@@ -787,7 +855,17 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
         outcome,
         &bash.session,
         &reg.repo,
-        &format!("{} {} {}", reg.id, reg.label(), reg.url),
+        &format!(
+            "{} {} {} page={}",
+            reg.id,
+            reg.label(),
+            reg.url,
+            if printed.page.is_empty() {
+                "-"
+            } else {
+                &printed.page
+            }
+        ),
     );
     regs.push(reg);
     save_registrations(&regs);
@@ -1352,7 +1430,7 @@ index 15750da..2770014 100644
             repo: "/w/duro-app".into(),
             commit: "abcdef0123".into(),
             url: "http://localhost:5173/x".into(),
-            attestation: "/h/a.md".into(),
+            guide: "/h/a.md".into(),
             at: 42,
             asked: "-".into(),
         };
@@ -1367,8 +1445,18 @@ index 15750da..2770014 100644
             repo: "/r".into(),
             commit: "c".into(),
             url: "http://localhost:1".into(),
-            attestation: "/a".into(),
+            guide: "/g/guide.md".into(),
+            page: "/g/index.html".into(),
+            page_url: "file:///g/index.html".into(),
         };
         assert_eq!(Registered::from_json(&r.to_json()), Some(r));
+    }
+
+    #[test]
+    fn a_registration_printed_before_guides_still_reads() {
+        let old = r#"{"id":"i","repo":"/r","commit":"c","url":"http://l/","attestation":"/a.md"}"#;
+        let r = Registered::from_json(old).expect("the 2.20.0 shape");
+        assert_eq!(r.guide, "/a.md");
+        assert_eq!(r.page, "");
     }
 }
