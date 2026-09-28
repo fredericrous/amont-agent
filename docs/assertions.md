@@ -11,6 +11,7 @@ Nothing in a command string tells you that the push you just ran reported
 | id | fires on | asks |
 |---|---|---|
 | `push-landed` | `git push` | is the branch on the remote, at the commit you have? |
+| `push-published` | `git push` to a UI repository | did it publish a new commit, and was it an approved preview? (records only; see [preview approval](preview.md)) |
 
 ## Only successful calls
 

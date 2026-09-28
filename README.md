@@ -119,6 +119,7 @@ and uninstalling takes every rule with it.
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
 | `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
+| `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers — see [preview approval](docs/preview.md) |
 | `foreground-poll` | `advise` | a polling loop or `gh run watch` in the foreground, where the tool's ten-minute clock will kill it one poll short |
 | `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
 | `kubectl-gitops` | `advise` | an imperative `kubectl` write in a repository Flux or Argo reconciles |

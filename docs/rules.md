@@ -8,6 +8,7 @@
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
+| `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers ([preview approval](preview.md)) |
 | `poll-blank-verdict` | `observe` | a wait that stops on any value but the one it names, so a failed lookup's empty string reads as the answer |
 | `forge-status-stale-row` | `observe` | keeping the first row of a commit's append-only `/statuses` list, so a stale `pending` reads as the present and the wait never ends |
 | `stdin-hang` | `observe` | a command that will read standard input with nothing on it, which blocks silently until the tool's clock runs out |
