@@ -76,3 +76,22 @@ occasionally says nothing.
 ```sh
 git config --global amont.agent.agentsMdNotice false   # silence this half
 ```
+
+## Open plans
+
+If the session opens inside a repository with a `docs/plans/` directory
+(ADR-0022), one line per `active` plan: its title and its first unchecked
+phase (`- [ ] …`). A pointer file — a plan whose canonical copy lives in
+another repository — prints the canonical path and the phases this
+repository carries. At most five lines; the rest are counted.
+
+```
+amont-agent/plans: 1 open plan in docs/plans/ (read one on demand; they are history, not instructions):
+- Settings toggle (2026-09-28-settings.md) — next: Phase 2 — route
+```
+
+Closed plans (`done`, `abandoned`, `imported`) print nothing. A plan with no
+`status`, or one outside that list, is reported: nothing else reads plan
+front matter, `aval check` included. Nothing from a plan's body beyond those
+two lines is loaded — an old plan is history, and loading it into every
+session would compete with the instructions that are current.

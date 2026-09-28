@@ -114,6 +114,9 @@ fn on_session_start(session: &Session) -> Decision {
     if let Some(line) = crate::shim::notice() {
         lines.push(line);
     }
+    if let Some(line) = crate::plans::notice(&session.cwd) {
+        lines.push(line);
+    }
     if lines.is_empty() {
         Decision::Silent
     } else {

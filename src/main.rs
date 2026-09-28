@@ -35,6 +35,7 @@ mod journal;
 mod json;
 mod mine;
 mod payload;
+mod plans;
 mod preview;
 mod push_target;
 mod rules;
