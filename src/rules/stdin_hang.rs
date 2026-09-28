@@ -37,12 +37,13 @@
 //! is deliberately absent: `while read line; do …; done < file` feeds the
 //! loop, not the `read`, and the lexer attaches that redirect to `done`.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "stdin-hang",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // One firing in 32,401 real commands — the `cat > file` that cost the
         // author ten minutes the night this was written — and no false
@@ -51,7 +52,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-08",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

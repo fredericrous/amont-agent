@@ -79,10 +79,18 @@ impl Subject {
         }
     }
 
-    fn span(&self, parsed: &shell::Parsed) -> Option<Range<usize>> {
+    /// The same dispatch as the hook's: a rule through [`Rule::judge`], and an
+    /// assertion — which reads only the legacy lexer — never on a command
+    /// that lexer could not read.
+    ///
+    /// [`Rule::judge`]: crate::rules::Rule::judge
+    fn span(&self, input: &crate::rules::Input) -> Option<Range<usize>> {
         match self {
-            Subject::Rule(r) => (r.examine)(parsed).map(|f| f.span),
-            Subject::Assertion(a) => (a.examine)(parsed).map(|c| c.span),
+            Subject::Rule(r) => r.judge(input).map(|f| f.span),
+            Subject::Assertion(a) => match input.legacy {
+                shell::Parsed::Opaque(_) => None,
+                parsed => (a.examine)(parsed).map(|c| c.span),
+            },
         }
     }
 }
@@ -118,19 +126,26 @@ pub fn run(scan: &Scan, rules: &[Subject], samples_per_rule: usize) -> Result<Re
             return;
         }
         let parsed = shell::lex(call.command);
+        // Counted, then still judged: whether a rule may run on a command the
+        // legacy lexer could not read is `Rule::judge`'s call, as it is in the
+        // hook. Legacy rules and assertions skip it exactly as before.
         if matches!(parsed, shell::Parsed::Opaque(_)) {
             opaque += 1;
-            return;
-        }
-        if !parsed.fully_read() {
+        } else if !parsed.fully_read() {
             // Counted, and then judged: the readable pipelines still run.
             partly += 1;
         }
+        // A transcript does not record which shell ran the command.
+        let input = crate::rules::Input {
+            src: call.command,
+            dialect: crate::rules::Dialect::Unknown,
+            legacy: &parsed,
+        };
         for (i, rule) in rules.iter().enumerate() {
             // `examine` only. `confirm` touches the world, and the world has
             // moved since these commands ran — replaying it would produce a
             // number that describes today rather than then.
-            if let Some(span) = rule.span(&parsed) {
+            if let Some(span) = rule.span(&input) {
                 bucket.fires[i] += 1;
                 totals[i] += 1;
                 if samples[i].len() < samples_per_rule {

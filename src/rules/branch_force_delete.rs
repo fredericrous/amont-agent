@@ -17,18 +17,19 @@
 //! Ships observing: the shape is common and mostly harmless, and this crate
 //! measures before it speaks.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "branch-force-delete",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 11.0,
         measured: "2026-09-05",
         trend: Trend::Flat(8),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

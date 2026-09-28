@@ -193,7 +193,7 @@ pub fn run(scan: &Scan, options: Options) -> Result<Report, ScanError> {
             }
             let parsed = shell::lex(&record.command);
             for rule in rules::RULES {
-                if fires(rule, &parsed) {
+                if fires(rule, &record.command, &parsed) {
                     *entry.rules.entry(rule.id).or_default() += 1;
                 }
             }
@@ -256,8 +256,16 @@ pub fn run(scan: &Scan, options: Options) -> Result<Report, ScanError> {
 /// `examine` only, and never `confirm` — the same discipline the backtester
 /// keeps. `confirm` touches the world, and the world has moved since these
 /// commands ran.
-fn fires(rule: &Rule, parsed: &shell::Parsed) -> bool {
-    (rule.examine)(parsed).is_some()
+///
+/// Through the same dispatch as the hook; the dialect is unknown, because a
+/// transcript does not record the shell.
+fn fires(rule: &Rule, src: &str, parsed: &shell::Parsed) -> bool {
+    let input = crate::rules::Input {
+        src,
+        dialect: crate::rules::Dialect::Unknown,
+        legacy: parsed,
+    };
+    rule.judge(&input).is_some()
 }
 
 /// Did a near-identical command follow this one — and is this the call that

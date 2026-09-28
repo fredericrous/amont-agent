@@ -66,6 +66,7 @@ usage: amont-agent <command>
   backtest [flags]      replay your transcripts through the rules
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
+                        [--dialect bash|zsh|unknown, default unknown]
   rules                 every rule, its default stance and its evidence
 
 install/uninstall flags:
@@ -290,6 +291,7 @@ struct Flags {
     min_rate: Option<f64>,
     rank: Option<String>,
     compliance: bool,
+    dialect: Option<rules::Dialect>,
     rest: Vec<String>,
 }
 
@@ -344,6 +346,13 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                 f.min_rate = Some(rate);
             }
             "--rank" => f.rank = Some(value(&mut i, &a)?),
+            "--dialect" => {
+                let v = value(&mut i, &a)?;
+                f.dialect = Some(
+                    rules::Dialect::parse(&v)
+                        .ok_or_else(|| format!("--dialect: `{v}` is not bash, zsh or unknown"))?,
+                );
+            }
             "--compliance" => f.compliance = true,
             "--json" => f.json = true,
             "--format" => f.format = Some(value(&mut i, &a)?),
@@ -650,13 +659,20 @@ fn run_check(args: &[OsString]) -> ExitCode {
     }
     let src = &f.rest[0];
     let parsed = shell::lex(src);
-    if let shell::Parsed::Opaque(why) = &parsed {
-        println!("no opinion: {}", why.why());
-        return ExitCode::SUCCESS;
-    }
-    let found = rules::examine_all(&parsed);
+    // The dialect is what the command would run in. `check` has no hook
+    // payload and no business guessing from its own `SHELL`, so it is told,
+    // or it says `unknown` — the same answer the backtester has to give.
+    let input = rules::Input {
+        src,
+        dialect: f.dialect.unwrap_or(rules::Dialect::Unknown),
+        legacy: &parsed,
+    };
+    let found = rules::evaluate(&input);
     if found.is_empty() {
-        println!("no rule fires");
+        match &parsed {
+            shell::Parsed::Opaque(why) => println!("no opinion: {}", why.why()),
+            _ => println!("no rule fires"),
+        }
         return ExitCode::SUCCESS;
     }
     for (rule, finding) in found {
@@ -712,8 +728,15 @@ fn name_the_unread(src: &str, parsed: &shell::Parsed) {
 fn run_rules() -> ExitCode {
     let w = ui::id_column();
     for r in rules::RULES {
+        // Named only when it bites: a rule capped below `deny` can never be
+        // configured past it, and that is worth seeing next to its stance.
+        let ceiling = if r.max_stance < rules::Stance::Deny {
+            format!("  (max {})", r.max_stance.as_str())
+        } else {
+            String::new()
+        };
         println!(
-            "{:<w$}{:<8} {:>6.1}/1000  measured {}",
+            "{:<w$}{:<8} {:>6.1}/1000  measured {}{ceiling}",
             r.id,
             r.default_stance.as_str(),
             r.evidence.per_1000,

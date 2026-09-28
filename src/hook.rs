@@ -137,11 +137,17 @@ fn stale_checkout_notice(session: &Session) -> Option<String> {
 
 fn on_bash(bash: &Bash) -> Decision {
     let parsed = shell::lex(&bash.command);
-    if matches!(parsed, Parsed::Opaque(_)) {
-        return Decision::Silent;
-    }
-
-    let fired = rules::examine_all(&parsed);
+    // No early return on `Parsed::Opaque`: `rules::evaluate` owns that
+    // policy, so the hook, `check` and the backtester cannot drift apart on
+    // it. Legacy rules are skipped on an unreadable command exactly as they
+    // were; a rule built on the shell analysis judges it with its own account
+    // of what it could not read.
+    let input = rules::Input {
+        src: &bash.command,
+        dialect: rules::tool_shell::dialect(),
+        legacy: &parsed,
+    };
+    let fired = rules::evaluate(&input);
     let dumped = rules::dump::dumps(&parsed);
     if fired.is_empty() && dumped.is_empty() {
         // The whole no-fire path: one lex, no processes, no files.

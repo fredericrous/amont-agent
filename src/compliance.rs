@@ -159,13 +159,15 @@ pub fn run(scan: &Scan, rules: &[&'static Rule], options: Options) -> Result<Rep
             // Found once and reused: every rule is asking the same question
             // about the same successor.
             let end = (i + 1 + options.window).min(records.len());
-            let next = parsed[i + 1..end]
-                .iter()
-                .flatten()
-                .find(|(_, other)| shape::distance(shape, other) <= shape::NEAR);
+            let next = (i + 1..end).find_map(|j| {
+                parsed[j]
+                    .as_ref()
+                    .filter(|(_, other)| shape::distance(shape, other) <= shape::NEAR)
+                    .map(|(then, _)| (j, then))
+            });
 
             for (k, (rule, _)) in watched.iter().enumerate() {
-                if (rule.examine)(here).is_none() {
+                if !fires(rule, &record.command, here) {
                     continue;
                 }
                 let model = if record.model.is_empty() {
@@ -177,7 +179,7 @@ pub fn run(scan: &Scan, rules: &[&'static Rule], options: Options) -> Result<Rep
                 cell.firings += 1;
                 match next {
                     None => cell.unanswered += 1,
-                    Some((then, _)) if (rule.examine)(then).is_some() => cell.ignored += 1,
+                    Some((j, then)) if fires(rule, &records[j].command, then) => cell.ignored += 1,
                     Some(_) => cell.complied += 1,
                 }
             }
@@ -320,6 +322,17 @@ impl Report {
             ),
         ])
     }
+}
+
+/// `examine` only, through the same dispatch as the hook. The dialect is
+/// unknown: a transcript does not record the shell.
+fn fires(rule: &crate::rules::Rule, src: &str, parsed: &shell::Parsed) -> bool {
+    let input = crate::rules::Input {
+        src,
+        dialect: crate::rules::Dialect::Unknown,
+        legacy: parsed,
+    };
+    rule.judge(&input).is_some()
 }
 
 #[cfg(test)]

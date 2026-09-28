@@ -37,7 +37,21 @@ The ladder, most specific first:
 rule.default_stance  <  amont.agent.stance  <  amont.agent.<id>.stance
 ```
 
-then clamped to `observe` if the guard is switched off.
+then capped at the rule's own ceiling, and clamped to `observe` if the guard
+is switched off.
+
+## Ceilings
+
+Every rule declares the loudest stance it may ever take. For most rules that
+is `deny`, and the ceiling changes nothing. A rule whose finding is an
+estimate — "this loop may make hundreds of requests" — is capped at
+`advise`: refusing a command on an estimate would claim a certainty the
+analysis does not have.
+
+The cap is applied after every configured key, so neither
+`amont.agent.stance deny` nor the rule's own key can pass it, and
+`graduate --to deny` refuses a capped rule with the reason. `amont-agent
+rules` prints each rule's ceiling beside its stance.
 
 ## Why git config and not a committed file
 

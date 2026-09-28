@@ -18,12 +18,13 @@
 //! match is still a true positive.
 
 use crate::rules::tool_shell;
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "glob-in-flag-value",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // 132 zsh diagnostics in 32,555 calls, flat across five weeks
         // (8.3 · 3.3 · 4.1 · 1.6 · 6.0 · 5.5) and 95% of them reported as
@@ -33,7 +34,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-09",
         trend: Trend::Flat(5),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

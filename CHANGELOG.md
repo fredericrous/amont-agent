@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **One dispatch for every judge.** The hook, `check`, `backtest`,
+  `corpus check`, `backtest --compliance` and `mine` now reach the rules
+  through a single `rules::evaluate`, instead of each deciding for itself
+  what to do with a command the lexer could not read. Every existing rule
+  keeps today's behaviour exactly — skipped on an unreadable command, as
+  before — and every corpus replays unchanged. The seam exists for rules
+  built on a real shell analysis, which carry their own account of what they
+  could not read and so may judge such a command.
+- **`check --dialect bash|zsh|unknown`.** A rule may depend on which shell
+  runs the command. The hook reads it from `SHELL` as the existing zsh rules
+  already did; `check` is told, and defaults to `unknown` — which is also all
+  the backtester can say, since a transcript does not record the shell.
+
+### Added
+
+- **Stance ceilings.** Every rule declares the loudest stance it may take.
+  The cap is applied after every configured key, so neither
+  `amont.agent.stance deny` nor the rule's own key can pass it, and
+  `graduate` refuses to promote past it. Every existing rule's ceiling is
+  `deny`, so nothing changes for them; `amont-agent rules` names a ceiling
+  only where it is lower.
+
 ## v2.17.0
 
 ### Added

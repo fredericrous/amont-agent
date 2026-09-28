@@ -38,13 +38,14 @@
 //! `docker exec` is looked at: a remote path is not this filesystem's to
 //! check.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Connector, Parsed, Simple, Word};
 use std::path::{Path, PathBuf};
 
 pub const RULE: Rule = Rule {
     id: "path-operand-missing",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // The shape rate — a reader with a literal path operand. After
         // `confirm` (does the path exist?) the transcripts put it at 6.3 per
@@ -53,7 +54,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-09",
         trend: Trend::Flat(6),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

@@ -18,12 +18,13 @@
 //! or more, is what this rule is about; a `cat` of a 300-byte config is not.
 
 use crate::rules::dump::{dumps, Extent};
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "whole-file-dump",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // 7,278 dumps in 41,700 calls; 1,571 of them unbounded over a file
         // the Read tool would have windowed.
@@ -31,7 +32,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-09",
         trend: Trend::Flat(4),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

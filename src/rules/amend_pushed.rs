@@ -13,18 +13,19 @@
 //! --contains HEAD` and stays silent when no remote-tracking branch has the
 //! commit — the local-only case, which is the safe one.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "amend-pushed",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 1.8,
         measured: "2026-09-05",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 
