@@ -31,7 +31,14 @@ Dialect differences that are modelled: whether the last element of a
 pipeline runs in the current shell (zsh yes; bash only under
 `shopt -s lastpipe`); word-splitting of unquoted parameters (bash splits,
 zsh does not); an unmatched glob in a URL-shaped word (bash passes it
-through; zsh refuses the command).
+through; zsh refuses the command); `break`/`continue` with no loop in the
+current shell, as inside `( … )` (bash warns and carries on; zsh leaves).
+
+Where the command does not say which `seq` runs, `seq 5 1` is either nothing
+(GNU) or five numbers (BSD, macOS): both are allowed.
+
+`tools/shell-oracle/` checks all of this against bash and zsh actually
+running generated scripts with stubbed clients — see its `Cargo.toml`.
 
 ## Assumptions
 

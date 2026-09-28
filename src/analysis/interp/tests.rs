@@ -389,7 +389,10 @@ fn a_long_call_chain_is_bounded() {
 fn seq_is_counted_arithmetically() {
     let a = bash("for i in $(seq 1 300); do curl -s https://h.example/$i; done");
     assert_eq!(total(&to_host(&a, H)), Count::exactly(300));
+    // GNU seq prints nothing here; BSD seq counts down.
     let a = bash("for i in $(seq 5 1); do curl -s https://h.example/; done");
+    assert_eq!(total(&to_host(&a, H)), Count::between(0, 5));
+    let a = bash("for i in $(seq 5 1 1); do curl -s https://h.example/; done");
     assert!(to_host(&a, H).is_empty());
     let a = bash("for i in $(seq 0 10 99999999999999); do curl -s https://h.example/; done");
     assert_eq!(
@@ -481,4 +484,47 @@ fn a_one_off_in_another_branch_does_not_unpace_a_poll() {
         r#"if [ -n "$X" ]; then curl -X POST https://h.example/pr; n=0; while [ $n -lt 120 ]; do curl -s https://h.example/s && break; n=$((n+1)); sleep 20; done; else curl -s https://h.example/x; fi"#,
     );
     assert!(p.contains(&Some((20, Upper::Finite(1)))), "{p:?}");
+}
+
+// ── found by tools/shell-oracle ───────────────────────────────────────────
+
+#[test]
+fn a_loop_variable_over_a_split_list_is_each_word() {
+    let a = bash(
+        r#"items="a b c"; for x in $items; do [ "$x" = c ] && curl -s https://h.example/; done"#,
+    );
+    let t = total(&to_host(&a, H));
+    assert!(t.lower == 0 && t.upper == Upper::Finite(3), "{t:?}");
+    let a = bash(
+        r#"items="a b c"; for x in $items; do [ "$x" = "a b c" ] && curl -s https://h.example/; done"#,
+    );
+    assert!(to_host(&a, H).is_empty() || total(&to_host(&a, H)).lower == 0);
+}
+
+#[test]
+fn break_in_a_subshell_carries_on_in_bash_and_leaves_in_zsh() {
+    let src = "for i in 1 2; do ( break; curl -s https://h.example/ ); done";
+    assert_eq!(total(&to_host(&bash(src), H)), Count::exactly(2));
+    assert!(to_host(&zsh(src), H).is_empty());
+    let u = total(&to_host(&run(src, Dialect::Unknown), H));
+    assert!(u.lower == 0 && u.upper == Upper::Finite(2), "{u:?}");
+}
+
+#[test]
+fn let_fails_when_its_value_is_zero() {
+    assert!(to_host(&bash("set -e; i=0; let i++; curl -s https://h.example/"), H).is_empty());
+    assert!(to_host(&bash("i=0; let i++ && curl -s https://h.example/"), H).is_empty());
+    assert_eq!(
+        total(&to_host(
+            &bash("i=0; let ++i && curl -s https://h.example/"),
+            H
+        )),
+        Count::ONE
+    );
+}
+
+#[test]
+fn until_false_never_ends() {
+    let a = bash("until false; do wget -q https://h.example/x; done");
+    assert_eq!(total(&to_host(&a, H)).upper, Upper::Uncapped(Why::Infinite));
 }

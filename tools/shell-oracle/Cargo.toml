@@ -17,8 +17,8 @@
 #   cd tools/shell-oracle && cargo test --locked
 # Knobs: ORACLE_SEEDS=n (generated scripts, default 500), ORACLE_SEED=s (one
 # seed, printed), ORACLE_SCRIPT='…' with `--test execution adhoc` (check one
-# hand-written script), ORACLE_AVOID_KNOWN_BUGS=1 (generate past the bugs
-# already reported, to hunt new ones), `-- --ignored` (replay the known bugs).
+# hand-written script), ORACLE_AVOID_KNOWN_BUGS=1 (leave out constructs
+# that exposed past bugs, to hunt new ones).
 # `cargo run --example dump -- 1 500` prints the generated scripts.
 [package]
 name = "shell-oracle"

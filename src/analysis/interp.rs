@@ -202,6 +202,7 @@ pub fn run(cmd: &Cmd, src: &str, dialect: Dialect) -> Outcomes {
         func_bodies: BTreeMap::new(),
         locals: Vec::new(),
         summaries: Vec::new(),
+        loops: 0,
     };
     match it.exec(cmd, State::initial(dialect), Ctx::TOP) {
         Ok(res) => Outcomes {
@@ -249,6 +250,10 @@ struct Interp<'s> {
     /// stack, reused by every call that matches. The stack is part of the key
     /// because what counts as recursion depends on it.
     summaries: Vec<Summary>,
+    /// Loops enclosing the command being analysed, in the current shell: a
+    /// subshell starts again from zero. Where there is none, `break` and
+    /// `continue` mean different things in bash and zsh.
+    loops: u32,
 }
 
 type R<T> = Result<T, Exhausted>;
@@ -260,6 +265,28 @@ impl Interp<'_> {
 
     fn exec(&mut self, cmd: &Cmd, state: State, ctx: Ctx) -> R<Res> {
         self.budget.step()?;
+        if matches!(
+            cmd,
+            Cmd::For { .. } | Cmd::ArithFor { .. } | Cmd::Loop { .. }
+        ) {
+            self.loops += 1;
+            let r = self.exec_node(cmd, state, ctx);
+            self.loops -= 1;
+            return r;
+        }
+        self.exec_node(cmd, state, ctx)
+    }
+
+    /// A copy of the shell: nothing it writes survives, and the loops around
+    /// it are not its loops.
+    fn in_subshell(&mut self, cmd: &Cmd, state: State, ctx: Ctx) -> R<Res> {
+        let loops = std::mem::replace(&mut self.loops, 0);
+        let r = self.exec(cmd, state, ctx);
+        self.loops = loops;
+        r
+    }
+
+    fn exec_node(&mut self, cmd: &Cmd, state: State, ctx: Ctx) -> R<Res> {
         match cmd {
             Cmd::Simple(s) => self.simple(s, state, ctx),
             Cmd::Seq { items, .. } => self.seq(items, state, ctx),
@@ -429,7 +456,7 @@ impl Interp<'_> {
             if item.background {
                 // `cmd &` runs in a subshell; its status is 0 and nothing it
                 // writes survives, but its transfers happen.
-                let r = self.exec(&item.cmd, entry.clone(), ctx)?;
+                let r = self.in_subshell(&item.cmd, entry.clone(), ctx)?;
                 effects = effects.then(r.effects.scaled(reach, None));
                 // Nothing waits for it.
                 pending.push(Outcome {
@@ -612,7 +639,7 @@ impl Interp<'_> {
 
     fn subshell(&mut self, body: &Cmd, state: State, ctx: Ctx) -> R<Res> {
         let entry = state.clone();
-        let r = self.exec(body, state, ctx)?;
+        let r = self.in_subshell(body, state, ctx)?;
         let status = r
             .outs
             .iter()
@@ -818,7 +845,7 @@ impl Interp<'_> {
             }
             None => {
                 let lower = first_enters.lower;
-                if self.is_literal_true(cond) && !body_breaks {
+                if self.never_ends(kind, cond) && !body_breaks {
                     (
                         Count::uncapped(lower, Why::Infinite),
                         "nothing stops it".to_string(),
@@ -926,13 +953,19 @@ impl Interp<'_> {
         Ok(Res::new(outs, effects))
     }
 
-    fn is_literal_true(&self, cond: &Cmd) -> bool {
+    /// `while true`, `while :`, `until false`: a condition that never
+    /// ends the loop.
+    fn never_ends(&self, kind: LoopKind, cond: &Cmd) -> bool {
         let Some(s) = last_simple(cond) else {
             return false;
         };
+        let word = s.words.first().and_then(Word::literal);
         s.assigns.is_empty()
             && s.words.len() == 1
-            && matches!(s.words[0].literal().as_deref(), Some("true" | ":"))
+            && match kind {
+                LoopKind::While => matches!(word.as_deref(), Some("true" | ":")),
+                LoopKind::Until => word.as_deref() == Some("false"),
+            }
     }
 
     /// Positive evidence of pagination: the condition's final command is a
@@ -1351,15 +1384,19 @@ impl Interp<'_> {
                 let mut last = None;
                 for a in rest {
                     match single_exact(a).and_then(|t| parse_let(&t)) {
-                        Some((var, delta)) => {
-                            let v = state.get(&var).as_int().and_then(|n| n.checked_add(delta));
+                        Some((var, delta, after)) => {
+                            let old = match state.get(&var) {
+                                x if x.emptiness() == Tri::Yes => Some(0),
+                                x => x.as_int(),
+                            };
+                            let v = old.and_then(|n| n.checked_add(delta));
                             self.assign(
                                 &mut state,
                                 &var,
                                 v.map(|n| AbsVal::exact(n.to_string()))
                                     .unwrap_or(AbsVal::Top),
                             );
-                            last = v;
+                            last = if after { v } else { old };
                         }
                         None => {
                             state.havoc();
@@ -1415,15 +1452,27 @@ impl Interp<'_> {
                 } else {
                     Flow::Continue(n)
                 };
-                Res::new(
-                    vec![Outcome {
-                        flow,
-                        status: Status::Zero,
-                        state,
-                        slept: 0,
-                    }],
-                    Effects::default(),
-                )
+                let dialect = state.dialect;
+                let leaves = Outcome {
+                    flow,
+                    status: Status::Zero,
+                    state: state.clone(),
+                    slept: 0,
+                };
+                // No loop of its own: bash warns and carries on with the next
+                // command; zsh leaves (the subshell, or the script).
+                let carries_on = Outcome {
+                    flow: Flow::Normal,
+                    status: Status::Unknown,
+                    state,
+                    slept: 0,
+                };
+                let outs = match (self.loops, dialect) {
+                    (1.., _) | (0, Dialect::Zsh) => vec![leaves],
+                    (0, Dialect::Bash) => vec![carries_on],
+                    (0, Dialect::Unknown) => vec![leaves, carries_on],
+                };
+                Res::new(outs, Effects::default())
             }
             "return" | "exit" => {
                 let status = match rest
@@ -1834,8 +1883,14 @@ impl Interp<'_> {
         if split && flags.subst_split {
             // Both shells split what a substitution printed.
             fields = fields.mul(split_count(&val, Dialect::Bash));
+            val = split_words(&val);
         } else if split && flags.param_split {
             fields = fields.mul(split_count(&val, state.dialect));
+            val = match state.dialect {
+                Dialect::Bash => split_words(&val),
+                Dialect::Zsh => val,
+                Dialect::Unknown => split_words(&val).join(&val),
+            };
         }
         if split && flags.glob {
             // An unquoted glob in a URL-shaped word never matches a file: bash
@@ -1907,7 +1962,7 @@ impl Interp<'_> {
             }
             Part::CmdSubst { body, span } => {
                 flags.subst = true;
-                let r = self.exec(body, state.clone(), Ctx::TOP)?;
+                let r = self.in_subshell(body, state.clone(), Ctx::TOP)?;
                 *effects = std::mem::take(effects).then(r.effects.scaled(
                     Count::ONE,
                     Some(Factor {
@@ -1918,7 +1973,7 @@ impl Interp<'_> {
                 ));
                 if let Some(n) = seq_len(body) {
                     // `$(seq 1 300)` is 300 words, counted and never produced.
-                    (AbsVal::Token, Count::exactly(n))
+                    (AbsVal::Token, n)
                 } else if prints_one_word(body) {
                     (AbsVal::Token, Count::ONE)
                 } else {
@@ -1927,7 +1982,7 @@ impl Interp<'_> {
                 }
             }
             Part::ProcSubst { body, span } => {
-                let r = self.exec(body, state.clone(), Ctx::TOP)?;
+                let r = self.in_subshell(body, state.clone(), Ctx::TOP)?;
                 *effects = std::mem::take(effects).then(r.effects.scaled(
                     Count::ONE,
                     Some(Factor {
@@ -2345,6 +2400,20 @@ fn pattern_match(subject: &AbsVal, pattern: &AbsVal) -> Tri {
     }
 }
 
+/// The value of each word `val` splits into: `"a b c"` → one of `a`, `b`,
+/// `c`. Only exact values are split; anything else is left as it is.
+fn split_words(val: &AbsVal) -> AbsVal {
+    match val {
+        AbsVal::Values(vs) if vs.iter().any(|v| v.contains(char::is_whitespace)) => vs
+            .iter()
+            .flat_map(|v| v.split_whitespace())
+            .map(AbsVal::exact)
+            .reduce(|a, b| a.join(&b))
+            .unwrap_or(AbsVal::Top),
+        other => other.clone(),
+    }
+}
+
 /// How many words `val` splits into, unquoted.
 fn split_count(val: &AbsVal, dialect: Dialect) -> Count {
     let bash = match val {
@@ -2422,7 +2491,11 @@ fn pace(effects: &mut Effects, pause: u64) {
 
 /// `seq LAST`, `seq FIRST LAST`, `seq FIRST INCR LAST` with literal integers:
 /// how many numbers it prints. Options (`-w`, `-f`, `-s`) are not read.
-fn seq_len(body: &Cmd) -> Option<u64> {
+///
+/// `seq 5 1` is where the two seqs part: GNU prints nothing, BSD (macOS)
+/// counts down. Which one is on `PATH` is not in the command, so a
+/// descending range with no increment given is either.
+fn seq_len(body: &Cmd) -> Option<Count> {
     let Cmd::Simple(s) = body else { return None };
     let words: Vec<String> = s.words.iter().map(Word::literal).collect::<Option<_>>()?;
     let (name, args) = words.split_first()?;
@@ -2430,19 +2503,24 @@ fn seq_len(body: &Cmd) -> Option<u64> {
         return None;
     }
     let n: Vec<i64> = args.iter().map(|a| a.parse().ok()).collect::<Option<_>>()?;
-    let (first, incr, last) = match n.as_slice() {
-        [last] => (1, 1, *last),
-        [first, last] => (*first, 1, *last),
-        [first, incr, last] => (*first, *incr, *last),
+    let (first, incr, last, implied) = match n.as_slice() {
+        [last] => (1, 1, *last, true),
+        [first, last] => (*first, 1, *last, true),
+        [first, incr, last] => (*first, *incr, *last, false),
         _ => return None,
     };
     if incr == 0 {
         return None;
     }
+    let span = first.abs_diff(last) / incr.unsigned_abs() + 1;
     if (incr > 0 && last < first) || (incr < 0 && last > first) {
-        return Some(0);
+        return Some(if implied {
+            Count::between(0, span)
+        } else {
+            Count::ZERO
+        });
     }
-    Some(first.abs_diff(last) / incr.unsigned_abs() + 1)
+    Some(Count::exactly(span))
 }
 
 /// A substitution whose output is always one non-empty word without
@@ -2459,19 +2537,25 @@ fn prints_one_word(body: &Cmd) -> bool {
 }
 
 /// `v++`, `v+=1`, `++v` — the forms of `let` the counter pattern reads.
-fn parse_let(t: &str) -> Option<(String, i64)> {
+/// A `let` operand the counter pattern reads: the variable, the delta, and
+/// whether the expression's value is the variable's value AFTER the change
+/// (`++v`, `v+=1`) or before it (`v++`) — which decides `let`'s status: 1
+/// when that value is 0.
+fn parse_let(t: &str) -> Option<(String, i64, bool)> {
     let t = t.replace(' ', "");
     let name_ok =
         |n: &str| !n.is_empty() && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
-    if let Some(v) = t.strip_suffix("++").or_else(|| t.strip_prefix("++")) {
-        return name_ok(v).then(|| (v.to_string(), 1));
-    }
-    if let Some(v) = t.strip_suffix("--").or_else(|| t.strip_prefix("--")) {
-        return name_ok(v).then(|| (v.to_string(), -1));
+    for (op, delta) in [("++", 1), ("--", -1)] {
+        if let Some(v) = t.strip_suffix(op) {
+            return name_ok(v).then(|| (v.to_string(), delta, false));
+        }
+        if let Some(v) = t.strip_prefix(op) {
+            return name_ok(v).then(|| (v.to_string(), delta, true));
+        }
     }
     if let Some((v, n)) = t.split_once("+=") {
         return (name_ok(v))
-            .then(|| n.parse().ok().map(|n| (v.to_string(), n)))
+            .then(|| n.parse().ok().map(|n| (v.to_string(), n, true)))
             .flatten();
     }
     None
@@ -2842,6 +2926,7 @@ fn is_increment(cmd: &Cmd, var: &str) -> bool {
                 && s.words[1]
                     .literal()
                     .and_then(|t| parse_let(&t))
+                    .map(|(v, d, _)| (v, d))
                     .is_some_and(|(v, d)| v == var && d == 1)
         }
         _ => false,

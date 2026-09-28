@@ -96,41 +96,6 @@ fn seeds() -> Vec<u64> {
     (1..=n).collect()
 }
 
-/// Seeds (default options, up to 1000) whose script exposes a KNOWN analyzer
-/// bug, with the bug. Each bug has a minimal `#[ignore]`d regression test
-/// below, and `known_bug_seeds_still_fail` replays these. Skipped by the
-/// sweep so it stays a gate for NEW regressions at any `ORACLE_SEEDS` up to
-/// 1000. Remove an entry when its bug is fixed — the replay test says when.
-const KNOWN_BUG_SEEDS: &[(u64, Bug)] = &[
-    (525, Bug::SplitLoopVar),
-    (596, Bug::SubshellJump),
-    (653, Bug::SplitLoopVar),
-    (739, Bug::SplitLoopVar),
-    (756, Bug::SplitLoopVar),
-    (761, Bug::SplitLoopVar),
-    (808, Bug::SplitLoopVar),
-    (835, Bug::SplitLoopVar),
-    (905, Bug::SplitLoopVar),
-    (907, Bug::SplitLoopVar),
-];
-
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-enum Bug {
-    /// bash: `for x in $v` counts the split words but binds `x` to the
-    /// UNSPLIT value. See `known_bug_split_loop_var_*`.
-    SplitLoopVar,
-    /// bash: `break`/`continue` inside `( )` treated as leaving the rest of
-    /// the subshell; bash errors and runs on. See `known_bug_subshell_jump_*`.
-    SubshellJump,
-    /// `let` treated as always succeeding. See `known_bug_let_status_*`.
-    LetStatus,
-}
-
-fn is_known(seed: u64) -> bool {
-    !options().avoid_known_bugs && KNOWN_BUG_SEEDS.iter().any(|k| k.0 == seed)
-}
-
 #[test]
 fn generated_scripts_stay_inside_the_claimed_interval() {
     let bin = amont_bin();
@@ -151,7 +116,6 @@ fn generated_scripts_stay_inside_the_claimed_interval() {
                     let sb = Sandbox::new(Path::new(STUB));
                     chunk
                         .into_iter()
-                        .filter(|s| !is_known(*s))
                         .map(|seed| {
                             let script = gen::script_with(seed, options());
                             let v = verify(&sb, &bin, &script);
@@ -190,12 +154,11 @@ fn generated_scripts_stay_inside_the_claimed_interval() {
     let transfers: u128 = vs.iter().map(|v| v.transfers).sum();
     let silent = vs.iter().filter(|v| v.transfers == 0).count();
     eprintln!(
-        "{} generated scripts ({} known-bug seeds skipped)\n{report}\
+        "{} generated scripts\n{report}\
          \x20 runs: {} exited, {} stopped at the budget, {} timed out\n\
          \x20 {transfers} transfers observed; {silent} scripts made none\n\
          \x20 {claims} host claims: {exact} exact, {infinite} with an infinite upper",
         results.len(),
-        seeds.iter().filter(|s| is_known(**s)).count(),
         ends(|e| matches!(e, End::Exited(_))),
         ends(|e| matches!(e, End::Budget)),
         ends(|e| matches!(e, End::Timeout)),
@@ -240,9 +203,8 @@ fn generated_scripts_stay_inside_the_claimed_interval() {
 /// completion against stubs (run in an empty directory, so the glob case
 /// matches nothing). Adapted where a helper is not guaranteed on a runner:
 /// `jq` became `head -c0`; the count-away loop gained a `break`. Left out:
-/// the 10^12 ranges and seq limits (`limits.rs`' business), recursion, and
-/// `seq 5 1` — whose output depends on whose `seq` is on PATH (GNU:
-/// nothing; BSD/macOS: 5 4 3 2 1), where the analyzer assumes GNU.
+/// the 10^12 ranges and seq limits (`limits.rs`' business), and recursion.
+/// `seq 5 1` has its own regression below.
 const APPENDIX_C: &[&str] = &[
     "for i in {1..60}; do curl -s https://h.example/$i; done",
     r#"for i in "{1..5}"; do curl https://h.example/; done"#,
@@ -331,42 +293,21 @@ fn a_loop_with_no_way_out_is_uncapped() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
-// ── known analyzer bugs (regressions, ignored until fixed) ──────────────────
+// ── analyzer bugs this harness found, kept as regressions ──────────────────
 
 fn replay(script: &str) {
     let f = run_fixed(&[script]);
     assert!(f.is_empty(), "{}", f.join("\n\n"));
 }
 
-#[test]
-#[ignore = "known analyzer bugs: replays KNOWN_BUG_SEEDS"]
-fn known_bug_seeds_still_fail() {
-    // Inverted on purpose: this passes while every listed seed still fails,
-    // and names the seeds that started passing (their bug is fixed; drop
-    // them from KNOWN_BUG_SEEDS).
-    let bin = amont_bin();
-    let sb = Sandbox::new(Path::new(STUB));
-    let fixed: Vec<String> = KNOWN_BUG_SEEDS
-        .iter()
-        .filter(|(seed, _)| verify(&sb, &bin, &gen::script(*seed)).failures.is_empty())
-        .map(|(seed, bug)| format!("{seed} ({bug:?})"))
-        .collect();
-    assert!(
-        fixed.is_empty(),
-        "now pass — remove from KNOWN_BUG_SEEDS: {}",
-        fixed.join(", ")
-    );
-}
-
-/// BUG (bash, and `unknown` against bash): `for x in $items` with
+/// FIXED (bash, and `unknown` against bash): `for x in $items` with
 /// `items="a b c"` runs three times — the analyzer counts that right — but
 /// binds `x` to the whole unsplit "a b c" on each trip instead of "a", "b",
 /// "c". A test on the loop variable is then decided wrongly, in both
 /// directions:
 ///   bash observes 1 transfer; `--dialect bash` and `unknown` claim [0, 0].
 #[test]
-#[ignore = "analyzer bug: split for-list binds the unsplit value (bash)"]
-fn known_bug_split_loop_var_upper() {
+fn regression_split_loop_var_upper() {
     replay(
         r#"items="a b c"; for x in $items; do [ "$x" = c ] && curl -s https://a.example/; done"#,
     );
@@ -375,65 +316,57 @@ fn known_bug_split_loop_var_upper() {
 /// Same bug, the lower bound: bash observes 0; `--dialect bash` claims
 /// [3, 3], `unknown` [1, 3].
 #[test]
-#[ignore = "analyzer bug: split for-list binds the unsplit value (bash)"]
-fn known_bug_split_loop_var_lower() {
+fn regression_split_loop_var_lower() {
     replay(
         r#"items="a b c"; for x in $items; do [ "$x" = "a b c" ] && curl -s https://a.example/; done"#,
     );
 }
 
-/// BUG (bash, and `unknown` against bash): `continue`/`break` inside a
+/// FIXED (bash, and `unknown` against bash): `continue`/`break` inside a
 /// subshell. bash resets the loop level in `( )`: the builtin prints
 /// "only meaningful in a loop", returns 1, and the subshell RUNS ON. zsh
 /// leaves the subshell instead. The analyzer applies the zsh reading to
 /// bash: bash observes 2 transfers; `bash` and `unknown` claim [0, 0].
 #[test]
-#[ignore = "analyzer bug: break/continue in ( ) does not stop a bash subshell"]
-fn known_bug_subshell_jump_continue() {
+fn regression_subshell_jump_continue() {
     replay("for i in 1 2; do ( continue; curl -s https://a.example/ ); done");
 }
 
 #[test]
-#[ignore = "analyzer bug: break/continue in ( ) does not stop a bash subshell"]
-fn known_bug_subshell_jump_break() {
+fn regression_subshell_jump_break() {
     replay("for i in 1 2; do ( break; curl -s https://a.example/ ); done");
 }
 
-/// BUG (every dialect): `let` returns 1 when its last expression is 0 —
+/// FIXED (every dialect): `let` returns 1 when its last expression is 0 —
 /// `let i++` with i=0 evaluates to 0. The analyzer treats `let` as always
 /// succeeding (`((i++))` is modelled right). Under `set -e` the shell exits:
 /// both shells observe 0; every dialect claims [1, 1].
 #[test]
-#[ignore = "analyzer bug: `let` exit status is not modelled"]
-fn known_bug_let_status_errexit() {
+fn regression_let_status_errexit() {
     replay("set -e; i=0; let i++; curl -s https://a.example/");
 }
 
 /// Same bug without errexit: both shells observe 0; every dialect claims
 /// [1, 1].
 #[test]
-#[ignore = "analyzer bug: `let` exit status is not modelled"]
-fn known_bug_let_status_and() {
+fn regression_let_status_and() {
     replay("i=0; let i++ && curl -s https://a.example/");
 }
 
-/// PLATFORM (macOS/BSD): `seq 5 1` prints nothing with GNU coreutils and
-/// `5 4 3 2 1` with BSD `seq` (/usr/bin/seq on macOS). The analyzer assumes
-/// GNU and claims [0, 0]; where BSD `seq` is first on PATH, bash and zsh
-/// observe 5. Not in docs/analysis.md's assumptions. Passes on Linux.
+/// FIXED, PLATFORM: `seq 5 1` prints nothing with GNU coreutils and
+/// `5 4 3 2 1` with BSD `seq` (/usr/bin/seq on macOS). The analyzer assumed
+/// GNU and claimed [0, 0]; it now claims [0, 5], true on both.
 #[test]
-#[ignore = "analyzer assumes GNU seq: `seq 5 1` counts down on BSD/macOS"]
-fn known_bug_bsd_seq_descending() {
+fn regression_bsd_seq_descending() {
     replay("for i in $(seq 5 1); do curl -s https://a.example/; done");
 }
 
-/// PRECISION, not soundness: `until false` is `while true` spelled the
+/// FIXED, PRECISION, not soundness: `until false` is `while true` spelled the
 /// other way, but the analysis calls its later iterations `unknown` rather
 /// than `uncapped` (the interval still holds; the evidence is lost). Every
 /// dialect. docs/analysis.md names "`while true` with no way out" as
 /// uncapped; the negated form should be too.
 #[test]
-#[ignore = "analyzer precision gap: `until false` is unknown, not uncapped"]
 fn until_false_is_uncapped() {
     let bin = amont_bin();
     let s = "until false; do wget -q https://a.example/x; done";

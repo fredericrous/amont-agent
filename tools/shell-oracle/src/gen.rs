@@ -84,9 +84,9 @@ struct Gen {
 /// What the generator may produce.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
-    /// Leave out the constructs behind the analyzer bugs already reported
-    /// (see tests/execution.rs, `known_bug_*`), so a sweep can look for NEW
-    /// ones past them. Never the default.
+    /// Leave out the constructs behind analyzer bugs found before (see
+    /// tests/execution.rs, `regression_*`), so a sweep can look past them
+    /// while one is open. Never the default.
     pub avoid_known_bugs: bool,
 }
 
