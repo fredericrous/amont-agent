@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 # Preview gate: soak fixes
 
@@ -19,7 +19,7 @@ the gate rather than its bugs.
    extension filter AND its nearest `package.json` (walking up to the repo
    root, read from the pushed commit) has a `dev` script or depends on
    `react`, `react-dom`, `react-native`, `react-strict-dom` or
-   `@duro-app/ui`. Repo-level `gated()` and the `amont.agent.push-preview.ui`
+   `@duro-app/ui` in `dependencies` or as a required peer. Repo-level `gated()` and the `amont.agent.push-preview.ui`
    override are unchanged.
 3. A `.ts/.tsx/.js/.jsx/.css` file whose every changed non-blank line is a
    comment line does not count as a UI change. Any doubt counts as UI.
@@ -42,18 +42,37 @@ the gate rather than its bugs.
 
 - 2026-09-28: origin/main already carries 2.19.0 (request-fanout), so this
   release is 2.20.0, not the 2.19.0 the brief assumed.
+- 2026-09-28: the brief said a UI dependency in deps, devDeps or peerDeps
+  marks a package as UI. duro-design-system's `packages/cli` — the very
+  package that must NOT count — lists `@duro-app/ui` in `devDependencies`
+  and as an optional peer, so that rule could not pass its own acceptance.
+  Only `dependencies` and required (non-optional) peers count. Every real
+  UI package surveyed (duro-design-system `ui`, `diagrams`, `tokens`,
+  `ui-email`; application-landscape; duro-app) still counts, by a `dev`
+  script or a required peer / dependency.
+- 2026-09-28: a `*`-prefixed line is a comment unless it reads like code
+  (ends in `{`, `}` or `;`, or holds a `{` outside a JSDoc `@tag` line), so
+  CSS's `* { … }` counts. Real comment text with `;` mid-line (#301) stays
+  a comment.
+- 2026-09-28: with no single base (new branch, no `origin/HEAD`), the
+  comment check reads `git log -p --first-parent` over the unpublished
+  commits; comments-only in each is comments-only in all.
 
 ## Verification
 
 | input | expected | actual |
 |---|---|---|
-| duro-design-system clone, change under `packages/cli/src` only | not advised | _pending_ |
-| duro-design-system clone, change under `packages/ui/src` | advised | _pending_ |
-| application-landscape clone, comment-only `.tsx` change under `app/` | not advised | _pending_ |
-| application-landscape clone, real JSX change | advised | _pending_ |
-| `cd <clone> && amont-agent preview register …` | journal `registered` with the clone's name | _pending_ |
-| marked question answered after ~3s | latency ≥3s in the journal | _pending_ |
+| duro-design-system clone, change under `packages/cli/src` only | not advised | not advised (`unconfirmed no_interface_change … duro-design-system`) |
+| duro-design-system clone, change to `packages/ui/src/components/ActionBar/ActionBar.tsx` | advised | advised |
+| application-landscape clone, comment-only change to `app/components/graph/GraphCanvas.tsx` | not advised | not advised |
+| application-landscape clone, `<p>` → `<p className="pilot">` in `DangerZone.tsx` | advised | advised |
+| application-landscape clone, the real #301 branch against its own base | not advised | not advised |
+| `cd <clone> && amont-agent preview register …` from a session cwd outside the clone | journal `registered` with the clone's name | `registered pilot application-landscape … application-landscape@310e67e` |
+| marked question answered after `sleep 3`, payload `duration_ms` 0 | latency ≥3s in the journal | `approved … by option,3s,dur=0ms`; the push is then silent |
+| `make check` | green | green (457 unit tests + integration suites; `tests/preview.rs` 22) |
 
 ## Outcome
 
-_pending_
+All five fixed, each with an end-to-end test through the real binary in
+`tests/preview.rs` and falsified once (the fix broken, the test red, the fix
+restored). Released as 2.20.0; not pushed from this worktree.
