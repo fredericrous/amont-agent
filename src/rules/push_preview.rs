@@ -67,8 +67,9 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
         reason: "This push would publish interface changes that no approved preview covers."
             .to_string(),
         remedy: "Verify the final commit in a real browser, serve the clean worktree, then run \
-                 `amont-agent preview register --url <url> --attestation <file outside the worktree>` \
-                 as its own command and, in the same turn, ask the marked question \
+                 `amont-agent preview register --url <url> --guide <guide.md outside the worktree>` \
+                 as its own command (see `amont-agent preview --help` for the guide's sections), open the app \
+                 at the first step's state and the rendered page, and, in the same turn, ask the marked question \
                  (`[preview <id>]`, listing each repo@sha, options exactly Approve / Request changes / Hold). \
                  Push after the person approves. A push shape this guard cannot read is held under deny: \
                  push the branch explicitly (`git push <remote> <branch>`)."

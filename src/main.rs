@@ -31,6 +31,7 @@ mod git;
 mod gitconfig;
 mod graduate;
 mod guidance;
+mod guide;
 mod hook;
 mod journal;
 mod json;
@@ -75,8 +76,9 @@ usage: amont-agent <command>
                         interface tools/shell-oracle compares against real
                         shells [--dialect, as for check]
   rules                 every rule, its default stance and its evidence
-  preview register --url <url> --attestation <file> [--repo <dir>]
+  preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
                         validate a localhost preview of HEAD for approval
+                        and render its guide to a page
 
 install/uninstall flags:
   --write               actually edit the file
@@ -713,25 +715,44 @@ fn run_analyze(args: &[OsString]) -> ExitCode {
 }
 
 const PREVIEW_USAGE: &str = "\
-usage: amont-agent preview register --url <url> --attestation <file> [--repo <dir>]
+usage: amont-agent preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
 
 Validate a localhost preview of the repository's HEAD, for the person to
-approve before a UI-changing push (ADR-0023). Run it as its own command,
-in the foreground: the Claude Code hook binds its output to the session.
+approve before a UI-changing push (ADR-0023), and render its guide to a
+page (work.preview-is-guided). Run it as its own command, in the
+foreground: the Claude Code hook binds its output to the session.
 
-  --url <url>           where the clean worktree is served (http or https)
-  --attestation <file>  what you verified: routes driven, interactions,
-                        console errors, screenshot paths. Must be non-empty
-                        and OUTSIDE the worktree, or it would dirty the
-                        commit it describes
-  --repo <dir>          the repository (default: the current directory)
+  --url <url>         where the clean worktree is served (http or https)
+  --guide <file.md>   what the person needs to decide with. Must be OUTSIDE
+                      the worktree (it and its page would dirty the commit
+                      they describe) and carry these H2 sections, emoji
+                      and case aside:
+                        ## Where we are          project, branch, plan, why
+                                                 they are asked
+                        ## What you should see   in their words; \"nothing
+                                                 new\" when that is the point
+                        ## Try it                numbered steps (`1. ...`):
+                                                 the URL, each click by its
+                                                 label, what should appear
+                        ## Reference             ![before](before.png)
+                                                 ![after](after.png)
+                        ## Already checked       what you verified, and what
+                                                 to look at especially
+                      Images are relative to the guide's directory; two
+                      named *before* and *after* show side by side.
+  --repo <dir>        the repository (default: the current directory)
+  --open              open the rendered page with the platform opener; a
+                      failure to open never fails the command
+  --attestation <f>   DEPRECATED alias of --guide, for one release: read as
+                      the guide, and refused unless it is one
 
-Prints one JSON object on stdout. Exit 0 when valid, 1 when refused (the
-reason on stderr), 2 on a usage error.
+Writes index.html beside the guide and prints one JSON object on stdout:
+id, repo, commit, url, guide, page, page_url. Exit 0 when valid, 1 when
+refused (the reason on stderr), 2 on a usage error.
 
 example:
   amont-agent preview register --url http://localhost:5173/settings \\
-    --attestation ~/.claude/amont-agent/attestations/abc1234/verify.md
+    --guide ~/.claude/amont-agent/attestations/abc1234/guide.md
 ";
 
 fn run_preview(args: &[OsString]) -> ExitCode {
@@ -754,9 +775,15 @@ fn run_preview(args: &[OsString]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let (mut url, mut attestation, mut repo) = (None, None, None);
+    let (mut url, mut guide, mut attestation, mut repo) = (None, None, None, None);
+    let mut open = false;
     let mut i = 1;
     while i < args.len() {
+        if args[i] == "--open" {
+            open = true;
+            i += 1;
+            continue;
+        }
         let (flag, inline) = match args[i].split_once('=') {
             Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
             _ => (args[i].clone(), None),
@@ -776,6 +803,7 @@ fn run_preview(args: &[OsString]) -> ExitCode {
         };
         match flag.as_str() {
             "--url" => url = Some(value),
+            "--guide" => guide = Some(value),
             "--attestation" => attestation = Some(value),
             "--repo" => repo = Some(value),
             other => {
@@ -785,8 +813,27 @@ fn run_preview(args: &[OsString]) -> ExitCode {
         }
         i += 1;
     }
-    let (Some(url), Some(attestation)) = (url, attestation) else {
-        eprintln!("amont-agent: preview register needs --url and --attestation");
+    let guide = match (guide, attestation) {
+        (Some(g), None) => g,
+        (Some(g), Some(_)) => {
+            eprintln!("amont-agent: --attestation is deprecated and ignored beside --guide");
+            g
+        }
+        (None, Some(a)) => {
+            eprintln!(
+                "amont-agent: --attestation is deprecated; use --guide. It is read as the guide, and refused unless it is one (see `amont-agent preview --help`)"
+            );
+            a
+        }
+        (None, None) => {
+            eprintln!(
+                "amont-agent: preview register needs --guide <file.md>: the person is guided, not quizzed (see `amont-agent preview --help`)"
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let Some(url) = url else {
+        eprintln!("amont-agent: preview register needs --url");
         return ExitCode::from(2);
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -796,15 +843,45 @@ fn run_preview(args: &[OsString]) -> ExitCode {
     } else {
         cwd.join(dir)
     };
-    match preview::validate(&dir, &url, std::path::Path::new(&attestation)) {
+    match preview::register(&dir, &url, std::path::Path::new(&guide)) {
         Ok(r) => {
             println!("{}", r.to_json());
+            if open {
+                open_page(std::path::Path::new(&r.page));
+            }
             ExitCode::SUCCESS
         }
         Err(why) => {
             eprintln!("amont-agent: preview not registered: {why}");
             ExitCode::from(1)
         }
+    }
+}
+
+/// Hand the page to the platform's opener and do not wait. Whatever
+/// happens, the registration stands: the page is a convenience.
+fn open_page(page: &std::path::Path) {
+    use std::process::{Command, Stdio};
+    let mut cmd = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/c", "start", ""]);
+        c
+    } else {
+        Command::new("xdg-open")
+    };
+    let spawned = cmd
+        .arg(page)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if spawned.is_err() {
+        eprintln!(
+            "amont-agent: the page could not be opened; it is at {}",
+            page.display()
+        );
     }
 }
 
