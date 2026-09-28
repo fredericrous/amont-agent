@@ -140,6 +140,9 @@ pub struct CaseArm {
     pub patterns: Vec<Word>,
     pub body: Cmd,
     pub term: CaseTerm,
+    // Syntax kept whole for the frontend's golden tests; the interpreter
+    // does not need it to count.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -176,10 +179,16 @@ pub struct Assign {
 pub struct Redirect {
     /// The operator as written, with its fd prefix: `>`, `>>`, `<`, `2>`,
     /// `2>&` (whose target is `1`), `&>`, `<<`, `<<-`, `<<<`, …
+    // Syntax kept whole for the frontend's golden tests; the interpreter
+    // does not need it to count.
+    #[allow(dead_code)]
     pub op: String,
     /// The target word; for a heredoc, the delimiter.
     pub target: Word,
     /// The heredoc's body, when `op` is `<<` or `<<-`. Data, never parsed.
+    // Syntax kept whole for the frontend's golden tests; the interpreter
+    // does not need it to count.
+    #[allow(dead_code)]
     pub heredoc: Option<String>,
     pub span: Span,
 }
@@ -217,6 +226,9 @@ pub enum Part {
     /// Unquoted `*`, `?`, or the `[` that opens a bracket expression.
     Glob(char),
     /// A leading unquoted `~` (or `~user`, kept as written).
+    // Syntax kept whole for the frontend's golden tests; the interpreter
+    // does not need it to count.
+    #[allow(dead_code)]
     Tilde(String),
     /// `<(…)` or `>(…)`.
     ProcSubst { body: Box<Cmd>, span: Span },

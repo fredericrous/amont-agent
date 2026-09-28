@@ -327,11 +327,7 @@ impl Report {
 /// `examine` only, through the same dispatch as the hook. The dialect is
 /// unknown: a transcript does not record the shell.
 fn fires(rule: &crate::rules::Rule, src: &str, parsed: &shell::Parsed) -> bool {
-    let input = crate::rules::Input {
-        src,
-        dialect: crate::rules::Dialect::Unknown,
-        legacy: parsed,
-    };
+    let input = crate::rules::Input::new(src, crate::rules::Dialect::Unknown, parsed);
     rule.judge(&input).is_some()
 }
 

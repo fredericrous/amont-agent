@@ -48,6 +48,7 @@ pub mod pipe_to_tail;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
 pub mod release_tag_push;
+pub mod request_fanout;
 pub mod sed_in_place;
 pub mod stale_base;
 pub mod stat_bsd_format;
@@ -216,9 +217,6 @@ pub enum Examine {
     /// Reads the whole [`Input`], and runs whatever the legacy lexer made of
     /// the command: a rule of this kind carries its own account of what it
     /// could not understand.
-    // Read by the first analysis-backed rule (`request-fanout`); this allow
-    // goes in the commit that adds it.
-    #[allow(dead_code)]
     Analysis(fn(&Input) -> Option<Finding>),
 }
 
@@ -237,9 +235,6 @@ pub enum Dialect {
 }
 
 impl Dialect {
-    // Read by the first analysis-backed rule (`request-fanout`); this allow
-    // goes in the commit that adds it.
-    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self {
             Dialect::Bash => "bash",
@@ -259,17 +254,31 @@ impl Dialect {
 }
 
 /// Everything a rule may judge a command by: the source as written, the shell
-/// it runs in, and the legacy lexer's reading of it.
+/// it runs in, the legacy lexer's reading of it, and — computed at most once,
+/// and only when a rule asks — the shell analysis ([`crate::analysis`]).
 pub struct Input<'a> {
-    // Read by the first analysis-backed rule (`request-fanout`); this allow
-    // goes in the commit that adds it.
-    #[allow(dead_code)]
     pub src: &'a str,
-    // Read by the first analysis-backed rule (`request-fanout`); this allow
-    // goes in the commit that adds it.
-    #[allow(dead_code)]
     pub dialect: Dialect,
     pub legacy: &'a Parsed,
+    analysis: std::cell::OnceCell<crate::analysis::Analysis>,
+}
+
+impl<'a> Input<'a> {
+    pub fn new(src: &'a str, dialect: Dialect, legacy: &'a Parsed) -> Input<'a> {
+        Input {
+            src,
+            dialect,
+            legacy,
+            analysis: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The analysis of [`Input::src`] under [`Input::dialect`], run on first
+    /// use and shared by every rule that reads it.
+    pub fn analysis(&self) -> &crate::analysis::Analysis {
+        self.analysis
+            .get_or_init(|| crate::analysis::analyze(self.src, self.dialect))
+    }
 }
 
 impl Rule {
@@ -405,6 +414,7 @@ pub const RULES: &[Rule] = &[
     whole_file_dump::RULE,
     persisted_output_dump::RULE,
     file_reread::RULE,
+    request_fanout::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {

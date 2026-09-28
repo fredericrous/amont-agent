@@ -142,11 +142,7 @@ fn on_bash(bash: &Bash) -> Decision {
     // it. Legacy rules are skipped on an unreadable command exactly as they
     // were; a rule built on the shell analysis judges it with its own account
     // of what it could not read.
-    let input = rules::Input {
-        src: &bash.command,
-        dialect: rules::tool_shell::dialect(),
-        legacy: &parsed,
-    };
+    let input = rules::Input::new(&bash.command, rules::tool_shell::dialect(), &parsed);
     let fired = rules::evaluate(&input);
     let dumped = rules::dump::dumps(&parsed);
     if fired.is_empty() && dumped.is_empty() {
@@ -505,13 +501,25 @@ fn confirmed(
 
 fn note(rule: &Rule, stance: &str, outcome: &str, bash: &Bash, finding: &Finding) {
     let excerpt = crate::backtest::excerpt(&bash.command, finding.span.start, finding.span.end);
+    // A rule built on the shell analysis judged the command under a dialect
+    // the replay cannot recover from a transcript, so the record carries it:
+    // `bypassPermissions+zsh`. Folded into the mode token, which nothing
+    // parses, so the journal format is unchanged.
+    let mode = match rule.examine {
+        rules::Examine::Analysis(_) => format!(
+            "{}+{}",
+            bash.permission_mode,
+            rules::tool_shell::dialect().as_str()
+        ),
+        rules::Examine::Legacy(_) => bash.permission_mode.clone(),
+    };
     journal::record(&journal::Entry {
         rule: rule.id,
         stance,
         outcome,
         session: &bash.session,
         repo: &repo_name(&bash.cwd),
-        mode: &bash.permission_mode,
+        mode: &mode,
         excerpt: &excerpt,
     });
 }

@@ -96,13 +96,6 @@ impl Count {
         }
     }
 
-    pub fn at_most(upper: u64) -> Count {
-        Count {
-            lower: 0,
-            upper: Upper::Finite(upper),
-        }
-    }
-
     pub fn uncapped(lower: u64, why: Why) -> Count {
         Count {
             lower,

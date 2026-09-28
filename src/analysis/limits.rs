@@ -22,6 +22,9 @@ pub const WIDEN_AFTER: usize = 3;
 pub const MAX_ROUNDS: usize = 8;
 /// Maximum distinct variables tracked; past this, new ones stay unknown.
 pub const MAX_VARS: usize = 512;
+/// Maximum function summaries kept per analysis; past this, calls are
+/// analysed afresh (and draw on the step budget).
+pub const MAX_SUMMARIES: usize = 256;
 
 /// Why an analysis stopped short.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

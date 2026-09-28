@@ -18,6 +18,10 @@ pub enum AbsVal {
     Values(BTreeSet<String>),
     /// Starts with this, and continues with something unknown.
     Prefix(String),
+    /// One non-empty word of unknown text: no whitespace, no glob character.
+    /// What a loop over `{1..500}` or `$(seq …)` binds its variable to — the
+    /// value is unknown, but that `$i` stays one word is not.
+    Token,
     /// Nothing is known.
     Top,
 }
@@ -58,14 +62,22 @@ impl AbsVal {
                 }
             }
             AbsVal::Prefix(p) if !p.is_empty() => Tri::No,
+            AbsVal::Token => Tri::No,
             _ => Tri::Maybe,
         }
     }
 
     /// `self` followed by `other`, as word expansion joins pieces.
     pub fn concat(&self, other: &AbsVal) -> AbsVal {
+        // The empty string is the identity: `""$v` is `$v`, whatever `$v` is.
+        if self.as_exact() == Some("") {
+            return other.clone();
+        }
+        if other.as_exact() == Some("") {
+            return self.clone();
+        }
         match (self, other) {
-            (AbsVal::Top, _) => AbsVal::Top,
+            (AbsVal::Top | AbsVal::Token, _) => AbsVal::Top,
             (AbsVal::Prefix(p), _) => AbsVal::Prefix(p.clone()),
             (AbsVal::Values(a), AbsVal::Values(b)) => {
                 let mut out = BTreeSet::new();
@@ -81,7 +93,7 @@ impl AbsVal {
                 .map(|x| AbsVal::Prefix(format!("{x}{q}")))
                 .reduce(|l, r| l.join(&r))
                 .unwrap_or(AbsVal::Top),
-            (AbsVal::Values(a), AbsVal::Top) => a
+            (AbsVal::Values(a), AbsVal::Top | AbsVal::Token) => a
                 .iter()
                 .map(|x| {
                     if x.is_empty() {
@@ -99,6 +111,13 @@ impl AbsVal {
     pub fn join(&self, other: &AbsVal) -> AbsVal {
         match (self, other) {
             (AbsVal::Top, _) | (_, AbsVal::Top) => AbsVal::Top,
+            (AbsVal::Token, AbsVal::Token) => AbsVal::Token,
+            (AbsVal::Token, AbsVal::Values(v)) | (AbsVal::Values(v), AbsVal::Token)
+                if v.iter().all(|s| is_token(s)) =>
+            {
+                AbsVal::Token
+            }
+            (AbsVal::Token, _) | (_, AbsVal::Token) => AbsVal::Top,
             (AbsVal::Values(a), AbsVal::Values(b)) => {
                 widen(a.iter().chain(b.iter()).cloned().collect())
             }
@@ -112,10 +131,24 @@ impl AbsVal {
     }
 }
 
-/// Keep up to [`MAX_VALUES`] exact values; past that, their common prefix.
+/// Non-empty, one word however it is split, and not a glob.
+pub fn is_token(s: &str) -> bool {
+    !s.is_empty()
+        && !s
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '*' | '?' | '['))
+}
+
+/// Keep up to [`MAX_VALUES`] exact values; past that, their common prefix —
+/// or, when every one is a single word and they share no prefix, a token.
 fn widen(values: BTreeSet<String>) -> AbsVal {
     if values.len() <= MAX_VALUES {
         AbsVal::Values(values)
+    } else if values.iter().all(|s| is_token(s)) {
+        match prefix_of(values.iter().map(String::as_str)) {
+            AbsVal::Top => AbsVal::Token,
+            other => other,
+        }
     } else {
         prefix_of(values.iter().map(String::as_str))
     }
@@ -404,6 +437,10 @@ mod tests {
         assert_eq!(vals(&["a"]).join(&AbsVal::Top), AbsVal::Top);
         assert_eq!(
             vals(&["abc"]).join(&vals(&["xyz", "q", "r", "s"])),
+            AbsVal::Token
+        );
+        assert_eq!(
+            vals(&["a c"]).join(&vals(&["xyz", "q", "r", "s"])),
             AbsVal::Top
         );
     }

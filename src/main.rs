@@ -18,7 +18,6 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
-#[allow(dead_code)] // wired to rules in the request-fanout commit
 mod analysis;
 mod assertions;
 mod atomic;
@@ -664,11 +663,7 @@ fn run_check(args: &[OsString]) -> ExitCode {
     // The dialect is what the command would run in. `check` has no hook
     // payload and no business guessing from its own `SHELL`, so it is told,
     // or it says `unknown` — the same answer the backtester has to give.
-    let input = rules::Input {
-        src,
-        dialect: f.dialect.unwrap_or(rules::Dialect::Unknown),
-        legacy: &parsed,
-    };
+    let input = rules::Input::new(src, f.dialect.unwrap_or(rules::Dialect::Unknown), &parsed);
     let found = rules::evaluate(&input);
     if found.is_empty() {
         match &parsed {

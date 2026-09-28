@@ -9,7 +9,6 @@
 
 use super::super::ir::*;
 use super::super::limits::Exhausted;
-use super::test_expr::parse_words;
 use super::{parse, ParseError};
 
 fn p(src: &str) -> Cmd {
@@ -900,24 +899,6 @@ fn double_bracket_conditional() {
         show_src("[[ $x =~ ^(a|b)$ ]] && echo m"),
         "(cond(($x =~ ^(a|b)$)) && [echo m])"
     );
-}
-
-#[test]
-fn bracket_test_words() {
-    let t = |src: &str| {
-        let c = p(src);
-        let Cmd::Simple(s) = &c else { panic!() };
-        test(&parse_words(&s.words[1..s.words.len() - 1]))
-    };
-    assert_eq!(t(r#"[ -n "$url" ]"#), r#"(-n "$url")"#);
-    assert_eq!(t("[ $pages -lt 400 ]"), "($pages -lt 400)");
-    assert_eq!(
-        t("[ -f a -a ! -d b -o x = y ]"),
-        "(((-f a) && (! (-d b))) || (x = y))"
-    );
-    assert_eq!(t(r"[ \( a -o b \) -a c ]"), "((a || b) && c)");
-    assert_eq!(t("[ x ]"), "x");
-    assert_eq!(t("[ a b c ]"), "?");
 }
 
 #[test]

@@ -149,10 +149,6 @@ pub struct Effects {
 }
 
 impl Effects {
-    pub fn is_empty(&self) -> bool {
-        self.contributions.is_empty() && self.unknown.is_empty()
-    }
-
     /// `self`, then `other`.
     pub fn then(mut self, other: Effects) -> Effects {
         self.contributions.extend(other.contributions);

@@ -19,6 +19,18 @@
 
 ### Added
 
+- **`request-fanout`**, the first rule built on a real shell analysis. It
+  counts the explicit command-line transfers a command may and must make —
+  per destination, through loops, function calls, `case` arms and client
+  options such as `--retry`, `--paginate` and curl URL ranges — and advises
+  when one destination may see more than 50. It never counts what it cannot
+  read: an unbounded or unparsed region is reported beside the counts, never
+  folded into them. Ships `observe`; its ceiling is `advise`, because every
+  bound is an estimate of what a program may do at run time.
+- **Shell analysis** (`src/analysis/`): a parser for a declared subset of
+  bash and zsh, an abstract interpreter over it, and models of the network
+  clients. The contract — inputs, assumptions, the subset, and what
+  `Unknown` and `Incomplete` mean — is in `docs/analysis.md`.
 - **Stance ceilings.** Every rule declares the loudest stance it may take.
   The cap is applied after every configured key, so neither
   `amont.agent.stance deny` nor the rule's own key can pass it, and

@@ -500,7 +500,7 @@ fn ref_target(val: &AbsVal, transport: bool) -> Option<TargetSet> {
             .filter_map(|v| one(v, true))
             .reduce(|a, b| a.union(&b)),
         AbsVal::Prefix(p) => one(p, false).or_else(|| (!transport).then(dynamic)),
-        AbsVal::Top => Some(dynamic()),
+        AbsVal::Top | AbsVal::Token => Some(dynamic()),
     }
 }
 

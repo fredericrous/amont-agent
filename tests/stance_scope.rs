@@ -231,3 +231,18 @@ fn a_relocated_global_config_is_still_read() {
         "the fixture's global config is the one that answered"
     );
 }
+
+/// A rule built on an estimate may advise and never refuse, whichever key
+/// asks it to: the ceiling is applied after every configured stance.
+#[test]
+fn a_ceiling_holds_against_both_keys() {
+    let f = Fixture::new("ceiling-rule");
+    assert_eq!(f.stance_of("request-fanout"), "observe");
+    f.set("--global", "amont.agent.request-fanout.stance", "deny");
+    assert_eq!(f.stance_of("request-fanout"), "advise");
+
+    let f = Fixture::new("ceiling-blanket");
+    f.set("--global", "amont.agent.stance", "deny");
+    assert_eq!(f.stance_of("request-fanout"), "advise");
+    assert_eq!(f.stance_of("pipe-to-tail"), "deny");
+}

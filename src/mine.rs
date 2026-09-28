@@ -260,11 +260,7 @@ pub fn run(scan: &Scan, options: Options) -> Result<Report, ScanError> {
 /// Through the same dispatch as the hook; the dialect is unknown, because a
 /// transcript does not record the shell.
 fn fires(rule: &Rule, src: &str, parsed: &shell::Parsed) -> bool {
-    let input = crate::rules::Input {
-        src,
-        dialect: crate::rules::Dialect::Unknown,
-        legacy: parsed,
-    };
+    let input = crate::rules::Input::new(src, crate::rules::Dialect::Unknown, parsed);
     rule.judge(&input).is_some()
 }
 

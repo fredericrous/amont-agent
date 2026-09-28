@@ -166,7 +166,7 @@ fn git_target(val: &AbsVal) -> TargetSet {
             .reduce(|a, b| a.union(&b))
             .unwrap_or_else(|| TargetSet::unresolved(Unresolved::Dynamic)),
         AbsVal::Prefix(p) => git_one(p, false),
-        AbsVal::Top => TargetSet::unresolved(Unresolved::Dynamic),
+        AbsVal::Top | AbsVal::Token => TargetSet::unresolved(Unresolved::Dynamic),
     }
 }
 

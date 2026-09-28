@@ -136,11 +136,7 @@ pub fn run(scan: &Scan, rules: &[Subject], samples_per_rule: usize) -> Result<Re
             partly += 1;
         }
         // A transcript does not record which shell ran the command.
-        let input = crate::rules::Input {
-            src: call.command,
-            dialect: crate::rules::Dialect::Unknown,
-            legacy: &parsed,
-        };
+        let input = crate::rules::Input::new(call.command, crate::rules::Dialect::Unknown, &parsed);
         for (i, rule) in rules.iter().enumerate() {
             // `examine` only. `confirm` touches the world, and the world has
             // moved since these commands ran — replaying it would produce a

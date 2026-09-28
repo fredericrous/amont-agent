@@ -91,7 +91,7 @@ pub fn target_of(val: &AbsVal) -> TargetSet {
             .reduce(|a, b| a.union(&b))
             .unwrap_or_else(|| TargetSet::unresolved(Unresolved::Dynamic)),
         AbsVal::Prefix(p) => host_target(url_host(p, false)),
-        AbsVal::Top => TargetSet::unresolved(Unresolved::Dynamic),
+        AbsVal::Top | AbsVal::Token => TargetSet::unresolved(Unresolved::Dynamic),
     }
 }
 
@@ -265,7 +265,7 @@ fn shape(arg: &Arg) -> Shape<'_> {
             }
         }
         AbsVal::Prefix(_) => Shape::Operand,
-        AbsVal::Top => Shape::Opaque,
+        AbsVal::Top | AbsVal::Token => Shape::Opaque,
     }
 }
 

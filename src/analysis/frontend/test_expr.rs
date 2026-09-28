@@ -32,20 +32,6 @@ enum Tok<'a> {
     Op(&'static str),
 }
 
-/// Parse the argv of `[` (without the closing `]`) or `test`.
-pub fn parse_words(words: &[Word]) -> TestExpr {
-    let toks: Vec<Tok<'_>> = words
-        .iter()
-        .map(|w| match w.literal().as_deref() {
-            Some("(") => Tok::Op("("),
-            Some(")") => Tok::Op(")"),
-            _ => Tok::W(w),
-        })
-        .collect();
-    let mut nodes = 0;
-    run(toks, true, 0, &mut nodes).unwrap_or(TestExpr::Unknown)
-}
-
 /// Parse the tokens between `[[` and `]]`.
 pub(super) fn parse_cond(
     toks: &[CondTok],

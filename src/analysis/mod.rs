@@ -21,3 +21,43 @@ pub mod ir;
 pub mod limits;
 pub mod models;
 pub mod state;
+
+use crate::rules::Dialect;
+use effects::Effects;
+use frontend::ParseError;
+pub use interp::{Incomplete, ASSUMPTIONS};
+
+/// What the analysis established about one command.
+#[derive(Debug, Clone)]
+pub struct Analysis {
+    pub effects: Effects,
+    /// Set when the analysis stopped short — a resource limit, or text the
+    /// frontend could not parse. Nothing after `span` is known.
+    pub incomplete: Option<Incomplete>,
+}
+
+/// Analyse `src` as run by `dialect`.
+pub fn analyze(src: &str, dialect: Dialect) -> Analysis {
+    match frontend::parse(src) {
+        Ok(cmd) => {
+            let out = interp::run(&cmd, src, dialect);
+            Analysis {
+                effects: out.effects,
+                incomplete: out.incomplete,
+            }
+        }
+        Err(e) => {
+            let (span, why) = match e {
+                ParseError::Syntax { why, span } => (span, why),
+                ParseError::Limit(x) => (0..src.len(), x.describe()),
+            };
+            Analysis {
+                effects: Effects {
+                    contributions: Vec::new(),
+                    unknown: vec![(span.clone(), why)],
+                },
+                incomplete: Some(Incomplete { span, why }),
+            }
+        }
+    }
+}
