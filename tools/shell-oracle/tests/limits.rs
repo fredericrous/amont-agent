@@ -94,7 +94,9 @@ fn other_pathological_inputs_do_not_crash() {
         "$(".repeat(500) + &")".repeat(500),
         "if true; then ".repeat(500) + &"fi; ".repeat(500),
         "for i in 1; do ".repeat(500) + "curl -s https://x.example/; " + &"done; ".repeat(500),
-        "curl -s https://x.example/; ".repeat(5000),
+        // Linux caps ONE argv string at 128 KiB (MAX_ARG_STRLEN); macOS
+        // does not. 4000 × 28 bytes stays under it on every runner.
+        "curl -s https://x.example/; ".repeat(4000),
         "a && ".repeat(3000) + "b",
         "echo ".to_string() + &"\"".repeat(10001),
         "f() { f; f; }; f".to_string(),
