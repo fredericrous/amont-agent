@@ -25,11 +25,22 @@ a release.
      --attestation ~/.claude/amont-agent/attestations/abc1234/verify.md
    ```
 
-   Run it as its own foreground command. It refuses a dirty tree, a
-   non-commit `HEAD` and an attestation inside the worktree, and prints one
-   JSON object. The `PostToolUse` hook binds that output to the session and
-   to the person's current prompt. A registration run chained, piped or in
-   the background is not bound; the journal says why.
+   Run it as its own foreground command, optionally after `cd` into the
+   worktree:
+
+   ```sh
+   cd ~/Developer/app-wt-settings && amont-agent preview register --url … --attestation …
+   ```
+
+   It refuses a dirty tree, a non-commit `HEAD` and an attestation inside
+   the worktree, and prints one JSON object. The `PostToolUse` hook binds
+   that output to the session and to the person's current prompt, in the
+   repository the command ran in — the leading `cd`s followed — which must
+   still be the printed repository at the printed `HEAD`. The only chaining
+   accepted is leading `cd <literal path>` clauses joined by `&&`. A
+   registration after any other program, after `;` or `||`, piped, in the
+   background or behind a substitution (`cd $(…)`) is not bound; the
+   journal says why.
 3. **Ask, in the same turn.** One `AskUserQuestion` whose text carries
    `[preview <id>]` and lists every `repo@sha` it approves, with options
    exactly `Approve`, `Request changes`, `Hold` — no "(Recommended)"
@@ -66,9 +77,37 @@ it runs.
 - the repository has a user interface: a `dev` script in `package.json` at
   the root or in `web/`, or `git config amont.agent.push-preview.ui true`
   (`false` opts a repository out);
-- a pushed branch carries a file under `app/`, `src/` or `web/`, or a
-  `.tsx`, `.jsx`, `.css` or `.html` file;
+- a pushed branch carries an **interface change** (below);
 - that commit has no approval.
+
+### What counts as an interface change
+
+The repository-level decision above says whether a repository is gated at
+all. Within a gated repository, one changed file counts only when all hold:
+
+1. **The path.** It is under `app/`, `src/` or `web/` (at any depth), or it
+   is a `.tsx`, `.jsx`, `.css` or `.html` file.
+2. **The package.** Its nearest `package.json` — walking up from the file
+   to the repository root, read from the **pushed commit** (`git show
+   <commit>:<path>`), not the working tree — has a `dev` script, or lists
+   `react`, `react-dom`, `react-native`, `react-strict-dom` or
+   `@duro-app/ui` in `dependencies` or as a **required** peer dependency.
+   `devDependencies` and optional peers (`peerDependenciesMeta.<name>.optional`)
+   do not count: duro-design-system's `packages/cli` carries `@duro-app/ui`
+   exactly there, and renders nothing. A monorepo whose root has a `dev`
+   script is therefore judged package by package. No `package.json` at all
+   on the way up, or one that does not parse: the path decides.
+3. **Not comments only.** For a `.ts`, `.tsx`, `.js`, `.jsx` or `.css`
+   file, the diff (`git diff -U0 <base>..<commit> -- <file>`; on a new
+   branch with no base, each unpublished commit against its first parent)
+   is read. When every added and removed line that is not blank is a comment
+   line — starting with `//`, `/*`, `*`, `*/`, or a JSX `{/* … */}` — the
+   file does not count. A line with code after a closed comment (`/* a */
+   foo()`), a `*` line that reads like code (CSS `* {`), a binary file or a
+   diff that cannot be taken all count. Any doubt counts.
+
+`git config amont.agent.push-preview.ui` still overrides the repository
+decision; it does not change how files are judged.
 
 A push to `main` or `master` is left to amont's `branch-protect`.
 
@@ -115,8 +154,17 @@ shell, and it is a workflow aid, not a Git enforcement boundary.
 grep -E 'push-(preview|published)' ~/.claude/amont-agent/journal.log
 ```
 
+Every line names the repository the push ran in or the registration
+belongs to — never the session's working directory, which may be another
+worktree.
+
 The rule's own lines (`registered`, `replaced`, `approved`, `dropped`,
 `unanswered`, `expired`, `prefilled`, `unbound`) carry the answer latency on
-approvals and drops (`option,4s`). A median under about ten seconds after a
-week says the approval is a rubber stamp; ADR-0023 then retires the gate and
-keeps the verification.
+approvals and drops: `option,184s,dur=0ms`. **The latency is the first
+number** (`184s`): the hook's own clock, from the `PreToolUse` of the marked
+question to its `PostToolUse`. `dur=` is the payload's raw `duration_ms`,
+kept only for comparison — it is not the person's answer time (a
+minutes-long approval arrived as `0`). A `-` in place of the seconds means
+the question's `PreToolUse` record was written by an older release. A median
+under about ten seconds after a week says the approval is a rubber stamp;
+ADR-0023 then retires the gate and keeps the verification.
