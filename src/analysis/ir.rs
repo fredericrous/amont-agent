@@ -99,6 +99,15 @@ pub enum Cmd {
         expr: TestExpr,
         span: Span,
     },
+    /// A compound command followed by redirections: `while …; done < file`,
+    /// `{ …; } 2>/dev/null`. A simple command keeps its own in
+    /// [`SimpleCmd::redirects`]; this carries them for everything else, so a
+    /// `done < <(curl …)` target, which runs a command, is not dropped.
+    Redirected {
+        body: Box<Cmd>,
+        redirects: Vec<Redirect>,
+        span: Span,
+    },
     /// A construct the frontend recognised and deliberately does not model,
     /// or could not parse. The interpreter treats it as able to do anything
     /// to the shell's state.
@@ -165,7 +174,8 @@ pub struct Assign {
 
 #[derive(Debug, Clone)]
 pub struct Redirect {
-    /// The operator as written: `>`, `>>`, `<`, `2>&1`, `<<`, `<<<`, …
+    /// The operator as written, with its fd prefix: `>`, `>>`, `<`, `2>`,
+    /// `2>&` (whose target is `1`), `&>`, `<<`, `<<-`, `<<<`, …
     pub op: String,
     /// The target word; for a heredoc, the delimiter.
     pub target: Word,
@@ -336,6 +346,7 @@ impl Cmd {
             | Cmd::FuncDef { span, .. }
             | Cmd::Arith { span, .. }
             | Cmd::Cond { span, .. }
+            | Cmd::Redirected { span, .. }
             | Cmd::Unsupported { span, .. } => span.clone(),
         }
     }
