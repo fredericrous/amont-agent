@@ -1,0 +1,5 @@
+# The harness's own toolchain. brush-parser 0.4 requires 1.88; this is the
+# same channel the root crate builds with, so one toolchain serves both on a
+# developer machine. Bump it together with the root pin.
+[toolchain]
+channel = "1.94.1"

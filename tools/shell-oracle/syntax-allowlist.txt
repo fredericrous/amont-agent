@@ -1,0 +1,5 @@
+# Commands bash parses (per brush-parser) that `amont-agent analyze --dialect bash`
+# refuses, accepted on purpose. One per line: `reason<TAB>command`, the
+# command escaped like tests/corpus (\n, \t, \\). Keep this SHORT: every
+# entry is a known gap, and the_allowlist_has_no_stale_entries fails once an
+# entry stops disagreeing.
