@@ -116,9 +116,14 @@ impl World {
     }
 
     fn pre_bash(&self, session: &str, tool_use_id: &str, command: &str) -> String {
+        self.pre_bash_in(&self.work, session, tool_use_id, command)
+    }
+
+    /// A PreToolUse Bash payload whose session cwd is `cwd`.
+    fn pre_bash_in(&self, cwd: &Path, session: &str, tool_use_id: &str, command: &str) -> String {
         self.hook(serde_json::json!({
             "hook_event_name": "PreToolUse", "tool_name": "Bash",
-            "cwd": self.work, "session_id": session, "prompt_id": "p1",
+            "cwd": cwd, "session_id": session, "prompt_id": "p1",
             "tool_use_id": tool_use_id, "permission_mode": "default",
             "tool_input": {"command": command}
         }))
@@ -610,4 +615,47 @@ fn a_real_push_is_recorded_as_published_with_its_approval() {
     git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
     w.post_bash("s", "p1", "push10", command, "");
     assert!(w.journal().contains("already-present"), "{}", w.journal());
+}
+
+#[test]
+fn preview_journal_lines_name_the_repository_pushed_not_the_sessions() {
+    // Seen 2026-09-28: an application-landscape push was journalled under
+    // the name of the worktree the session sat in.
+    let w = World::new("attribution");
+    let elsewhere = w.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    git(&elsewhere, &["init", "-q", "--template=", "."]);
+    w.commit("app/a.tsx", "export const a = 1\n");
+
+    let push = format!("cd {} && git push -q -u origin feat/x", w.work.display());
+    let out = w.pre_bash_in(&elsewhere, "s", "push1", &push);
+    assert!(out.contains("amont-agent/push-preview"), "{out}");
+    git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
+    w.post_bash_in(&elsewhere, "s", "p1", "push1", &push, "");
+
+    let record = w.root.join("attest.md");
+    std::fs::write(&record, "x\n").unwrap();
+    let unbound = format!(
+        "cd {}; amont-agent preview register --url http://localhost:1/ --attestation {}",
+        w.work.display(),
+        record.display()
+    );
+    w.post_bash_in(&elsewhere, "s", "p1", "reg", &unbound, "{}");
+
+    let journal = w.journal();
+    let lines: Vec<&str> = journal
+        .lines()
+        .filter(|l| l.contains("push-preview") || l.contains("push-published"))
+        .collect();
+    for needle in ["advised", "published-unapproved", "unbound"] {
+        assert!(
+            lines.iter().any(|l| l.contains(needle)),
+            "{needle} missing:\n{journal}"
+        );
+    }
+    for l in &lines {
+        let fields: Vec<&str> = l.split_whitespace().collect();
+        assert!(fields.contains(&"app"), "{l}");
+        assert!(!fields.contains(&"elsewhere"), "{l}");
+    }
 }

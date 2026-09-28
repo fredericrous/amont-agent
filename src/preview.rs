@@ -699,24 +699,6 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
     let Some(cmd) = clauses.iter().find(|c| is_register(c)) else {
         return;
     };
-    let excerpt = "preview register";
-    let refuse = |why: &str| {
-        note(
-            "unbound",
-            &bash.session,
-            &bash.cwd.to_string_lossy(),
-            &format!("{excerpt}: {why}"),
-        )
-    };
-    if bash.background {
-        return refuse("ran in the background");
-    }
-    if !parsed.fully_read() || !standalone(clauses, cmd.at) {
-        return refuse("not a standalone command");
-    }
-    let Some(printed) = bash.stdout.as_deref().and_then(Registered::from_json) else {
-        return refuse("its output is not the expected JSON");
-    };
     // Where the leading `cd`s left the shell, with `cwd_at`'s semantics.
     let ctx = crate::rules::Context {
         cwd: &bash.cwd,
@@ -731,7 +713,28 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
         Some(d) => here.join(d),
         None => here,
     };
-    let Some(repo) = push_target::toplevel(&dir) else {
+    let named = push_target::toplevel(&dir);
+    // Even a refusal is journalled under the repository the command named.
+    let shown = named.clone().unwrap_or_else(|| dir.clone());
+    let excerpt = "preview register";
+    let refuse = |why: &str| {
+        note(
+            "unbound",
+            &bash.session,
+            &shown.to_string_lossy(),
+            &format!("{excerpt}: {why}"),
+        )
+    };
+    if bash.background {
+        return refuse("ran in the background");
+    }
+    if !parsed.fully_read() || !standalone(clauses, cmd.at) {
+        return refuse("not a standalone command");
+    }
+    let Some(printed) = bash.stdout.as_deref().and_then(Registered::from_json) else {
+        return refuse("its output is not the expected JSON");
+    };
+    let Some(repo) = named else {
         return refuse("the repository it names is gone");
     };
     let head = git(
@@ -856,7 +859,7 @@ pub fn on_pre_ask(ask: &crate::payload::Ask, stance: Stance) -> Option<String> {
         note(
             "prefilled",
             &ask.session,
-            "-",
+            &repo_of(&ask.session, &ids),
             &format!("marked question {}", ids.join(",")),
         );
         if stance == Stance::Deny {
@@ -897,10 +900,16 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
         // No PreToolUse record: the question was never seen before it ran,
         // so nothing proves its answers were not pre-filled.
         if ask.questions.iter().any(|q| marker(q).is_some()) {
+            let ids: Vec<String> = ask
+                .questions
+                .iter()
+                .filter_map(|q| marker(q))
+                .flatten()
+                .collect();
             note(
                 "unrecorded",
                 &ask.session,
-                "-",
+                &repo_of(&ask.session, &ids),
                 "marked question with no PreToolUse record",
             );
         }
@@ -975,6 +984,22 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
                 save_registrations(&back);
             }
         }
+    }
+}
+
+/// The repository of this session's registrations a marked question names,
+/// for the journal; `-` when it names none (or several repositories).
+fn repo_of(session: &str, ids: &[String]) -> String {
+    let mut repos: Vec<String> = registrations()
+        .into_iter()
+        .filter(|r| r.session == session && ids.contains(&r.id))
+        .map(|r| r.repo)
+        .collect();
+    repos.sort();
+    repos.dedup();
+    match repos.as_slice() {
+        [one] => one.clone(),
+        _ => "-".to_string(),
     }
 }
 

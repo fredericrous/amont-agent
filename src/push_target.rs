@@ -230,22 +230,10 @@ pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
             }
         }
     };
-    let mut dir = cwd.to_path_buf();
-    for d in &spec.dirs {
-        dir = if let Some(rest) = d.strip_prefix("~/") {
-            match std::env::var_os("HOME") {
-                Some(h) => PathBuf::from(h).join(rest),
-                None => {
-                    return Push::Unresolvable {
-                        repo: None,
-                        shape: "-C names a home-relative path and HOME is unset",
-                    }
-                }
-            }
-        } else {
-            dir.join(d)
-        };
-    }
+    let dir = match directory(cwd, &spec) {
+        Ok(d) => d,
+        Err(shape) => return Push::Unresolvable { repo: None, shape },
+    };
     let Some(repo) = toplevel(&dir) else {
         return Push::Unresolvable {
             repo: None,
@@ -297,6 +285,31 @@ pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
         });
     }
     Push::Resolved { repo, targets }
+}
+
+/// The directory the push runs in: `cwd` moved by each `-C`.
+fn directory(cwd: &Path, spec: &Spec) -> Result<PathBuf, &'static str> {
+    let mut dir = cwd.to_path_buf();
+    for d in &spec.dirs {
+        dir = if let Some(rest) = d.strip_prefix("~/") {
+            match std::env::var_os("HOME") {
+                Some(h) => PathBuf::from(h).join(rest),
+                None => return Err("-C names a home-relative path and HOME is unset"),
+            }
+        } else {
+            dir.join(d)
+        };
+    }
+    Ok(dir)
+}
+
+/// The repository a push runs in, without resolving what it publishes:
+/// what the journal names it by. `cwd` is the directory of the clause.
+pub fn repository(cwd: &Path, cmd: &Simple) -> Option<PathBuf> {
+    match read(cmd) {
+        Read::Spec(spec) => toplevel(&directory(cwd, &spec).ok()?),
+        _ => toplevel(cwd),
+    }
 }
 
 /// The full destination ref for `src[:dst]`, the way git names it — or

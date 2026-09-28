@@ -362,7 +362,7 @@ fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, c
         stance,
         outcome,
         session: &bash.session,
-        repo: &repo_name(&bash.cwd),
+        repo: &attributed_repo(assertion.id, bash),
         mode: &bash.permission_mode,
         excerpt: &excerpt,
     });
@@ -554,10 +554,39 @@ fn note(rule: &Rule, stance: &str, outcome: &str, bash: &Bash, finding: &Finding
         stance,
         outcome,
         session: &bash.session,
-        repo: &repo_name(&bash.cwd),
+        repo: &attributed_repo(rule.id, bash),
         mode: &mode,
         excerpt: &excerpt,
     });
+}
+
+/// The repository a journal line names. For the preview gate's push records
+/// that is the repository the push runs in — `cd`s and `-C` followed — not
+/// the session's: a session in one worktree pushing another must not log
+/// the push under the first one's name.
+fn attributed_repo(id: &str, bash: &Bash) -> String {
+    let pushes = [
+        rules::push_preview::RULE.id,
+        crate::assertions::push_published::ASSERTION.id,
+    ];
+    if !pushes.contains(&id) {
+        return repo_name(&bash.cwd);
+    }
+    let parsed = shell::lex(&bash.command);
+    let resolved = crate::push_target::find(&parsed).and_then(|cmd| {
+        let ctx = Context {
+            cwd: &bash.cwd,
+            parsed: &parsed,
+            background: bash.background,
+            timeout_ms: bash.timeout_ms,
+            tool_use_id: &bash.tool_use_id,
+        };
+        crate::push_target::repository(&ctx.cwd_at(cmd.at), cmd)
+    });
+    match resolved.as_deref().and_then(std::path::Path::file_name) {
+        Some(n) => n.to_string_lossy().into_owned(),
+        None => repo_name(&bash.cwd),
+    }
 }
 
 /// The basename of the repository, not its path. Enough to group firings by
