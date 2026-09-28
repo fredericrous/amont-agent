@@ -540,7 +540,7 @@ fn a_register_after_leading_cds_is_bound_in_the_repository_they_reach() {
     w.commit("app/a.tsx", "1\n");
     let (id, out, record) = validated(&w);
     let command = format!(
-        "cd {} && cd app && amont-agent preview register --url http://localhost:1/ --attestation {}",
+        "cd '{}' && cd app && amont-agent preview register --url http://localhost:1/ --attestation '{}'",
         w.root.display(),
         record.display()
     );
@@ -627,7 +627,9 @@ fn preview_journal_lines_name_the_repository_pushed_not_the_sessions() {
     git(&elsewhere, &["init", "-q", "--template=", "."]);
     w.commit("app/a.tsx", "export const a = 1\n");
 
-    let push = format!("cd {} && git push -q -u origin feat/x", w.work.display());
+    // Quoted as a session writes it: an unquoted Windows path's backslashes
+    // are shell escapes.
+    let push = format!("cd '{}' && git push -q -u origin feat/x", w.work.display());
     let out = w.pre_bash_in(&elsewhere, "s", "push1", &push);
     assert!(out.contains("amont-agent/push-preview"), "{out}");
     git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
