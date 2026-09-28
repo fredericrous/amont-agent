@@ -28,18 +28,32 @@ pub fn repo_root() -> PathBuf {
 /// `$AMONT_AGENT_BIN`, else `<repo>/target/debug/amont-agent`. Panics with
 /// the fix when it is missing: this harness never builds the crate itself.
 pub fn amont_bin() -> PathBuf {
-    let p = match std::env::var_os("AMONT_AGENT_BIN") {
-        Some(p) => PathBuf::from(p),
-        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/amont-agent"),
-    };
-    assert!(
-        p.is_file(),
-        "amont-agent binary not found at {}.\n\
-         Run `cargo build` at the repository root first, or point \
-         AMONT_AGENT_BIN at a built binary.",
-        p.display()
-    );
-    p
+    if let Some(p) = std::env::var_os("AMONT_AGENT_BIN") {
+        let p = PathBuf::from(p);
+        assert!(p.is_file(), "AMONT_AGENT_BIN={} is not a file", p.display());
+        return p;
+    }
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            // The binary under test is the repository's own, built from the
+            // tree these tests sit in. Building it here, once, is what lets
+            // `cargo test` run from a fresh checkout — CI, or a push gate's
+            // snapshot — without a separate step to forget.
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+                .args(["build", "--quiet", "--bin", "amont-agent"])
+                .current_dir(&root)
+                .env_remove("CARGO_TARGET_DIR")
+                .env_remove("RUSTUP_TOOLCHAIN")
+                .status()
+                .expect("spawn cargo build at the repository root");
+            assert!(status.success(), "cargo build at {} failed", root.display());
+            let p = root.join("target/debug/amont-agent");
+            assert!(p.is_file(), "no binary at {} after building", p.display());
+            p
+        })
+        .clone()
 }
 
 /// An upper bound as the binary prints it.

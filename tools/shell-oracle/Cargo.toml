@@ -9,11 +9,10 @@
 # the root `make check` never compiles it.
 #
 # It exercises the analyzer ONLY through the built binary
-# (`amont-agent analyze`), located by `AMONT_AGENT_BIN`, defaulting to
-# `../../target/debug/amont-agent`. Build it first: `cargo build` at the root.
+# (`amont-agent analyze`): `AMONT_AGENT_BIN` if set, otherwise the tests
+# build the repository's own debug binary once and use that.
 #
 # Run (needs bash and zsh on PATH):
-#   cargo build                                  # at the repository root
 #   cd tools/shell-oracle && cargo test --locked
 # Knobs: ORACLE_SEEDS=n (generated scripts, default 500), ORACLE_SEED=s (one
 # seed, printed), ORACLE_SCRIPT='…' with `--test execution adhoc` (check one
