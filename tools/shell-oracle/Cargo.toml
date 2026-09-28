@@ -1,0 +1,44 @@
+# The verification harness for `src/analysis/`: a SEPARATE cargo workspace.
+#
+# It lives in the repository but outside the crate on purpose. amont-agent
+# ships with serde/serde_json only; this harness needs a third-party bash
+# parser (brush-parser, which pulls a PEG generator, bon, and friends) and a
+# newer toolchain (brush-parser 0.4 declares rust-version 1.88). Neither may
+# leak into the shipped crate, its lockfile, or its MSRV — so this directory
+# is its own workspace root with its own `Cargo.lock` and toolchain pin, and
+# the root `make check` never compiles it.
+#
+# It exercises the analyzer ONLY through the built binary
+# (`amont-agent analyze`): `AMONT_AGENT_BIN` if set, otherwise the tests
+# build the repository's own debug binary once and use that.
+#
+# Run (needs bash and zsh on PATH):
+#   cd tools/shell-oracle && cargo test --locked
+# Knobs: ORACLE_SEEDS=n (generated scripts, default 500), ORACLE_SEED=s (one
+# seed, printed), ORACLE_SCRIPT='…' with `--test execution adhoc` (check one
+# hand-written script), ORACLE_AVOID_KNOWN_BUGS=1 (leave out constructs
+# that exposed past bugs, to hunt new ones).
+# `cargo run --example dump -- 1 500` prints the generated scripts.
+[package]
+name = "shell-oracle"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+rust-version = "1.88.0"
+
+# An empty workspace: this manifest is its own root, so cargo never walks up
+# to the amont-agent manifest (which declares no workspace at all).
+[workspace]
+
+[dependencies]
+# Exact pins: a syntax oracle whose grammar moves under it on `cargo update`
+# would turn a green run red without a change on either side.
+brush-parser = { version = "=0.4.0", default-features = false }
+serde_json = "=1.0.151"
+
+# The stub that stands in for curl, wget and gh while generated scripts run.
+# Integration tests find it through CARGO_BIN_EXE_oracle-stub.
+[[bin]]
+name = "oracle-stub"
+path = "src/bin/oracle-stub.rs"

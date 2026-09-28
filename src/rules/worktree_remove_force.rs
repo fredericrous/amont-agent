@@ -15,18 +15,19 @@
 //! holds and stays silent when it is clean — which is most of the time, and
 //! is exactly when `--force` was harmless.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "worktree-remove-force",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 5.2,
         measured: "2026-09-05",
         trend: Trend::Flat(8),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

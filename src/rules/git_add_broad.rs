@@ -14,18 +14,19 @@
 //! is broad but the pathspec is not. Firing on it would make the rule noise,
 //! and the corpus is full of exactly that shape.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "git-add-broad",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 5.4,
         measured: "2026-08-20",
         trend: Trend::Improving,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

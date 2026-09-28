@@ -18,6 +18,7 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
+mod analysis;
 mod assertions;
 mod atomic;
 mod backtest;
@@ -69,6 +70,10 @@ usage: amont-agent <command>
   backtest [flags]      replay your transcripts through the rules
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
+                        [--dialect bash|zsh|unknown, default unknown]
+  analyze '<command>'   the shell analysis of one command, as JSON — the
+                        interface tools/shell-oracle compares against real
+                        shells [--dialect, as for check]
   rules                 every rule, its default stance and its evidence
   preview register --url <url> --attestation <file> [--repo <dir>]
                         validate a localhost preview of HEAD for approval
@@ -113,11 +118,12 @@ enum Sub {
     Explain,
     Mine,
     Check,
+    Analyze,
     Rules,
     Preview,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 14] = [
+const SUBCOMMANDS: [(&str, Sub); 15] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -130,6 +136,7 @@ const SUBCOMMANDS: [(&str, Sub); 14] = [
     ("explain", Sub::Explain),
     ("mine", Sub::Mine),
     ("check", Sub::Check),
+    ("analyze", Sub::Analyze),
     ("rules", Sub::Rules),
     ("preview", Sub::Preview),
 ];
@@ -273,6 +280,7 @@ fn main() -> ExitCode {
             Sub::Explain => run_backtest(&args, true),
             Sub::Mine => run_mine(&args),
             Sub::Check => run_check(&args),
+            Sub::Analyze => run_analyze(&args),
             Sub::Rules => run_rules(),
             Sub::Preview => run_preview(&args),
         },
@@ -298,6 +306,7 @@ struct Flags {
     min_rate: Option<f64>,
     rank: Option<String>,
     compliance: bool,
+    dialect: Option<rules::Dialect>,
     rest: Vec<String>,
 }
 
@@ -352,6 +361,13 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                 f.min_rate = Some(rate);
             }
             "--rank" => f.rank = Some(value(&mut i, &a)?),
+            "--dialect" => {
+                let v = value(&mut i, &a)?;
+                f.dialect = Some(
+                    rules::Dialect::parse(&v)
+                        .ok_or_else(|| format!("--dialect: `{v}` is not bash, zsh or unknown"))?,
+                );
+            }
             "--compliance" => f.compliance = true,
             "--json" => f.json = true,
             "--format" => f.format = Some(value(&mut i, &a)?),
@@ -644,6 +660,58 @@ fn run_mine(args: &[OsString]) -> ExitCode {
     }
 }
 
+/// The analysis of one command as JSON: what `tools/shell-oracle` checks
+/// against bash and zsh actually running it. Counts are per contribution,
+/// never aggregated — aggregation is policy.
+fn run_analyze(args: &[OsString]) -> ExitCode {
+    let f = match flags(args) {
+        Ok(f) => f,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    if f.rest.len() != 1 {
+        eprintln!("amont-agent: analyze needs exactly one command, quoted");
+        return ExitCode::from(2);
+    }
+    let src = &f.rest[0];
+    let dialect = f.dialect.unwrap_or(rules::Dialect::Unknown);
+    let a = analysis::analyze(src, dialect);
+    let upper = |u: analysis::domain::Upper| match u {
+        analysis::domain::Upper::Finite(n) => serde_json::json!(n),
+        analysis::domain::Upper::Saturated => serde_json::json!("saturated"),
+        analysis::domain::Upper::Uncapped(_) => serde_json::json!("uncapped"),
+        analysis::domain::Upper::Unknown => serde_json::json!("unknown"),
+    };
+    let contributions: Vec<serde_json::Value> = a
+        .effects
+        .contributions
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "program": c.program,
+                "span": [c.span.start, c.span.end],
+                "hosts": c.targets.hosts,
+                "unresolved": !c.targets.unresolved.is_empty(),
+                "local": c.targets.local,
+                "lower": c.transfers.lower,
+                "upper": upper(c.transfers.upper),
+                "paced": c.paced.map(|p| p.secs),
+            })
+        })
+        .collect();
+    let out = serde_json::json!({
+        "dialect": dialect.as_str(),
+        "parsed": analysis::frontend::parse(src).is_ok(),
+        "incomplete": a.incomplete.as_ref().map(|i| i.why),
+        "unknown": a.effects.unknown.len(),
+        "contributions": contributions,
+    });
+    println!("{out}");
+    ExitCode::SUCCESS
+}
+
 const PREVIEW_USAGE: &str = "\
 usage: amont-agent preview register --url <url> --attestation <file> [--repo <dir>]
 
@@ -754,13 +822,16 @@ fn run_check(args: &[OsString]) -> ExitCode {
     }
     let src = &f.rest[0];
     let parsed = shell::lex(src);
-    if let shell::Parsed::Opaque(why) = &parsed {
-        println!("no opinion: {}", why.why());
-        return ExitCode::SUCCESS;
-    }
-    let found = rules::examine_all(&parsed);
+    // The dialect is what the command would run in. `check` has no hook
+    // payload and no business guessing from its own `SHELL`, so it is told,
+    // or it says `unknown` — the same answer the backtester has to give.
+    let input = rules::Input::new(src, f.dialect.unwrap_or(rules::Dialect::Unknown), &parsed);
+    let found = rules::evaluate(&input);
     if found.is_empty() {
-        println!("no rule fires");
+        match &parsed {
+            shell::Parsed::Opaque(why) => println!("no opinion: {}", why.why()),
+            _ => println!("no rule fires"),
+        }
         return ExitCode::SUCCESS;
     }
     for (rule, finding) in found {
@@ -816,8 +887,15 @@ fn name_the_unread(src: &str, parsed: &shell::Parsed) {
 fn run_rules() -> ExitCode {
     let w = ui::id_column();
     for r in rules::RULES {
+        // Named only when it bites: a rule capped below `deny` can never be
+        // configured past it, and that is worth seeing next to its stance.
+        let ceiling = if r.max_stance < rules::Stance::Deny {
+            format!("  (max {})", r.max_stance.as_str())
+        } else {
+            String::new()
+        };
         println!(
-            "{:<w$}{:<8} {:>6.1}/1000  measured {}",
+            "{:<w$}{:<8} {:>6.1}/1000  measured {}{ceiling}",
             r.id,
             r.default_stance.as_str(),
             r.evidence.per_1000,

@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **One dispatch for every judge.** The hook, `check`, `backtest`,
+  `corpus check`, `backtest --compliance` and `mine` now reach the rules
+  through a single `rules::evaluate`, instead of each deciding for itself
+  what to do with a command the lexer could not read. Every existing rule
+  keeps today's behaviour exactly — skipped on an unreadable command, as
+  before — and every corpus replays unchanged. The seam exists for rules
+  built on a real shell analysis, which carry their own account of what they
+  could not read and so may judge such a command.
+- **`check --dialect bash|zsh|unknown`.** A rule may depend on which shell
+  runs the command. The hook reads it from `SHELL` as the existing zsh rules
+  already did; `check` is told, and defaults to `unknown` — which is also all
+  the backtester can say, since a transcript does not record the shell.
+
+### Added
+
+- **`request-fanout`**, the first rule built on a real shell analysis. It
+  counts the explicit command-line transfers a command may and must make —
+  per destination, through loops, function calls, `case` arms and client
+  options such as `--retry`, `--paginate` and curl URL ranges — and advises
+  when one destination may see more than 50. It never counts what it cannot
+  read: an unbounded or unparsed region is reported beside the counts, never
+  folded into them. A paced poll — a loop that sleeps at least ten seconds
+  on every path back to its head, with a small burst between sleeps — is
+  not fan-out and stays silent. Replayed over 30 days (57,361 calls) it
+  fires on the two forms of the 2026-09-27 incident and nothing else. Ships
+  `observe`; its ceiling is `advise`, because every bound is an estimate of
+  what a program may do at run time.
+- **`amont-agent analyze '<command>'`** prints the shell analysis of one
+  command as JSON, per call site — what `tools/shell-oracle` checks against
+  bash and zsh actually running it.
+- **Shell analysis** (`src/analysis/`): a parser for a declared subset of
+  bash and zsh, an abstract interpreter over it, and models of the network
+  clients. The contract — inputs, assumptions, the subset, and what
+  `Unknown` and `Incomplete` mean — is in `docs/analysis.md`.
+- **Stance ceilings.** Every rule declares the loudest stance it may take.
+  The cap is applied after every configured key, so neither
+  `amont.agent.stance deny` nor the rule's own key can pass it, and
+  `graduate` refuses to promote past it. Every existing rule's ceiling is
+  `deny`, so nothing changes for them; `amont-agent rules` names a ceiling
+  only where it is lower.
+
 ## v2.18.0
 
 ### Added

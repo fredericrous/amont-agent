@@ -23,7 +23,7 @@
 //! backtester never runs `confirm`, so a replayed rate counts background
 //! loops too — an overcount, documented here rather than hidden.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -31,12 +31,13 @@ pub const RULE: Rule = Rule {
     // Advises from the start: it refuses nothing, and the failure it names
     // is a ten-minute wait that ends in a kill nobody explains.
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 13.6,
         measured: "2026-09-05",
         trend: Trend::Flat(8),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

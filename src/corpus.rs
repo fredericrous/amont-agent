@@ -216,6 +216,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         "worktree-isolation",
         include_str!("../tests/corpus/worktree-isolation.cases"),
     ),
+    (
+        "request-fanout",
+        include_str!("../tests/corpus/request-fanout.cases"),
+    ),
 ];
 
 /// The compiled-in corpus for a rule, if the table has one.
@@ -377,7 +381,11 @@ pub fn score_cases(rule: &crate::rules::Rule, cases: &[Case]) -> Score {
             score.negatives += 1;
         }
         let parsed = crate::shell::lex(&case.command);
-        let fired = (rule.examine)(&parsed).is_some();
+        // Replayed as the backtester replays: no shell is recorded for a
+        // case, so the dialect is unknown.
+        let input =
+            crate::rules::Input::new(&case.command, crate::rules::Dialect::Unknown, &parsed);
+        let fired = rule.judge(&input).is_some();
         let expected = case.verdict == Verdict::Match;
         if fired != expected {
             score.disagreements.push(Disagreement {

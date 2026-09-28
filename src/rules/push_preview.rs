@@ -27,7 +27,7 @@
 //! The rule runs BEFORE the command, so it speaks of what the push would do.
 //! Whether a push actually published anything is `push-published`'s record.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
@@ -36,12 +36,13 @@ pub const RULE: Rule = Rule {
     // under review: the soak decides between deny, advise, or retiring the
     // gate while keeping the verification loop (ADR-0023).
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 0.0,
         measured: "2026-09-28",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

@@ -36,7 +36,7 @@
 //! and only when the compared variable was assigned from a command
 //! substitution, which is what makes blank reachable in the first place.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple, Word};
 
 pub const RULE: Rule = Rule {
@@ -44,6 +44,7 @@ pub const RULE: Rule = Rule {
     // Ships observing, like everything here: measured first, promoted on the
     // corpus rather than on how good the argument reads.
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // 33 firings in 30,486 Bash calls across five weeks, p95 2.4/1000 —
         // about seven a week. Every one of them reviewed into the corpus, and
@@ -53,7 +54,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-06",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

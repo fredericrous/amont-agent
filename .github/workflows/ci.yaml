@@ -121,6 +121,40 @@ jobs:
           print(f"{len(vulns)} vulnerability advisories, {sum(len(v) for v in warns.values())} warnings")
           PY
 
+  # The shell analysis, checked against real shells rather than against
+  # itself. `tools/shell-oracle` is its OWN cargo workspace (own lockfile,
+  # own toolchain pin, brush-parser as a bash syntax oracle), so none of it
+  # reaches the shipped crate's dependency tree or its 1.85 floor — which is
+  # also why it is a separate job and not a step of `rust`/`msrv`/`test`.
+  #
+  # It runs generated scripts under bash AND zsh with stub curl/wget/gh on
+  # PATH and requires every per-host count to lie inside the interval
+  # `amont-agent analyze` claims. zsh is not on ubuntu runners by default.
+  # Known analyzer bugs are `#[ignore]`d regression tests there, so this job
+  # gates NEW ones.
+  shell-oracle:
+    name: shell-oracle (analysis vs bash and zsh)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            tools/shell-oracle/target
+          key: oracle-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/shell-oracle/Cargo.lock') }}
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      # The harness drives the BINARY, and never builds it itself.
+      - name: Build amont-agent
+        run: cargo build --locked
+      - name: Oracle
+        working-directory: tools/shell-oracle
+        run: cargo test --locked
+
   test:
     name: tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

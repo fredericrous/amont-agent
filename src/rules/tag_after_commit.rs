@@ -14,7 +14,7 @@
 //! The failure is silent by construction: every command in the chain
 //! reports success, and the tag really does exist.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -22,12 +22,13 @@ pub const RULE: Rule = Rule {
     // Advises from the start: pure shape, and the cost of a miss is a
     // published artefact nobody can unpublish.
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 4.0,
         measured: "2026-09-05",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

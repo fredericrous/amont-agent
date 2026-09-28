@@ -7,7 +7,12 @@
 //! rule.default_stance  <  amont.agent.stance  <  amont.agent.<id>.stance
 //! ```
 //!
-//! then clamped to `Observe` if the guard is switched off.
+//! then capped at the rule's own [`Rule::max_stance`], and clamped to
+//! `Observe` if the guard is switched off.
+//!
+//! The cap is applied last, after every configured key, so no configuration
+//! path — the global floor or the rule's own key — can promote a rule past
+//! what its analysis can support.
 //!
 //! ## Why git config and not `amont.conf`
 //!
@@ -71,7 +76,18 @@ pub fn resolve(rule: &Rule) -> Stance {
     // failure this whole crate is about.
     let floor = config::enumerated_or(KEY_STANCE, ALLOWED, rule.default_stance.as_str());
     let mine = config::enumerated_or(&key_for(rule), ALLOWED, floor);
-    Stance::parse(mine).unwrap_or(rule.default_stance)
+    ladder(rule, Stance::parse(mine))
+}
+
+/// The configured stance, or the rule's default, then the rule's ceiling.
+///
+/// The pure half of [`resolve`]: `configured` is whatever the two keys
+/// produced (the per-rule key when set, else the global floor, else the
+/// default). Whichever path produced it, the ceiling wins.
+pub fn ladder(rule: &Rule, configured: Option<Stance>) -> Stance {
+    configured
+        .unwrap_or(rule.default_stance)
+        .min(rule.max_stance)
 }
 
 /// The same ladder for an assertion.
@@ -110,6 +126,48 @@ mod tests {
                 r.id
             );
             assert!(!r.id.starts_with('-') && !r.id.ends_with('-'), "{}", r.id);
+        }
+    }
+
+    fn capped(max: Stance) -> Rule {
+        Rule {
+            id: "capped",
+            default_stance: Stance::Observe,
+            max_stance: max,
+            evidence: crate::rules::Evidence {
+                per_1000: 0.0,
+                measured: "-",
+                trend: crate::rules::Trend::Rare,
+            },
+            examine: crate::rules::Examine::Legacy(|_| None),
+            confirm: None,
+        }
+    }
+
+    /// Both configuration paths — the global `amont.agent.stance` floor and
+    /// the rule's own key — arrive here as the same configured value, and
+    /// neither may carry a capped rule past its ceiling.
+    #[test]
+    fn no_configured_stance_passes_the_ceiling() {
+        let rule = capped(Stance::Advise);
+        assert_eq!(ladder(&rule, Some(Stance::Deny)), Stance::Advise);
+        assert_eq!(ladder(&rule, Some(Stance::Advise)), Stance::Advise);
+        assert_eq!(ladder(&rule, Some(Stance::Observe)), Stance::Observe);
+        assert_eq!(ladder(&rule, None), Stance::Observe);
+    }
+
+    /// Every rule that shipped before the ceiling existed keeps `Deny` as its
+    /// ceiling, so the cap changes nothing for them.
+    #[test]
+    fn an_uncapped_rule_still_resolves_as_configured() {
+        let rule = capped(Stance::Deny);
+        assert_eq!(ladder(&rule, Some(Stance::Deny)), Stance::Deny);
+        for r in RULES {
+            assert!(
+                r.max_stance >= r.default_stance,
+                "`{}` ships above its own ceiling",
+                r.id
+            );
         }
     }
 

@@ -56,6 +56,25 @@ pub fn assess_score(rule: &Rule, to: Stance, score: &corpus::Score) -> Verdict {
         };
     }
 
+    // A ceiling is part of the rule, not a threshold evidence can clear: it
+    // says the rule's analysis cannot support a louder stance, however good
+    // its corpus. `stance::resolve` enforces the same cap on configuration.
+    if to > rule.max_stance {
+        lines.push((
+            false,
+            format!(
+                "`{}` is capped at {}: its finding is an estimate, and a louder stance \
+                 would claim a certainty the analysis does not have",
+                rule.id,
+                rule.max_stance.as_str()
+            ),
+        ));
+        return Verdict {
+            allowed: false,
+            lines,
+        };
+    }
+
     let enough = score.reviewed >= MIN_REVIEWED;
     lines.push((
         enough,
@@ -199,5 +218,25 @@ mod tests {
         let rule = crate::rules::by_id("pipe-to-tail").unwrap();
         let v = assess_score(rule, Stance::Observe, &score_of(rule, ""));
         assert!(v.allowed);
+    }
+
+    /// Evidence cannot buy a stance above the rule's ceiling.
+    #[test]
+    fn promotion_past_the_ceiling_is_refused() {
+        let base = crate::rules::by_id("pipe-to-tail").unwrap();
+        let capped = Rule {
+            id: "capped",
+            default_stance: Stance::Observe,
+            max_stance: Stance::Advise,
+            evidence: base.evidence,
+            examine: base.examine,
+            confirm: None,
+        };
+        let score = score_of(base, &cases(12, 4));
+        assert!(score.agrees(), "the fixture corpus agrees");
+        let to_deny = assess_score(&capped, Stance::Deny, &score);
+        assert!(!to_deny.allowed);
+        assert!(to_deny.lines[0].1.contains("capped at advise"));
+        assert!(assess_score(&capped, Stance::Advise, &score).allowed);
     }
 }

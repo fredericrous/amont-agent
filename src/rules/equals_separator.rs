@@ -19,12 +19,13 @@
 //! the number that decides whether it earns `advise`.
 
 use crate::rules::tool_shell;
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "equals-separator",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // 78 zsh diagnostics in 32,555 calls (0.0 · 1.7 · 2.1 · 1.5 · 4.6 ·
         // 1.4 per week), all but a handful the `echo ===` idiom between two
@@ -33,7 +34,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-09",
         trend: Trend::Flat(5),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

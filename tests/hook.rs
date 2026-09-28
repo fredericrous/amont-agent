@@ -945,3 +945,80 @@ fn a_wholly_unreadable_command_is_still_not_judged() {
         assert_eq!(reply.stdout, "", "{command} was judged: {}", reply.stdout);
     }
 }
+
+/// The hook, with its stance config pinned to `global` so the developer's own
+/// `~/.gitconfig` cannot decide what the test sees.
+fn send_with_global(payload: &str, global: &str) -> Reply {
+    let dir = home();
+    let cfg = dir.join("fanout.gitconfig");
+    std::fs::write(&cfg, global).expect("global config");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("hook")
+        .env("CLAUDE_CONFIG_DIR", &dir)
+        .env("GIT_CONFIG_GLOBAL", &cfg)
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("SHELL", "/bin/zsh")
+        .env_remove("AMONT_AGENT_OFF")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write the payload");
+    let out = child.wait_with_output().expect("the hook exits");
+    Reply {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+    }
+}
+
+const FANOUT: &str = r#"i=0; while [ $i -lt 400 ]; do curl -s "https://ghcr.io/v2/o/r/tags/list?page=$i"; i=$((i+1)); done"#;
+const ADVISE_FANOUT: &str = "[amont \"agent.request-fanout\"]\n\tstance = advise\n";
+
+/// `request-fanout` ships observing: it measures and says nothing.
+#[test]
+fn a_fanout_is_silent_while_the_rule_observes() {
+    let r = send_with_global(&bash(FANOUT), "");
+    assert_eq!(r.stdout, "");
+    assert_eq!(r.code, 0);
+}
+
+/// Promoted to `advise`, it speaks — with the count, the host and the
+/// reason the count is bounded — and never refuses.
+#[test]
+fn a_fanout_is_advised_once_promoted() {
+    let r = send_with_global(&bash(FANOUT), ADVISE_FANOUT);
+    assert_ne!(r.decision().as_deref(), Some("deny"));
+    let reason = r.reason();
+    assert!(reason.contains("400"), "{reason}");
+    assert!(reason.contains("ghcr.io"), "{reason}");
+    assert!(reason.contains("egress IP"), "{reason}");
+}
+
+/// A command the legacy lexer cannot read (an `xargs` elsewhere on the line)
+/// is still analysed: the analysis carries its own account of what it could
+/// not follow.
+#[test]
+fn a_fanout_beside_an_unreadable_clause_is_still_advised() {
+    let cmd = format!("{FANOUT}; ls | xargs -n1 echo");
+    let r = send_with_global(&bash(&cmd), ADVISE_FANOUT);
+    let reason = r.reason();
+    assert!(reason.contains("ghcr.io"), "{reason}");
+    assert!(reason.contains("could not follow"), "{reason}");
+}
+
+/// Even `deny`, set for this rule by name, only advises.
+#[test]
+fn a_fanout_is_never_refused() {
+    let r = send_with_global(
+        &bash(FANOUT),
+        "[amont \"agent.request-fanout\"]\n\tstance = deny\n",
+    );
+    assert_ne!(r.decision().as_deref(), Some("deny"));
+    assert!(r.reason().contains("ghcr.io"));
+}

@@ -29,7 +29,7 @@
 
 use std::ops::Range;
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -47,12 +47,13 @@ pub const RULE: Rule = Rule {
     //
     //     git config --global amont.agent.pipe-to-tail.stance observe
     default_stance: Stance::Deny,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 62.3,
         measured: "2026-08-20",
         trend: Trend::Flat(7),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

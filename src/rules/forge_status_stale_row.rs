@@ -56,12 +56,13 @@
 //! syntax goes stale the first time someone writes it differently. The remedy
 //! text carries what right looks like instead.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "forge-status-stale-row",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // 5 matches in 35,165 calls, all inside one day: 0.8/1000 that week,
         // 0.0 in the four before. Kept for the cost of a miss — a wait that
@@ -70,7 +71,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-10",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

@@ -52,12 +52,13 @@
 //! the checkout's. That is a round-trip on a path that runs before every shell
 //! command. The reason states the condition instead.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "release-tag-push",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // p95 of the weekly rate. `Rare` rather than `Flat`: at ~5 per
         // thousand the weeks are too noisy to call a trend, and the reason to
@@ -66,7 +67,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-10",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

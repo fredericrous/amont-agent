@@ -17,20 +17,21 @@
 //! evidence is the transcript measurement, and its stance is honoured the
 //! same way as every other rule's.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::session_state::Seen;
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "file-reread",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // 3,381 re-reads over 41,700 calls of every tool.
         per_1000: 81.1,
         measured: "2026-09-09",
         trend: Trend::Flat(4),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

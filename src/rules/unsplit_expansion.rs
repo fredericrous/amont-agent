@@ -30,12 +30,13 @@
 //! habit is, and that is what `observe` measures first.
 
 use crate::rules::tool_shell;
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Word};
 
 pub const RULE: Rule = Rule {
     id: "unsplit-expansion",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // 65 firings in 44,929 calls; per full week 0.8 · 1.6 · 1.4 · 1.2 ·
         // 0.9 per thousand, no downward drift without a guard.
@@ -43,7 +44,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-21",
         trend: Trend::Flat(5),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

@@ -16,18 +16,19 @@
 //! Matching `-n` against a flat flag list would report a dry-run push as a gate
 //! bypass, which is the opposite of what it is.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "no-verify",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 5.4,
         measured: "2026-08-20",
         trend: Trend::Improving,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

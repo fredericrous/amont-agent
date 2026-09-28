@@ -33,7 +33,7 @@
 //! you do when you are *finished*, and firing there would put the rule in
 //! front of the remedy.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -44,6 +44,7 @@ pub const RULE: Rule = Rule {
     // front of every branch creation in a primary checkout, and that text
     // would contaminate the very rate this is here to measure.
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // Backtested over 31,119 Bash calls / 302 transcripts. The shape is
         // flat across four full weeks — 5.6, 4.8, 3.3, 5.2 per thousand — so
@@ -55,7 +56,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-08",
         trend: Trend::Flat(4),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

@@ -25,13 +25,14 @@
 //! answer.
 
 use crate::rules::tool_shell;
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple, Word};
 use std::path::{Path, PathBuf};
 
 pub const RULE: Rule = Rule {
     id: "glob-no-match",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // The shape rate: every unquoted glob operand the backtester can see.
         // The FAILURE rate from the shell's own diagnostics is 6.5 per 1000
@@ -41,7 +42,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-09-09",
         trend: Trend::Flat(5),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

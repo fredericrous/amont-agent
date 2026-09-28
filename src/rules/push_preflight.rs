@@ -37,7 +37,7 @@
 //! content the branch push already proved — both are also the ordinary
 //! shapes a shape-only `examine` must stay silent on.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -47,12 +47,13 @@ pub const RULE: Rule = Rule {
     // transport window, and the failure it names is one no correcting loop
     // can see — the push fails for a reason the model reads as "network".
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 0.0,
         measured: "2026-09-04",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

@@ -26,7 +26,7 @@
 //! `origin/main` first, on the same throttle and budget as the session
 //! notice — and stays silent unless the start point is actually behind.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -38,12 +38,13 @@ pub const RULE: Rule = Rule {
     // ~1 by August, as worktrees-from-origin became the habit); the stance is
     // priced on the cost of a miss, not on the rate.
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 1.0,
         measured: "2026-08-24",
         trend: Trend::Improving,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

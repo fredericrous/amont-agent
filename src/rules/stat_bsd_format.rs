@@ -17,18 +17,19 @@
 //! command's directory and stays silent when the spelling matches the stat
 //! that will run it — the mirror of `sed-in-place`.
 
-use crate::rules::{Confirmed, Context, Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Connector, Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "stat-bsd-format",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 0.34,
         measured: "2026-09-09",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: Some(confirm),
 };
 

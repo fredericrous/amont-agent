@@ -67,12 +67,13 @@
 //! reaching for the endpoint is itself the evidence that the procedure was
 //! skipped — there is no other reason to hand-write it.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "forge-merge-by-hand",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         // p95 of the weekly rate, not the mean: the worst week is what a guard
         // has to hold up in.
@@ -82,7 +83,7 @@ pub const RULE: Rule = Rule {
         // with room to spare — the rate rose across the five weeks measured.
         trend: Trend::Flat(5),
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

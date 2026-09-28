@@ -49,6 +49,7 @@ pub mod poll_blank_verdict;
 pub mod push_preflight;
 pub mod push_preview;
 pub mod release_tag_push;
+pub mod request_fanout;
 pub mod sed_in_place;
 pub mod stale_base;
 pub mod stat_bsd_format;
@@ -185,12 +186,113 @@ pub enum Trend {
 pub struct Rule {
     pub id: &'static str,
     pub default_stance: Stance,
+    /// The loudest this rule may ever be, whatever git config says.
+    ///
+    /// `amont.agent.stance deny` promotes every rule at once, and the
+    /// per-rule key promotes one. For a rule whose match is exact that is the
+    /// person's call to make. For a rule built on an estimate — "this loop MAY
+    /// make hundreds of requests" — a refusal would be the guard claiming a
+    /// certainty its analysis does not have, so the ceiling is part of the
+    /// rule, enforced in [`crate::stance::resolve`] and by `graduate`, and not
+    /// a default somebody can configure past.
+    pub max_stance: Stance,
     pub evidence: Evidence,
-    /// PURE. See the module note.
-    pub examine: fn(&Parsed) -> Option<Finding>,
+    /// PURE. See the module note, and [`Examine`] for what each kind reads.
+    pub examine: Examine,
     /// Consumed by the hook path; see [`Confirmed`].
     #[allow(dead_code)]
     pub confirm: Option<fn(&crate::rules::Context, &Finding) -> Confirmed>,
+}
+
+/// What a rule's `examine` reads, which is also what decides whether it may
+/// run on a command the legacy lexer could not read.
+///
+/// A variant rather than a flag: the two kinds differ in their input type, and
+/// the dispatch in [`evaluate`] is the only place that has to know.
+#[derive(Clone, Copy)]
+pub enum Examine {
+    /// Reads the legacy lexer's clauses ([`crate::shell::lex`]). Skipped
+    /// entirely when that lexer returned [`Parsed::Opaque`] — the behaviour
+    /// every caller had before [`evaluate`] existed, kept exactly.
+    Legacy(fn(&Parsed) -> Option<Finding>),
+    /// Reads the whole [`Input`], and runs whatever the legacy lexer made of
+    /// the command: a rule of this kind carries its own account of what it
+    /// could not understand.
+    Analysis(fn(&Input) -> Option<Finding>),
+}
+
+/// Which shell the command will run in.
+///
+/// An input to judgement, never read from the world inside `examine`: the hook
+/// knows it (see [`tool_shell::dialect`]), `check` is told it, and the
+/// backtester cannot know it because transcripts do not record the shell.
+/// `Unknown` is a real answer, and a rule that depends on the difference must
+/// allow for both shells rather than assume one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    Bash,
+    Zsh,
+    Unknown,
+}
+
+impl Dialect {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Dialect::Bash => "bash",
+            Dialect::Zsh => "zsh",
+            Dialect::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Dialect> {
+        match s {
+            "bash" => Some(Dialect::Bash),
+            "zsh" => Some(Dialect::Zsh),
+            "unknown" => Some(Dialect::Unknown),
+            _ => None,
+        }
+    }
+}
+
+/// Everything a rule may judge a command by: the source as written, the shell
+/// it runs in, the legacy lexer's reading of it, and — computed at most once,
+/// and only when a rule asks — the shell analysis ([`crate::analysis`]).
+pub struct Input<'a> {
+    pub src: &'a str,
+    pub dialect: Dialect,
+    pub legacy: &'a Parsed,
+    analysis: std::cell::OnceCell<crate::analysis::Analysis>,
+}
+
+impl<'a> Input<'a> {
+    pub fn new(src: &'a str, dialect: Dialect, legacy: &'a Parsed) -> Input<'a> {
+        Input {
+            src,
+            dialect,
+            legacy,
+            analysis: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The analysis of [`Input::src`] under [`Input::dialect`], run on first
+    /// use and shared by every rule that reads it.
+    pub fn analysis(&self) -> &crate::analysis::Analysis {
+        self.analysis
+            .get_or_init(|| crate::analysis::analyze(self.src, self.dialect))
+    }
+}
+
+impl Rule {
+    /// This rule's verdict on one command, applying [`Examine`]'s dispatch.
+    pub fn judge(&self, input: &Input) -> Option<Finding> {
+        match self.examine {
+            Examine::Legacy(f) => match input.legacy {
+                Parsed::Opaque(_) => None,
+                parsed => f(parsed),
+            },
+            Examine::Analysis(f) => f(input),
+        }
+    }
 }
 
 /// What a `confirm` is allowed to know.
@@ -317,23 +419,25 @@ pub const RULES: &[Rule] = &[
     whole_file_dump::RULE,
     persisted_output_dump::RULE,
     file_reread::RULE,
+    request_fanout::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {
     RULES.iter().find(|r| r.id == id)
 }
 
-/// Run every rule's `examine` over one parsed command.
+/// Every rule's verdict on one command — the single dispatch the hook,
+/// `check`, the backtester and the corpus all share, so that the same command
+/// and the same dialect can never be judged two ways.
 ///
 /// A panicking rule is dropped and the others still report, mirroring
 /// `dispatch::run_concurrently`. That isolation only exists because the
 /// workspace release profile refuses `panic = "abort"` — see the root
 /// `Cargo.toml`.
-pub fn examine_all(parsed: &Parsed) -> Vec<(&'static Rule, Finding)> {
+pub fn evaluate(input: &Input) -> Vec<(&'static Rule, Finding)> {
     let mut out = Vec::new();
     for rule in RULES {
-        let found =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (rule.examine)(parsed)));
+        let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rule.judge(input)));
         match found {
             Ok(Some(f)) => out.push((rule, f)),
             Ok(None) => {}

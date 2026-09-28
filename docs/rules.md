@@ -21,6 +21,7 @@
 | `whole-file-dump` | `advise` | a file poured whole into the tool result by `cat`/`sed -n`/`head` — 31% of all result bytes measured — where the Read tool would have windowed it |
 | `file-reread` | `advise` | a Read, or a `cat`, of a file this session already has in context and that is unchanged on disk since — answered from the session's own record, not the command |
 | `persisted-output-dump` | `advise` | reading back whole a tool result the harness saved to a file for being too large, paying for it twice |
+| `request-fanout` | `observe` (ceiling `advise`) | one command that may make more than 50 explicit network transfers to one destination — a loop following `Link: next`, `gh api --paginate`, a curl URL range — counted by the shell analysis ([analysis.md](analysis.md)) with the loops and calls that multiply them |
 
 `amont-agent rules` prints this with each rule's measured firing rate.
 

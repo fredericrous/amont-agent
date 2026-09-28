@@ -7,18 +7,19 @@
 //! handful of lines: `grep`, `head -c`, or a Read with `offset`/`limit`.
 
 use crate::rules::dump::{dumps, Extent};
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "persisted-output-dump",
     default_stance: Stance::Advise,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 0.7,
         measured: "2026-09-09",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 

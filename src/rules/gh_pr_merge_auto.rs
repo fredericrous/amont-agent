@@ -14,18 +14,19 @@
 //! worse than a hook that is occasionally imprecise. So the rule states the
 //! condition in its reason and lets the reader settle it.
 
-use crate::rules::{Evidence, Finding, Rule, Stance, Trend};
+use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "gh-pr-merge-auto",
     default_stance: Stance::Observe,
+    max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 0.02,
         measured: "2026-08-20",
         trend: Trend::Rare,
     },
-    examine,
+    examine: Examine::Legacy(examine),
     confirm: None,
 };
 
