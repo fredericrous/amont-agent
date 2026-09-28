@@ -42,6 +42,42 @@ pub struct Bash {
     /// tool's own default is two minutes; `foreground-poll` compares a loop's
     /// budget against it.
     pub timeout_ms: Option<u64>,
+    /// `tool_use_id`: the one key a `PreToolUse` and its `PostToolUse` share.
+    /// `push-published` reads, after the push, the remote state recorded
+    /// before it under this id.
+    pub tool_use_id: String,
+    /// `prompt_id`: which person's prompt this call belongs to. A preview
+    /// registration is bound to it, so an approval can be scoped to the turn
+    /// that showed the preview.
+    pub prompt_id: String,
+    /// `tool_response.stdout`, after the call. Only `preview register` output
+    /// is ever read from it.
+    pub stdout: Option<String>,
+}
+
+/// A prompt the person typed and submitted.
+pub struct Prompt {
+    pub text: String,
+    pub session: String,
+    pub prompt_id: String,
+}
+
+/// An `AskUserQuestion` call, before or after the person answered.
+pub struct Ask {
+    pub session: String,
+    pub prompt_id: String,
+    pub tool_use_id: String,
+    /// The question texts, in order.
+    pub questions: Vec<String>,
+    /// The call's INPUT already carried `answers`. The tool's schema accepts
+    /// them, so a model could pre-answer its own question; an answer that did
+    /// not come from the person approves nothing.
+    pub prefilled: bool,
+    /// After the call: question text → the label the person picked, from
+    /// `tool_response.answers`. Empty when nobody answered.
+    pub answers: Vec<(String, String)>,
+    /// `duration_ms`: how long the person took. The soak's latency signal.
+    pub duration_ms: Option<u64>,
 }
 
 /// A Read, Edit or Write tool call: one path, and whether it reads or writes.
@@ -84,6 +120,14 @@ pub enum Event {
     /// to be in context. Only then is it remembered: a Read that was refused,
     /// or that failed on a path that is not there, is not a read.
     PostFile(Box<FileOp>),
+    /// A prompt the person submitted: the one moment a typed approval of a
+    /// shown preview can arrive, and the moment every older one lapses.
+    Prompt(Box<Prompt>),
+    /// An `AskUserQuestion` about to run: record whether its answers were
+    /// pre-filled by the model.
+    PreAsk(Box<Ask>),
+    /// An `AskUserQuestion` the person has answered (or not).
+    PostAsk(Box<Ask>),
     NotOurs,
 }
 
@@ -114,6 +158,61 @@ pub fn parse(raw: &str) -> Event {
             cwd,
             session: str_at("session_id"),
         }),
+        Some("UserPromptSubmit") => Event::Prompt(Box::new(Prompt {
+            text: str_at("prompt"),
+            session: str_at("session_id"),
+            prompt_id: str_at("prompt_id"),
+        })),
+        Some(stage @ ("PreToolUse" | "PostToolUse"))
+            if v.get("tool_name").and_then(|x| x.as_str()) == Some("AskUserQuestion") =>
+        {
+            let input = v.get("tool_input");
+            let questions = input
+                .and_then(|i| i.get("questions"))
+                .and_then(|q| q.as_array())
+                .map(|qs| {
+                    qs.iter()
+                        .filter_map(|q| q.get("question").and_then(|t| t.as_str()))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Present and non-empty in the INPUT is a pre-filled answer. An
+            // empty object is what an unanswered call can look like, and is
+            // not an answer at all.
+            let prefilled = stage == "PreToolUse"
+                && input
+                    .and_then(|i| i.get("answers"))
+                    .and_then(|a| a.as_object())
+                    .is_some_and(|a| !a.is_empty());
+            let answers = if stage == "PostToolUse" {
+                v.get("tool_response")
+                    .and_then(|r| r.get("answers"))
+                    .and_then(|a| a.as_object())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|(q, l)| Some((q.clone(), l.as_str()?.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let ask = Box::new(Ask {
+                session: str_at("session_id"),
+                prompt_id: str_at("prompt_id"),
+                tool_use_id: str_at("tool_use_id"),
+                questions,
+                prefilled,
+                answers,
+                duration_ms: v.get("duration_ms").and_then(|d| d.as_u64()),
+            });
+            if stage == "PreToolUse" {
+                Event::PreAsk(ask)
+            } else {
+                Event::PostAsk(ask)
+            }
+        }
         Some(stage @ ("PreToolUse" | "PostToolUse"))
             if matches!(
                 v.get("tool_name").and_then(|x| x.as_str()),
@@ -198,6 +297,11 @@ pub fn parse(raw: &str) -> Event {
                 .get("tool_input")
                 .and_then(|i| i.get("timeout"))
                 .and_then(|t| t.as_u64());
+            let stdout = v
+                .get("tool_response")
+                .and_then(|r| r.get("stdout"))
+                .and_then(|o| o.as_str())
+                .map(str::to_string);
             let bash = Box::new(Bash {
                 command,
                 cwd,
@@ -205,6 +309,9 @@ pub fn parse(raw: &str) -> Event {
                 permission_mode: str_at("permission_mode"),
                 background,
                 timeout_ms,
+                tool_use_id: str_at("tool_use_id"),
+                prompt_id: str_at("prompt_id"),
+                stdout,
             });
             if stage == "PreToolUse" {
                 Event::PreBash(bash)
@@ -326,6 +433,66 @@ mod tests {
         match parse(raw) {
             Event::PostBash(b) => assert!(b.background, "a task id means it is still running"),
             _ => panic!("expected a finished Bash call"),
+        }
+    }
+
+    /// The shape captured from a real session (2026-09-28): the person's
+    /// selection arrives in `tool_response.answers`, keyed by question text.
+    #[test]
+    fn an_answered_question_carries_the_persons_label() {
+        let raw = r#"{"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion",
+                      "session_id":"s","prompt_id":"p","tool_use_id":"t","duration_ms":30997,
+                      "tool_input":{"questions":[{"question":"[preview a1] ship?","options":[]}],
+                                    "answers":{"[preview a1] ship?":"Approve"}},
+                      "tool_response":{"questions":[],"answers":{"[preview a1] ship?":"Approve"},
+                                       "annotations":{}}}"#;
+        match parse(raw) {
+            Event::PostAsk(a) => {
+                assert_eq!(a.questions, vec!["[preview a1] ship?".to_string()]);
+                assert_eq!(
+                    a.answers,
+                    vec![("[preview a1] ship?".to_string(), "Approve".to_string())]
+                );
+                assert_eq!(a.duration_ms, Some(30997));
+                assert!(!a.prefilled, "prefilled is only judged before the call");
+            }
+            _ => panic!("expected an answered question"),
+        }
+    }
+
+    /// The tool's input schema accepts `answers`, so a model can pre-answer.
+    #[test]
+    fn a_question_that_arrives_with_answers_is_prefilled() {
+        let pre = |answers: &str| {
+            format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion",
+                     "tool_input":{{"questions":[{{"question":"q"}}]{answers}}}}}"#
+            )
+        };
+        match parse(&pre(r#","answers":{"q":"Approve"}"#)) {
+            Event::PreAsk(a) => assert!(a.prefilled),
+            _ => panic!("expected a question"),
+        }
+        match parse(&pre(r#","answers":{}"#)) {
+            Event::PreAsk(a) => assert!(!a.prefilled, "an empty map is not an answer"),
+            _ => panic!("expected a question"),
+        }
+        match parse(&pre("")) {
+            Event::PreAsk(a) => assert!(!a.prefilled),
+            _ => panic!("expected a question"),
+        }
+    }
+
+    #[test]
+    fn a_submitted_prompt_is_its_own_event() {
+        let raw = r#"{"hook_event_name":"UserPromptSubmit","prompt":"approve",
+                      "session_id":"s","prompt_id":"p2","cwd":"/tmp"}"#;
+        match parse(raw) {
+            Event::Prompt(p) => {
+                assert_eq!(p.text, "approve");
+                assert_eq!(p.prompt_id, "p2");
+            }
+            _ => panic!("expected a prompt"),
         }
     }
 

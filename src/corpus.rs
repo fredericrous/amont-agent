@@ -173,6 +173,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/push-preflight.cases"),
     ),
     (
+        "push-preview",
+        include_str!("../tests/corpus/push-preview.cases"),
+    ),
+    (
         "foreground-poll",
         include_str!("../tests/corpus/foreground-poll.cases"),
     ),
