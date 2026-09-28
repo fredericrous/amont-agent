@@ -25,8 +25,12 @@
   options such as `--retry`, `--paginate` and curl URL ranges — and advises
   when one destination may see more than 50. It never counts what it cannot
   read: an unbounded or unparsed region is reported beside the counts, never
-  folded into them. Ships `observe`; its ceiling is `advise`, because every
-  bound is an estimate of what a program may do at run time.
+  folded into them. A paced poll — a loop that sleeps at least ten seconds
+  on every path back to its head, with a small burst between sleeps — is
+  not fan-out and stays silent. Replayed over 30 days (57,361 calls) it
+  fires on the two forms of the 2026-09-27 incident and nothing else. Ships
+  `observe`; its ceiling is `advise`, because every bound is an estimate of
+  what a program may do at run time.
 - **Shell analysis** (`src/analysis/`): a parser for a declared subset of
   bash and zsh, an abstract interpreter over it, and models of the network
   clients. The contract — inputs, assumptions, the subset, and what

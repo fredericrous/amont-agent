@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use super::domain::{Count, Upper, Why};
-use super::effects::{Contribution, Effects, Factor, FactorKind};
+use super::effects::{Contribution, Effects, Factor, FactorKind, Pace};
 use super::ir::{
     AndOrOp, ArithBinOp, ArithExpr, ArithUnOp, BraceExpr, CaseArm, CaseTerm, Cmd, LoopKind,
     ParamRef, Part, SeqItem, SimpleCmd, Span, TestExpr, Word,
@@ -74,6 +74,11 @@ struct Outcome {
     flow: Flow,
     status: Status,
     state: State,
+    /// Seconds this path definitely slept (`sleep 30`) since the command it
+    /// ends started — a lower bound, so 0 is always sound. What tells a paced
+    /// poll from a burst: a loop is paced when every path back to its head
+    /// slept.
+    slept: u64,
 }
 
 /// What analysing one command produced.
@@ -97,6 +102,7 @@ impl Res {
                 flow: Flow::Normal,
                 status,
                 state,
+                slept: 0,
             }],
             Effects::default(),
         )
@@ -129,6 +135,22 @@ fn join_states<'a>(mut outs: impl Iterator<Item = &'a Outcome>) -> Option<State>
     Some(outs.fold(first, |acc, o| acc.join(&o.state)))
 }
 
+/// The least any of these paths slept: a lower bound for what runs after
+/// all of them.
+fn least_slept<'a>(outs: impl Iterator<Item = &'a Outcome>) -> u64 {
+    outs.map(|o| o.slept).min().unwrap_or(0)
+}
+
+/// Outcomes of a command that ran after `base` seconds of sleep.
+fn after(base: u64, outs: Vec<Outcome>) -> Vec<Outcome> {
+    outs.into_iter()
+        .map(|o| Outcome {
+            slept: o.slept.saturating_add(base),
+            ..o
+        })
+        .collect()
+}
+
 /// One outcome per kind of ending, so the set stays small.
 fn merge(outs: Vec<Outcome>) -> Vec<Outcome> {
     let mut merged: Vec<Outcome> = Vec::new();
@@ -137,6 +159,7 @@ fn merge(outs: Vec<Outcome>) -> Vec<Outcome> {
             Some(m) => {
                 m.state = m.state.join(&o.state);
                 m.status = m.status.join(o.status);
+                m.slept = m.slept.min(o.slept);
             }
             None => merged.push(o),
         }
@@ -291,6 +314,7 @@ impl Interp<'_> {
                         flow: Flow::Normal,
                         status,
                         state,
+                        slept: 0,
                     }],
                     Effects::default(),
                 );
@@ -305,6 +329,7 @@ impl Interp<'_> {
                         flow: Flow::Normal,
                         status: Status::of(t),
                         state,
+                        slept: 0,
                     }],
                     eff,
                 );
@@ -336,16 +361,19 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status: Status::Unknown,
                 state: state.clone(),
+                slept: 0,
             },
             Outcome {
                 flow: Flow::Exit,
                 status: Status::Unknown,
                 state: state.clone(),
+                slept: 0,
             },
             Outcome {
                 flow: Flow::NonTerm,
                 status: Status::Unknown,
                 state,
+                slept: 0,
             },
         ];
         Res::new(
@@ -388,6 +416,7 @@ impl Interp<'_> {
             flow: Flow::Normal,
             status: Status::Zero,
             state,
+            slept: 0,
         }];
         let mut effects = Effects::default();
         for item in items {
@@ -395,21 +424,24 @@ impl Interp<'_> {
                 break;
             };
             let reach = reach(&pending);
+            let base = least_slept(pending.iter().filter(|o| o.flow == Flow::Normal));
             pending.retain(|o| o.flow != Flow::Normal);
             if item.background {
                 // `cmd &` runs in a subshell; its status is 0 and nothing it
                 // writes survives, but its transfers happen.
                 let r = self.subshell_res(&item.cmd, entry.clone(), ctx)?;
                 effects = effects.then(r.effects.scaled(reach, None));
+                // Nothing waits for it.
                 pending.push(Outcome {
                     flow: Flow::Normal,
                     status: Status::Zero,
                     state: entry,
+                    slept: base,
                 });
             } else {
                 let r = self.exec(&item.cmd, entry, ctx)?;
                 effects = effects.then(r.effects.scaled(reach, None));
-                pending.extend(r.outs);
+                pending.extend(after(base, r.outs));
             }
             pending = merge(pending);
         }
@@ -453,10 +485,11 @@ impl Interp<'_> {
             };
             let mut next = passes;
             if let Some(entry) = join_states(runs_on.iter()) {
+                let base = least_slept(runs_on.iter());
                 let c = if i + 1 == last { ctx } else { Ctx::CONDITION };
                 let r = self.exec(cmd, entry, c)?;
                 effects = effects.then(r.effects.scaled(count, None));
-                next.extend(r.outs);
+                next.extend(after(base, r.outs));
             }
             outs = merge(next);
         }
@@ -484,15 +517,16 @@ impl Interp<'_> {
             .cloned()
             .collect();
         let (yes, no) = split_status(&c.outs, Status::Zero);
+        let base = least_slept(c.outs.iter().filter(|o| o.flow == Flow::Normal));
         let mut alts = Vec::new();
         if let Some(s) = yes {
             let r = self.exec(body, s, ctx)?;
-            outs.extend(r.outs);
+            outs.extend(after(base, r.outs));
             alts.push(r.effects);
         }
         if let Some(s) = no {
             let r = self.if_(rest, otherwise, s, ctx)?;
-            outs.extend(r.outs);
+            outs.extend(after(base, r.outs));
             alts.push(r.effects);
         }
         // Exactly one branch runs once the condition completes, so the
@@ -567,6 +601,7 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status: Status::Zero,
                 state: s,
+                slept: 0,
             });
         }
         if only_breaks {
@@ -589,6 +624,7 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status,
                 state: entry,
+                slept: 0,
             }],
             r.effects,
         );
@@ -650,6 +686,7 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status: o.status,
                 state: entry.clone(),
+                slept: 0,
             })
             .collect();
         let keeps = match entry.dialect {
@@ -719,6 +756,7 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status: Status::Zero,
                 state: s,
+                slept: 0,
             })
             .collect();
         let Some(go1) = go1 else {
@@ -813,6 +851,22 @@ impl Interp<'_> {
             span: span.clone(),
         };
 
+        let later_pause = later.as_ref().map_or(u64::MAX, |(c, b)| {
+            let cond = least_slept(c.outs.iter().filter(|o| o.flow == Flow::Normal));
+            cond.saturating_add(back_edge_slept(&b.outs))
+        });
+        let per_iteration = least_slept(c1.outs.iter().filter(|o| o.flow == Flow::Normal))
+            .saturating_add(back_edge_slept(&b1.outs))
+            .min(later_pause);
+        let mut c1 = c1;
+        let mut b1 = b1;
+        pace(&mut c1.effects, per_iteration);
+        pace(&mut b1.effects, per_iteration);
+        let later = later.map(|(mut c, mut b)| {
+            pace(&mut c.effects, per_iteration);
+            pace(&mut b.effects, per_iteration);
+            (c, b)
+        });
         let mut effects = c1.effects;
         effects = effects.then(b1.effects.scaled(
             first_enters,
@@ -860,6 +914,7 @@ impl Interp<'_> {
                     flow: Flow::Normal,
                     status: Status::Zero,
                     state: s,
+                    slept: 0,
                 });
             }
         }
@@ -869,6 +924,7 @@ impl Interp<'_> {
                 flow: Flow::NonTerm,
                 status: Status::Unknown,
                 state,
+                slept: 0,
             });
         } else {
             outs.extend(exits);
@@ -1016,6 +1072,7 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status: Status::Zero,
                 state,
+                slept: 0,
             });
             return Ok(Res::new(outs, effects));
         }
@@ -1063,6 +1120,10 @@ impl Interp<'_> {
             count: iterations,
             span: span.clone(),
         };
+        let per_iteration = back_edge_slept(&b1.outs).min(back_edge_slept(&later.outs));
+        let (mut b1, mut later) = (b1, later);
+        pace(&mut b1.effects, per_iteration);
+        pace(&mut later.effects, per_iteration);
         effects = effects.then(b1.effects.scaled(
             first,
             Some(Factor {
@@ -1091,6 +1152,7 @@ impl Interp<'_> {
             flow: Flow::Normal,
             status: Status::Unknown,
             state: state.join(&fix),
+            slept: 0,
         });
         Ok(Res::new(outs, effects))
     }
@@ -1195,6 +1257,7 @@ impl Interp<'_> {
                     flow: Flow::Normal,
                     status,
                     state,
+                    slept: 0,
                 }],
                 effects,
             );
@@ -1230,8 +1293,8 @@ impl Interp<'_> {
                 let st = Status::of(test_argv(&argv));
                 Res::normal(state, st)
             }
-            "echo" | "printf" | "cd" | "pushd" | "popd" | "wait" | "sleep" | "pwd" | "type"
-            | "hash" | "umask" | "ulimit" | "jobs" | "disown" | "kill" => {
+            "echo" | "printf" | "cd" | "pushd" | "popd" | "wait" | "pwd" | "type" | "hash"
+            | "umask" | "ulimit" | "jobs" | "disown" | "kill" => {
                 let mut state = state;
                 if name == "printf" {
                     if let Some(i) = rest
@@ -1249,6 +1312,18 @@ impl Interp<'_> {
                     Status::Unknown
                 };
                 Res::normal(state, st)
+            }
+            "sleep" => {
+                let pause = rest
+                    .iter()
+                    .map(|a| single_exact(a).and_then(|t| seconds(&t)))
+                    .sum::<Option<u64>>()
+                    .unwrap_or(0);
+                let mut res = Res::normal(state, Status::Zero);
+                for o in &mut res.outs {
+                    o.slept = pause;
+                }
+                res
             }
             "local" | "typeset" | "declare" | "export" | "readonly" | "integer" => {
                 self.declare(&name, rest, state)
@@ -1351,6 +1426,7 @@ impl Interp<'_> {
                         flow,
                         status: Status::Zero,
                         state,
+                        slept: 0,
                     }],
                     Effects::default(),
                 )
@@ -1376,6 +1452,7 @@ impl Interp<'_> {
                         flow,
                         status,
                         state,
+                        slept: 0,
                     }],
                     Effects::default(),
                 )
@@ -1597,6 +1674,7 @@ impl Interp<'_> {
                     factors: t.builtin,
                     uncounted: t.uncounted,
                     span: t.span,
+                    paced: None,
                 });
             }
         } else if state.havocked {
@@ -1612,6 +1690,7 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status: Status::Unknown,
                 state,
+                slept: 0,
             }],
             effects,
         );
@@ -1638,6 +1717,7 @@ impl Interp<'_> {
                 flow: Flow::Normal,
                 status: Status::Unknown,
                 state,
+                slept: 0,
             }],
             Effects {
                 contributions: Vec::new(),
@@ -2069,6 +2149,17 @@ fn back_edge(outs: &[Outcome]) -> (Option<State>, Vec<Outcome>) {
     (join_states(back.iter()), ended)
 }
 
+/// The least a loop body slept on the paths that go round again — its end,
+/// or a `continue` of this loop. `u64::MAX` when no path goes round: nothing
+/// repeats, so nothing is unpaced.
+fn back_edge_slept(outs: &[Outcome]) -> u64 {
+    outs.iter()
+        .filter(|o| matches!(o.flow, Flow::Normal | Flow::Continue(1)))
+        .map(|o| o.slept)
+        .min()
+        .unwrap_or(u64::MAX)
+}
+
 /// Can the body leave the loop early (`break`, `return`, `exit`)?
 fn has_early_exit(outs: &[Outcome]) -> bool {
     outs.iter()
@@ -2295,6 +2386,52 @@ fn split_count(val: &AbsVal, dialect: Dialect) -> Count {
 fn range_len(from: i64, to: i64, step: i64) -> u64 {
     let st = step.unsigned_abs().max(1);
     (from.abs_diff(to) / st).saturating_add(1)
+}
+
+/// `sleep`'s operand in whole seconds, rounded down: `30`, `1.5`, `2m`.
+fn seconds(t: &str) -> Option<u64> {
+    let (num, unit) = match t.char_indices().last()? {
+        (i, c @ ('s' | 'm' | 'h' | 'd')) => (&t[..i], c),
+        _ => (t, 's'),
+    };
+    let whole: u64 = num.split('.').next()?.parse().ok()?;
+    let per = match unit {
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => 1,
+    };
+    whole.checked_mul(per)
+}
+
+/// Mark the transfers a loop repeats as paced by `pause` seconds, when every
+/// path through its body sleeps at least that long, recording how many
+/// transfers each iteration makes between sleeps. The innermost paced loop
+/// wins: an outer loop's slower pace does not hide an inner poll's burst.
+fn pace(effects: &mut Effects, pause: u64) {
+    // `u64::MAX`: no path goes round again, so nothing here repeats.
+    if pause == 0 || pause == u64::MAX {
+        return;
+    }
+    // One call site can be several contributions (an inner loop's first
+    // iteration and the rest): the burst is what the site makes per
+    // iteration, all of them together.
+    let mut per_site: Vec<(Span, Count)> = Vec::new();
+    for c in &effects.contributions {
+        match per_site.iter_mut().find(|(s, _)| *s == c.span) {
+            Some((_, n)) => *n = n.add(c.transfers),
+            None => per_site.push((c.span.clone(), c.transfers)),
+        }
+    }
+    for c in &mut effects.contributions {
+        if c.paced.is_none() {
+            let burst = per_site
+                .iter()
+                .find(|(s, _)| *s == c.span)
+                .map_or(c.transfers, |(_, n)| *n);
+            c.paced = Some(Pace { secs: pause, burst });
+        }
+    }
 }
 
 /// `seq LAST`, `seq FIRST LAST`, `seq FIRST INCR LAST` with literal integers:

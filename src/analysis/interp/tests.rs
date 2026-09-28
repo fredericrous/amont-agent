@@ -409,3 +409,76 @@ fn a_quoted_substitution_is_one_word() {
     let a = zsh(r#"for t in "$(cat list)"; do curl -s https://h.example/; done"#);
     assert_eq!(total(&to_host(&a, H)), Count::ONE);
 }
+
+// ── pacing ────────────────────────────────────────────────────────────────
+
+fn paced(src: &str) -> Vec<Option<(u64, Upper)>> {
+    bash(src)
+        .effects
+        .contributions
+        .iter()
+        .filter(|c| c.targets.hosts.contains(H))
+        .map(|c| c.paced.map(|p| (p.secs, p.burst.upper)))
+        .collect()
+}
+
+fn all(p: &[Option<(u64, Upper)>], want: Option<(u64, Upper)>) -> bool {
+    !p.is_empty() && p.iter().all(|x| *x == want)
+}
+
+#[test]
+fn a_poll_that_sleeps_every_iteration_is_paced() {
+    let p = paced(
+        "n=0; while [ $n -lt 60 ]; do st=$(curl -s https://h.example/s); case $st in ok) break;; esac; sleep 30; n=$((n+1)); done",
+    );
+    assert!(all(&p, Some((30, Upper::Finite(1)))), "{p:?}");
+}
+
+#[test]
+fn a_seq_poll_is_paced_too() {
+    let p = paced("for i in $(seq 1 60); do curl -s https://h.example/ && break; sleep 20; done");
+    assert!(all(&p, Some((20, Upper::Finite(1)))), "{p:?}");
+}
+
+#[test]
+fn a_sleep_a_continue_can_skip_does_not_pace() {
+    let p = paced("for i in {1..60}; do curl -s https://h.example/ || continue; sleep 30; done");
+    assert!(all(&p, None), "{p:?}");
+}
+
+#[test]
+fn a_conditional_sleep_does_not_pace() {
+    let p =
+        paced(r#"for i in {1..60}; do curl -s https://h.example/; [ -n "$X" ] && sleep 30; done"#);
+    assert!(all(&p, None), "{p:?}");
+}
+
+#[test]
+fn a_paced_loop_records_the_burst_between_sleeps() {
+    let p = paced("for i in {1..5}; do for j in {1..100}; do curl -s https://h.example/; done; sleep 60; done");
+    assert!(all(&p, Some((60, Upper::Finite(100)))), "{p:?}");
+    let p = paced("for i in {1..60}; do curl --retry 3 -s https://h.example/; sleep 30; done");
+    assert!(all(&p, Some((30, Upper::Finite(4)))), "{p:?}");
+}
+
+#[test]
+fn a_backgrounded_sleep_does_not_pace() {
+    let p = paced("for i in {1..60}; do curl -s https://h.example/; sleep 30 & done");
+    assert!(all(&p, None), "{p:?}");
+}
+
+#[test]
+fn a_continue_that_sleeps_first_still_paces() {
+    let p = paced(
+        "for i in $(seq 1 90); do raw=$(curl -sS https://h.example/s); out=$(echo \"$raw\" | jq .) || { sleep 20; continue; }; echo \"$out\" | grep -q DONE && break; sleep 20; done",
+    );
+    assert!(all(&p, Some((20, Upper::Finite(1)))), "{p:?}");
+}
+
+#[test]
+fn a_one_off_in_another_branch_does_not_unpace_a_poll() {
+    let p = paced(
+        r#"if [ -n "$X" ]; then curl -X POST https://h.example/pr; n=0; while [ $n -lt 120 ]; do curl -s https://h.example/s && break; n=$((n+1)); sleep 20; done; else curl -s https://h.example/x; fi"#,
+    );
+    assert!(p.contains(&Some((20, Upper::Finite(1)))), "{p:?}");
+}

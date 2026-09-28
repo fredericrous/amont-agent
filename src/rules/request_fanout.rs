@@ -38,12 +38,13 @@ use crate::rules::{Evidence, Examine, Finding, Input, Rule, Stance, Trend};
 
 pub const RULE: Rule = Rule {
     id: "request-fanout",
-    // Ships observing: the rate is measured by the backtest before the rule
-    // is allowed to talk, and `Advise` is as far as it may ever go.
+    // Ships observing, and `Advise` is as far as it may ever go. Replayed
+    // over 30 days (57,361 calls) it fired twice, on the two forms of the
+    // incident command and nothing else: rare, kept for the cost of a miss.
     default_stance: Stance::Observe,
     max_stance: Stance::Advise,
     evidence: Evidence {
-        per_1000: 0.0,
+        per_1000: 0.03,
         measured: "2026-09-28",
         trend: Trend::Rare,
     },
@@ -54,6 +55,20 @@ pub const RULE: Rule = Rule {
 /// More explicit transfers than this to one destination group is fan-out.
 /// A constant, not configuration: see the module note on estimates.
 pub const BUDGET: u64 = 50;
+
+/// A loop that definitely sleeps this long between repetitions is a poll, not
+/// a burst: sixty checks thirty seconds apart are thirty minutes of one
+/// request at a time, which no rate limit is about. Waiting that long in the
+/// foreground is `foreground-poll`'s business.
+///
+/// Measured before this existed (2026-09-28, 57,257 calls over 30 days): 124
+/// of the 126 firings were exactly that shape — `curl …; sleep 15..60` under
+/// a counter — and the other two were the incident. With it: those two only.
+///
+/// Exempt only when the burst between sleeps is itself within [`BUDGET`]: a
+/// hundred requests, then a minute's sleep, then a hundred more is a burst
+/// on a timer.
+pub const PACED_SECS: u64 = 10;
 
 /// Where a group of transfers goes, for the decision and the message.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,7 +107,7 @@ fn examine(input: &Input) -> Option<Finding> {
 
     let mut tallies: BTreeMap<Dest, Tally> = BTreeMap::new();
     for c in &effects.contributions {
-        if c.targets.is_local_only() {
+        if c.targets.is_local_only() || is_a_poll(c) {
             continue;
         }
         let exact = c.targets.only_host();
@@ -136,6 +151,13 @@ fn examine(input: &Input) -> Option<Finding> {
         reason: reason(input.src, &firing, analysis),
         remedy: remedy(&firing),
         span: clamp(span, input.src.len()),
+    })
+}
+
+/// Paced at least [`PACED_SECS`] apart, a burst within budget each time.
+fn is_a_poll(c: &Contribution) -> bool {
+    c.paced.is_some_and(|p| {
+        p.secs >= PACED_SECS && !p.burst.may_exceed(BUDGET) && p.burst.upper != Upper::Unknown
     })
 }
 
@@ -459,6 +481,7 @@ mod tests {
             factors: Vec::new(),
             uncounted: Vec::new(),
             span: 0..4,
+            paced: None,
         }
     }
 

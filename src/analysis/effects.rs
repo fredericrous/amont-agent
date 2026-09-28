@@ -136,6 +136,17 @@ pub struct Contribution {
     pub uncounted: Vec<&'static str>,
     /// The call site.
     pub span: Span,
+    /// How the loop that repeats this call site spaces it out, when every
+    /// path through that loop's body sleeps. `None`: nothing established.
+    pub paced: Option<Pace>,
+}
+
+/// A paced repetition: `burst` transfers, then at least `secs` seconds of
+/// sleep, then the next burst.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pace {
+    pub secs: u64,
+    pub burst: Count,
 }
 
 /// Everything a command may do to the network.
@@ -161,10 +172,7 @@ impl Effects {
     /// code that never runs makes no transfers.
     pub fn scaled(self, count: Count, factor: Option<Factor>) -> Effects {
         if count.is_zero() {
-            return Effects {
-                contributions: Vec::new(),
-                unknown: Vec::new(),
-            };
+            return Effects::default();
         }
         let contributions = self
             .contributions
@@ -197,15 +205,23 @@ impl Effects {
         let mut unknown = Vec::new();
         // For each distinct (targets, auth, program) class, the per-branch
         // total; a branch without the class contributes zero.
-        type Key = (TargetSet, Auth, &'static str);
+        // Paced and unpaced transfers are different kinds of load and never
+        // join: a poll in one branch and a one-off POST in the other are not
+        // one burst.
+        type Key = (TargetSet, Auth, &'static str, bool);
         let mut classes: Vec<(Key, Vec<Count>, Contribution)> = Vec::new();
         for (i, alt) in alts.into_iter().enumerate() {
             unknown.extend(alt.unknown);
             for c in alt.contributions {
-                let key: Key = (c.targets.clone(), c.auth, c.program);
+                let key: Key = (c.targets.clone(), c.auth, c.program, c.paced.is_some());
                 match classes.iter_mut().find(|(k, _, _)| *k == key) {
                     Some((_, per_branch, rep)) => {
                         per_branch[i] = per_branch[i].add(c.transfers);
+                        // Both paced (the key says so): the slower claim.
+                        rep.paced = rep.paced.zip(c.paced).map(|(a, b)| Pace {
+                            secs: a.secs.min(b.secs),
+                            burst: a.burst.join(b.burst),
+                        });
                         for f in c.factors {
                             if !rep.factors.contains(&f) {
                                 rep.factors.push(f);
@@ -252,6 +268,7 @@ mod tests {
             factors: Vec::new(),
             uncounted: Vec::new(),
             span: at..at + 4,
+            paced: None,
         }
     }
 

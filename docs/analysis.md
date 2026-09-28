@@ -65,6 +65,23 @@ one unconditional `+1` of the counter in the body, and no other write to it —
 including from a function the body calls, or from anything unmodelled — and
 no `continue` that could skip the increment.
 
+## Pacing
+
+Each path through the interpreter carries how long it definitely slept
+(`sleep 30`, `sleep 2m`; a backgrounded `sleep` does not count). A loop is
+**paced** when every path back to its head — the end of the body, or a
+`continue` — slept: a `continue` that skips the sleep, or a sleep behind a
+condition, leaves it unpaced. A paced call site records the interval and its
+**burst**: the transfers it makes per iteration, an inner loop or `--retry`
+included. The innermost paced loop is the one recorded.
+
+Paced and unpaced transfers never join across `if` branches: a poll in one
+branch and a one-off request in the other are two different kinds of load.
+
+`request-fanout` exempts a call site paced at least 10 seconds apart whose
+burst is within its budget: a poll, not a burst, and `foreground-poll`'s
+business if it runs in the foreground.
+
 ## The supported subset
 
 Sequences, `&&`/`||`, pipelines and `!`, `if`/`elif`/`else`, `case` with `;;`,

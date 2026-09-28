@@ -32,3 +32,9 @@ nomatch	f() { for i in {1..100}; do curl -s https://ghcr.io/v2/; done; }; echo d
 nomatch	for i in {1..20}; do curl -s "https://ghcr.io/v2/x$i/tags/list"; done
 nomatch	cargo test --workspace
 nomatch	i=0; while [ $i -lt 400 ]; do i=$((i+1)); done; echo curl
+# A paced poll is not a burst (124 of 126 firings before PACED_SECS existed).
+nomatch	n=0; while [ $n -lt 60 ]; do st=$(curl -sS -m 30 https://git.daddyshome.fr/api/v1/repos/o/r/actions/tasks); case "$st" in *completed*) break;; esac; sleep 30; n=$((n+1)); done
+nomatch	for i in $(seq 1 60); do st=$(curl -sS --max-time 10 https://ghcr.io/v2/); [ "$st" = ok ] && break; sleep 20; done
+match	for i in {1..60}; do curl -s https://ghcr.io/v2/ || continue; sleep 30; done
+nomatch	for i in $(seq 1 75); do all=1; for pr in 913 914 915; do st=$(curl -sS --max-time 20 --retry 2 "https://git.example.org/api/v1/repos/o/r/pulls/$pr"); [ "$st" = merged ] || all=0; done; [ $all = 1 ] && break; sleep 20; done
+match	for i in {1..5}; do for j in {1..100}; do curl -s "https://ghcr.io/v2/x$j/tags/list"; done; sleep 60; done
