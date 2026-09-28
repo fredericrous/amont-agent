@@ -68,6 +68,9 @@ usage: amont-agent <command>
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
                         [--dialect bash|zsh|unknown, default unknown]
+  analyze '<command>'   the shell analysis of one command, as JSON — the
+                        interface tools/shell-oracle compares against real
+                        shells [--dialect, as for check]
   rules                 every rule, its default stance and its evidence
 
 install/uninstall flags:
@@ -110,10 +113,11 @@ enum Sub {
     Explain,
     Mine,
     Check,
+    Analyze,
     Rules,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 13] = [
+const SUBCOMMANDS: [(&str, Sub); 14] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -126,6 +130,7 @@ const SUBCOMMANDS: [(&str, Sub); 13] = [
     ("explain", Sub::Explain),
     ("mine", Sub::Mine),
     ("check", Sub::Check),
+    ("analyze", Sub::Analyze),
     ("rules", Sub::Rules),
 ];
 
@@ -268,6 +273,7 @@ fn main() -> ExitCode {
             Sub::Explain => run_backtest(&args, true),
             Sub::Mine => run_mine(&args),
             Sub::Check => run_check(&args),
+            Sub::Analyze => run_analyze(&args),
             Sub::Rules => run_rules(),
         },
     }
@@ -644,6 +650,58 @@ fn run_mine(args: &[OsString]) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The analysis of one command as JSON: what `tools/shell-oracle` checks
+/// against bash and zsh actually running it. Counts are per contribution,
+/// never aggregated — aggregation is policy.
+fn run_analyze(args: &[OsString]) -> ExitCode {
+    let f = match flags(args) {
+        Ok(f) => f,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    if f.rest.len() != 1 {
+        eprintln!("amont-agent: analyze needs exactly one command, quoted");
+        return ExitCode::from(2);
+    }
+    let src = &f.rest[0];
+    let dialect = f.dialect.unwrap_or(rules::Dialect::Unknown);
+    let a = analysis::analyze(src, dialect);
+    let upper = |u: analysis::domain::Upper| match u {
+        analysis::domain::Upper::Finite(n) => serde_json::json!(n),
+        analysis::domain::Upper::Saturated => serde_json::json!("saturated"),
+        analysis::domain::Upper::Uncapped(_) => serde_json::json!("uncapped"),
+        analysis::domain::Upper::Unknown => serde_json::json!("unknown"),
+    };
+    let contributions: Vec<serde_json::Value> = a
+        .effects
+        .contributions
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "program": c.program,
+                "span": [c.span.start, c.span.end],
+                "hosts": c.targets.hosts,
+                "unresolved": !c.targets.unresolved.is_empty(),
+                "local": c.targets.local,
+                "lower": c.transfers.lower,
+                "upper": upper(c.transfers.upper),
+                "paced": c.paced.map(|p| p.secs),
+            })
+        })
+        .collect();
+    let out = serde_json::json!({
+        "dialect": dialect.as_str(),
+        "parsed": analysis::frontend::parse(src).is_ok(),
+        "incomplete": a.incomplete.as_ref().map(|i| i.why),
+        "unknown": a.effects.unknown.len(),
+        "contributions": contributions,
+    });
+    println!("{out}");
+    ExitCode::SUCCESS
 }
 
 fn run_check(args: &[OsString]) -> ExitCode {
