@@ -18,6 +18,8 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
+#[allow(dead_code)] // wired to rules in the request-fanout commit
+mod analysis;
 mod assertions;
 mod atomic;
 mod backtest;
