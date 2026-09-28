@@ -35,6 +35,9 @@ mod journal;
 mod json;
 mod mine;
 mod payload;
+mod plans;
+mod preview;
+mod push_target;
 mod rules;
 mod session_state;
 mod settings;
@@ -67,6 +70,8 @@ usage: amont-agent <command>
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
   rules                 every rule, its default stance and its evidence
+  preview register --url <url> --attestation <file> [--repo <dir>]
+                        validate a localhost preview of HEAD for approval
 
 install/uninstall flags:
   --write               actually edit the file
@@ -109,9 +114,10 @@ enum Sub {
     Mine,
     Check,
     Rules,
+    Preview,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 13] = [
+const SUBCOMMANDS: [(&str, Sub); 14] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -125,6 +131,7 @@ const SUBCOMMANDS: [(&str, Sub); 13] = [
     ("mine", Sub::Mine),
     ("check", Sub::Check),
     ("rules", Sub::Rules),
+    ("preview", Sub::Preview),
 ];
 
 enum Invocation {
@@ -267,6 +274,7 @@ fn main() -> ExitCode {
             Sub::Mine => run_mine(&args),
             Sub::Check => run_check(&args),
             Sub::Rules => run_rules(),
+            Sub::Preview => run_preview(&args),
         },
     }
 }
@@ -632,6 +640,102 @@ fn run_mine(args: &[OsString]) -> ExitCode {
         Err(e) => {
             eprintln!("amont-agent: {}", e.explain());
             ExitCode::from(2)
+        }
+    }
+}
+
+const PREVIEW_USAGE: &str = "\
+usage: amont-agent preview register --url <url> --attestation <file> [--repo <dir>]
+
+Validate a localhost preview of the repository's HEAD, for the person to
+approve before a UI-changing push (ADR-0023). Run it as its own command,
+in the foreground: the Claude Code hook binds its output to the session.
+
+  --url <url>           where the clean worktree is served (http or https)
+  --attestation <file>  what you verified: routes driven, interactions,
+                        console errors, screenshot paths. Must be non-empty
+                        and OUTSIDE the worktree, or it would dirty the
+                        commit it describes
+  --repo <dir>          the repository (default: the current directory)
+
+Prints one JSON object on stdout. Exit 0 when valid, 1 when refused (the
+reason on stderr), 2 on a usage error.
+
+example:
+  amont-agent preview register --url http://localhost:5173/settings \\
+    --attestation ~/.claude/amont-agent/attestations/abc1234/verify.md
+";
+
+fn run_preview(args: &[OsString]) -> ExitCode {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{PREVIEW_USAGE}");
+        return if args.is_empty() {
+            ExitCode::from(2)
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+    if args[0] != "register" {
+        eprintln!(
+            "amont-agent: unknown preview command `{}`; try `amont-agent preview --help`",
+            args[0]
+        );
+        return ExitCode::from(2);
+    }
+    let (mut url, mut attestation, mut repo) = (None, None, None);
+    let mut i = 1;
+    while i < args.len() {
+        let (flag, inline) = match args[i].split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
+            _ => (args[i].clone(), None),
+        };
+        let value = match inline {
+            Some(v) => v,
+            None => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => v.clone(),
+                    None => {
+                        eprintln!("amont-agent: {flag} needs a value");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+        };
+        match flag.as_str() {
+            "--url" => url = Some(value),
+            "--attestation" => attestation = Some(value),
+            "--repo" => repo = Some(value),
+            other => {
+                eprintln!("amont-agent: unknown flag `{other}`; try `amont-agent preview --help`");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+    let (Some(url), Some(attestation)) = (url, attestation) else {
+        eprintln!("amont-agent: preview register needs --url and --attestation");
+        return ExitCode::from(2);
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let dir = repo.map(PathBuf::from).unwrap_or_else(|| cwd.clone());
+    let dir = if dir.is_absolute() {
+        dir
+    } else {
+        cwd.join(dir)
+    };
+    match preview::validate(&dir, &url, std::path::Path::new(&attestation)) {
+        Ok(r) => {
+            println!("{}", r.to_json());
+            ExitCode::SUCCESS
+        }
+        Err(why) => {
+            eprintln!("amont-agent: preview not registered: {why}");
+            ExitCode::from(1)
         }
     }
 }

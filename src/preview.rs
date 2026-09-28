@@ -1,0 +1,959 @@
+//! Preview approval (ADR-0023): a UI-changing commit is published only after
+//! the person approves that exact commit, seen on localhost.
+//!
+//! ## The flow this module keeps honest
+//!
+//! 1. The agent verifies the final commit itself, then runs
+//!    `amont-agent preview register --url … --attestation …` as a standalone
+//!    command. That command only VALIDATES (clean tree, real commit, record
+//!    outside the worktree) and prints JSON; the PostToolUse hook binds that
+//!    output to the session and the person's prompt ([`bind`]).
+//! 2. In the same turn the agent asks a *marked* question —
+//!    `[preview <id>,…]` in its text, every `repo@sha` listed, options exactly
+//!    `Approve` / `Request changes` / `Hold`.
+//! 3. The person answers. Only their selection, read from `tool_response`
+//!    ([`on_post_ask`]), or a typed `approve|ship|lgtm|looks good` in the very
+//!    next prompt ([`on_prompt`]), approves — and only the commits the
+//!    question listed.
+//!
+//! What this is NOT: proof. A registration is the agent's attestation of
+//! worktree, commit and URL; nothing here can show the browser served that
+//! commit or that the person looked. It is a workflow aid over Claude Code's
+//! hooks, not a Git enforcement boundary.
+//!
+//! ## Why the answer has to be checked twice
+//!
+//! `AskUserQuestion`'s input schema accepts `answers`. A model could
+//! pre-answer its own question, and the PostToolUse payload would then carry
+//! an "Approve" nobody chose. [`on_pre_ask`] records, per `tool_use_id`,
+//! whether the call arrived pre-answered; a pre-answered marked question never
+//! approves, and under `deny` it is refused before it runs.
+
+use std::path::{Path, PathBuf};
+
+use crate::journal;
+use crate::push_target::{self, Kind, Push, Target};
+use crate::rules::Stance;
+
+/// A registration nobody answered lapses after a day: the commit pins the
+/// content, and any other prompt drops it long before this.
+const REGISTRATION_TTL: u64 = 24 * 3600;
+/// An approval unused for a day lapses too.
+const APPROVAL_TTL: u64 = 24 * 3600;
+/// Per-call scratch (`pushes/`, `asks/`) older than this is nobody's call.
+const SCRATCH_TTL: u64 = 24 * 3600;
+
+pub const RULE_ID: &str = "push-preview";
+
+/// The labels of a marked question. Exact, with no "(Recommended)" suffix.
+pub const APPROVE: &str = "Approve";
+pub const REQUEST_CHANGES: &str = "Request changes";
+pub const HOLD: &str = "Hold";
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn dir() -> Option<PathBuf> {
+    Some(journal::dir()?.join("previews"))
+}
+
+fn ensure(dir: &Path) -> Option<()> {
+    std::fs::create_dir_all(dir).ok()?;
+    journal::private(dir, 0o700);
+    Some(())
+}
+
+// --- gating ---------------------------------------------------------------
+
+/// Whether a repository has a user interface a person can preview.
+///
+/// `git config amont.agent.push-preview.ui true|false` decides when set (the
+/// repository's own config, which a clone never carries). Otherwise: a `dev`
+/// script in `package.json` at the root or in `web/`.
+pub fn gated(repo: &Path) -> bool {
+    match crate::git::stdout_in(repo, &["config", "--get", "amont.agent.push-preview.ui"])
+        .as_deref()
+    {
+        Some("true") => return true,
+        Some("false") => return false,
+        _ => {}
+    }
+    ["package.json", "web/package.json"]
+        .iter()
+        .any(|p| has_dev_script(&repo.join(p)))
+}
+
+fn has_dev_script(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("scripts")?.get("dev").cloned())
+        .is_some_and(|d| d.as_str().is_some_and(|s| !s.trim().is_empty()))
+}
+
+/// A path whose change a person could see.
+pub fn is_ui_path(path: &str) -> bool {
+    let top = ["app/", "src/", "web/"];
+    let ext = [".tsx", ".jsx", ".css", ".html"];
+    top.iter()
+        .any(|t| path.starts_with(t) || path.contains(&format!("/{t}")))
+        || ext.iter().any(|e| path.ends_with(e))
+}
+
+/// The files a branch push would publish, or `None` when that cannot be
+/// established without guessing.
+fn published_files(repo: &Path, t: &Target) -> Option<Vec<String>> {
+    let short = t.dst.strip_prefix("refs/heads/")?;
+    let tracking = format!("refs/remotes/{}/{}", t.remote, short);
+    let base = if git(repo, &["rev-parse", "--verify", "--quiet", &tracking]).is_some() {
+        Some(tracking)
+    } else {
+        git(
+            repo,
+            &[
+                "merge-base",
+                &t.src,
+                &format!("refs/remotes/{}/HEAD", t.remote),
+            ],
+        )
+    };
+    let out = match base {
+        Some(b) => {
+            crate::git::stdout_in(repo, &["diff", "--name-only", &format!("{b}..{}", t.src)])?
+        }
+        None => crate::git::stdout_in(
+            repo,
+            &[
+                "log",
+                "--format=",
+                "--name-only",
+                &t.src,
+                "--not",
+                &format!("--remotes={}", t.remote),
+            ],
+        )?,
+    };
+    Some(
+        out.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    crate::git::stdout_in(dir, args).filter(|s| !s.is_empty())
+}
+
+/// The rule's question: would this push publish an interface change that no
+/// approved preview covers? `Ok` fires the rule; `Err` names why it did not.
+pub fn needs_preview(
+    cwd: &Path,
+    cmd: &crate::shell::Simple,
+    stance: Stance,
+) -> Result<(), &'static str> {
+    match push_target::resolve(cwd, cmd) {
+        Push::DryRun => Err("a dry run publishes nothing"),
+        Push::Unresolvable { repo, shape } => {
+            if repo.as_deref().is_some_and(gated) && stance == Stance::Deny {
+                // Under deny a shape nobody can read is held: `--all` must
+                // not be the way around the gate.
+                Ok(())
+            } else {
+                Err(shape)
+            }
+        }
+        Push::Resolved { repo, targets } => {
+            if !gated(&repo) {
+                return Err("not a repository with a user interface");
+            }
+            let mut any_ui = false;
+            for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
+                let Some(files) = published_files(&repo, t) else {
+                    return if stance == Stance::Deny {
+                        Ok(())
+                    } else {
+                        Err("the published files cannot be listed")
+                    };
+                };
+                if files.iter().any(|f| is_ui_path(f)) {
+                    any_ui = true;
+                    if !approved(&repo, &t.src) {
+                        return Ok(());
+                    }
+                }
+            }
+            if any_ui {
+                Err("every interface change is approved")
+            } else {
+                Err("no interface change")
+            }
+        }
+    }
+}
+
+// --- the store ------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Registration {
+    id: String,
+    session: String,
+    prompt: String,
+    repo: String,
+    commit: String,
+    url: String,
+    attestation: String,
+    at: u64,
+    /// The `tool_use_id` of the marked question that listed it, or `-`.
+    asked: String,
+}
+
+impl Registration {
+    fn line(&self) -> String {
+        [
+            self.id.as_str(),
+            &self.session,
+            &self.prompt,
+            &self.repo,
+            &self.commit,
+            &self.url,
+            &self.attestation,
+            &self.at.to_string(),
+            &self.asked,
+        ]
+        .map(clean)
+        .join("\t")
+    }
+    fn parse(line: &str) -> Option<Registration> {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() != 9 {
+            return None;
+        }
+        Some(Registration {
+            id: f[0].into(),
+            session: f[1].into(),
+            prompt: f[2].into(),
+            repo: f[3].into(),
+            commit: f[4].into(),
+            url: f[5].into(),
+            attestation: f[6].into(),
+            at: f[7].parse().ok()?,
+            asked: f[8].into(),
+        })
+    }
+    fn label(&self) -> String {
+        let name = Path::new(&self.repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("{name}@{}", short(&self.commit))
+    }
+}
+
+fn clean(s: &str) -> String {
+    s.replace(['\t', '\n', '\r'], " ")
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
+}
+
+/// Live registrations; lapsed ones are journalled and dropped here, on read,
+/// so expiry holds in a session that never restarts.
+fn registrations() -> Vec<Registration> {
+    let Some(path) = dir().map(|d| d.join("registrations")) else {
+        return Vec::new();
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let all: Vec<Registration> = text.lines().filter_map(Registration::parse).collect();
+    let cutoff = now().saturating_sub(REGISTRATION_TTL);
+    let (live, lapsed): (Vec<_>, Vec<_>) = all.into_iter().partition(|r| r.at >= cutoff);
+    if !lapsed.is_empty() {
+        for r in &lapsed {
+            note(
+                "expired",
+                &r.session,
+                &r.repo,
+                &format!("registration {} {}", r.id, r.label()),
+            );
+        }
+        save_registrations(&live);
+    }
+    live
+}
+
+fn save_registrations(regs: &[Registration]) {
+    let Some(d) = dir() else { return };
+    if ensure(&d).is_none() {
+        return;
+    }
+    let mut body: String = regs.iter().map(|r| r.line() + "\n").collect();
+    if body.is_empty() {
+        body.push('\n');
+    }
+    let path = d.join("registrations");
+    let _ = crate::atomic::write_atomic(&path, &body);
+    journal::private(&path, 0o600);
+}
+
+fn approvals() -> Vec<(String, String, u64, String)> {
+    let Some(path) = dir().map(|d| d.join("approvals")) else {
+        return Vec::new();
+    };
+    let cutoff = now().saturating_sub(APPROVAL_TTL);
+    std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let at: u64 = f.get(2)?.parse().ok()?;
+            Some((
+                f.first()?.to_string(),
+                f.get(1)?.to_string(),
+                at,
+                f.get(3).unwrap_or(&"-").to_string(),
+            ))
+        })
+        .filter(|(_, _, at, _)| *at >= cutoff)
+        .collect()
+}
+
+/// Whether the person approved exactly this commit of this repository.
+pub fn approved(repo: &Path, commit: &str) -> bool {
+    let repo = repo.to_string_lossy();
+    approvals()
+        .iter()
+        .any(|(r, c, _, _)| *r == repo && c == commit)
+}
+
+fn approve(regs: &[Registration], channel: &str) {
+    let Some(d) = dir() else { return };
+    if ensure(&d).is_none() {
+        return;
+    }
+    let mut kept = approvals();
+    for r in regs {
+        kept.retain(|(repo, c, _, _)| !(repo == &r.repo && c == &r.commit));
+        kept.push((r.repo.clone(), r.commit.clone(), now(), channel.to_string()));
+        note(
+            "approved",
+            &r.session,
+            &r.repo,
+            &format!("{} by {channel}", r.label()),
+        );
+    }
+    let body: String = kept
+        .iter()
+        .map(|(r, c, at, ch)| format!("{}\t{}\t{at}\t{}\n", clean(r), clean(c), clean(ch)))
+        .collect();
+    let path = d.join("approvals");
+    let _ = crate::atomic::write_atomic(&path, &body);
+    journal::private(&path, 0o600);
+}
+
+/// One journal line under the rule's id. The soak reads these back.
+fn note(outcome: &str, session: &str, repo: &str, excerpt: &str) {
+    let name = Path::new(repo)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "-".to_string());
+    journal::record(&journal::Entry {
+        rule: RULE_ID,
+        stance: "-",
+        outcome,
+        session,
+        repo: &name,
+        mode: "-",
+        excerpt,
+    });
+}
+
+// --- registration ---------------------------------------------------------
+
+/// What `preview register` validated and printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Registered {
+    pub id: String,
+    pub repo: String,
+    pub commit: String,
+    pub url: String,
+    pub attestation: String,
+}
+
+impl Registered {
+    pub fn to_json(&self) -> String {
+        crate::json::object(&[
+            crate::json::string_field("id", &self.id),
+            crate::json::string_field("repo", &self.repo),
+            crate::json::string_field("commit", &self.commit),
+            crate::json::string_field("url", &self.url),
+            crate::json::string_field("attestation", &self.attestation),
+        ])
+    }
+    fn from_json(text: &str) -> Option<Registered> {
+        let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+        let s = |k: &str| v.get(k)?.as_str().map(str::to_string);
+        Some(Registered {
+            id: s("id")?,
+            repo: s("repo")?,
+            commit: s("commit")?,
+            url: s("url")?,
+            attestation: s("attestation")?,
+        })
+    }
+}
+
+/// Validate a preview for registration. Pure of any store: the hook binds.
+pub fn validate(repo_dir: &Path, url: &str, attestation: &Path) -> Result<Registered, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("`{url}` is not an http(s) URL"));
+    }
+    let repo = push_target::toplevel(repo_dir)
+        .ok_or_else(|| format!("{} is not inside a git repository", repo_dir.display()))?;
+    let commit = git(
+        &repo,
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    )
+    .ok_or_else(|| "HEAD is not a commit".to_string())?;
+    let status = crate::git::stdout_in(&repo, &["status", "--porcelain"])
+        .ok_or_else(|| "`git status` failed".to_string())?;
+    if !status.trim().is_empty() {
+        return Err(format!(
+            "the worktree is not clean, so the preview is not of commit {}:\n{status}",
+            short(&commit)
+        ));
+    }
+    let record = std::fs::canonicalize(attestation)
+        .map_err(|_| format!("the attestation {} does not exist", attestation.display()))?;
+    let size = std::fs::metadata(&record).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return Err(format!("the attestation {} is empty", record.display()));
+    }
+    let canon_repo = std::fs::canonicalize(&repo).unwrap_or_else(|_| repo.clone());
+    if record.starts_with(&canon_repo) {
+        return Err(format!(
+            "the attestation {} is inside the worktree; writing it there dirties the commit it describes. Keep it under {}",
+            record.display(),
+            dir()
+                .and_then(|d| d.parent().map(|p| p.join("attestations")))
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "the amont-agent state directory".to_string())
+        ));
+    }
+    let id = format!("{}{:x}", short(&commit), now() & 0xfff_ffff);
+    Ok(Registered {
+        id,
+        repo: repo.to_string_lossy().into_owned(),
+        commit,
+        url: url.to_string(),
+        attestation: record.to_string_lossy().into_owned(),
+    })
+}
+
+/// After a Bash call: bind a `preview register` that ran as its own
+/// foreground command to this session and prompt.
+pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
+    let clauses = parsed.clauses();
+    let Some(cmd) = clauses.iter().find(|c| is_register(c)) else {
+        return;
+    };
+    let excerpt = "preview register";
+    let refuse = |why: &str| {
+        note(
+            "unbound",
+            &bash.session,
+            &bash.cwd.to_string_lossy(),
+            &format!("{excerpt}: {why}"),
+        )
+    };
+    if bash.background {
+        return refuse("ran in the background");
+    }
+    if clauses.len() != 1 || !parsed.fully_read() || cmd.prev.is_some() || cmd.next.is_some() {
+        return refuse("not a standalone command");
+    }
+    let Some(printed) = bash.stdout.as_deref().and_then(Registered::from_json) else {
+        return refuse("its output is not the expected JSON");
+    };
+    let dir = match cmd.flag_value("--repo") {
+        Some(d) if d.starts_with('/') => PathBuf::from(d),
+        Some(d) => bash.cwd.join(d),
+        None => bash.cwd.clone(),
+    };
+    let Some(repo) = push_target::toplevel(&dir) else {
+        return refuse("the repository it names is gone");
+    };
+    let head = git(
+        &repo,
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    );
+    if printed.repo != repo.to_string_lossy() || head.as_deref() != Some(printed.commit.as_str()) {
+        return refuse("its output does not match the repository's HEAD");
+    }
+    let mut regs = registrations();
+    let before = regs.len();
+    regs.retain(|r| !(r.session == bash.session && r.repo == printed.repo));
+    let outcome = if regs.len() < before {
+        "replaced"
+    } else {
+        "registered"
+    };
+    let reg = Registration {
+        id: printed.id.clone(),
+        session: bash.session.clone(),
+        prompt: bash.prompt_id.clone(),
+        repo: printed.repo.clone(),
+        commit: printed.commit.clone(),
+        url: printed.url.clone(),
+        attestation: printed.attestation.clone(),
+        at: now(),
+        asked: "-".to_string(),
+    };
+    note(
+        outcome,
+        &bash.session,
+        &reg.repo,
+        &format!("{} {} {}", reg.id, reg.label(), reg.url),
+    );
+    regs.push(reg);
+    save_registrations(&regs);
+}
+
+fn is_register(cmd: &crate::shell::Simple) -> bool {
+    let is_us = cmd
+        .program()
+        .is_some_and(|p| p == "amont-agent" || p.ends_with("/amont-agent"));
+    let ops: Vec<&str> = cmd.operands().iter().map(|w| w.text.as_str()).collect();
+    is_us && ops.first() == Some(&"preview") && ops.get(1) == Some(&"register")
+}
+
+// --- marked questions and approval ----------------------------------------
+
+/// The ids in a `[preview a,b]` marker, if the question carries one.
+pub fn marker(question: &str) -> Option<Vec<String>> {
+    let start = question.find("[preview ")? + "[preview ".len();
+    let end = start + question[start..].find(']')?;
+    let ids: Vec<String> = question[start..end]
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
+/// Before an `AskUserQuestion` runs. Returns the refusal text when a marked
+/// question arrives pre-answered and the rule is denying.
+pub fn on_pre_ask(ask: &crate::payload::Ask, stance: Stance) -> Option<String> {
+    let marked: Vec<Vec<String>> = ask.questions.iter().filter_map(|q| marker(q)).collect();
+    if marked.is_empty() {
+        return None;
+    }
+    let ids: Vec<String> = marked.concat();
+    if let Some(d) = dir().map(|d| d.join("asks")) {
+        if ensure(&d).is_some() && !ask.tool_use_id.is_empty() && !ask.tool_use_id.contains('/') {
+            let _ = crate::atomic::write_atomic(
+                &d.join(&ask.tool_use_id),
+                &format!(
+                    "{}\t{}\t{}\t{}\n",
+                    clean(&ask.session),
+                    clean(&ask.prompt_id),
+                    ask.prefilled,
+                    ids.join(",")
+                ),
+            );
+        }
+    }
+    if ask.prefilled {
+        note(
+            "prefilled",
+            &ask.session,
+            "-",
+            &format!("marked question {}", ids.join(",")),
+        );
+        if stance == Stance::Deny {
+            return Some(
+                "A preview question may not arrive with `answers` already filled in: only the person's own selection approves a preview. Ask it again without `answers`."
+                    .to_string(),
+            );
+        }
+        return None;
+    }
+    // Mark the listed registrations as asked in this turn.
+    let mut regs = registrations();
+    let mut changed = false;
+    for r in regs.iter_mut() {
+        if r.session == ask.session && r.prompt == ask.prompt_id && ids.contains(&r.id) {
+            r.asked = ask.tool_use_id.clone();
+            changed = true;
+        }
+    }
+    if changed {
+        save_registrations(&regs);
+    }
+    None
+}
+
+/// After an `AskUserQuestion`: an answer to a marked question approves,
+/// drops, or — unanswered — leaves its registrations pending.
+pub fn on_post_ask(ask: &crate::payload::Ask) {
+    let recorded = dir()
+        .map(|d| d.join("asks").join(&ask.tool_use_id))
+        .filter(|_| !ask.tool_use_id.is_empty() && !ask.tool_use_id.contains('/'))
+        .and_then(|p| {
+            let t = std::fs::read_to_string(&p).ok();
+            let _ = std::fs::remove_file(&p);
+            t
+        });
+    let Some(recorded) = recorded else {
+        // No PreToolUse record: the question was never seen before it ran,
+        // so nothing proves its answers were not pre-filled.
+        if ask.questions.iter().any(|q| marker(q).is_some()) {
+            note(
+                "unrecorded",
+                &ask.session,
+                "-",
+                "marked question with no PreToolUse record",
+            );
+        }
+        return;
+    };
+    let f: Vec<&str> = recorded.trim_end().split('\t').collect();
+    if f.len() != 4 || f[0] != ask.session || f[2] != "false" {
+        return;
+    }
+    for question in &ask.questions {
+        let Some(ids) = marker(question) else {
+            continue;
+        };
+        let label = ask
+            .answers
+            .iter()
+            .find(|(q, _)| q == question)
+            .map(|(_, l)| l.as_str())
+            .unwrap_or("");
+        let latency = ask
+            .duration_ms
+            .map(|d| format!("{}s", d / 1000))
+            .unwrap_or_else(|| "-".to_string());
+        let mut regs = registrations();
+        let (mine, rest): (Vec<Registration>, Vec<Registration>) = regs.drain(..).partition(|r| {
+            r.session == ask.session && r.asked == ask.tool_use_id && ids.contains(&r.id)
+        });
+        if mine.is_empty() {
+            continue;
+        }
+        match label {
+            APPROVE => {
+                // Every approved commit must be visible in the question itself.
+                let (listed, unlisted): (Vec<_>, Vec<_>) = mine
+                    .into_iter()
+                    .partition(|r| question.contains(&r.label()));
+                for r in &unlisted {
+                    note(
+                        "unlisted",
+                        &r.session,
+                        &r.repo,
+                        &format!("{} not shown in the question", r.label()),
+                    );
+                }
+                approve(&listed, &format!("option,{latency}"));
+                save_registrations(&rest);
+            }
+            REQUEST_CHANGES | HOLD => {
+                for r in &mine {
+                    note(
+                        "dropped",
+                        &r.session,
+                        &r.repo,
+                        &format!("{} {label} after {latency}", r.label()),
+                    );
+                }
+                save_registrations(&rest);
+            }
+            _ => {
+                // Unanswered — a timeout, or an empty answer. Still pending, so
+                // the typed fallback works for a person who was not watching.
+                for r in &mine {
+                    note(
+                        "unanswered",
+                        &r.session,
+                        &r.repo,
+                        &format!("{} after {latency}", r.label()),
+                    );
+                }
+                let mut back = rest;
+                back.extend(mine);
+                save_registrations(&back);
+            }
+        }
+    }
+}
+
+/// A typed approval: the whole prompt, trimmed, is one of these words.
+pub fn is_typed_approval(text: &str) -> bool {
+    let t = text
+        .trim()
+        .trim_end_matches(['.', '!', ' '])
+        .to_ascii_lowercase();
+    let t = t.strip_suffix(" it").unwrap_or(&t);
+    matches!(t, "approve" | "approved" | "ship" | "lgtm" | "looks good")
+}
+
+/// A new prompt: previews shown in an earlier turn either get the typed
+/// approval right now, or lapse.
+pub fn on_prompt(prompt: &crate::payload::Prompt) {
+    let regs = registrations();
+    let (older, rest): (Vec<Registration>, Vec<Registration>) = regs
+        .into_iter()
+        .partition(|r| r.session == prompt.session && r.prompt != prompt.prompt_id);
+    if older.is_empty() {
+        return;
+    }
+    let typed = is_typed_approval(&prompt.text);
+    let (asked, never): (Vec<_>, Vec<_>) = older.into_iter().partition(|r| r.asked != "-");
+    for r in &never {
+        note(
+            "dropped",
+            &r.session,
+            &r.repo,
+            &format!("{} was never asked about", r.label()),
+        );
+    }
+    if typed {
+        approve(&asked, "typed");
+    } else {
+        for r in &asked {
+            note(
+                "dropped",
+                &r.session,
+                &r.repo,
+                &format!("{} the next prompt was not an approval", r.label()),
+            );
+        }
+    }
+    save_registrations(&rest);
+}
+
+// --- publication ----------------------------------------------------------
+
+/// Before a push runs: remember, per `tool_use_id`, where each branch
+/// destination stood, and whether the commit was an approved UI change.
+/// `push-published` reads it back after the push.
+pub fn record_before(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
+    if bash.tool_use_id.is_empty() || bash.tool_use_id.contains('/') {
+        return;
+    }
+    let Some(cmd) = push_target::find(parsed) else {
+        return;
+    };
+    let ctx = crate::rules::Context {
+        cwd: &bash.cwd,
+        parsed,
+        background: bash.background,
+        timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
+    };
+    let Push::Resolved { repo, targets } = push_target::resolve(&ctx.cwd_at(cmd.at), cmd) else {
+        return;
+    };
+    if !gated(&repo) {
+        return;
+    }
+    let mut body = String::new();
+    for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
+        let short = t.dst.trim_start_matches("refs/heads/");
+        let before = git(
+            &repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{}/{short}", t.remote),
+            ],
+        )
+        .unwrap_or_else(|| "-".to_string());
+        let ui = published_files(&repo, t).is_some_and(|f| f.iter().any(|p| is_ui_path(p)));
+        body.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            clean(&repo.to_string_lossy()),
+            clean(&t.remote),
+            clean(&t.dst),
+            before,
+            t.src,
+            ui,
+            approved(&repo, &t.src)
+        ));
+    }
+    if body.is_empty() {
+        return;
+    }
+    if let Some(d) = dir().map(|d| d.join("pushes")) {
+        if ensure(&d).is_some() {
+            let _ = crate::atomic::write_atomic(&d.join(&bash.tool_use_id), &body);
+        }
+    }
+}
+
+/// One branch destination as recorded before the push.
+pub struct Before {
+    pub repo: PathBuf,
+    pub remote: String,
+    pub dst: String,
+    pub before: Option<String>,
+    pub src: String,
+    pub ui: bool,
+    pub approved: bool,
+}
+
+/// Take (read and remove) what [`record_before`] wrote for this call.
+pub fn take_before(tool_use_id: &str) -> Vec<Before> {
+    if tool_use_id.is_empty() || tool_use_id.contains('/') {
+        return Vec::new();
+    }
+    let Some(path) = dir().map(|d| d.join("pushes").join(tool_use_id)) else {
+        return Vec::new();
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    text.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() != 7 {
+                return None;
+            }
+            Some(Before {
+                repo: PathBuf::from(f[0]),
+                remote: f[1].to_string(),
+                dst: f[2].to_string(),
+                before: (f[3] != "-").then(|| f[3].to_string()),
+                src: f[4].to_string(),
+                ui: f[5] == "true",
+                approved: f[6] == "true",
+            })
+        })
+        .collect()
+}
+
+/// Delete per-call scratch nobody came back for.
+pub fn sweep() {
+    let Some(d) = dir() else { return };
+    for sub in ["pushes", "asks"] {
+        let Ok(entries) = std::fs::read_dir(d.join(sub)) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let old = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > SCRATCH_TTL);
+            if old {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    // Reading prunes lapsed registrations and journals them.
+    let _ = registrations();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_marker_lists_its_ids() {
+        assert_eq!(
+            marker("[preview a1b2, c3] Ship duro-app@abc1234?"),
+            Some(vec!["a1b2".to_string(), "c3".to_string()])
+        );
+        assert_eq!(marker("Ship it?"), None);
+        assert_eq!(marker("[preview ] empty"), None);
+        assert_eq!(marker("[preview unterminated"), None);
+    }
+
+    #[test]
+    fn only_explicit_words_are_a_typed_approval() {
+        for yes in [
+            "approve",
+            "Approve.",
+            "ship it",
+            "Ship it!",
+            "lgtm",
+            "looks good",
+            "  LGTM  ",
+        ] {
+            assert!(is_typed_approval(yes), "{yes}");
+        }
+        for no in [
+            "yes",
+            "go",
+            "ok",
+            "continue",
+            "approve but fix the header",
+            "ship it later",
+            "",
+        ] {
+            assert!(!is_typed_approval(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn ui_paths_are_recognised_and_docs_are_not() {
+        for ui in [
+            "app/routes/home.tsx",
+            "src/main.ts",
+            "web/src/x.ts",
+            "packages/ui/src/a.ts",
+            "styles/site.css",
+            "public/index.html",
+        ] {
+            assert!(is_ui_path(ui), "{ui}");
+        }
+        for not in [
+            "docs/plans/x.md",
+            ".github/workflows/ci.yaml",
+            "README.md",
+            "Cargo.toml",
+            "package.json",
+        ] {
+            assert!(!is_ui_path(not), "{not}");
+        }
+    }
+
+    #[test]
+    fn a_registration_round_trips_through_its_line() {
+        let r = Registration {
+            id: "abc123".into(),
+            session: "s".into(),
+            prompt: "p".into(),
+            repo: "/w/duro-app".into(),
+            commit: "abcdef0123".into(),
+            url: "http://localhost:5173/x".into(),
+            attestation: "/h/a.md".into(),
+            at: 42,
+            asked: "-".into(),
+        };
+        assert_eq!(Registration::parse(&r.line()), Some(r.clone()));
+        assert_eq!(r.label(), "duro-app@abcdef0");
+    }
+
+    #[test]
+    fn registered_json_round_trips() {
+        let r = Registered {
+            id: "i".into(),
+            repo: "/r".into(),
+            commit: "c".into(),
+            url: "http://localhost:1".into(),
+            attestation: "/a".into(),
+        };
+        assert_eq!(Registered::from_json(&r.to_json()), Some(r));
+    }
+}

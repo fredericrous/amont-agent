@@ -9,6 +9,7 @@
 - [The rules](rules.md)
 - [The assertions](assertions.md)
 - [Measuring and graduating](measuring.md)
+- [Preview approval](preview.md)
 - [The session notice](session-notice.md)
 - [Configuration](configuration.md)
 

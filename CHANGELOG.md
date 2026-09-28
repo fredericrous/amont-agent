@@ -1,5 +1,38 @@
 # Changelog
 
+## v2.18.0
+
+### Added
+
+- **Preview approval (fleet ADR-0023): `push-preview`, `push-published`,
+  `amont-agent preview register`.** A commit that changes a user interface is
+  published only after the person approved that exact commit on localhost.
+  The agent verifies first, registers the clean worktree's preview
+  (`preview register --url … --attestation <file outside the worktree>`, bound
+  to the session and prompt by the `PostToolUse` hook), and asks a marked
+  question (`[preview <id>]`, options `Approve` / `Request changes` / `Hold`).
+  Only the person's selection — read from `tool_response.answers` — or a typed
+  `approve|ship|lgtm|looks good` as the very next prompt approves; `yes`, `go`,
+  `ok` and `continue` do not. A question the model pre-answered through the
+  tool's own `answers` input never approves, and under `deny` is refused.
+  `push-preview` ships advising and reads a documented subset of push shapes
+  (explicit remote and refspecs, `-C`, `cd`); anything else is journalled as
+  unresolvable, and held under `deny` in a UI repository. `push-published`
+  records, never speaks: published with or without approval, already present,
+  or unverified — the numbers the soak review is read from. See
+  `docs/preview.md`.
+- **Open plans in the session notice (fleet ADR-0022).** A session opening in
+  a repository with `docs/plans/` gets one line per `active` plan — title and
+  first unchecked phase — and one per pointer file; a malformed `status` is
+  reported, since nothing else reads plan front matter.
+
+### Changed
+
+- `install` registers three more hook targets: `UserPromptSubmit`,
+  `PreToolUse:AskUserQuestion` and `PostToolUse:AskUserQuestion`. Run
+  `amont-agent install --write` after upgrading; `doctor` reports the
+  missing targets until you do.
+
 ## v2.17.0
 
 ### Added

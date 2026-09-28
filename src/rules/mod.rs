@@ -47,6 +47,7 @@ pub mod persisted_output_dump;
 pub mod pipe_to_tail;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
+pub mod push_preview;
 pub mod release_tag_push;
 pub mod sed_in_place;
 pub mod stale_base;
@@ -204,6 +205,9 @@ pub struct Context<'a> {
     /// `tool_input.timeout` in milliseconds, when the call set one. The
     /// tool's default is two minutes.
     pub timeout_ms: Option<u64>,
+    /// The payload's `tool_use_id`, shared by a call's `PreToolUse` and
+    /// `PostToolUse`. Empty where there is no call (tests, `check`).
+    pub tool_use_id: &'a str,
 }
 
 impl Context<'_> {
@@ -292,6 +296,7 @@ pub const RULES: &[Rule] = &[
     git_add_broad::RULE,
     stale_base::RULE,
     push_preflight::RULE,
+    push_preview::RULE,
     foreground_poll::RULE,
     sed_in_place::RULE,
     kubectl_gitops::RULE,
@@ -362,6 +367,7 @@ mod tests {
             parsed: &parsed,
             background: false,
             timeout_ms: None,
+            tool_use_id: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -383,6 +389,7 @@ mod tests {
             parsed: &parsed,
             background: false,
             timeout_ms: None,
+            tool_use_id: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -398,6 +405,7 @@ mod tests {
             parsed: &parsed,
             background: false,
             timeout_ms: None,
+            tool_use_id: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -413,6 +421,7 @@ mod tests {
             parsed: &parsed,
             background: false,
             timeout_ms: None,
+            tool_use_id: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -430,6 +439,7 @@ mod tests {
                 parsed: &parsed,
                 background: false,
                 timeout_ms: None,
+                tool_use_id: "",
             };
             assert_eq!(
                 ctx.cwd_at(at_of(&parsed, "stash")),
@@ -447,6 +457,7 @@ mod tests {
             parsed: &parsed,
             background: false,
             timeout_ms: None,
+            tool_use_id: "",
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));
