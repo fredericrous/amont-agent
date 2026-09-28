@@ -31,6 +31,9 @@
   fires on the two forms of the 2026-09-27 incident and nothing else. Ships
   `observe`; its ceiling is `advise`, because every bound is an estimate of
   what a program may do at run time.
+- **`amont-agent analyze '<command>'`** prints the shell analysis of one
+  command as JSON, per call site — what `tools/shell-oracle` checks against
+  bash and zsh actually running it.
 - **Shell analysis** (`src/analysis/`): a parser for a declared subset of
   bash and zsh, an abstract interpreter over it, and models of the network
   clients. The contract — inputs, assumptions, the subset, and what

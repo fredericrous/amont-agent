@@ -429,7 +429,7 @@ impl Interp<'_> {
             if item.background {
                 // `cmd &` runs in a subshell; its status is 0 and nothing it
                 // writes survives, but its transfers happen.
-                let r = self.subshell_res(&item.cmd, entry.clone(), ctx)?;
+                let r = self.exec(&item.cmd, entry.clone(), ctx)?;
                 effects = effects.then(r.effects.scaled(reach, None));
                 // Nothing waits for it.
                 pending.push(Outcome {
@@ -612,7 +612,7 @@ impl Interp<'_> {
 
     fn subshell(&mut self, body: &Cmd, state: State, ctx: Ctx) -> R<Res> {
         let entry = state.clone();
-        let r = self.subshell_res(body, state, ctx)?;
+        let r = self.exec(body, state, ctx)?;
         let status = r
             .outs
             .iter()
@@ -629,12 +629,6 @@ impl Interp<'_> {
             r.effects,
         );
         Ok(self.errexit(res, ctx))
-    }
-
-    /// Run `body` in a copy of the shell. Its endings are returned as they
-    /// are; the caller decides what survives.
-    fn subshell_res(&mut self, body: &Cmd, state: State, ctx: Ctx) -> R<Res> {
-        self.exec(body, state, ctx)
     }
 
     fn pipeline(&mut self, negated: bool, cmds: &[Cmd], state: State, ctx: Ctx) -> R<Res> {
@@ -1439,7 +1433,7 @@ impl Interp<'_> {
                 {
                     Some(0) => Status::Zero,
                     Some(_) => Status::NonZero,
-                    None if rest.is_empty() => Status::Unknown,
+                    // Bare, it returns the last command's status.
                     None => Status::Unknown,
                 };
                 let flow = if name == "return" && !self.calls.is_empty() {
@@ -1470,7 +1464,7 @@ impl Interp<'_> {
             // A shell or runner reading a program we cannot see.
             "xargs" | "parallel" | "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "watch"
             | "flock" | "script" | "ssh" | "kubectl" | "docker-compose" => {
-                return Ok(self.external_unknown(state, s, &name, rest, ctx))
+                return Ok(self.external_unknown(state, s, &name, ctx))
             }
             _ => {
                 if let Some(body) = state.funcs.get(&name).cloned() {
@@ -1592,12 +1586,11 @@ impl Interp<'_> {
                 "sudo" | "doas" => matches!(w.as_str(), "-u" | "-g" | "-C" | "-D" | "-h" | "-p"),
                 "env" => w.contains('=') || matches!(w.as_str(), "-u" | "-C" | "-S"),
                 "ionice" => matches!(w.as_str(), "-c" | "-n" | "-p"),
-                "stdbuf" => false,
                 _ => false,
             };
             if w.starts_with('-') || takes_value {
                 if name == "env" && w == "-S" {
-                    return Ok(self.external_unknown(state, s, name, rest, ctx));
+                    return Ok(self.external_unknown(state, s, name, ctx));
                 }
                 i += 1;
                 if takes_value && w.starts_with('-') && !w.contains('=') {
@@ -1698,14 +1691,7 @@ impl Interp<'_> {
     }
 
     /// A program that runs other programs the analysis cannot see.
-    fn external_unknown(
-        &mut self,
-        state: State,
-        s: &SimpleCmd,
-        name: &str,
-        _rest: &[models::Arg],
-        ctx: Ctx,
-    ) -> Res {
+    fn external_unknown(&mut self, state: State, s: &SimpleCmd, name: &str, ctx: Ctx) -> Res {
         let why = match name {
             "xargs" | "parallel" => "a command run once per input line",
             "ssh" => "a command run on another machine",
