@@ -269,6 +269,29 @@ unit test shows a heading that must stay unknown.
 run locally before its push. There is one PR per repo, merged with
 `merge-when-green` when the person asks.
 
+## Verification record (2026-09-29)
+
+| Input | Expected | Actual |
+|---|---|---|
+| AL `npx vitest run .forgejo/scripts/ui-handoff.test.ts` | ≥14 cases, pass | ✅ 26/26 (macOS); CI unit step on the runner green (#303) |
+| AL #303 checks | ui-handoff, ADR, CI green | ✅ all three `success` on aa0897c |
+| amont-agent `make check` | green | ✅ (fmt, clippy -D warnings, 491 unit + 35 preview integration + other suites) |
+| Pushed branch adding `docs/mockups/x/Main.dc.html`, old guide | exit 1, stdout empty, stderr names the mode and every piece | ✅ `a_mockup_branch_without_the_side_by_side_is_refused`, `…already_pushed_is_still_in_mockup_mode` |
+| Same with the images, viewport, differences | registers; page shows both figures with the overlay | ✅ `a_complete_mockup_guide_registers_and_renders_the_pair` |
+| Artboards, no default remote | refused with the reason | ✅ `artboards_with_no_default_branch_to_compare_are_refused_not_skipped` |
+| Chained register (hook payload) | PostToolUse context "NOT bound" + a command that binds when run | ✅ `a_chained_register_is_not_bound` (extended) |
+| Question with another repo's name, then the right label | first says "bound NOTHING" and stays pending; second approves | ✅ `a_question_with_the_wrong_label_…` |
+| Question naming the main checkout, from a worktree | approved; push not advised | ✅ `a_worktree_commit_is_approved_under_the_main_checkouts_name` |
+| Unapproved mockup-mode push / plain UI push / observe | deny / advise / not deny | ✅ `an_unapproved_mockup_commit_is_held_and_a_plain_ui_one_is_advised` |
+| `2fcffec/guide.md` registered in #302 at 2fcffec (debug build) | refused | ✅ refused: screen path, viewport, artboard/after, differences |
+| `e115e20/guide.md` in a scratch repo without mockups | registers | ✅ exit 0 |
+| Real session with the released binary (chained register; worktree label) | as the payload tests | pending: needs the release installed |
+| #302 retrofit (edited trigger, three-edit cancel, merge-when-green reads ui-handoff) | per plan | pending: needs #303 merged |
+
+Deviation: refusal lines are not wrapped at 80 columns; the items quote
+absolute paths, and wrapping them would break copy-paste. The paste-ready
+block is short.
+
 ## What to measure after release
 - **Previews rejected for not matching the mockup** over 30 days. Source:
   the journal's marked answers (`Request changes`) on previews registered in
