@@ -79,6 +79,116 @@ pub fn succeeds_in(dir: &std::path::Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// Raw stdout of a git command run inside `dir`, optionally fed `input` on
+/// stdin: bytes as git wrote them, never trimmed or decoded.
+///
+/// Three answers, because `plan-review-panel` must tell them apart: `Err`
+/// is "git could not be asked" (the person is asked instead), `Ok(None)` is
+/// git answering no, `Ok(Some)` is the output. [`stdout_in`] folds the
+/// first two together and trims, which breaks a `-z` listing whose last
+/// name ends in a space.
+pub fn bytes_in(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Write;
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+    let mut child = retrying(|| cmd.spawn())?;
+    // Fed from a thread: `cat-file --batch` writes while it reads, and a
+    // pipe filled on both sides at once deadlocks.
+    let feeder = match (input, child.stdin.take()) {
+        (Some(bytes), Some(mut stdin)) => {
+            let bytes = bytes.to_vec();
+            Some(std::thread::spawn(move || {
+                let _ = stdin.write_all(&bytes);
+            }))
+        }
+        _ => None,
+    };
+    let out = child.wait_with_output()?;
+    if let Some(f) = feeder {
+        let _ = f.join();
+    }
+    Ok(out.status.success().then_some(out.stdout))
+}
+
+/// Every path in `tree`, recursively, as raw bytes split on NUL.
+/// Submodules are gitlinks, listed and not entered.
+pub fn ls_tree_z(dir: &std::path::Path, tree: &str) -> std::io::Result<Option<Vec<Vec<u8>>>> {
+    let out = bytes_in(
+        dir,
+        &[
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            "--name-only",
+            "--end-of-options",
+            tree,
+        ],
+        None,
+    )?;
+    Ok(out.map(|b| {
+        b.split(|c| *c == 0)
+            .filter(|p| !p.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect()
+    }))
+}
+
+/// Named blobs, as `cat-file --batch` returned them.
+pub type Blobs = Vec<(String, Vec<u8>)>;
+
+/// The contents of `names` (each `<tree>:<path>`), in one `cat-file
+/// --batch`. A name git reports missing is left out of the answer.
+pub fn cat_file_batch(dir: &std::path::Path, names: &[String]) -> std::io::Result<Option<Blobs>> {
+    if names.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let mut input = Vec::new();
+    for n in names {
+        input.extend_from_slice(n.as_bytes());
+        input.push(b'\n');
+    }
+    let Some(out) = bytes_in(dir, &["cat-file", "--batch"], Some(&input))? else {
+        return Ok(None);
+    };
+    let mut found = Vec::new();
+    let mut at = 0;
+    for name in names {
+        let Some(nl) = out[at..].iter().position(|c| *c == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&out[at..at + nl]).into_owned();
+        at += nl + 1;
+        // `<oid> <type> <size>`, or `<name> missing`.
+        let mut parts = header.rsplitn(3, ' ');
+        let (Some(size), Some(_kind)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Ok(size) = size.parse::<usize>() else {
+            continue;
+        };
+        if at + size > out.len() {
+            break;
+        }
+        found.push((name.clone(), out[at..at + size].to_vec()));
+        at += size + 1;
+    }
+    Ok(Some(found))
+}
+
 pub struct Output {
     pub code: i32,
     pub stdout: String,

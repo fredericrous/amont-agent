@@ -98,6 +98,19 @@ pub struct Session {
     pub session: String,
 }
 
+/// An `ExitPlanMode` about to run: the plan is about to be shown to the
+/// person for approval.
+pub struct PlanExit {
+    pub session: String,
+    pub permission_mode: String,
+    /// `transcript_path`: where this session's reviews, if any, are recorded.
+    /// `None` when the payload carried none.
+    pub transcript: Option<PathBuf>,
+    /// `tool_input.planFilePath`: the file the reviewers read. `None` when
+    /// the payload carried none.
+    pub plan_file: Option<PathBuf>,
+}
+
 pub enum Event {
     /// A Bash tool call we can have an opinion about.
     PreBash(Box<Bash>),
@@ -130,6 +143,9 @@ pub enum Event {
     PreAsk(Box<Ask>),
     /// An `AskUserQuestion` the person has answered (or not).
     PostAsk(Box<Ask>),
+    /// An `ExitPlanMode` about to run: has the plan been through its review
+    /// panel (`plan-review-panel`)?
+    PrePlanExit(Box<PlanExit>),
     NotOurs,
 }
 
@@ -165,6 +181,25 @@ pub fn parse(raw: &str) -> Event {
             session: str_at("session_id"),
             prompt_id: str_at("prompt_id"),
         })),
+        Some("PreToolUse")
+            if v.get("tool_name").and_then(|x| x.as_str()) == Some("ExitPlanMode") =>
+        {
+            let path_at = |s: Option<&str>| {
+                s.filter(|p| !p.trim().is_empty())
+                    .map(PathBuf::from)
+                    .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+            };
+            Event::PrePlanExit(Box::new(PlanExit {
+                session: str_at("session_id"),
+                permission_mode: str_at("permission_mode"),
+                transcript: path_at(v.get("transcript_path").and_then(|x| x.as_str())),
+                plan_file: path_at(
+                    v.get("tool_input")
+                        .and_then(|i| i.get("planFilePath"))
+                        .and_then(|x| x.as_str()),
+                ),
+            }))
+        }
         Some(stage @ ("PreToolUse" | "PostToolUse"))
             if v.get("tool_name").and_then(|x| x.as_str()) == Some("AskUserQuestion") =>
         {

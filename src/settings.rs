@@ -272,6 +272,9 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     ("UserPromptSubmit", None),
     ("PreToolUse", Some("AskUserQuestion")),
     ("PostToolUse", Some("AskUserQuestion")),
+    // The review panel (ADR-0022, `work.plan-review-panel`): a plan is
+    // checked for its reviews the moment it is about to be presented.
+    ("PreToolUse", Some("ExitPlanMode")),
 ];
 
 /// Add our handler to one event, joining an existing block rather than adding a

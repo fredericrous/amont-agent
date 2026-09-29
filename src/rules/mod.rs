@@ -45,6 +45,7 @@ pub mod no_verify;
 pub mod path_operand_missing;
 pub mod persisted_output_dump;
 pub mod pipe_to_tail;
+pub mod plan_review_panel;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
 pub mod push_preview;
@@ -399,6 +400,7 @@ pub const RULES: &[Rule] = &[
     stale_base::RULE,
     push_preflight::RULE,
     push_preview::RULE,
+    plan_review_panel::RULE,
     foreground_poll::RULE,
     sed_in_place::RULE,
     kubectl_gitops::RULE,

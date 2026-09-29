@@ -37,6 +37,7 @@ mod journal;
 mod json;
 mod mine;
 mod payload;
+mod plan_review;
 mod plans;
 mod preview;
 mod push_target;
@@ -79,6 +80,8 @@ usage: amont-agent <command>
   preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
                         validate a localhost preview of HEAD for approval
                         and render its guide to a page
+  plan-sha [--short] [--block [--lang <l>]] [--] <file|->
+                        the sha256 of a plan's canonical body, as reviewed
 
 install/uninstall flags:
   --write               actually edit the file
@@ -123,9 +126,10 @@ enum Sub {
     Analyze,
     Rules,
     Preview,
+    PlanSha,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 15] = [
+const SUBCOMMANDS: [(&str, Sub); 16] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -141,6 +145,7 @@ const SUBCOMMANDS: [(&str, Sub); 15] = [
     ("analyze", Sub::Analyze),
     ("rules", Sub::Rules),
     ("preview", Sub::Preview),
+    ("plan-sha", Sub::PlanSha),
 ];
 
 enum Invocation {
@@ -285,6 +290,7 @@ fn main() -> ExitCode {
             Sub::Analyze => run_analyze(&args),
             Sub::Rules => run_rules(),
             Sub::Preview => run_preview(&args),
+            Sub::PlanSha => run_plan_sha(&args),
         },
     }
 }
@@ -711,6 +717,116 @@ fn run_analyze(args: &[OsString]) -> ExitCode {
         "contributions": contributions,
     });
     println!("{out}");
+    ExitCode::SUCCESS
+}
+
+const PLAN_SHA_USAGE: &str = "\
+usage: amont-agent plan-sha [--short] [--block [--lang <language>]] [--] <file|->
+
+The sha256 of a plan's canonical body: the plan without its `## Review
+panel` section, its `## Full reviews` section and its machine comment
+(`<!-- panel: ... -->` on the last line), CRLF read as LF and trailing
+blanks trimmed. Writing review results into the plan never changes it
+(ADR-0022, work.plan-review-panel).
+
+  --short            the first 12 hex characters, for the machine comment
+  --block            the review block a plan-review-* agent's prompt carries:
+                     <<<PLAN path=<realpath> sha=<64 hex>>>>
+  --lang <language>  with --block, for plan-review-language: adds lang=<l>
+  -                  read the plan from stdin (not with --block, which
+                     needs the file's path)
+
+Prints one line on stdout. Exit 0, 1 when the file cannot be read (the
+reason on stderr), 2 on a usage error.
+";
+
+fn run_plan_sha(args: &[OsString]) -> ExitCode {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let (mut short, mut block, mut lang, mut file) = (false, false, None, None);
+    let mut i = 0;
+    let mut operands_only = false;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            _ if operands_only || a == "-" || !a.starts_with('-') => {
+                if file.is_some() {
+                    eprintln!(
+                        "amont-agent: plan-sha takes one file; try `amont-agent plan-sha --help`"
+                    );
+                    return ExitCode::from(2);
+                }
+                file = Some(a.to_string());
+            }
+            "--" => operands_only = true,
+            "--help" | "-h" => {
+                print!("{PLAN_SHA_USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--short" => short = true,
+            "--block" => block = true,
+            "--lang" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => lang = Some(v.clone()),
+                    None => {
+                        eprintln!("amont-agent: --lang needs a value");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            other => {
+                eprintln!("amont-agent: unknown flag `{other}`; try `amont-agent plan-sha --help`");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+    let Some(file) = file else {
+        eprint!("amont-agent: plan-sha needs a file, or - for stdin\n\n{PLAN_SHA_USAGE}");
+        return ExitCode::from(2);
+    };
+    let conflict = if short && block {
+        Some("--short and --block exclude each other")
+    } else if lang.is_some() && !block {
+        Some("--lang only goes with --block")
+    } else if block && file == "-" {
+        Some("--block needs the plan's file, not stdin")
+    } else {
+        None
+    };
+    if let Some(why) = conflict {
+        eprintln!("amont-agent: {why}; try `amont-agent plan-sha --help`");
+        return ExitCode::from(2);
+    }
+    let text = if file == "-" {
+        use std::io::Read;
+        let mut t = String::new();
+        if let Err(e) = std::io::stdin().read_to_string(&mut t) {
+            eprintln!("amont-agent: cannot read stdin: {e}");
+            return ExitCode::from(1);
+        }
+        t
+    } else {
+        match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("amont-agent: cannot read {file}: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    };
+    let sha = plan_review::body_sha(&text);
+    if block {
+        let path = plan_review::real(std::path::Path::new(&file));
+        println!("{}", plan_review::block(&path, &sha, lang.as_deref()));
+    } else if short {
+        println!("{}", &sha[..12]);
+    } else {
+        println!("{sha}");
+    }
     ExitCode::SUCCESS
 }
 
