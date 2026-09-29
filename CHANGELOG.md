@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.22.1
+
+### Changed
+
+- **`plan-sha` and the `plan-review-panel` hook skip YAML front matter**
+  (a `---` first line through the next `---`) and the blank lines after
+  it. A plan gains front matter when it lands in `docs/plans/`, so the
+  landed copy now hashes like the approved file the reviewers read.
+  Landing can therefore be checked on the file it writes. Plans without
+  front matter hash exactly as in 2.22.0, and stored baselines stay
+  valid. A `---` first line with no closing `---` is still text.
+
 ## v2.22.0
 
 ### Added

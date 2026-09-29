@@ -728,8 +728,9 @@ fn run_analyze(args: &[OsString]) -> ExitCode {
 const PLAN_SHA_USAGE: &str = "\
 usage: amont-agent plan-sha [--short] [--block [--lang <language>]] [--] <file|->
 
-The sha256 of a plan's canonical body: the plan without its `## Review
-panel` section, its `## Full reviews` section and its machine comment
+The sha256 of a plan's canonical body: the plan without its YAML front
+matter, its `## Review panel` section, its `## Full reviews` section and
+its machine comment
 (`<!-- panel: ... -->` on the last line), CRLF read as LF and trailing
 blanks trimmed. Writing review results into the plan never changes it
 (ADR-0022, work.plan-review-panel).
