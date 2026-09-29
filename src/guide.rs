@@ -62,6 +62,30 @@ fn normalise(heading: &str) -> String {
     words.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Whether a heading as written names the section `name`: the same words,
+/// emoji, punctuation and case aside — or the section's words followed by a
+/// note, introduced by `(`, a dash or `:` (`Try it (about 2 minutes)`,
+/// `Reference — screenshots`). Other trailing words are a different heading:
+/// `Try it now` is not `Try it`.
+fn names_section(heading: &str, name: &str) -> bool {
+    if normalise(heading) == normalise(name) {
+        return true;
+    }
+    let h = heading.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let Some(head) = h.get(..name.len()) else {
+        return false;
+    };
+    if !head.eq_ignore_ascii_case(name) {
+        return false;
+    }
+    let rest = &h[name.len()..];
+    if rest.chars().next().is_some_and(char::is_alphanumeric) {
+        return false;
+    }
+    let rest = rest.trim_start();
+    rest.is_empty() || rest.starts_with(['(', '-', '–', '—', ':'])
+}
+
 fn h2(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("## ")?;
     Some(rest.trim().trim_end_matches('#').trim())
@@ -107,8 +131,9 @@ pub fn parse(text: &str) -> Guide<'_> {
 impl<'a> Guide<'a> {
     /// The first section whose heading is `name`, emoji and case aside.
     fn section(&self, name: &str) -> Option<&Section<'a>> {
-        let want = normalise(name);
-        self.sections.iter().find(|s| normalise(s.heading) == want)
+        self.sections
+            .iter()
+            .find(|s| names_section(s.heading, name))
     }
 }
 
@@ -171,6 +196,251 @@ pub fn check(text: &str) -> Vec<String> {
         }
     }
     missing
+}
+
+// --- mockup mode ------------------------------------------------------------
+
+/// The section a guide adds when its commit carries a picked mockup.
+pub const DIFFERENCES: &str = "Differences from the mockup";
+
+/// What an image shows, read from its file name: the picked design, the
+/// built screen, or the screen before the change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Design,
+    Built,
+    Before,
+}
+
+/// The role word in a file name and what is left of its stem around it:
+/// `artboard-empty.png` → (Design, `-empty`). The first matching word wins.
+fn role(src: &str) -> Option<(Role, String)> {
+    let name = file_name(src);
+    let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&name);
+    [
+        ("artboard", Role::Design),
+        ("mockup", Role::Design),
+        ("after", Role::Built),
+        ("live", Role::Built),
+        ("before", Role::Before),
+    ]
+    .iter()
+    .find_map(|(word, r)| {
+        let i = stem.find(word)?;
+        Some((*r, format!("{}{}", &stem[..i], &stem[i + word.len()..])))
+    })
+}
+
+/// A design image and the built screen it is compared with, for one state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proof {
+    /// What distinguishes this state's file names (`-empty`); empty for the
+    /// default pair.
+    pub state: String,
+    pub design: String,
+    pub design_alt: String,
+    pub built: String,
+    pub built_alt: String,
+}
+
+/// Every image in the guide with its alt text.
+fn images_with_alt(text: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("![") {
+        rest = &rest[i + 2..];
+        let Some((alt, src, after)) = link_parts(rest) else {
+            continue;
+        };
+        found.push((alt.to_string(), src.to_string()));
+        rest = after;
+    }
+    found
+}
+
+/// The design/built pairs, matched by what their names share besides the
+/// role word: `artboard.png` with `after.png`, `artboard-empty.png` with
+/// `live-empty.png`.
+pub fn proofs(text: &str) -> Vec<Proof> {
+    let all = images_with_alt(text);
+    let mut out: Vec<Proof> = Vec::new();
+    for (alt, src) in &all {
+        let Some((Role::Design, key)) = role(src) else {
+            continue;
+        };
+        if out.iter().any(|p| p.state == key) {
+            continue;
+        }
+        let built = all
+            .iter()
+            .find(|(_, s)| role(s) == Some((Role::Built, key.clone())));
+        if let Some((balt, bsrc)) = built {
+            out.push(Proof {
+                state: key,
+                design: src.clone(),
+                design_alt: alt.clone(),
+                built: bsrc.clone(),
+                built_alt: balt.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// The image the guide shows as the screen before the change, if any.
+fn before_image(text: &str) -> Option<(String, String)> {
+    images_with_alt(text)
+        .into_iter()
+        .find(|(_, s)| matches!(role(s), Some((Role::Before, _))))
+}
+
+/// A local image source as a file: relative to the guide's folder, or an
+/// absolute path, or a `file://` URL. A remote URL is `None`.
+fn local_file(src: &str, folder: &Path) -> Option<std::path::PathBuf> {
+    let s = src.trim();
+    if let Some(p) = s.strip_prefix("file://") {
+        return Some(std::path::PathBuf::from(p));
+    }
+    if s.starts_with('/') {
+        return Some(std::path::PathBuf::from(s));
+    }
+    if s.contains(':') {
+        return None;
+    }
+    Some(folder.join(s))
+}
+
+/// The `Viewport: <w>px · <theme>` line, if a body carries one.
+fn viewport(lines: &[&str]) -> Option<String> {
+    lines.iter().find_map(|l| {
+        let low = l.to_ascii_lowercase();
+        let i = low.find("viewport")?;
+        let rest = low[i + "viewport".len()..].trim_start_matches(['*', ':', ' ']);
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        (digits > 0 && rest[digits..].trim_start().starts_with("px"))
+            .then(|| plain(l.trim().trim_start_matches(['-', '*', ' '])))
+    })
+}
+
+/// How the differences section reads: `Ok` for `None` or bullets that each
+/// say `fixed:` or `deliberate: <reason>`, else what is wrong.
+fn differences(lines: &[&str]) -> Result<(), String> {
+    let mut bullets = 0;
+    let mut unclassified = 0;
+    let mut none = false;
+    for l in lines {
+        let low = l.trim().to_ascii_lowercase();
+        if low.trim_end_matches('.') == "none" {
+            none = true;
+            continue;
+        }
+        let Some(b) = bullet(l) else { continue };
+        bullets += 1;
+        let b = b.trim().to_ascii_lowercase();
+        let b = b.trim_start_matches("**");
+        let classified = ["fixed", "deliberate"].iter().any(|w| {
+            b.strip_prefix(w)
+                .map(|r| r.trim_start_matches("**"))
+                .and_then(|r| r.strip_prefix(':'))
+                .is_some_and(|r| !r.trim().is_empty())
+        });
+        if !classified {
+            unclassified += 1;
+        }
+    }
+    if unclassified > 0 {
+        return Err(format!(
+            "{unclassified} bullet(s) under `## {DIFFERENCES}` say neither `fixed: …` nor `deliberate: <reason>`"
+        ));
+    }
+    if bullets == 0 && !none {
+        return Err(format!(
+            "`## {DIFFERENCES}` lists nothing: write `None`, or one bullet per difference (`- fixed: …` / `- deliberate: <reason>`)"
+        ));
+    }
+    Ok(())
+}
+
+/// What a guide lacks in mockup mode — its commit carries the picked
+/// artboards of `screens` — on top of [`check`]. Images resolve against
+/// `folder`, the guide's own.
+pub fn check_mockup(text: &str, screens: &[String], folder: &Path) -> Vec<String> {
+    let g = parse(text);
+    let mut missing = Vec::new();
+    let reference: Vec<&str> = g
+        .section(SECTIONS[REFERENCE])
+        .map(|s| s.body.clone())
+        .unwrap_or_default();
+    for screen in screens {
+        if !reference.iter().any(|l| l.contains(screen.as_str())) {
+            missing.push(format!("the screen's path `{screen}` under `## Reference`"));
+        }
+    }
+    if viewport(&reference).is_none() {
+        missing.push(
+            "a viewport line under `## Reference`: `Viewport: 1120px · light`, the width and theme both images were taken at".to_string(),
+        );
+    }
+    let found = proofs(text);
+    if !found.iter().any(|p| p.state.is_empty()) {
+        missing.push(format!(
+            "the picked artboard beside the built screen under `## Reference`: `artboard.png` and `after.png` in {}",
+            folder.display()
+        ));
+    }
+    for p in &found {
+        for src in [&p.design, &p.built] {
+            match local_file(src, folder) {
+                Some(f) if f.is_file() => {}
+                Some(f) => missing.push(format!(
+                    "the image {} (the guide shows `{src}`)",
+                    f.display()
+                )),
+                None => missing.push(format!(
+                    "`{src}` as a file beside the guide: a remote image cannot be checked"
+                )),
+            }
+        }
+    }
+    match g.section(DIFFERENCES) {
+        None => missing.push(format!("the section `## {DIFFERENCES}`")),
+        Some(s) => {
+            if let Err(why) = differences(&s.body) {
+                missing.push(why);
+            }
+        }
+    }
+    missing
+}
+
+/// Width of a PNG, from its IHDR chunk; `None` for anything else.
+pub fn png_width(path: &Path) -> Option<u32> {
+    use std::io::Read;
+    let mut head = [0u8; 24];
+    std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+    if head[..8] != [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] || &head[12..16] != b"IHDR" {
+        return None;
+    }
+    Some(u32::from_be_bytes([head[16], head[17], head[18], head[19]]))
+}
+
+/// Pairs whose two PNGs differ in width by more than a tenth: a divergence
+/// would read as a scaling difference.
+pub fn width_warnings(text: &str, folder: &Path) -> Vec<String> {
+    proofs(text)
+        .iter()
+        .filter_map(|p| {
+            let d = png_width(&local_file(&p.design, folder)?)?;
+            let b = png_width(&local_file(&p.built, folder)?)?;
+            let (lo, hi) = (d.min(b), d.max(b));
+            (hi - lo > hi / 10).then(|| {
+                format!(
+                    "{} is {d}px wide and {} is {b}px: take the built screen at the artboard's width",
+                    p.design, p.built
+                )
+            })
+        })
+        .collect()
 }
 
 // --- rendering ------------------------------------------------------------
@@ -261,13 +531,13 @@ fn pair(text: &str) -> Option<(String, String)> {
 }
 
 struct Ctx<'p> {
-    /// Sources rendered in the before/after block, so skipped inline.
-    paired: Option<&'p (String, String)>,
+    /// Sources rendered in the Reference block, so skipped inline.
+    paired: &'p [String],
 }
 
 impl Ctx<'_> {
     fn is_paired(&self, src: &str) -> bool {
-        self.paired.is_some_and(|(b, a)| b == src || a == src)
+        self.paired.iter().any(|s| s == src)
     }
 }
 
@@ -543,7 +813,7 @@ fn list(
 /// Plain text of a line of inline markdown, for `<title>`: tags stripped
 /// from our own rendering (the text in it is already escaped).
 fn plain(s: &str) -> String {
-    let html = inline(s, &Ctx { paired: None });
+    let html = inline(s, &Ctx { paired: &[] });
     let mut out = String::new();
     let mut tag = false;
     for c in html.chars() {
@@ -590,10 +860,25 @@ fn headline(g: &Guide) -> String {
 /// external asset; images are the guide's own, relative to the page.
 pub fn render(text: &str, page: &Page) -> String {
     let g = parse(text);
-    let paired = pair(text);
-    let ctx = Ctx {
-        paired: paired.as_ref(),
+    let found = proofs(text);
+    let paired = if found.is_empty() { pair(text) } else { None };
+    let before = if found.is_empty() {
+        None
+    } else {
+        before_image(text)
     };
+    let mut skipped: Vec<String> = Vec::new();
+    if let Some((b, a)) = &paired {
+        skipped.extend([b.clone(), a.clone()]);
+    }
+    for p in &found {
+        skipped.extend([p.design.clone(), p.built.clone()]);
+    }
+    if let Some((_, b)) = &before {
+        skipped.push(b.clone());
+    }
+    let ctx = Ctx { paired: &skipped };
+    let direction = direction(text);
     let headline = headline(&g);
     let title = if headline.is_empty() {
         escape(page.label)
@@ -629,6 +914,36 @@ pub fn render(text: &str, page: &Page) -> String {
             inline(s.heading, &ctx)
         ));
         if normalise(s.heading) == reference {
+            let view = viewport(&s.body).map(|v| escape(&v)).unwrap_or_default();
+            for (i, p) in found.iter().enumerate() {
+                let state = p.state.trim_matches(['-', '_', ' ']);
+                let design_caption = match &direction {
+                    Some(d) => format!("Mockup, direction {d}"),
+                    None => "Mockup".to_string(),
+                };
+                body.push_str(&format!(
+                    "<div class=\"proof\">\n{state_line}<input type=\"checkbox\" id=\"overlay-{i}\" class=\"overlay\"><label for=\"overlay-{i}\">Overlay the built screen on the mockup</label>\n<div class=\"stack\">\n<figure class=\"design\"><a href=\"{dsrc}\">{dimg}</a><figcaption>{dcap}{view_line}</figcaption></figure>\n<figure class=\"built\"><a href=\"{bsrc}\">{bimg}</a><figcaption>Built, <code>{sha}</code>{view_line}</figcaption></figure>\n</div>\n</div>\n",
+                    state_line = if state.is_empty() {
+                        String::new()
+                    } else {
+                        format!("<p class=\"state\">State: {}</p>\n", escape(state))
+                    },
+                    dsrc = escape(&p.design),
+                    dimg = img(alt_or(&p.design_alt, &design_caption), &p.design),
+                    dcap = escape(&design_caption),
+                    bsrc = escape(&p.built),
+                    bimg = img(alt_or(&p.built_alt, "Built screen"), &p.built),
+                    sha = escape(&page.commit[..page.commit.len().min(7)]),
+                    view_line = if view.is_empty() { String::new() } else { format!(" · {view}") },
+                ));
+            }
+            if let Some((alt, src)) = &before {
+                body.push_str(&format!(
+                    "<figure class=\"before\"><a href=\"{}\">{}</a><figcaption>Before</figcaption></figure>\n",
+                    escape(src),
+                    img(alt_or(alt, "Before"), src)
+                ));
+            }
             if let Some((before, after)) = &paired {
                 body.push_str(&format!(
                     "<div class=\"pair\">\n<figure>{}<figcaption>Before</figcaption></figure>\n<figure>{}<figcaption>After</figcaption></figure>\n</div>\n",
@@ -702,11 +1017,49 @@ blockquote{margin:8px 0;padding:4px 12px;border-left:3px solid var(--line);color
 img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:8px;background:var(--card)}
 figure{margin:12px 0}
 figcaption{color:var(--muted);font-size:14px;margin-top:4px}
+.proof{margin:12px 0 20px}
+.proof .state{margin:0 0 6px;font-weight:600}
+.proof label{display:inline-block;margin:0 0 8px;color:var(--muted);font-size:14px;cursor:pointer}
+.proof .overlay{margin-right:6px}
+.stack{display:grid;grid-template-columns:1fr;gap:16px}
+.stack figure{margin:0}
+.stack img{width:100%}
+.overlay:checked+label+.stack{gap:0}
+.overlay:checked+label+.stack figure{grid-area:1/1}
+.overlay:checked+label+.stack .built img{opacity:.5}
+.overlay:checked+label+.stack .built figcaption{display:none}
 .pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .pair figure{margin:0}
 @media (max-width:640px){.pair{grid-template-columns:1fr}}
 footer{margin-top:24px;color:var(--muted);font-size:14px}
 ";
+
+/// The alt text as written, or the role when the guide left it empty.
+fn alt_or<'a>(alt: &'a str, role: &'a str) -> &'a str {
+    if alt.trim().is_empty() {
+        role
+    } else {
+        alt
+    }
+}
+
+/// The picked direction a guide names (`direction B`), if any.
+fn direction(text: &str) -> Option<String> {
+    let low = text.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = low[from..].find("direction ") {
+        let at = from + i + "direction ".len();
+        let word: String = text[at..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric())
+            .collect();
+        if word.chars().count() == 1 && word.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Some(word.to_ascii_uppercase());
+        }
+        from = at;
+    }
+    None
+}
 
 /// A `file://` URL for an absolute path, percent-encoded. A Windows
 /// verbatim prefix (`\\?\`) is dropped and backslashes become slashes.
@@ -774,6 +1127,177 @@ The **Save** button moved.
     }
 
     #[test]
+    fn a_heading_with_a_trailing_note_matches() {
+        for (heading, name) in [
+            ("👉 Try it (about 2 minutes)", "Try it"),
+            ("Try it — 2 min", "Try it"),
+            ("Reference - screenshots", "Reference"),
+            ("📍 Where we are: the masthead", "Where we are"),
+        ] {
+            assert!(names_section(heading, name), "{heading:?} names {name:?}");
+        }
+        let text = GOOD.replace("## 👉 Try it\n", "## 👉 Try it (about 2 minutes)\n");
+        assert_ne!(text, GOOD, "the fixture has a `## 👉 Try it` heading");
+        let m = check(&text);
+        assert!(!m.iter().any(|m| m.contains("Try it")), "{m:?}");
+    }
+
+    const MOCKUP_GUIDE: &str = "\
+## Where we are
+app, branch `feat/x`, direction B.
+
+## What you should see
+A pill.
+
+## Try it
+1. Open http://localhost:5173/
+
+## Reference
+Artboards: docs/mockups/pill
+Viewport: 1120px · light
+
+![Mockup B](artboard.png) ![Built](after.png)
+
+## Already checked
+- console clean
+
+## Differences from the mockup
+- fixed: the separate History segment is gone
+- deliberate: a hidden live region copy, for screen readers
+";
+
+    fn folder_with(files: &[&str]) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "amont-agent-guide-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for f in files {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn a_complete_mockup_guide_lacks_nothing() {
+        let d = folder_with(&["artboard.png", "after.png"]);
+        let m = check_mockup(MOCKUP_GUIDE, &["docs/mockups/pill".to_string()], &d);
+        assert!(m.is_empty(), "{m:?}");
+        assert!(check(MOCKUP_GUIDE).is_empty());
+    }
+
+    #[test]
+    fn mockup_mode_names_every_missing_piece() {
+        let d = folder_with(&[]);
+        let m = check_mockup(GOOD, &["docs/mockups/pill".to_string()], &d);
+        let all = m.join("\n");
+        for piece in [
+            "docs/mockups/pill",
+            "viewport line",
+            "artboard.png",
+            "## Differences from the mockup",
+        ] {
+            assert!(all.contains(piece), "{piece} in {all}");
+        }
+    }
+
+    #[test]
+    fn a_missing_image_is_refused_even_by_absolute_path() {
+        let d = folder_with(&["after.png"]);
+        let text = MOCKUP_GUIDE.replace("(artboard.png)", "(/nonexistent/artboard.png)");
+        let m = check_mockup(&text, &["docs/mockups/pill".to_string()], &d);
+        assert!(
+            m.iter().any(|m| m.contains("/nonexistent/artboard.png")),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn differences_must_be_classified_or_none() {
+        assert!(differences(&["None"]).is_ok());
+        assert!(differences(&["- fixed: spacing", "- **deliberate:** a11y copy"]).is_ok());
+        assert!(differences(&["- spacing is off"])
+            .unwrap_err()
+            .contains("1 bullet"));
+        assert!(
+            differences(&["- deliberate:"]).is_err(),
+            "a reason is required"
+        );
+        assert!(differences(&[]).is_err());
+    }
+
+    #[test]
+    fn proofs_pair_by_state_and_accept_the_aliases() {
+        let text = "![a](shots/mockup.png) ![b](live.png) ![c](artboard-empty.png) ![d](after-empty.png) ![e](before.png)";
+        let p = proofs(text);
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert_eq!(
+            (p[0].design.as_str(), p[0].built.as_str()),
+            ("shots/mockup.png", "live.png")
+        );
+        assert_eq!(p[1].state, "-empty");
+        assert_eq!(
+            before_image(text).map(|(_, s)| s),
+            Some("before.png".to_string())
+        );
+    }
+
+    #[test]
+    fn the_page_shows_the_pair_full_width_with_an_overlay() {
+        let html = render(
+            MOCKUP_GUIDE,
+            &Page {
+                label: "app@abcdef0",
+                commit: "abcdef0123",
+                url: "http://localhost:5173/",
+            },
+        );
+        assert!(
+            html.contains("Mockup, direction B"),
+            "caption names the direction"
+        );
+        assert!(html.contains("Built, <code>abcdef0</code>"));
+        assert!(html.contains("Viewport: 1120px · light"));
+        assert!(html.contains("class=\"overlay\""));
+        assert!(
+            html.contains("<a href=\"artboard.png\">"),
+            "links to the full size"
+        );
+        assert_eq!(
+            html.matches("src=\"artboard.png\"").count(),
+            1,
+            "not repeated inline"
+        );
+    }
+
+    #[test]
+    fn a_png_width_is_read_from_its_header() {
+        let d = folder_with(&[]);
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+        png.extend(b"IHDR");
+        png.extend(1120u32.to_be_bytes());
+        png.extend(800u32.to_be_bytes());
+        std::fs::write(d.join("a.png"), &png).unwrap();
+        assert_eq!(png_width(&d.join("a.png")), Some(1120));
+        std::fs::write(d.join("b.png"), b"not a png at all, just text").unwrap();
+        assert_eq!(png_width(&d.join("b.png")), None);
+    }
+
+    #[test]
+    fn extra_words_are_not_a_note() {
+        for (heading, name) in [
+            ("Try it now", "Try it"),
+            ("Reference material", "Reference"),
+            ("Try items", "Try it"),
+            ("Already", "Already checked"),
+        ] {
+            assert!(!names_section(heading, name), "{heading:?} is not {name:?}");
+        }
+    }
+
+    #[test]
     fn a_missing_section_is_named() {
         let text = GOOD.replace("## Already checked", "## Checked");
         let m = check(&text);
@@ -792,7 +1316,7 @@ The **Save** button moved.
 
     #[test]
     fn inline_markup_is_escaped_and_unsafe_links_are_text() {
-        let ctx = Ctx { paired: None };
+        let ctx = Ctx { paired: &[] };
         assert_eq!(
             inline("<script>x</script>", &ctx),
             "&lt;script&gt;x&lt;/script&gt;"

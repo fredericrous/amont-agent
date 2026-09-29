@@ -914,8 +914,26 @@ foreground: the Claude Code hook binds its output to the session.
                                                  ![after](after.png)
                         ## Already checked       what you verified, and what
                                                  to look at especially
+                      A heading may carry a note: `## Try it (2 min)`.
                       Images are relative to the guide's directory; two
                       named *before* and *after* show side by side.
+
+                      Mockup mode: when the branch (from its merge base
+                      with the default branch) commits a picked mockup's
+                      artboards (`*.dc.html` under docs/mockups/<screen>, or
+                      `git config amont.agent.preview.mockups`), the guide
+                      must also show, under ## Reference, the screen path,
+                      `Viewport: <width>px · <theme>`, and the artboard
+                      beside the built screen as files next to it
+                      (artboard.png / after.png; also mockup / live, and
+                      state pairs such as artboard-empty.png /
+                      after-empty.png), plus a section
+                        ## Differences from the mockup
+                                                 `None`, or bullets
+                                                 `- fixed: …` /
+                                                 `- deliberate: <reason>`
+                      Copy the images beside the guide as their own step,
+                      before this command.
   --repo <dir>        the repository (default: the current directory)
   --open              open the rendered page with the platform opener; a
                       failure to open never fails the command
@@ -923,8 +941,9 @@ foreground: the Claude Code hook binds its output to the session.
                       the guide, and refused unless it is one
 
 Writes index.html beside the guide and prints one JSON object on stdout:
-id, repo, commit, url, guide, page, page_url. Exit 0 when valid, 1 when
-refused (the reason on stderr), 2 on a usage error.
+id, repo, commit, url, guide, page, page_url, label, aliases. Put `label`
+(or one of `aliases`) in the marked question with `[preview <id>]`. Exit
+0 when valid, 1 when refused (the reason on stderr), 2 on a usage error.
 
 example:
   amont-agent preview register --url http://localhost:5173/settings \\

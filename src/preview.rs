@@ -410,18 +410,21 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 
 /// The rule's question: would this push publish an interface change that no
 /// approved preview covers? `Ok` fires the rule; `Err` names why it did not.
+/// `Ok(held)` when the push needs a preview it does not have; `held` when
+/// the unapproved commit carries a picked mockup (or cannot be told apart
+/// from one), which the rule holds at deny.
 pub fn needs_preview(
     cwd: &Path,
     cmd: &crate::shell::Simple,
     stance: Stance,
-) -> Result<(), &'static str> {
+) -> Result<bool, &'static str> {
     match push_target::resolve(cwd, cmd) {
         Push::DryRun => Err("a dry run publishes nothing"),
         Push::Unresolvable { repo, shape } => {
             if repo.as_deref().is_some_and(gated) && stance == Stance::Deny {
                 // Under deny a shape nobody can read is held: `--all` must
                 // not be the way around the gate.
-                Ok(())
+                Ok(false)
             } else {
                 Err(shape)
             }
@@ -434,7 +437,7 @@ pub fn needs_preview(
             for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
                 let Some(ui) = carries_ui(&repo, t) else {
                     return if stance == Stance::Deny {
-                        Ok(())
+                        Ok(false)
                     } else {
                         Err("the published files cannot be listed")
                     };
@@ -442,7 +445,7 @@ pub fn needs_preview(
                 if ui {
                     any_ui = true;
                     if !approved(&repo, &t.src) {
-                        return Ok(());
+                        return Ok(mockup_screens(&repo, &t.src).map_or(true, |s| !s.is_empty()));
                     }
                 }
             }
@@ -453,6 +456,71 @@ pub fn needs_preview(
             }
         }
     }
+}
+
+// --- mockup mode -----------------------------------------------------------
+
+/// Where a repository keeps its picked mockups: `git config
+/// amont.agent.preview.mockups`, else `docs/mockups` — the same key the
+/// application-landscape `ui-handoff` check reads.
+fn mockups_dir(repo: &Path) -> String {
+    git(repo, &["config", "--get", "amont.agent.preview.mockups"])
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| d.trim().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "docs/mockups".to_string())
+}
+
+/// The screens a commit's branch carries picked mockups for: folders under
+/// the mockups directory that `merge-base(<default branch>, commit)..commit`
+/// changes and that hold a `*.dc.html` artboard at `commit`.
+///
+/// Always from the merge base, never from the upstream ref: after the first
+/// push the upstream already holds the artboards, and a range that starts
+/// there would find no screen and switch the check off (the PR #302 case).
+/// `Err` when the range cannot be established while the commit does carry
+/// artboards: a check that cannot look must not pass.
+pub fn mockup_screens(repo: &Path, commit: &str) -> Result<Vec<String>, String> {
+    let dir = mockups_dir(repo);
+    let has_artboards = |tree_path: &str| {
+        git(
+            repo,
+            &["ls-tree", "-r", "--name-only", commit, "--", tree_path],
+        )
+        .is_some_and(|l| l.lines().any(|f| f.ends_with(".dc.html")))
+    };
+    if !has_artboards(&dir) {
+        return Ok(Vec::new());
+    }
+    let base = crate::stale::remote_of(repo)
+        .and_then(|r| crate::stale::default_base(repo, &r))
+        .ok_or_else(|| {
+            format!(
+                "{dir} holds artboards, and the commits this preview adds cannot be told apart from the default branch's: no default remote branch (set `checkout.defaultRemote`, or fetch `origin`)"
+            )
+        })?;
+    let from = git(repo, &["merge-base", &base, commit]).ok_or_else(|| {
+        format!(
+            "{dir} holds artboards, and {base} shares no history with {}",
+            short(commit)
+        )
+    })?;
+    let changed = git(repo, &["diff", "--name-only", &format!("{from}..{commit}")])
+        .ok_or_else(|| format!("`git diff {}..{}` failed", short(&from), short(commit)))?;
+    let prefix = format!("{dir}/");
+    let mut screens: Vec<String> = Vec::new();
+    for f in changed.lines() {
+        let Some(rest) = f.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once('/') else {
+            continue;
+        };
+        let screen = format!("{dir}/{name}");
+        if !screens.contains(&screen) && has_artboards(&screen) {
+            screens.push(screen);
+        }
+    }
+    Ok(screens)
 }
 
 // --- the store ------------------------------------------------------------
@@ -512,6 +580,104 @@ impl Registration {
             .unwrap_or_default();
         format!("{name}@{}", short(&self.commit))
     }
+    /// Every label a question may show for this commit: the checkout's own
+    /// directory, then the aliases `register` worked out (the main worktree's
+    /// directory, the origin repository's name), each `@<sha7>`.
+    fn labels(&self) -> Vec<String> {
+        let mut all = vec![self.label()];
+        for a in aliases_of(&self.id) {
+            if !all.contains(&a) {
+                all.push(a);
+            }
+        }
+        all
+    }
+}
+
+/// The names a person knows a checkout by, most specific first: its
+/// directory, the main worktree's directory (a task worktree is
+/// `app-wt-x`; the person calls it `app`), and the origin repository's name.
+fn checkout_names(repo: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: &str| {
+        let s = s.trim();
+        if !s.is_empty() && !out.iter().any(|o| o == s) {
+            out.push(s.to_string());
+        }
+    };
+    if let Some(n) = repo.file_name() {
+        push(&n.to_string_lossy());
+    }
+    if let Some(common) = git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) {
+        let common = PathBuf::from(common);
+        if common.file_name().is_some_and(|n| n == ".git") {
+            if let Some(n) = common.parent().and_then(Path::file_name) {
+                push(&n.to_string_lossy());
+            }
+        }
+    }
+    if let Some(url) = git(repo, &["remote", "get-url", "origin"]) {
+        let last = url
+            .trim_end_matches('/')
+            .rsplit(['/', ':'])
+            .next()
+            .unwrap_or("");
+        push(last.trim_end_matches(".git"));
+    }
+    out
+}
+
+/// The alias labels bound with registration `id`, from the sidecar that
+/// keeps the registrations line in the format older releases read.
+fn aliases_of(id: &str) -> Vec<String> {
+    let Some(path) = dir().map(|d| d.join("registrations.labels")) else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| {
+            let (i, rest) = l.split_once('\t')?;
+            (i == id).then(|| {
+                rest.split(' ')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Record `id`'s alias labels, keeping only the lines of live registrations.
+fn save_aliases(id: &str, labels: &[String], live: &[Registration]) {
+    let Some(d) = dir() else { return };
+    if ensure(&d).is_none() {
+        return;
+    }
+    let path = d.join("registrations.labels");
+    let mut body: String = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| {
+            l.split_once('\t')
+                .is_some_and(|(i, _)| i != id && live.iter().any(|r| r.id == i))
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    body.push_str(&format!(
+        "{}\t{}\n",
+        clean(id),
+        labels
+            .iter()
+            .map(|l| clean(l))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    let _ = crate::atomic::write_atomic(&path, &body);
+    journal::private(&path, 0o600);
 }
 
 fn clean(s: &str) -> String {
@@ -648,6 +814,11 @@ pub struct Registered {
     pub page: String,
     /// The page as a `file://` URL.
     pub page_url: String,
+    /// What the marked question must show: `<checkout>@<sha7>`.
+    pub label: String,
+    /// Other labels that name the same commit: the main worktree's
+    /// directory and the origin repository's name, each `@<sha7>`.
+    pub aliases: Vec<String>,
 }
 
 impl Registered {
@@ -662,6 +833,8 @@ impl Registered {
             crate::json::string_field("guide", &self.guide),
             crate::json::string_field("page", &self.page),
             crate::json::string_field("page_url", &self.page_url),
+            crate::json::string_field("label", &self.label),
+            crate::json::string_array_field("aliases", &self.aliases),
             crate::json::string_field("attestation", &self.guide),
         ])
     }
@@ -678,6 +851,16 @@ impl Registered {
             guide: s("guide").or_else(|| s("attestation"))?,
             page: s("page").unwrap_or_default(),
             page_url: s("page_url").unwrap_or_default(),
+            label: s("label").unwrap_or_default(),
+            aliases: v
+                .get("aliases")
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -728,28 +911,61 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
     }
     let text = std::fs::read_to_string(&record)
         .map_err(|_| format!("the guide {} is not UTF-8 text", record.display()))?;
-    let missing = crate::guide::check(&text);
+    let folder = record.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let screens = mockup_screens(&repo, &commit)?;
+    let mut missing = crate::guide::check(&text);
+    if !screens.is_empty() {
+        missing.extend(crate::guide::check_mockup(&text, &screens, &folder));
+    }
     if !missing.is_empty() {
+        let mut sections: Vec<String> = crate::guide::SECTIONS
+            .iter()
+            .map(|s| format!("`## {s}`"))
+            .collect();
+        let mut mode = String::new();
+        if !screens.is_empty() {
+            sections.push(format!("`## {}`", crate::guide::DIFFERENCES));
+            let screen = &screens[0];
+            mode = format!(
+                "mockup mode: this branch commits the picked artboards of {} (handoff.prove-fidelity), so the guide shows the artboard beside the built screen, at one viewport, and says how they differ.\n",
+                screens.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ")
+            );
+            let paste = format!(
+                "\nPaste and fill, with artboard.png and after.png copied beside the guide first (its own step):\n\n## Reference\nArtboards: {screen}\nViewport: 1120px · light\n\n![Mockup, direction B](artboard.png)\n![Built screen](after.png)\n\n## {}\n- fixed: <a difference found and removed>\n- deliberate: <a difference kept, and why>\n",
+                crate::guide::DIFFERENCES
+            );
+            missing.push(paste.trim_end().to_string());
+        }
+        let (paste, items): (Vec<&String>, Vec<&String>) =
+            missing.iter().partition(|m| m.starts_with("\nPaste"));
         return Err(format!(
-            "the guide {} lacks what the person needs to decide with (work.preview-is-guided):\n{}\nRequired H2 sections, in order: {}.",
+            "the guide {} lacks what the person needs to decide with (work.preview-is-guided):\n{mode}{}\nRequired H2 sections, in order: {}.{}",
             record.display(),
-            missing
+            items
                 .iter()
                 .map(|m| format!("  - {m}"))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            crate::guide::SECTIONS
-                .iter()
-                .map(|s| format!("`## {s}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            sections.join(", "),
+            paste.first().map(|s| s.as_str()).unwrap_or("")
         ));
     }
-    let name = repo
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let label = format!("{name}@{}", short(&commit));
+    if !screens.is_empty() {
+        for w in crate::guide::width_warnings(&text, &folder) {
+            eprintln!("amont-agent: warning: {w}");
+        }
+    }
+    let names = checkout_names(&repo);
+    let label = format!(
+        "{}@{}",
+        names.first().map(String::as_str).unwrap_or_default(),
+        short(&commit)
+    );
+    let aliases: Vec<String> = names
+        .iter()
+        .skip(1)
+        .map(|n| format!("{n}@{}", short(&commit)))
+        .collect();
     let html = crate::guide::render(
         &text,
         &crate::guide::Page {
@@ -758,8 +974,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
             url,
         },
     );
-    let folder = record.parent().unwrap_or(Path::new("/"));
-    for img in crate::guide::missing_images(&text, folder) {
+    for img in crate::guide::missing_images(&text, &folder) {
         eprintln!(
             "amont-agent: warning: the guide references {img}, which is not beside it in {}",
             folder.display()
@@ -777,16 +992,20 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
         guide: record.to_string_lossy().into_owned(),
         page_url: crate::guide::file_url(&page),
         page: page.to_string_lossy().into_owned(),
+        label,
+        aliases,
     })
 }
 
 /// After a Bash call: bind a `preview register` that ran as its own
 /// foreground command to this session and prompt.
-pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
+///
+/// Returns what the session must hear: a register that did not bind cannot
+/// be approved by any answer, and in PR #302 that failure was silent — the
+/// journal knew, the agent asked anyway, and the approval bound nothing.
+pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) -> Option<String> {
     let clauses = parsed.clauses();
-    let Some(cmd) = clauses.iter().find(|c| is_register(c)) else {
-        return;
-    };
+    let cmd = clauses.iter().find(|c| is_register(c))?;
     // Where the leading `cd`s left the shell, with `cwd_at`'s semantics.
     let ctx = crate::rules::Context {
         cwd: &bash.cwd,
@@ -799,27 +1018,49 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
     let dir = match cmd.flag_value("--repo") {
         Some(d) if d.starts_with('/') => PathBuf::from(d),
         Some(d) => here.join(d),
-        None => here,
+        None => here.clone(),
     };
     let named = push_target::toplevel(&dir);
     // Even a refusal is journalled under the repository the command named.
     let shown = named.clone().unwrap_or_else(|| dir.clone());
     let excerpt = "preview register";
-    let refuse = |why: &str| {
+    let printed = bash.stdout.as_deref().and_then(Registered::from_json);
+    // The same command, alone: what the session runs to bind it.
+    let again = format!(
+        "cd {} && {}",
+        shell_word(&here.to_string_lossy()),
+        cmd.words
+            .iter()
+            .map(|w| shell_word(&w.text))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let speaks = crate::stance::resolve(&crate::rules::push_preview::RULE) != Stance::Observe;
+    let refuse = |why: &str| -> Option<String> {
         note(
             "unbound",
             &bash.session,
             &shown.to_string_lossy(),
             &format!("{excerpt}: {why}"),
-        )
+        );
+        speaks.then(|| {
+            let label = printed
+                .as_ref()
+                .filter(|p| !p.label.is_empty())
+                .map(|p| format!(" and the label `{}`", p.label))
+                .unwrap_or_default();
+            format!(
+                "`preview register` ran, but the preview is NOT bound to this session ({why}), so no answer to a marked question can approve it. Run it again as its own foreground command, with nothing chained before it but `cd`:\n  {again}\nthen ask the marked question with `[preview <id>]`{label} from its output."
+            )
+        })
     };
     if bash.background {
-        return refuse("ran in the background");
+        return refuse("it ran in the background");
     }
     if !parsed.fully_read() || !standalone(clauses, cmd.at) {
-        return refuse("not a standalone command");
+        return refuse("it was not a standalone command");
     }
-    let Some(printed) = bash.stdout.as_deref().and_then(Registered::from_json) else {
+    let Some(printed) = printed.clone() else {
         return refuse("its output is not the expected JSON");
     };
     let Some(repo) = named else {
@@ -867,8 +1108,24 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) {
             }
         ),
     );
+    let id = reg.id.clone();
     regs.push(reg);
     save_registrations(&regs);
+    save_aliases(&id, &printed.aliases, &regs);
+    None
+}
+
+/// A word as a shell reads it back: bare when it is plain, single-quoted
+/// otherwise.
+fn shell_word(w: &str) -> String {
+    if !w.is_empty()
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        w.to_string()
+    } else {
+        format!("'{}'", w.replace('\'', "'\\''"))
+    }
 }
 
 /// The register clause at `at` is the last clause of the line, and every
@@ -985,8 +1242,10 @@ pub fn on_pre_ask(ask: &crate::payload::Ask, stance: Stance) -> Option<String> {
 }
 
 /// After an `AskUserQuestion`: an answer to a marked question approves,
-/// drops, or — unanswered — leaves its registrations pending.
-pub fn on_post_ask(ask: &crate::payload::Ask) {
+/// drops, or — unanswered — leaves its registrations pending. Returns what
+/// the session must hear: an approval that bound nothing because the
+/// question did not name the commit.
+pub fn on_post_ask(ask: &crate::payload::Ask) -> Option<String> {
     let recorded = dir()
         .map(|d| d.join("asks").join(&ask.tool_use_id))
         .filter(|_| !ask.tool_use_id.is_empty() && !ask.tool_use_id.contains('/'))
@@ -1012,14 +1271,15 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
                 "marked question with no PreToolUse record",
             );
         }
-        return;
+        return None;
     };
     let answered_ms = now_ms();
     let f: Vec<&str> = recorded.trim_end().split('\t').collect();
     // Four fields: written by a release that did not yet time the ask.
     if !(f.len() == 4 || f.len() == 5) || f[0] != ask.session || f[2] != "false" {
-        return;
+        return None;
     }
+    let mut said: Vec<String> = Vec::new();
     let asked_ms = f.get(4).and_then(|t| t.parse::<u64>().ok());
     for question in &ask.questions {
         let Some(ids) = marker(question) else {
@@ -1041,10 +1301,11 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
         }
         match label {
             APPROVE => {
-                // Every approved commit must be visible in the question itself.
+                // Every approved commit must be visible in the question itself,
+                // under any name the person knows the checkout by.
                 let (listed, unlisted): (Vec<_>, Vec<_>) = mine
                     .into_iter()
-                    .partition(|r| question.contains(&r.label()));
+                    .partition(|r| r.labels().iter().any(|l| question.contains(l.as_str())));
                 for r in &unlisted {
                     note(
                         "unlisted",
@@ -1052,9 +1313,26 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
                         &r.repo,
                         &format!("{} not shown in the question", r.label()),
                     );
+                    said.push(format!(
+                        "The answer Approve bound NOTHING for preview {}: the question did not name its commit. Ask again with `[preview {}]` and one of {} in the question text; the registration is still pending.",
+                        r.id,
+                        r.id,
+                        r.labels()
+                            .iter()
+                            .map(|l| format!("`{l}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 approve(&listed, &format!("option,{latency}"));
-                save_registrations(&rest);
+                // An unlisted registration stays pending: dropping it made the
+                // corrected question fail too.
+                let mut back = rest;
+                back.extend(unlisted.into_iter().map(|mut r| {
+                    r.asked = "-".to_string();
+                    r
+                }));
+                save_registrations(&back);
             }
             REQUEST_CHANGES | HOLD => {
                 for r in &mine {
@@ -1084,6 +1362,9 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
             }
         }
     }
+    (!said.is_empty()
+        && crate::stance::resolve(&crate::rules::push_preview::RULE) != Stance::Observe)
+        .then(|| said.join("\n\n"))
 }
 
 /// The repository of this session's registrations a marked question names,
@@ -1448,8 +1729,29 @@ index 15750da..2770014 100644
             guide: "/g/guide.md".into(),
             page: "/g/index.html".into(),
             page_url: "file:///g/index.html".into(),
+            label: "r-wt-x@c".into(),
+            aliases: vec!["r@c".into(), "repo@c".into()],
         };
         assert_eq!(Registered::from_json(&r.to_json()), Some(r));
+    }
+
+    #[test]
+    fn a_registration_printed_before_labels_still_reads() {
+        let old = r#"{"id":"i","repo":"/r","commit":"c","url":"http://l/","guide":"/g.md","page":"","page_url":""}"#;
+        let r = Registered::from_json(old).expect("the 2.22 shape");
+        assert_eq!(r.label, "");
+        assert!(r.aliases.is_empty());
+    }
+
+    #[test]
+    fn a_word_is_quoted_only_when_it_must_be() {
+        assert_eq!(shell_word("/tmp/g.md"), "/tmp/g.md");
+        assert_eq!(
+            shell_word("http://localhost:5173/"),
+            "http://localhost:5173/"
+        );
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
     }
 
     #[test]

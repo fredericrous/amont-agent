@@ -517,10 +517,134 @@ fn a_chained_register_is_not_bound() {
         "npm test && amont-agent preview register --url http://localhost:1/ --guide '{}'",
         record.display()
     );
-    w.post_bash("s", "p1", "reg", &command, &out);
+    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    // Seen 2026-09-29 (PR #302): this failure was silent, so the session
+    // asked, the person approved, and the approval bound nothing.
+    assert!(said.contains("NOT bound"), "the session is told: {said}");
     w.answer("s", "p1", &id, Some("Approve"));
     assert!(w.push_advised("s"));
     assert!(w.journal().contains("not a standalone command"));
+
+    // The command it prints binds when run as printed.
+    let v: serde_json::Value = serde_json::from_str(&said).unwrap();
+    let context = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    let again = context
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("cd "))
+        .map(|rest| format!("cd {rest}"))
+        .expect("a command to run");
+    assert!(again.contains("amont-agent preview register"), "{again}");
+    assert!(!again.contains("npm test"), "{again}");
+    let bound = w.post_bash("s", "p2", "reg2", &again, &out);
+    assert!(!bound.contains("NOT bound"), "{bound}");
+    assert!(w.journal().contains("registered"), "{}", w.journal());
+}
+
+#[test]
+fn a_question_with_the_wrong_label_says_so_and_the_right_one_then_approves() {
+    let w = World::new("wrong-label");
+    w.commit("app/a.tsx", "1\n");
+    let id = w.register("s", "p1");
+    let sha = git(&w.work, &["rev-parse", "HEAD"]);
+    // Another repository's name at the same commit is not this preview.
+    let wrong = format!("[preview {id}] Ship other-repo@{}?", &sha[..7]);
+    w.ask("PreToolUse", ("s", "p1"), "q1", &wrong, None, false);
+    let said = w.ask(
+        "PostToolUse",
+        ("s", "p1"),
+        "q1",
+        &wrong,
+        Some("Approve"),
+        false,
+    );
+    assert!(
+        said.contains("bound NOTHING"),
+        "the session is told: {said}"
+    );
+    assert!(
+        said.contains(&w.label()),
+        "it names the label to show: {said}"
+    );
+    assert!(w.push_advised("s"), "nothing was approved");
+
+    let right = format!("[preview {id}] Ship {}?", w.label());
+    w.ask("PreToolUse", ("s", "p1"), "q2", &right, None, false);
+    w.ask(
+        "PostToolUse",
+        ("s", "p1"),
+        "q2",
+        &right,
+        Some("Approve"),
+        false,
+    );
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
+    // Seen 2026-09-29: the question said `application-landscape@2fcffec`, the
+    // registration's label was the worktree's `al-wt-history-mockup@2fcffec`.
+    let w = World::new("alias");
+    let wt = w.root.join("app-wt-x");
+    git(
+        &w.work,
+        &["worktree", "add", "-q", "-b", "feat/wt"]
+            .iter()
+            .copied()
+            .chain([wt.to_str().unwrap()])
+            .collect::<Vec<_>>(),
+    );
+    git(&wt, &["config", "user.email", "t@t"]);
+    git(&wt, &["config", "user.name", "t"]);
+    std::fs::create_dir_all(wt.join("app")).unwrap();
+    std::fs::write(wt.join("app/a.tsx"), "1\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-qm", "a"]);
+    let sha = git(&wt, &["rev-parse", "HEAD"]);
+
+    let record = w.guide();
+    let (code, out, err) = w.run(
+        &[
+            "preview",
+            "register",
+            "--repo",
+            wt.to_str().unwrap(),
+            "--url",
+            "http://localhost:1/",
+            "--guide",
+            record.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["label"], format!("app-wt-x@{}", &sha[..7]));
+    let aliases: Vec<&str> = v["aliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a.as_str())
+        .collect();
+    assert!(
+        aliases.contains(&format!("app@{}", &sha[..7]).as_str()),
+        "{aliases:?}"
+    );
+    let id = v["id"].as_str().unwrap().to_string();
+    let command = format!(
+        "cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        wt.display(),
+        record.display()
+    );
+    w.post_bash_in(&wt, "s", "p1", "reg", &command, &out);
+
+    let q = format!("[preview {id}] Ship app@{}?", &sha[..7]);
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    assert!(w.journal().contains("approved"), "{}", w.journal());
+    let pushed = w.pre_bash_in(&wt, "s", "push1", "git push -u origin feat/wt");
+    assert!(!pushed.contains("amont-agent/push-preview"), "{pushed}");
 }
 
 /// Run `preview register` in the worktree and return (id, printed JSON,
@@ -850,4 +974,129 @@ fn a_complete_guide_renders_its_page_beside_it() {
     assert!(at("what-you-should-see") < at("try-it"));
     assert!(at("try-it") < at("reference"));
     assert!(at("reference") < at("already-checked"));
+}
+
+// --- mockup mode (plan 2026-09-29-mockup-fidelity-checks) -----------------
+
+const MOCKUP_GUIDE: &str = "\
+## Where we are
+app, branch `feat/x`, direction B.
+
+## What you should see
+A pill.
+
+## Try it
+1. Open http://localhost:5173/
+
+## Reference
+Artboards: docs/mockups/pill
+Viewport: 1120px · light
+
+![Mockup B](artboard.png) ![Built](after.png)
+
+## Already checked
+- console clean
+
+## Differences from the mockup
+- fixed: the separate History segment is gone
+";
+
+/// A branch that commits a picked mockup's artboard and the screen it built.
+fn mockup_branch(w: &World) {
+    w.commit("docs/mockups/pill/Main.dc.html", "<x-dc></x-dc>\n");
+    w.commit("app/routes/home.tsx", "1\n");
+}
+
+fn guide_with_images(w: &World, text: &str, images: &[&str]) -> PathBuf {
+    let g = w.guide_with(text);
+    for i in images {
+        std::fs::write(g.parent().unwrap().join(i), b"png").unwrap();
+    }
+    g
+}
+
+#[test]
+fn a_mockup_branch_without_the_side_by_side_is_refused() {
+    // Seen 2026-09-29 (PR #302): the build diverged from the picked
+    // artboard, and the preview went up without the two side by side.
+    let w = World::new("mockup-refused");
+    mockup_branch(&w);
+    let (code, out, err) = w.register_cli("http://localhost:1/", &w.guide());
+    assert_eq!(code, 1, "{err}");
+    assert!(out.is_empty(), "nothing on stdout: {out}");
+    for piece in [
+        "mockup mode",
+        "docs/mockups/pill",
+        "viewport line",
+        "artboard.png",
+        "## Differences from the mockup",
+        "Paste and fill",
+    ] {
+        assert!(err.contains(piece), "{piece} in:\n{err}");
+    }
+}
+
+#[test]
+fn a_complete_mockup_guide_registers_and_renders_the_pair() {
+    let w = World::new("mockup-ok");
+    mockup_branch(&w);
+    let g = guide_with_images(&w, MOCKUP_GUIDE, &["artboard.png", "after.png"]);
+    let (code, _, err) = w.register_cli("http://localhost:1/", &g);
+    assert_eq!(code, 0, "{err}");
+    let html = std::fs::read_to_string(g.parent().unwrap().join("index.html")).unwrap();
+    assert!(html.contains("class=\"design\""), "{html}");
+    assert!(html.contains("class=\"built\""));
+    assert!(html.contains("Mockup, direction B"));
+}
+
+#[test]
+fn a_mockup_branch_already_pushed_is_still_in_mockup_mode() {
+    // The range starts at the merge base with the default branch, never at
+    // the upstream ref, which already holds the artboards after a push.
+    let w = World::new("mockup-pushed");
+    mockup_branch(&w);
+    git(&w.work, &["push", "-q", "-u", "origin", "feat/x"]);
+    let (code, _, err) = w.register_cli("http://localhost:1/", &w.guide());
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("mockup mode"), "{err}");
+}
+
+#[test]
+fn artboards_with_no_default_branch_to_compare_are_refused_not_skipped() {
+    let w = World::new("mockup-no-remote");
+    mockup_branch(&w);
+    git(&w.work, &["remote", "remove", "origin"]);
+    let (code, _, err) = w.register_cli("http://localhost:1/", &w.guide());
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("no default remote branch"), "{err}");
+}
+
+#[test]
+fn artboards_already_on_main_do_not_put_a_later_branch_in_mockup_mode() {
+    let w = World::new("mockup-on-main");
+    git(&w.work, &["checkout", "-q", "main"]);
+    w.commit("docs/mockups/pill/Main.dc.html", "<x-dc></x-dc>\n");
+    git(&w.work, &["push", "-q", "origin", "main"]);
+    git(&w.work, &["checkout", "-q", "-b", "feat/later"]);
+    w.commit("app/routes/home.tsx", "2\n");
+    let (code, _, err) = w.register_cli("http://localhost:1/", &w.guide());
+    assert_eq!(code, 0, "the old guide still registers: {err}");
+}
+
+#[test]
+fn an_unapproved_mockup_commit_is_held_and_a_plain_ui_one_is_advised() {
+    let w = World::new("mockup-deny");
+    w.commit("app/routes/home.tsx", "1\n");
+    let plain = w.pre_bash("s", "push1", "git push -u origin feat/x");
+    assert!(plain.contains("amont-agent/push-preview"), "{plain}");
+    assert!(!plain.contains("\"deny\""), "advised, not held: {plain}");
+
+    w.commit("docs/mockups/pill/Main.dc.html", "<x-dc></x-dc>\n");
+    let held = w.pre_bash("s", "push2", "git push -u origin feat/x");
+    assert!(held.contains("\"deny\""), "held: {held}");
+
+    // Observe is how a person turns the rule off; mockup mode respects it.
+    w.set_global("amont.agent.push-preview.stance", "observe");
+    let off = w.pre_bash("s", "push3", "git push -u origin feat/x");
+    assert!(!off.contains("\"deny\""), "{off}");
 }

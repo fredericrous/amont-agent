@@ -91,7 +91,11 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
     };
     let stance = crate::stance::resolve(&RULE);
     match crate::preview::needs_preview(&ctx.cwd_at(cmd.at), cmd, stance) {
-        Ok(()) => Confirmed::Yes,
+        // A commit that carries a picked mockup is held, not advised: in PR
+        // #302 the advice was read and the push went out anyway (decided
+        // 2026-09-29, plan mockup-fidelity-checks).
+        Ok(true) => Confirmed::YesAt(Stance::Deny),
+        Ok(false) => Confirmed::Yes,
         Err(why) => Confirmed::No(why),
     }
 }
