@@ -33,6 +33,7 @@ mod graduate;
 mod guidance;
 mod guide;
 mod hook;
+mod implementation_review;
 mod journal;
 mod json;
 mod mine;
@@ -84,6 +85,9 @@ usage: amont-agent <command>
                         the sha256 of a plan's canonical body, as reviewed
   plan-panel <plan.md>  the review agents a plan still needs, as the
                         plan-review-panel hook will judge it
+  tree-sha [--block] [-C <dir>] [--] [<rev>]
+                        the canonical tree id an implementation review
+                        binds to: HEAD's tree without docs/plans/
 
 install/uninstall flags:
   --write               actually edit the file
@@ -130,9 +134,10 @@ enum Sub {
     Preview,
     PlanSha,
     PlanPanel,
+    TreeSha,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 17] = [
+const SUBCOMMANDS: [(&str, Sub); 18] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -150,6 +155,7 @@ const SUBCOMMANDS: [(&str, Sub); 17] = [
     ("preview", Sub::Preview),
     ("plan-sha", Sub::PlanSha),
     ("plan-panel", Sub::PlanPanel),
+    ("tree-sha", Sub::TreeSha),
 ];
 
 enum Invocation {
@@ -296,6 +302,7 @@ fn main() -> ExitCode {
             Sub::Preview => run_preview(&args),
             Sub::PlanSha => run_plan_sha(&args),
             Sub::PlanPanel => run_plan_panel(&args),
+            Sub::TreeSha => run_tree_sha(&args),
         },
     }
 }
@@ -830,6 +837,100 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         println!("{}", plan_review::block(&path, &sha, lang.as_deref()));
     } else if short {
         println!("{}", &sha[..12]);
+    } else {
+        println!("{sha}");
+    }
+    ExitCode::SUCCESS
+}
+
+const TREE_SHA_USAGE: &str = "\
+usage: amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]
+
+The canonical tree id an implementation review binds to: the sha256 of
+`git ls-tree -r` of <rev> (default HEAD) with every entry under
+docs/plans/ left out, 64 hex in any object format. Recording the review
+in the plan therefore never changes it; a code change does (ADR-0022,
+work.implementation-review).
+
+  --block    the review block the implementation-review agent's prompt
+             carries: <<<TREE repo=<name> sha=<64 hex>>>>, where <name>
+             is the basename of the directory holding the common .git
+  -C <dir>   answer for the repository at <dir> (default: the current one)
+
+Prints one line on stdout. Exit 0; 1 outside a repository or for a rev
+that names no tree (the reason on stderr); 2 on a usage error.
+";
+
+fn run_tree_sha(args: &[OsString]) -> ExitCode {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let (mut block, mut dir, mut rev) = (false, None, None);
+    let mut i = 0;
+    let mut operands_only = false;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            _ if operands_only || !a.starts_with('-') => {
+                if rev.is_some() {
+                    eprintln!(
+                        "amont-agent: tree-sha takes one rev; try `amont-agent tree-sha --help`"
+                    );
+                    return ExitCode::from(2);
+                }
+                rev = Some(a.to_string());
+            }
+            "--" => operands_only = true,
+            "--help" | "-h" => {
+                print!("{TREE_SHA_USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "--block" => block = true,
+            "-C" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => dir = Some(std::path::PathBuf::from(v)),
+                    None => {
+                        eprintln!("amont-agent: -C needs a directory");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            other => {
+                eprintln!("amont-agent: unknown flag `{other}`; try `amont-agent tree-sha --help`");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+    let dir = dir.unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+    let Some(repo) = push_target::toplevel(&dir) else {
+        eprintln!(
+            "amont-agent: {} is not inside a git repository",
+            dir.display()
+        );
+        return ExitCode::from(1);
+    };
+    let rev = rev.as_deref().unwrap_or("HEAD");
+    let sha = match implementation_review::canonical_tree(&repo, rev) {
+        Ok(s) => s,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(1);
+        }
+    };
+    if block {
+        let Some(name) = implementation_review::repo_name(&repo) else {
+            eprintln!(
+                "amont-agent: the repository at {} has no name (git rev-parse --git-common-dir failed)",
+                repo.display()
+            );
+            return ExitCode::from(1);
+        };
+        println!("{}", implementation_review::block(&name, &sha));
     } else {
         println!("{sha}");
     }
