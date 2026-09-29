@@ -17,3 +17,4 @@
 # Design
 
 - [What it will not do](refusals.md)
+- [Shell analysis](analysis.md)

@@ -29,9 +29,9 @@ create-missing = false
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "ayu"
-git-repository-url = "https://github.com/fredericrous/amont"
-edit-url-template = "https://github.com/fredericrous/amont/edit/main/docs/{path}"
-site-url = "/amont/"
+git-repository-url = "https://github.com/fredericrous/amont-agent"
+edit-url-template = "https://github.com/fredericrous/amont-agent/edit/main/docs/{path}"
+site-url = "/amont-agent/"
 
 [output.html.fold]
 enable = true
