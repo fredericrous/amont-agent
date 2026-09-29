@@ -41,6 +41,11 @@ one exception, which is `git fetch` against your own remote for the
 [session notice](session-notice.md), and `amont.agent.fetch false` switches
 that off.
 
+**No repository can change a stance.** Stances are read from `--global` and
+`--system` git config only — never from a committed file, and never from the
+`.git/config` of the repository the agent is standing in, which is a file that
+agent could write. See [stances](stances.md#why-git-config-and-not-a-committed-file).
+
 ## The journal
 
 Every firing is recorded at `~/.claude/amont-agent/journal.log`, redacted, and
