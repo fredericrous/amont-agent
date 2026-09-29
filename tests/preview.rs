@@ -517,10 +517,134 @@ fn a_chained_register_is_not_bound() {
         "npm test && amont-agent preview register --url http://localhost:1/ --guide '{}'",
         record.display()
     );
-    w.post_bash("s", "p1", "reg", &command, &out);
+    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    // Seen 2026-09-29 (PR #302): this failure was silent, so the session
+    // asked, the person approved, and the approval bound nothing.
+    assert!(said.contains("NOT bound"), "the session is told: {said}");
     w.answer("s", "p1", &id, Some("Approve"));
     assert!(w.push_advised("s"));
     assert!(w.journal().contains("not a standalone command"));
+
+    // The command it prints binds when run as printed.
+    let v: serde_json::Value = serde_json::from_str(&said).unwrap();
+    let context = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    let again = context
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("cd "))
+        .map(|rest| format!("cd {rest}"))
+        .expect("a command to run");
+    assert!(again.contains("amont-agent preview register"), "{again}");
+    assert!(!again.contains("npm test"), "{again}");
+    let bound = w.post_bash("s", "p2", "reg2", &again, &out);
+    assert!(!bound.contains("NOT bound"), "{bound}");
+    assert!(w.journal().contains("registered"), "{}", w.journal());
+}
+
+#[test]
+fn a_question_with_the_wrong_label_says_so_and_the_right_one_then_approves() {
+    let w = World::new("wrong-label");
+    w.commit("app/a.tsx", "1\n");
+    let id = w.register("s", "p1");
+    let sha = git(&w.work, &["rev-parse", "HEAD"]);
+    // Another repository's name at the same commit is not this preview.
+    let wrong = format!("[preview {id}] Ship other-repo@{}?", &sha[..7]);
+    w.ask("PreToolUse", ("s", "p1"), "q1", &wrong, None, false);
+    let said = w.ask(
+        "PostToolUse",
+        ("s", "p1"),
+        "q1",
+        &wrong,
+        Some("Approve"),
+        false,
+    );
+    assert!(
+        said.contains("bound NOTHING"),
+        "the session is told: {said}"
+    );
+    assert!(
+        said.contains(&w.label()),
+        "it names the label to show: {said}"
+    );
+    assert!(w.push_advised("s"), "nothing was approved");
+
+    let right = format!("[preview {id}] Ship {}?", w.label());
+    w.ask("PreToolUse", ("s", "p1"), "q2", &right, None, false);
+    w.ask(
+        "PostToolUse",
+        ("s", "p1"),
+        "q2",
+        &right,
+        Some("Approve"),
+        false,
+    );
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
+    // Seen 2026-09-29: the question said `application-landscape@2fcffec`, the
+    // registration's label was the worktree's `al-wt-history-mockup@2fcffec`.
+    let w = World::new("alias");
+    let wt = w.root.join("app-wt-x");
+    git(
+        &w.work,
+        &["worktree", "add", "-q", "-b", "feat/wt"]
+            .iter()
+            .copied()
+            .chain([wt.to_str().unwrap()])
+            .collect::<Vec<_>>(),
+    );
+    git(&wt, &["config", "user.email", "t@t"]);
+    git(&wt, &["config", "user.name", "t"]);
+    std::fs::create_dir_all(wt.join("app")).unwrap();
+    std::fs::write(wt.join("app/a.tsx"), "1\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-qm", "a"]);
+    let sha = git(&wt, &["rev-parse", "HEAD"]);
+
+    let record = w.guide();
+    let (code, out, err) = w.run(
+        &[
+            "preview",
+            "register",
+            "--repo",
+            wt.to_str().unwrap(),
+            "--url",
+            "http://localhost:1/",
+            "--guide",
+            record.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["label"], format!("app-wt-x@{}", &sha[..7]));
+    let aliases: Vec<&str> = v["aliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a.as_str())
+        .collect();
+    assert!(
+        aliases.contains(&format!("app@{}", &sha[..7]).as_str()),
+        "{aliases:?}"
+    );
+    let id = v["id"].as_str().unwrap().to_string();
+    let command = format!(
+        "cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        wt.display(),
+        record.display()
+    );
+    w.post_bash_in(&wt, "s", "p1", "reg", &command, &out);
+
+    let q = format!("[preview {id}] Ship app@{}?", &sha[..7]);
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    assert!(w.journal().contains("approved"), "{}", w.journal());
+    let pushed = w.pre_bash_in(&wt, "s", "push1", "git push -u origin feat/wt");
+    assert!(!pushed.contains("amont-agent/push-preview"), "{pushed}");
 }
 
 /// Run `preview register` in the worktree and return (id, printed JSON,

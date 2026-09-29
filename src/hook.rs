@@ -87,10 +87,12 @@ fn decide(raw: &str) -> Decision {
             let stance = crate::stance::resolve(&rules::plan_review_panel::RULE);
             crate::plan_review::on_plan_exit(&plan, stance)
         }
-        Event::PostAsk(ask) => {
-            crate::preview::on_post_ask(&ask);
-            Decision::Silent
-        }
+        Event::PostAsk(ask) => match crate::preview::on_post_ask(&ask) {
+            Some(text) => {
+                Decision::Assert(decision::phrase(rules::push_preview::RULE.id, &text, ""))
+            }
+            None => Decision::Silent,
+        },
         Event::PreFile(op) => on_file(&op),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
@@ -299,10 +301,15 @@ fn on_post_bash(bash: &Bash) -> Decision {
     if matches!(parsed, Parsed::Opaque(_)) {
         return Decision::Silent;
     }
+    // A `preview register` that ran on its own is bound to this session and
+    // prompt here, from its printed output. One that did not bind says so —
+    // even run in the background, which is one of the reasons it cannot.
+    let unbound = crate::preview::bind(bash, &parsed)
+        .map(|t| decision::phrase(rules::push_preview::RULE.id, &t, ""));
     if bash.background {
         // Detached: the tool call returned a task id, not a result. Whatever it
         // claimed has not finished happening.
-        return Decision::Silent;
+        return unbound.map_or(Decision::Silent, Decision::Assert);
     }
 
     let ctx = Context {
@@ -324,17 +331,13 @@ fn on_post_bash(bash: &Bash) -> Decision {
         }
     }
 
-    // A `preview register` that ran on its own is bound to this session and
-    // prompt here, from its printed output.
-    crate::preview::bind(bash, &parsed);
-
     let claimed = assertions::examine_all(&parsed);
     if claimed.is_empty() {
         // The whole no-claim, no-dump path: one lex, no processes, no files.
-        return Decision::Silent;
+        return unbound.map_or(Decision::Silent, Decision::Assert);
     }
 
-    let mut spoken: Vec<String> = Vec::new();
+    let mut spoken: Vec<String> = unbound.into_iter().collect();
     for (assertion, claim) in &claimed {
         let stance = crate::stance::resolve_assertion(assertion);
         match (assertion.verify)(&ctx, claim) {
