@@ -1137,9 +1137,39 @@ fn name_the_unread(src: &str, parsed: &shell::Parsed) {
     }
 }
 
+/// A stance as `rules` shows it: the one in force, and what the rule ships as
+/// only when they differ — that difference is a decision somebody made on
+/// this machine. Printing the shipped default alone listed a rule promoted to
+/// `deny` as `observe`, so the one command you would run to ask whether a
+/// rule is armed was the one that got it wrong.
+fn stance_shown(now: rules::Stance, ships: rules::Stance) -> String {
+    if now == ships {
+        now.as_str().to_string()
+    } else {
+        format!("{} (ships as {})", now.as_str(), ships.as_str())
+    }
+}
+
 fn run_rules() -> ExitCode {
     let w = ui::id_column();
-    for r in rules::RULES {
+    let rule_stances: Vec<String> = rules::RULES
+        .iter()
+        .map(|r| stance_shown(stance::resolve(r), r.default_stance))
+        .collect();
+    let assertion_stances: Vec<String> = assertions::ASSERTIONS
+        .iter()
+        .map(|a| stance_shown(stance::resolve_assertion(a), a.default_stance))
+        .collect();
+    // Wide enough for the longest entry, so a moved stance does not push its
+    // row's evidence out of line with the others.
+    let s = rule_stances
+        .iter()
+        .chain(&assertion_stances)
+        .map(String::len)
+        .max()
+        .unwrap_or(0)
+        .max(8);
+    for (r, shown) in rules::RULES.iter().zip(&rule_stances) {
         // Named only when it bites: a rule capped below `deny` can never be
         // configured past it, and that is worth seeing next to its stance.
         let ceiling = if r.max_stance < rules::Stance::Deny {
@@ -1148,23 +1178,17 @@ fn run_rules() -> ExitCode {
             String::new()
         };
         println!(
-            "{:<w$}{:<8} {:>6.1}/1000  measured {}{ceiling}",
-            r.id,
-            r.default_stance.as_str(),
-            r.evidence.per_1000,
-            r.evidence.measured
+            "{:<w$}{:<s$} {:>6.1}/1000  measured {}{ceiling}",
+            r.id, shown, r.evidence.per_1000, r.evidence.measured
         );
     }
     // Listed apart, because they answer a different question: a rule judges a
     // command before it runs, an assertion checks what a command that already
     // reported success actually did.
-    for a in assertions::ASSERTIONS {
+    for (a, shown) in assertions::ASSERTIONS.iter().zip(&assertion_stances) {
         println!(
-            "{:<w$}{:<8} {:>6.1}/1000  measured {}  (assertion)",
-            a.id,
-            a.default_stance.as_str(),
-            a.evidence.per_1000,
-            a.evidence.measured
+            "{:<w$}{:<s$} {:>6.1}/1000  measured {}  (assertion)",
+            a.id, shown, a.evidence.per_1000, a.evidence.measured
         );
     }
     ExitCode::SUCCESS
@@ -1340,9 +1364,17 @@ fn run_corpus(args: &[OsString]) -> ExitCode {
         );
         for d in &score.disagreements {
             healthy = false;
+            // The checkout's file when there is one; outside a checkout the
+            // path the binary was built from means nothing on this disk.
+            let path = corpus::path_for(rule.id);
+            let shown = if path.exists() {
+                path.display().to_string()
+            } else {
+                format!("{}.cases", rule.id)
+            };
             println!(
                 "  {}:{} expected {} — {}",
-                corpus::path_for(rule.id).display(),
+                shown,
                 d.line,
                 d.expected.as_str(),
                 corpus::escape(&d.command)

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`rules` shows the stance in force.** It printed what each rule ships
+  as, so a rule promoted to `deny` in `~/.gitconfig` still listed as
+  `observe` — the one command you would run to ask whether a rule is armed
+  said it was not. It now prints the resolved stance, with
+  `(ships as …)` beside it only when a key on this machine moved it; the
+  same for assertions. `check` and `status` already did this.
+- **`corpus check` names a path that exists.** A disagreement line printed
+  the corpus path the binary was built from, which outside a checkout is
+  somebody else's disk; it now falls back to `<rule>.cases`.
+
 ## v2.22.1
 
 ### Changed
