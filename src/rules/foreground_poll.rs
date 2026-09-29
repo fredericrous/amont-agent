@@ -262,6 +262,7 @@ mod tests {
             background: true,
             timeout_ms: None,
             tool_use_id: "",
+            transcript: None,
         };
         assert!(matches!(confirm(&ctx, &f), Confirmed::No(_)));
         let ctx = Context {
@@ -285,6 +286,7 @@ mod tests {
             background: false,
             timeout_ms: None,
             tool_use_id: "",
+            transcript: None,
         };
         assert!(matches!(confirm(&ctx, &f), Confirmed::No(_)));
         // Thirty-six rounds of fifteen seconds is nine minutes: over the
