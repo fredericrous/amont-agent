@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.22.0
+
+### Added
+
+- **`plan-review-panel`**, a rule on `ExitPlanMode` that ships as `deny`
+  (ADR-0022, `work.plan-review-panel`). A plan is presented for approval
+  only after its expert review panel has run. The panel is computed from
+  the default tree of each repository in the plan's machine comment
+  (`repos=`): one reviewer per language, backend, platform for ops, Unix
+  and TUI for a CLI, PO and architect for 500 files or own commits, and 4
+  interface roles for a UI. Areas the plan declares it adds (`adds=`) are
+  added. A review binds when a `plan-review-<role>` agent launched with the
+  plan's review block completed. Completion is read only from structured
+  transcript fields, never from notification text echoed in tool output.
+  A pass is remembered by plan path and by body, so a later change needs
+  only its delta: backend plus the reviewers of any new area. The model
+  can fix a missing comment, a missing section or missing reviews, so those
+  are refused. After two refusals, and whenever the hook cannot check (no
+  transcript, git failed), the person is asked instead. See
+  `docs/plan-review.md`.
+- **`amont-agent plan-sha [--short] [--block [--lang <l>]] [--] <file|->`**
+  prints the sha256 of a plan's canonical body, which is the plan without
+  its review section, its full reviews and its machine comment, so writing
+  review results never changes it. `--block` prints the
+  `<<<PLAN path=… sha=…>>>` line a reviewer's prompt carries. Exit 1 on an
+  unreadable file, 2 on a usage error.
+- **`Decision::Ask`**: a hook answer of `permissionDecision: "ask"`, which
+  hands the call to the person whatever the permission mode.
+- `install` adds a `PreToolUse` block for `ExitPlanMode`.
+
 ## v2.21.0
 
 ### Changed
