@@ -53,6 +53,10 @@ pub struct Bash {
     /// `tool_response.stdout`, after the call. Only `preview register` output
     /// is ever read from it.
     pub stdout: Option<String>,
+    /// `transcript_path`: where this session's completed agents are
+    /// recorded. Read by `implementation-review`'s `confirm` for a push;
+    /// `None` when the payload carried none.
+    pub transcript: Option<PathBuf>,
 }
 
 /// A prompt the person typed and submitted.
@@ -80,6 +84,9 @@ pub struct Ask {
     /// approval arrived as 0 on 2026-09-28. The latency is measured by the
     /// hook itself (`crate::preview`); this is journalled beside it.
     pub duration_ms: Option<u64>,
+    /// `transcript_path`: an `Overrule` of an implementation review is
+    /// honoured only when the transcript shows the `rework` it overrules.
+    pub transcript: Option<PathBuf>,
 }
 
 /// A Read, Edit or Write tool call: one path, and whether it reads or writes.
@@ -170,6 +177,14 @@ pub fn parse(raw: &str) -> Event {
             PathBuf::from(c)
         }
     };
+    // A path the payload names, absolute against the session cwd; an empty
+    // or missing one is `None`.
+    let path_at = |s: Option<&str>| {
+        s.filter(|p| !p.trim().is_empty())
+            .map(PathBuf::from)
+            .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+    };
+    let transcript = || path_at(v.get("transcript_path").and_then(|x| x.as_str()));
 
     match v.get("hook_event_name").and_then(|x| x.as_str()) {
         Some("SessionStart") => Event::SessionStart(Session {
@@ -184,15 +199,10 @@ pub fn parse(raw: &str) -> Event {
         Some("PreToolUse")
             if v.get("tool_name").and_then(|x| x.as_str()) == Some("ExitPlanMode") =>
         {
-            let path_at = |s: Option<&str>| {
-                s.filter(|p| !p.trim().is_empty())
-                    .map(PathBuf::from)
-                    .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
-            };
             Event::PrePlanExit(Box::new(PlanExit {
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
-                transcript: path_at(v.get("transcript_path").and_then(|x| x.as_str())),
+                transcript: transcript(),
                 plan_file: path_at(
                     v.get("tool_input")
                         .and_then(|i| i.get("planFilePath"))
@@ -243,6 +253,7 @@ pub fn parse(raw: &str) -> Event {
                 prefilled,
                 answers,
                 duration_ms: v.get("duration_ms").and_then(|d| d.as_u64()),
+                transcript: transcript(),
             });
             if stage == "PreToolUse" {
                 Event::PreAsk(ask)
@@ -339,6 +350,7 @@ pub fn parse(raw: &str) -> Event {
                 .and_then(|r| r.get("stdout"))
                 .and_then(|o| o.as_str())
                 .map(str::to_string);
+            let transcript = transcript();
             let bash = Box::new(Bash {
                 command,
                 cwd,
@@ -349,6 +361,7 @@ pub fn parse(raw: &str) -> Event {
                 tool_use_id: str_at("tool_use_id"),
                 prompt_id: str_at("prompt_id"),
                 stdout,
+                transcript,
             });
             if stage == "PreToolUse" {
                 Event::PreBash(bash)

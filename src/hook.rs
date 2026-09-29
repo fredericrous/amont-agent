@@ -75,6 +75,7 @@ fn decide(raw: &str) -> Decision {
             Decision::Silent
         }
         Event::PreAsk(ask) => {
+            crate::implementation_review::on_pre_ask(&ask);
             let stance = crate::stance::resolve(&rules::push_preview::RULE);
             match crate::preview::on_pre_ask(&ask, stance) {
                 Some(why) => {
@@ -87,12 +88,26 @@ fn decide(raw: &str) -> Decision {
             let stance = crate::stance::resolve(&rules::plan_review_panel::RULE);
             crate::plan_review::on_plan_exit(&plan, stance)
         }
-        Event::PostAsk(ask) => match crate::preview::on_post_ask(&ask) {
-            Some(text) => {
-                Decision::Assert(decision::phrase(rules::push_preview::RULE.id, &text, ""))
+        Event::PostAsk(ask) => {
+            let mut said: Vec<String> = Vec::new();
+            if let Some(text) = crate::preview::on_post_ask(&ask) {
+                said.push(decision::phrase(rules::push_preview::RULE.id, &text, ""));
             }
-            None => Decision::Silent,
-        },
+            if let Some(text) = crate::implementation_review::on_post_ask(&ask) {
+                if crate::stance::resolve(&rules::implementation_review::RULE) != Stance::Observe {
+                    said.push(decision::phrase(
+                        rules::implementation_review::RULE.id,
+                        &text,
+                        "",
+                    ));
+                }
+            }
+            if said.is_empty() {
+                Decision::Silent
+            } else {
+                Decision::Assert(said.join("\n\n"))
+            }
+        }
         Event::PreFile(op) => on_file(&op),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
@@ -164,6 +179,26 @@ fn stale_checkout_notice(session: &Session) -> Option<String> {
 
 fn on_bash(bash: &Bash) -> Decision {
     let parsed = shell::lex(&bash.command);
+    // A pass file of the implementation review is written by the hook
+    // alone. Refused before any stance is consulted: there is no legitimate
+    // writer to advise, and `observe` turns a rule off, not a boundary.
+    if let Some(span) = crate::implementation_review::store_clause(&parsed) {
+        let rule = &rules::implementation_review::RULE;
+        journal::record(&journal::Entry {
+            rule: rule.id,
+            stance: "deny",
+            outcome: "denied",
+            session: &bash.session,
+            repo: &repo_name(&bash.cwd),
+            mode: &bash.permission_mode,
+            excerpt: &crate::backtest::excerpt(&bash.command, span.start, span.end),
+        });
+        return Decision::Deny(decision::phrase(
+            rule.id,
+            crate::implementation_review::GUARD_REASON,
+            crate::implementation_review::GUARD_REMEDY,
+        ));
+    }
     // No early return on `Parsed::Opaque`: `rules::evaluate` owns that
     // policy, so the hook, `check` and the backtester cannot drift apart on
     // it. Legacy rules are skipped on an unreadable command exactly as they
@@ -209,6 +244,7 @@ fn on_bash(bash: &Bash) -> Decision {
                 background: bash.background,
                 timeout_ms: bash.timeout_ms,
                 tool_use_id: &bash.tool_use_id,
+                transcript: bash.transcript.as_deref(),
             };
             let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
             let window = dump_window(&d.extent);
@@ -234,8 +270,8 @@ fn on_bash(bash: &Bash) -> Decision {
 
     for (rule, finding) in &fired {
         let mut stance = crate::stance::resolve(rule);
-        let floor = match confirmed(rule, finding, bash, &parsed) {
-            Ok(floor) => floor,
+        let Confirmation { floor, said } = match confirmed(rule, finding, bash, &parsed) {
+            Ok(c) => c,
             Err(why) => {
                 // The reason is the record. `status` tallies these, and "why did
                 // confirm say no" is the number that decides whether an observing
@@ -251,7 +287,14 @@ fn on_bash(bash: &Bash) -> Decision {
                 stance = stance.max(floor).min(rule.max_stance);
             }
         }
-        let text = decision::phrase(rule.id, &finding.reason, &finding.remedy);
+        // A `confirm` that learned the reason by looking speaks and journals
+        // it in place of the finding's; every other rule keeps the finding's
+        // reason and the command span.
+        let (reason, excerpt): (&str, Option<&str>) = match &said {
+            Some((reason, excerpt)) => (reason.as_str(), Some(excerpt.as_str())),
+            None => (finding.reason.as_str(), None),
+        };
+        let text = decision::phrase(rule.id, reason, &finding.remedy);
         // Never refuse on half a reading. A `deny` derived from a command we
         // only partly understood is the worst outcome available here: total
         // opacity would have let it run. It still advises, and it is still
@@ -263,13 +306,13 @@ fn on_bash(bash: &Bash) -> Decision {
             stance.min(Stance::Advise)
         };
         match stance {
-            Stance::Observe => note(rule, "observe", "watched", bash, finding),
+            Stance::Observe => note_with(rule, "observe", "watched", bash, finding, excerpt),
             Stance::Advise => {
-                note(rule, "advise", "advised", bash, finding);
+                note_with(rule, "advise", "advised", bash, finding, excerpt);
                 advise.push(text);
             }
             Stance::Deny => {
-                note(rule, "deny", "denied", bash, finding);
+                note_with(rule, "deny", "denied", bash, finding, excerpt);
                 deny.push(text);
             }
         }
@@ -326,6 +369,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
         background: bash.background,
         timeout_ms: bash.timeout_ms,
         tool_use_id: &bash.tool_use_id,
+        transcript: bash.transcript.as_deref(),
     };
 
     // A `cat`-shaped dump that has now run is a read the session should
@@ -391,6 +435,26 @@ fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, c
 /// itself is remembered by [`on_post_file`], once it has happened.
 fn on_file(op: &crate::payload::FileOp) -> Decision {
     if op.writes {
+        // A pass file of the implementation review is written by the hook
+        // alone; a Write or Edit there is refused whatever the rule's
+        // stance, since there is no legitimate writer to advise.
+        if crate::implementation_review::guards_path(&op.path) {
+            let rule = &rules::implementation_review::RULE;
+            journal::record(&journal::Entry {
+                rule: rule.id,
+                stance: "deny",
+                outcome: "denied",
+                session: &op.session,
+                repo: &repo_name(&op.cwd),
+                mode: &op.permission_mode,
+                excerpt: &format!("write {}", op.path.display()),
+            });
+            return Decision::Deny(decision::phrase(
+                rule.id,
+                crate::implementation_review::GUARD_REASON,
+                crate::implementation_review::GUARD_REMEDY,
+            ));
+        }
         crate::session_state::record(&op.session, "write", &op.path, "full");
         return Decision::Silent;
     }
@@ -525,14 +589,25 @@ fn resolve_path(cwd: &std::path::Path, text: &str) -> std::path::PathBuf {
     }
 }
 
+/// What a confirmed finding carries into the decision: a stance floor, and
+/// for a rule that learned its reason by looking, the reason and the journal
+/// excerpt to use instead of the finding's.
+struct Confirmation {
+    floor: Option<Stance>,
+    said: Option<(String, String)>,
+}
+
 fn confirmed(
     rule: &Rule,
     finding: &Finding,
     bash: &Bash,
     parsed: &Parsed,
-) -> Result<Option<Stance>, &'static str> {
+) -> Result<Confirmation, &'static str> {
     let Some(confirm) = rule.confirm else {
-        return Ok(None);
+        return Ok(Confirmation {
+            floor: None,
+            said: None,
+        });
     };
     if !bash.cwd.is_dir() {
         return Err("the working directory does not exist");
@@ -543,16 +618,45 @@ fn confirmed(
         background: bash.background,
         timeout_ms: bash.timeout_ms,
         tool_use_id: &bash.tool_use_id,
+        transcript: bash.transcript.as_deref(),
     };
     match confirm(&ctx, finding) {
-        Confirmed::Yes => Ok(None),
-        Confirmed::YesAt(floor) => Ok(Some(floor)),
+        Confirmed::Yes => Ok(Confirmation {
+            floor: None,
+            said: None,
+        }),
+        Confirmed::YesAt(floor) => Ok(Confirmation {
+            floor: Some(floor),
+            said: None,
+        }),
+        Confirmed::YesSaying {
+            floor,
+            reason,
+            excerpt,
+        } => Ok(Confirmation {
+            floor,
+            said: Some((reason, excerpt)),
+        }),
         Confirmed::No(why) => Err(why),
     }
 }
 
 fn note(rule: &Rule, stance: &str, outcome: &str, bash: &Bash, finding: &Finding) {
-    let excerpt = crate::backtest::excerpt(&bash.command, finding.span.start, finding.span.end);
+    note_with(rule, stance, outcome, bash, finding, None);
+}
+
+/// [`note`], with the journal excerpt a `confirm` chose in place of the
+/// command span.
+fn note_with(
+    rule: &Rule,
+    stance: &str,
+    outcome: &str,
+    bash: &Bash,
+    finding: &Finding,
+    excerpt: Option<&str>,
+) {
+    let span = crate::backtest::excerpt(&bash.command, finding.span.start, finding.span.end);
+    let excerpt = excerpt.unwrap_or(&span);
     // A rule built on the shell analysis judged the command under a dialect
     // the replay cannot recover from a transcript, so the record carries it:
     // `bypassPermissions+zsh`. Folded into the mode token, which nothing
@@ -572,7 +676,7 @@ fn note(rule: &Rule, stance: &str, outcome: &str, bash: &Bash, finding: &Finding
         session: &bash.session,
         repo: &attributed_repo(rule.id, bash),
         mode: &mode,
-        excerpt: &excerpt,
+        excerpt,
     });
 }
 
@@ -583,6 +687,7 @@ fn note(rule: &Rule, stance: &str, outcome: &str, bash: &Bash, finding: &Finding
 fn attributed_repo(id: &str, bash: &Bash) -> String {
     let pushes = [
         rules::push_preview::RULE.id,
+        rules::implementation_review::RULE.id,
         crate::assertions::push_published::ASSERTION.id,
     ];
     if !pushes.contains(&id) {
@@ -596,6 +701,7 @@ fn attributed_repo(id: &str, bash: &Bash) -> String {
             background: bash.background,
             timeout_ms: bash.timeout_ms,
             tool_use_id: &bash.tool_use_id,
+            transcript: bash.transcript.as_deref(),
         };
         crate::push_target::repository(&ctx.cwd_at(cmd.at), cmd)
     });

@@ -40,6 +40,7 @@ pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
 pub mod glob_in_flag_value;
 pub mod glob_no_match;
+pub mod implementation_review;
 pub mod kubectl_gitops;
 pub mod no_verify;
 pub mod path_operand_missing;
@@ -156,6 +157,16 @@ pub enum Confirmed {
     /// this stance — never above the rule's `max_stance`, and never raised
     /// from `observe`, which is how a person turns a rule off.
     YesAt(Stance),
+    /// Confirmed, with what to say and what to journal known only after
+    /// looking: `reason` replaces the finding's, and `excerpt` replaces the
+    /// command span in the journal line, so a rule whose fact is "which
+    /// tree, which review" can name it without a second journal line.
+    /// `floor` is [`Confirmed::YesAt`]'s.
+    YesSaying {
+        floor: Option<Stance>,
+        reason: String,
+        excerpt: String,
+    },
     /// Not confirmed, with the reason. Failing to confirm is always silence.
     No(&'static str),
 }
@@ -315,6 +326,10 @@ pub struct Context<'a> {
     /// The payload's `tool_use_id`, shared by a call's `PreToolUse` and
     /// `PostToolUse`. Empty where there is no call (tests, `check`).
     pub tool_use_id: &'a str,
+    /// The session's transcript, when the payload named one. Read by a
+    /// `confirm` that asks what this session's agents completed
+    /// (`implementation-review`); `None` where there is no session.
+    pub transcript: Option<&'a std::path::Path>,
 }
 
 impl Context<'_> {
@@ -405,6 +420,7 @@ pub const RULES: &[Rule] = &[
     push_preflight::RULE,
     push_preview::RULE,
     plan_review_panel::RULE,
+    implementation_review::RULE,
     foreground_poll::RULE,
     sed_in_place::RULE,
     kubectl_gitops::RULE,
@@ -478,6 +494,7 @@ mod tests {
             background: false,
             timeout_ms: None,
             tool_use_id: "",
+            transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -500,6 +517,7 @@ mod tests {
             background: false,
             timeout_ms: None,
             tool_use_id: "",
+            transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -516,6 +534,7 @@ mod tests {
             background: false,
             timeout_ms: None,
             tool_use_id: "",
+            transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -532,6 +551,7 @@ mod tests {
             background: false,
             timeout_ms: None,
             tool_use_id: "",
+            transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -550,6 +570,7 @@ mod tests {
                 background: false,
                 timeout_ms: None,
                 tool_use_id: "",
+                transcript: None,
             };
             assert_eq!(
                 ctx.cwd_at(at_of(&parsed, "stash")),
@@ -568,6 +589,7 @@ mod tests {
             background: false,
             timeout_ms: None,
             tool_use_id: "",
+            transcript: None,
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));

@@ -181,6 +181,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/plan-review-panel.cases"),
     ),
     (
+        "implementation-review",
+        include_str!("../tests/corpus/implementation-review.cases"),
+    ),
+    (
         "foreground-poll",
         include_str!("../tests/corpus/foreground-poll.cases"),
     ),

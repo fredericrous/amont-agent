@@ -211,11 +211,18 @@ pub fn run(scan: &Scan, options: Options) -> Result<Report, ScanError> {
             corrected: t.corrected,
             troubled: t.troubled,
             // The rule that fires on most of this shape's calls. A rule that
-            // fires on one call in forty is not what covers the shape.
+            // fires on one call in forty is not what covers the shape. Among
+            // rules that fire equally often — every push rule fires on every
+            // push — the one that ships loudest covers it: a reader sent to
+            // `pipe-to-tail` (deny) learns more than one sent to a rule that
+            // only advises on the same shape.
             covered_by: t
                 .rules
                 .iter()
-                .max_by_key(|(id, n)| (**n, std::cmp::Reverse(**id)))
+                .max_by_key(|(id, n)| {
+                    let stance = rules::by_id(id).map(|r| r.default_stance);
+                    (**n, stance, std::cmp::Reverse(**id))
+                })
                 .filter(|(_, n)| **n * 2 >= t.calls)
                 .map(|(id, _)| *id),
             samples: t.samples,

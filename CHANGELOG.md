@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`implementation-review`: one reviewer reads the diff before the push.**
+  Before the push of a branch that carries a plan, an `implementation-review`
+  agent has read the diff against the plan and the active rules, and its
+  verdict is bound to the **canonical tree id** of the commit — the sha256
+  of `git ls-tree -r` without `docs/plans/`, 64 hex in any object format,
+  read-only — so recording the review in the plan never makes it stale and
+  a code change does. The rule (ADR-0022, `work.implementation-review`)
+  resolves the push, takes its base from the remote's default branch
+  (`<remote>/HEAD`, `main`, `master`; never the tracking ref, never `HEAD`),
+  declines silently when `docs/plans/` did not change or the tree was
+  reviewed, and otherwise says why — missing, stale (both trees named),
+  `rework` with no delta, or unknown — with the next step. The verdict is
+  read from the completed agent's result; a `rework` never passes. Ships
+  `advise`; one journal line per push, `review=` and `verdict=` in the
+  excerpt for the soak.
+- **`amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]`** prints the
+  canonical tree id, or the `<<<TREE repo=<name> sha=…>>>` block the
+  reviewer's prompt carries, `<name>` being the directory that holds the
+  common `.git` so a worktree named after its task still names its
+  repository. Exit 0 / 1 / 2.
+- **The person's overrule.** A `rework` that survives the delta goes to
+  the person on a marked question (`[implementation-review <repo>@<sha64>]`,
+  options exactly Overrule / Fix / Hold); the hook records it at
+  `PreToolUse`, trusts the answer only without pre-filled `answers`, and on
+  `Overrule` writes the pass file itself — only when the transcript shows
+  the `rework` being overruled.
+- **Only the hook writes a pass file.** A Write, Edit or MultiEdit under
+  `~/.claude/amont-agent/implementation-review/`, or a Bash command naming
+  it, is refused whatever the rule's stance, with `.` and `..` folded
+  first.
+
+### Changed
+
+- **Bash and AskUserQuestion payloads carry `transcript_path`**, as
+  `ExitPlanMode` already did, and `rules::Context` carries it to a
+  `confirm`.
+- **`Confirmed::YesSaying`**: a `confirm` that learned its reason by
+  looking gives the reason to speak and the excerpt to journal, in place
+  of the finding's reason and the command span.
+- **`mine` breaks a covered-by tie by stance.** When several rules fire on
+  every call of a shape — every push rule fires on every push — the one
+  that ships loudest is named, not the alphabetically first.
+
 ## v2.23.1
 
 ### Fixed

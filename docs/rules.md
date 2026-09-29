@@ -13,6 +13,7 @@
 | `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
 | `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
+| `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |
 | `foreground-poll` | `advise` | a polling loop or `gh run watch` in the foreground, where the tool's ten-minute clock will kill it one poll short |
 | `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
 | `kubectl-gitops` | `advise` | an imperative `kubectl` write in a repository Flux or Argo reconciles |

@@ -38,7 +38,7 @@
 //! baseline, so a change the person asks for needs only its delta: the
 //! backend reviewer plus the reviewers of any area that is new.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -600,25 +600,47 @@ pub struct Binding {
     pub sha: String,
 }
 
-/// The completed reviews in a transcript, streamed.
+/// The completed reviews in a transcript, streamed: the review blocks of
+/// every `plan-review-*` launch that completed. See [`completed_agents`].
+pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
+    completed_agents(reader, AGENT_PREFIX)
+        .into_iter()
+        .flat_map(|c| parse_blocks(&c.agent, &c.prompt))
+        .collect()
+}
+
+/// One agent launch that Claude Code recorded as completed: the agent type,
+/// the prompt it was given, and the text of its result (a foreground
+/// result's text parts; a background notification's `<result>` body, or the
+/// whole notification when it has none).
+pub struct Completed {
+    pub agent: String,
+    pub prompt: String,
+    pub result: String,
+}
+
+/// The completed launches of agents whose type starts with `prefix`, in the
+/// order they were launched.
 ///
-/// A line is parsed only when it could matter: it names a `plan-review-`
-/// agent, or it is a task notification. A review counts only when it
-/// completed, read from structured fields: a foreground result's
-/// `toolUseResult` (`status: completed`, `agentType` the agent launched), or
-/// a background notification Claude Code itself queued (a `user` entry with
+/// A line is parsed only when it could matter: it names such an agent, or
+/// it is a task notification. A launch counts only when it completed, read
+/// from structured fields: a foreground result's `toolUseResult` (`status:
+/// completed`, `agentType` the agent launched), or a background
+/// notification Claude Code itself queued (a `user` entry with
 /// `origin.kind: task-notification`, or an `attachment` whose
 /// `queued_command` has `commandMode: task-notification`). Nothing inside a
 /// tool result or assistant text is read as a notification.
-pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
-    let mut launched: HashMap<String, (String, Vec<Binding>)> = HashMap::new();
-    let mut done: HashSet<String> = HashSet::new();
+pub fn completed_agents(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
+    // id → (agent, prompt), and the launch order, since a HashMap has none.
+    let mut launched: HashMap<String, (String, String)> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut done: HashMap<String, String> = HashMap::new();
     for line in reader.split(b'\n') {
         let Ok(raw) = line else { break };
         let Ok(text) = std::str::from_utf8(&raw) else {
             continue;
         };
-        let review = text.contains(AGENT_PREFIX);
+        let review = text.contains(prefix);
         let notice = text.contains("task-notification");
         if !review && !notice {
             continue;
@@ -646,7 +668,7 @@ pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
                     let Some(agent) = input
                         .and_then(|i| i.get("subagent_type"))
                         .and_then(|s| s.as_str())
-                        .filter(|s| s.starts_with(AGENT_PREFIX))
+                        .filter(|s| s.starts_with(prefix))
                     else {
                         continue;
                     };
@@ -657,10 +679,10 @@ pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
                         .and_then(|i| i.get("prompt"))
                         .and_then(|p| p.as_str())
                         .unwrap_or("");
-                    let blocks = parse_blocks(agent, prompt);
-                    launched
-                        .entry(id.to_string())
-                        .or_insert((agent.to_string(), blocks));
+                    if !launched.contains_key(id) {
+                        order.push(id.to_string());
+                        launched.insert(id.to_string(), (agent.to_string(), prompt.to_string()));
+                    }
                 }
             }
             Some("user") => {
@@ -682,7 +704,7 @@ pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
                         };
                         if let Some((agent, _)) = launched.get(id) {
                             if completed && agent_type == Some(agent.as_str()) {
-                                done.insert(id.to_string());
+                                done.insert(id.to_string(), text_of(c.get("content")));
                             }
                         }
                     }
@@ -701,7 +723,7 @@ pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
                             .join("\n"),
                         _ => String::new(),
                     };
-                    done.extend(completed_ids(&body));
+                    done.extend(completed_results(&body));
                 }
             }
             Some("attachment") if notice => {
@@ -710,19 +732,67 @@ pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
                 if field("type") == Some("queued_command")
                     && field("commandMode") == Some("task-notification")
                 {
-                    done.extend(completed_ids(field("prompt").unwrap_or("")));
+                    done.extend(completed_results(field("prompt").unwrap_or("")));
                 }
             }
             _ => {}
         }
     }
-    let mut out: Vec<Binding> = Vec::new();
-    for (id, (_, blocks)) in launched {
-        if done.contains(&id) {
-            out.extend(blocks);
-        }
+    order
+        .into_iter()
+        .filter_map(|id| {
+            let result = done.remove(&id)?;
+            let (agent, prompt) = launched.remove(&id)?;
+            Some(Completed {
+                agent,
+                prompt,
+                result,
+            })
+        })
+        .collect()
+}
+
+/// The text of a tool result's content: a string, or its text parts joined.
+fn text_of(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
     }
-    out
+}
+
+/// The tool-use ids a task notification reports `completed`.
+#[cfg(test)]
+fn completed_ids(text: &str) -> Vec<String> {
+    completed_results(text)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The tool-use ids a task notification reports `completed`, each with the
+/// text of its `<result>` (the whole chunk when it carries none).
+fn completed_results(text: &str) -> Vec<(String, String)> {
+    let tag = |chunk: &str, name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let close = format!("</{name}>");
+        let a = chunk.find(&open)? + open.len();
+        let b = chunk[a..].find(&close)? + a;
+        Some(chunk[a..b].trim().to_string())
+    };
+    text.split("<task-notification>")
+        .skip(1)
+        .filter(|c| tag(c, "status").as_deref() == Some("completed"))
+        .filter_map(|c| {
+            let id = tag(c, "tool-use-id")?;
+            let result = tag(c, "result").unwrap_or_else(|| c.trim().to_string());
+            Some((id, result))
+        })
+        .collect()
 }
 
 /// The review blocks in one reviewer's prompt, as bindings of its role.
@@ -761,22 +831,6 @@ fn parse_blocks(agent: &str, prompt: &str) -> Vec<Binding> {
         });
     }
     out
-}
-
-/// The tool-use ids a task notification reports `completed`.
-fn completed_ids(text: &str) -> Vec<String> {
-    let tag = |chunk: &str, name: &str| -> Option<String> {
-        let open = format!("<{name}>");
-        let close = format!("</{name}>");
-        let a = chunk.find(&open)? + open.len();
-        let b = chunk[a..].find(&close)? + a;
-        Some(chunk[a..b].trim().to_string())
-    };
-    text.split("<task-notification>")
-        .skip(1)
-        .filter(|c| tag(c, "status").as_deref() == Some("completed"))
-        .filter_map(|c| tag(c, "tool-use-id"))
-        .collect()
 }
 
 // ---------------------------------------------------------------- the judgement
@@ -1262,7 +1316,7 @@ pub fn agent_for(role: &str) -> (String, Option<&str>) {
 
 // ---------------------------------------------------------------- sha256
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

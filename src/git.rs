@@ -147,6 +147,31 @@ pub fn ls_tree_z(dir: &std::path::Path, tree: &str) -> std::io::Result<Option<Ve
     }))
 }
 
+/// Every entry of `tree`, recursively, as `ls-tree -r -z` prints it: raw
+/// `<mode> <type> <oid>\t<path>` records split on NUL, in git's own order.
+/// The content of a tree stated without reading any blob, which is what
+/// `implementation-review` hashes into a canonical tree id.
+pub fn ls_tree_entries(dir: &std::path::Path, tree: &str) -> std::io::Result<Option<Vec<Vec<u8>>>> {
+    let out = bytes_in(
+        dir,
+        &[
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            "--end-of-options",
+            tree,
+        ],
+        None,
+    )?;
+    Ok(out.map(|b| {
+        b.split(|c| *c == 0)
+            .filter(|p| !p.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect()
+    }))
+}
+
 /// Named blobs, as `cat-file --batch` returned them.
 pub type Blobs = Vec<(String, Vec<u8>)>;
 
