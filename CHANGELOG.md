@@ -1,9 +1,46 @@
 # Changelog
 
-## Unreleased
+## v2.23.0
+
+### Added
+
+- **Mockup mode in `preview register`.** When the previewed branch commits
+  a picked mockup's artboards (`*.dc.html` under `docs/mockups/<screen>`, or
+  `git config amont.agent.preview.mockups`), the guide must show the
+  screen's path, a `Viewport: <width>px · <theme>` line, the artboard
+  beside the built screen as files next to it (`artboard.png` /
+  `after.png`, also `mockup` / `live`, state pairs by suffix), and a
+  `## Differences from the mockup` section (`None`, or `fixed:` /
+  `deliberate: <reason>` bullets). The range starts at the merge base with
+  the default branch, never the upstream, so a pushed branch stays in
+  mockup mode; artboards with no resolvable base are a refusal. The
+  refusal gives a paste-ready block; PNG widths that differ by more than a
+  tenth warn. The page shows each pair full width, linked to full size,
+  with a CSS-only overlay toggle. Prompted by application-landscape PR
+  #302, whose preview was approved-asked while the build diverged from the
+  picked artboard.
+- **`push-preview` holds an unapproved mockup-mode commit** at `deny`
+  instead of advising, through a new `Confirmed::YesAt` floor that is
+  capped by the rule's `max_stance` and never raised from `observe`. Other
+  UI pushes are still advised.
+- **`register` prints `label` and `aliases`.** The label is the checkout's
+  directory `@sha7`; the aliases are the main worktree's directory and the
+  origin repository's name. A marked question may name any of them, so a
+  question about `app@abc1234` approves a commit registered from the
+  worktree `app-wt-x`.
 
 ### Fixed
 
+- **Binding failures reach the session.** A `preview register` that did not
+  bind (chained after another command, run in the background, output not
+  matching HEAD) was recorded only in the journal; the session asked the
+  person anyway and the approval bound nothing. The hook now says so right
+  after the command, with the command to run alone. An `Approve` on a
+  question that names none of a preview's labels says it approved nothing,
+  and the registration stays pending for a corrected question instead of
+  being dropped.
+- **A guide heading may carry a note**: `## Try it (about 2 minutes)` names
+  the Try it section. Other trailing words stay a different heading.
 - **`rules` shows the stance in force.** It printed what each rule ships
   as, so a rule promoted to `deny` in `~/.gitconfig` still listed as
   `observe` — the one command you would run to ask whether a rule is armed
