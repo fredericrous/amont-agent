@@ -16,7 +16,8 @@ silence loses a single firing. That trade is the whole posture, and it is why
 the hook payload is parsed with `serde_json::Value` and hand-written accessors
 rather than a derived struct: a field that is missing or has changed type
 becomes "no opinion", not a parse error somebody would be tempted to treat as
-an opinion.
+an opinion. What the hook writes back is emitted by a hand-rolled escaper
+(`src/json.rs`), so the reading and the writing share no representation.
 
 **It does not judge what it cannot read.** Heredocs without terminators,
 unbalanced quotes, `eval` — all opaque, and opaque never fires.
@@ -40,6 +41,11 @@ blocking on half a reading is the worst outcome available.
 one exception, which is `git fetch` against your own remote for the
 [session notice](session-notice.md), and `amont.agent.fetch false` switches
 that off.
+
+**No repository can change a stance.** Stances are read from `--global` and
+`--system` git config only — never from a committed file, and never from the
+`.git/config` of the repository the agent is standing in, which is a file that
+agent could write. See [stances](stances.md#why-git-config-and-not-a-committed-file).
 
 ## The journal
 

@@ -5,14 +5,25 @@
 | `pipe-to-tail` | `deny` | a mutating command whose status is swallowed by a pipe |
 | `bare-stash-pop` | `observe` | `git stash pop` with no ref, where `refs/stash` is shared across worktrees |
 | `gh-pr-merge-auto` | `observe` | `--auto` on a repository with no required checks, which merges immediately |
+| `forge-merge-by-hand` | `advise` | merging a pull request by POSTing to the forge's merge endpoint, which answers `200` whether the checks passed, failed or never started |
+| `forge-status-stale-row` | `observe` | keeping the first row of a commit's append-only `/statuses` list, so a stale `pending` reads as the present and the wait never ends |
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
+| `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
 | `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
+| `foreground-poll` | `advise` | a polling loop or `gh run watch` in the foreground, where the tool's ten-minute clock will kill it one poll short |
+| `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
+| `kubectl-gitops` | `advise` | an imperative `kubectl` write in a repository Flux or Argo reconciles |
+| `tag-after-commit` | `advise` | `git tag` chained onto a `git commit` that a hook may have refused |
+| `release-tag-push` | `observe` | pushing a `v*` tag, which publishes: the tag may name the wrong commit, and a green workflow does not mean the artefact is right |
+| `worktree-remove-force` | `advise` | `git worktree remove --force` on a worktree that still holds uncommitted work |
+| `amend-pushed` | `advise` | `git commit --amend` on a commit the remote already has |
+| `branch-force-delete` | `observe` | `git branch -D` on a branch whose commits are on no remote and not merged |
 | `poll-blank-verdict` | `observe` | a wait that stops on any value but the one it names, so a failed lookup's empty string reads as the answer |
-| `forge-status-stale-row` | `observe` | keeping the first row of a commit's append-only `/statuses` list, so a stale `pending` reads as the present and the wait never ends |
-| `stdin-hang` | `observe` | a command that will read standard input with nothing on it, which blocks silently until the tool's clock runs out |
+| `worktree-isolation` | `observe` | a branch created, or `git reset --hard`, in the primary checkout of a repository that already has linked worktrees |
+| `stdin-hang` | `observe` | a command that will read standard input with nothing on it — `cat > file`, a bare interpreter, `tee` outside a pipe — which blocks silently until the tool's clock runs out |
 | `glob-in-flag-value` | `advise` | an unquoted glob inside a flag value (`--include=*.ts`), which zsh expands — or fails on — before the program sees it |
 | `glob-no-match` | `advise` | an unquoted glob operand that matches nothing, which under zsh aborts the clause before it starts while a later clause reports success |
 | `equals-separator` | `observe` | a bare word beginning with `=` (`echo ===`, `[ x == y ]`), which zsh reads as a command lookup and whose failure aborts the whole command list |
@@ -20,23 +31,64 @@
 | `path-operand-missing` | `advise` | a read of a path that is not there — under the grep shim a warning in mid-stream, for the coreutils one line and carry on — which the chain then reports as success |
 | `stat-bsd-format` | `advise` | `stat -f '%…'` on GNU stat (or `-c` on BSD), which prints a filesystem report where a timestamp was wanted |
 | `whole-file-dump` | `advise` | a file poured whole into the tool result by `cat`/`sed -n`/`head` — 31% of all result bytes measured — where the Read tool would have windowed it |
-| `file-reread` | `advise` | a Read, or a `cat`, of a file this session already has in context and that is unchanged on disk since — answered from the session's own record, not the command |
 | `persisted-output-dump` | `advise` | reading back whole a tool result the harness saved to a file for being too large, paying for it twice |
+| `file-reread` | `advise` | a Read, or a `cat`, of a file this session already has in context and that is unchanged on disk since — answered from the session's own record, not the command |
 | `request-fanout` | `observe` (ceiling `advise`) | one command that may make more than 50 explicit network transfers to one destination — a loop following `Link: next`, `gh api --paginate`, a curl URL range — counted by the shell analysis ([analysis.md](analysis.md)) with the loops and calls that multiply them |
 
-`amont-agent rules` prints this with each rule's measured firing rate.
+Two more checks run after a command rather than before it, on `PostToolUse`:
+`push-landed` and `push-published` verify what a push that reported success
+actually did. See [the assertions](assertions.md).
 
-## Why only one of them denies
+`amont-agent rules` prints this with each rule's measured firing rate, and
+with the stance in force on this machine rather than the shipped one: a rule
+you promoted in `~/.gitconfig` reads `deny (ships as observe)`, and a rule
+with a ceiling names it, `(max advise)`.
+
+## Why only two of them deny
 
 `pipe-to-tail` blocks because seven consecutive weeks of measurement showed no
 downward trend while every other habit halved. That is the bar: a rule earns
 `deny` from your own transcripts, not from an argument about how bad the
-mistake is. See [measuring and graduating](measuring.md).
+mistake is. A habit the model is already correcting does not need a `deny`.
+See [measuring and graduating](measuring.md).
+
+`plan-review-panel` is the other kind of `deny`, and the person's choice
+rather than a measurement: it fires on `ExitPlanMode`, not on a shell command,
+and checks a fact — whether the review panel the plan calls for ran on the plan
+being presented — naming the missing roles when it did not. After two refusals
+of the same plan, or whenever it cannot check, it hands the call to the person
+as `ask` instead. See [the review panel](plan-review.md).
 
 `stale-base` advises from the start because it refuses nothing, speaks only
 after measuring a real gap, and names a failure no correcting loop can see —
 **nothing fails when you build on stale code.** The work is correct against
-the code it can see, and the conflict arrives later, from somewhere else.
+the code it can see, and the conflict arrives later, from somewhere else. So a
+session opening in a checkout the remote has moved past is told — see
+[the session notice](session-notice.md) for why it fetches and never pulls.
+
+`push-preflight` advises for the same reason. git opens its connection to the
+remote *before* it runs `pre-push` and holds it idle for as long as the test
+gate takes; a remote that closes idle sessions kills the push after the gate
+has already passed, and the model reads "the network" where the cause was the
+gate's placement. With amont ≥ 1.28, `amont rehearse --wait` runs the same
+gate on a snapshot of `HEAD` with no connection open — or follows the
+rehearsal `amont.rehearseOnCommit` already started — and stamps the tree, so
+the push that follows skips the suite (`amont run pre-push` on 1.27). The rule
+speaks only when `confirm` finds all three facts: amont guards this
+repository's pushes, a test gate would run for this push, and `HEAD`'s tree
+carries no stamp yet.
+
+## Shape, then the world
+
+Most rules after the first handful came out of the transcripts the same way —
+tens of thousands of Bash calls, sorted by what failed, was killed, or drew a
+correction (see [`mine`](measuring.md#0-mine--what-is-going-wrong-that-no-rule-names)).
+Each fires on shape and, where the fact lives in the world, confirms it first:
+whether the call already runs in the background, which `sed` is on `PATH`,
+whether the repository holds a Flux or Argo resource, whether the worktree is
+dirty, whether the remote has the commit, whether any other branch has the
+commits. A rule that fires on shape alone, like `tag-after-commit`, names a
+failure every command in the chain reports as success.
 
 ## `pipe-to-tail` in full
 

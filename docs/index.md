@@ -28,9 +28,10 @@ Three stances, and the middle one is the point:
 | `advise` | puts the reason into the model's context; refuses nothing |
 | `deny` | refuses the tool call, with the reason and the remedy |
 
-Only one rule ships as `deny`. The rest ship as `observe`, and a rule is
-promoted only once your own transcripts say it should be — see
-[measuring and graduating](measuring.md).
+Of the 32 rules, two ship as `deny`, eighteen as `advise` and twelve as
+`observe`. A rule is promoted only once your own transcripts say it should be
+— see [measuring and graduating](measuring.md) — and `amont-agent rules` shows
+the stance in force on your machine.
 
 ## Start here
 
@@ -51,3 +52,12 @@ They meet in exactly one place, and it is optional. If amont is installed and
 this repository carries its generated `AGENTS.md` block, a session opening on
 a stale block is told so — see [the session notice](session-notice.md). With
 no `amont` on `PATH`, that check says nothing.
+
+## Relationship to attest
+
+[attest](https://github.com/fredericrous/attest) is the CI end of the same
+story: amont signs a note at pre-push naming the gates that really ran, and
+attest verifies it so CI can skip them. It has no connection to this guard
+beyond the author and the conviction all three share — trust what was
+verified, never what was reported. The masked push at the top of this page is
+what that looks like when it fails.

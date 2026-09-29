@@ -14,6 +14,15 @@
   the corpus path the binary was built from, which outside a checkout is
   somebody else's disk; it now falls back to `<rule>.cases`.
 
+### Documentation
+
+- **The README is short again**, and the detail it carried lives in the book:
+  the full rule table (all 32 rules, `forge-merge-by-hand` and
+  `release-tag-push` included) in `docs/rules.md`, the `push-preflight`
+  rationale beside it. The book's repository, edit and site URLs pointed at
+  `fredericrous/amont`; they name `amont-agent` now, and `analysis.md` is in
+  the table of contents.
+
 ## v2.22.1
 
 ### Changed
