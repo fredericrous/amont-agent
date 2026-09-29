@@ -75,9 +75,11 @@ block that each reviewer's prompt carries:
 <<<PLAN path=/Users/me/.claude/plans/p.md sha=<64 hex>>>>
 ```
 
-The sha is that of the **canonical body**: the plan without its review
-section, its full reviews and its machine comment, with CRLF read as LF and
-trailing blanks trimmed. Writing the review results into the plan therefore
+The sha is that of the **canonical body**: the plan without its front
+matter, its review section, its full reviews and its machine comment, with
+CRLF read as LF and blanks trimmed at both ends. A landed copy in
+`docs/plans/`, which gains front matter, therefore hashes like the
+approved plan. Writing the review results into the plan therefore
 never makes a review stale. Editing the body does.
 
 A review counts only when Claude Code recorded it as completed:

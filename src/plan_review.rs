@@ -67,10 +67,17 @@ pub const ENV_ROOT: &str = "AMONT_AGENT_PLAN_ROOT";
 
 // ---------------------------------------------------------------- the body
 
-/// The plan as reviewed: CRLF → LF, the `## Review panel` section, the
-/// `## Full reviews …` section to the end, and a machine comment on the last
-/// non-empty line all removed, trailing space and tab trimmed per line, one
-/// final newline. Headings inside code fences are text. Idempotent.
+/// The plan as reviewed: CRLF → LF; YAML front matter (a `---` first line
+/// through the next `---`) and the blank lines after it removed; the
+/// `## Review panel` section, the `## Full reviews …` section to the end,
+/// and a machine comment on the last non-empty line removed; trailing space
+/// and tab trimmed per line; one final newline. Headings inside code fences
+/// are text. Idempotent.
+///
+/// Front matter is skipped because a plan gains it when it lands in a
+/// repository (`docs/plans/`, ADR-0022). The landed copy then hashes like
+/// the approved one the reviewers read, so landing can be checked on the
+/// file it writes.
 pub fn canonical(text: &str) -> String {
     let text = text.replace("\r\n", "\n");
     let lines: Vec<&str> = text.split('\n').collect();
@@ -78,10 +85,14 @@ pub fn canonical(text: &str) -> String {
         .iter()
         .rposition(|l| !l.trim().is_empty())
         .filter(|&i| is_machine_comment(lines[i]));
+    let mut start = front_matter_end(&lines);
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
+    }
     let mut out: Vec<&str> = Vec::new();
     let mut fence = Fence::default();
     let mut dropping = false;
-    for (i, line) in lines.iter().enumerate() {
+    for (i, line) in lines.iter().enumerate().skip(start) {
         if Some(i) == comment {
             continue;
         }
@@ -99,6 +110,20 @@ pub fn canonical(text: &str) -> String {
     body.truncate(body.trim_end_matches(['\n', ' ', '\t']).len());
     body.push('\n');
     body
+}
+
+/// The index of the first line after YAML front matter, or 0 when there is
+/// none: a `---` first line with no closing `---` is text, not front matter.
+fn front_matter_end(lines: &[&str]) -> usize {
+    if lines.first().map(|l| l.trim_end()) != Some("---") {
+        return 0;
+    }
+    lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, l)| l.trim_end() == "---")
+        .map_or(0, |(i, _)| i + 1)
 }
 
 /// sha256 of the canonical body, 64 lowercase hex.
@@ -1363,6 +1388,27 @@ mod tests {
         let once = canonical(PLAN);
         assert_eq!(canonical(&once), once);
         assert_eq!(body_sha(&PLAN.replace('\n', "\r\n")), body_sha(PLAN));
+    }
+
+    #[test]
+    fn front_matter_added_on_landing_keeps_the_sha() {
+        let landed = format!(
+            "---\nstatus: active\nbranch: feat/x\nrepos: [x]\n---\n\n{}",
+            PLAN.replace(
+                "👉 Decide: none",
+                "👉 Decide: none\n📄 Full reviews: [x](x.reviews.md)"
+            )
+            .split("\n## Full reviews")
+            .next()
+            .unwrap()
+        ) + "\n<!-- panel: repos=amont-agent -->\n";
+        assert_eq!(body_sha(&landed), body_sha(PLAN));
+        assert_eq!(canonical(&canonical(&landed)), canonical(&landed));
+        // Not front matter: no closing fence, or not on the first line.
+        let open = format!("---\n{PLAN}");
+        assert_ne!(body_sha(&open), body_sha(PLAN));
+        let later = PLAN.replace("Body.", "Body.\n\n---\n\nMore.\n\n---");
+        assert!(canonical(&later).contains("---\n\nMore."));
     }
 
     #[test]
