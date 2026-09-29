@@ -152,6 +152,10 @@ pub struct Finding {
 #[allow(dead_code)]
 pub enum Confirmed {
     Yes,
+    /// Confirmed, and this instance is serious enough to be held at least at
+    /// this stance — never above the rule's `max_stance`, and never raised
+    /// from `observe`, which is how a person turns a rule off.
+    YesAt(Stance),
     /// Not confirmed, with the reason. Failing to confirm is always silence.
     No(&'static str),
 }

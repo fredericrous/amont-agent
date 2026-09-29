@@ -410,18 +410,21 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
 
 /// The rule's question: would this push publish an interface change that no
 /// approved preview covers? `Ok` fires the rule; `Err` names why it did not.
+/// `Ok(held)` when the push needs a preview it does not have; `held` when
+/// the unapproved commit carries a picked mockup (or cannot be told apart
+/// from one), which the rule holds at deny.
 pub fn needs_preview(
     cwd: &Path,
     cmd: &crate::shell::Simple,
     stance: Stance,
-) -> Result<(), &'static str> {
+) -> Result<bool, &'static str> {
     match push_target::resolve(cwd, cmd) {
         Push::DryRun => Err("a dry run publishes nothing"),
         Push::Unresolvable { repo, shape } => {
             if repo.as_deref().is_some_and(gated) && stance == Stance::Deny {
                 // Under deny a shape nobody can read is held: `--all` must
                 // not be the way around the gate.
-                Ok(())
+                Ok(false)
             } else {
                 Err(shape)
             }
@@ -434,7 +437,7 @@ pub fn needs_preview(
             for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
                 let Some(ui) = carries_ui(&repo, t) else {
                     return if stance == Stance::Deny {
-                        Ok(())
+                        Ok(false)
                     } else {
                         Err("the published files cannot be listed")
                     };
@@ -442,7 +445,7 @@ pub fn needs_preview(
                 if ui {
                     any_ui = true;
                     if !approved(&repo, &t.src) {
-                        return Ok(());
+                        return Ok(mockup_screens(&repo, &t.src).map_or(true, |s| !s.is_empty()));
                     }
                 }
             }
@@ -453,6 +456,71 @@ pub fn needs_preview(
             }
         }
     }
+}
+
+// --- mockup mode -----------------------------------------------------------
+
+/// Where a repository keeps its picked mockups: `git config
+/// amont.agent.preview.mockups`, else `docs/mockups` — the same key the
+/// application-landscape `ui-handoff` check reads.
+fn mockups_dir(repo: &Path) -> String {
+    git(repo, &["config", "--get", "amont.agent.preview.mockups"])
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| d.trim().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "docs/mockups".to_string())
+}
+
+/// The screens a commit's branch carries picked mockups for: folders under
+/// the mockups directory that `merge-base(<default branch>, commit)..commit`
+/// changes and that hold a `*.dc.html` artboard at `commit`.
+///
+/// Always from the merge base, never from the upstream ref: after the first
+/// push the upstream already holds the artboards, and a range that starts
+/// there would find no screen and switch the check off (the PR #302 case).
+/// `Err` when the range cannot be established while the commit does carry
+/// artboards: a check that cannot look must not pass.
+pub fn mockup_screens(repo: &Path, commit: &str) -> Result<Vec<String>, String> {
+    let dir = mockups_dir(repo);
+    let has_artboards = |tree_path: &str| {
+        git(
+            repo,
+            &["ls-tree", "-r", "--name-only", commit, "--", tree_path],
+        )
+        .is_some_and(|l| l.lines().any(|f| f.ends_with(".dc.html")))
+    };
+    if !has_artboards(&dir) {
+        return Ok(Vec::new());
+    }
+    let base = crate::stale::remote_of(repo)
+        .and_then(|r| crate::stale::default_base(repo, &r))
+        .ok_or_else(|| {
+            format!(
+                "{dir} holds artboards, and the commits this preview adds cannot be told apart from the default branch's: no default remote branch (set `checkout.defaultRemote`, or fetch `origin`)"
+            )
+        })?;
+    let from = git(repo, &["merge-base", &base, commit]).ok_or_else(|| {
+        format!(
+            "{dir} holds artboards, and {base} shares no history with {}",
+            short(commit)
+        )
+    })?;
+    let changed = git(repo, &["diff", "--name-only", &format!("{from}..{commit}")])
+        .ok_or_else(|| format!("`git diff {}..{}` failed", short(&from), short(commit)))?;
+    let prefix = format!("{dir}/");
+    let mut screens: Vec<String> = Vec::new();
+    for f in changed.lines() {
+        let Some(rest) = f.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once('/') else {
+            continue;
+        };
+        let screen = format!("{dir}/{name}");
+        if !screens.contains(&screen) && has_artboards(&screen) {
+            screens.push(screen);
+        }
+    }
+    Ok(screens)
 }
 
 // --- the store ------------------------------------------------------------
@@ -843,22 +911,49 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
     }
     let text = std::fs::read_to_string(&record)
         .map_err(|_| format!("the guide {} is not UTF-8 text", record.display()))?;
-    let missing = crate::guide::check(&text);
+    let folder = record.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let screens = mockup_screens(&repo, &commit)?;
+    let mut missing = crate::guide::check(&text);
+    if !screens.is_empty() {
+        missing.extend(crate::guide::check_mockup(&text, &screens, &folder));
+    }
     if !missing.is_empty() {
+        let mut sections: Vec<String> = crate::guide::SECTIONS
+            .iter()
+            .map(|s| format!("`## {s}`"))
+            .collect();
+        let mut mode = String::new();
+        if !screens.is_empty() {
+            sections.push(format!("`## {}`", crate::guide::DIFFERENCES));
+            let screen = &screens[0];
+            mode = format!(
+                "mockup mode: this branch commits the picked artboards of {} (handoff.prove-fidelity), so the guide shows the artboard beside the built screen, at one viewport, and says how they differ.\n",
+                screens.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ")
+            );
+            let paste = format!(
+                "\nPaste and fill, with artboard.png and after.png copied beside the guide first (its own step):\n\n## Reference\nArtboards: {screen}\nViewport: 1120px · light\n\n![Mockup, direction B](artboard.png)\n![Built screen](after.png)\n\n## {}\n- fixed: <a difference found and removed>\n- deliberate: <a difference kept, and why>\n",
+                crate::guide::DIFFERENCES
+            );
+            missing.push(paste.trim_end().to_string());
+        }
+        let (paste, items): (Vec<&String>, Vec<&String>) =
+            missing.iter().partition(|m| m.starts_with("\nPaste"));
         return Err(format!(
-            "the guide {} lacks what the person needs to decide with (work.preview-is-guided):\n{}\nRequired H2 sections, in order: {}.",
+            "the guide {} lacks what the person needs to decide with (work.preview-is-guided):\n{mode}{}\nRequired H2 sections, in order: {}.{}",
             record.display(),
-            missing
+            items
                 .iter()
                 .map(|m| format!("  - {m}"))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            crate::guide::SECTIONS
-                .iter()
-                .map(|s| format!("`## {s}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            sections.join(", "),
+            paste.first().map(|s| s.as_str()).unwrap_or("")
         ));
+    }
+    if !screens.is_empty() {
+        for w in crate::guide::width_warnings(&text, &folder) {
+            eprintln!("amont-agent: warning: {w}");
+        }
     }
     let names = checkout_names(&repo);
     let label = format!(
@@ -879,8 +974,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
             url,
         },
     );
-    let folder = record.parent().unwrap_or(Path::new("/"));
-    for img in crate::guide::missing_images(&text, folder) {
+    for img in crate::guide::missing_images(&text, &folder) {
         eprintln!(
             "amont-agent: warning: the guide references {img}, which is not beside it in {}",
             folder.display()

@@ -233,15 +233,23 @@ fn on_bash(bash: &Bash) -> Decision {
     }
 
     for (rule, finding) in &fired {
-        let stance = crate::stance::resolve(rule);
-        if let Err(why) = confirmed(rule, finding, bash, &parsed) {
-            // The reason is the record. `status` tallies these, and "why did
-            // confirm say no" is the number that decides whether an observing
-            // rule may ever advise — a rule declined for `already in a linked
-            // worktree` a thousand times is a rule being obeyed, not one that
-            // is wrong.
-            note(rule, "unconfirmed", why, bash, finding);
-            continue;
+        let mut stance = crate::stance::resolve(rule);
+        let floor = match confirmed(rule, finding, bash, &parsed) {
+            Ok(floor) => floor,
+            Err(why) => {
+                // The reason is the record. `status` tallies these, and "why did
+                // confirm say no" is the number that decides whether an observing
+                // rule may ever advise — a rule declined for `already in a linked
+                // worktree` a thousand times is a rule being obeyed, not one that
+                // is wrong.
+                note(rule, "unconfirmed", why, bash, finding);
+                continue;
+            }
+        };
+        if let Some(floor) = floor {
+            if stance >= Stance::Advise {
+                stance = stance.max(floor).min(rule.max_stance);
+            }
         }
         let text = decision::phrase(rule.id, &finding.reason, &finding.remedy);
         // Never refuse on half a reading. A `deny` derived from a command we
@@ -522,9 +530,9 @@ fn confirmed(
     finding: &Finding,
     bash: &Bash,
     parsed: &Parsed,
-) -> Result<(), &'static str> {
+) -> Result<Option<Stance>, &'static str> {
     let Some(confirm) = rule.confirm else {
-        return Ok(());
+        return Ok(None);
     };
     if !bash.cwd.is_dir() {
         return Err("the working directory does not exist");
@@ -537,7 +545,8 @@ fn confirmed(
         tool_use_id: &bash.tool_use_id,
     };
     match confirm(&ctx, finding) {
-        Confirmed::Yes => Ok(()),
+        Confirmed::Yes => Ok(None),
+        Confirmed::YesAt(floor) => Ok(Some(floor)),
         Confirmed::No(why) => Err(why),
     }
 }

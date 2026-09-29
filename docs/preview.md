@@ -135,6 +135,39 @@ everything else; a link whose scheme is not http(s), mailto or file is text.
 No markdown crate: amont-agent is on a trust path and a page only the person
 reads does not clear `change.dependency-bar`.
 
+## Mockup mode
+
+When the previewed branch commits a picked mockup — a `*.dc.html` artboard
+under `docs/mockups/<screen>/` (or the directory `git config
+amont.agent.preview.mockups` names; the application-landscape `ui-handoff`
+PR check reads the same key) — the guide must prove fidelity
+(`handoff.prove-fidelity`, ADR-0016). Added to the five sections:
+
+- under `## Reference`: the screen's path, a `Viewport: 1120px · light` line
+  (the width and theme both images were taken at), and the picked artboard
+  beside the built screen as image files next to the guide:
+  `artboard.png` and `after.png` (`mockup` and `live` are read the same;
+  states pair by suffix, `artboard-empty.png` with `after-empty.png`);
+- a section `## Differences from the mockup`: `None`, or one bullet per
+  difference, each `- fixed: …` or `- deliberate: <reason>`.
+
+The range is the branch's own commits, from its merge base with the default
+branch — never from its upstream, which after a first push already holds the
+artboards. Artboards on a branch whose base cannot be resolved are a refusal,
+not a skip. A later branch that only edits a screen whose artboards are
+already on `main` is not in mockup mode; the PR check asks it for the
+side-by-side or `Mockup: none — <reason>`.
+
+The images are copies of the proof PNGs committed next to the artboards, so
+copying them beside the guide comes first, **as its own command**: a
+register chained after a `cp` is not bound (see below). Two PNGs whose widths
+differ by more than a tenth are a warning. On the page, each pair shows full
+width at the same scale, each image links to its full-size file, and an
+**Overlay** toggle lays the built screen over the mockup at half opacity.
+
+A branch in mockup mode that is pushed without a bound approval is **held**
+(deny) rather than advised, unless the rule is set to `observe`.
+
 ## What approves
 
 | the person… | result |
@@ -144,6 +177,15 @@ reads does not clear `change.dependency-bar`.
 | does not answer (a timeout) | still pending |
 | types `approve`, `ship`, `lgtm` or `looks good` as the next prompt, after a marked question was asked | approved |
 | types anything else next — including `yes`, `go`, `ok`, `continue` | the previews lapse |
+
+The question must name the commit: `register` prints `label` (the
+checkout's directory `@sha7`) and `aliases` (the main worktree's directory
+and the origin repository's name, each `@sha7`); any of them will do. An
+`Approve` on a question that names none of them approves nothing, says so
+to the session, and leaves the registration pending for a corrected
+question. A `register` that did not bind — chained after another command,
+run in the background, or whose output does not match HEAD — says so right
+after it runs, with the command to run alone.
 
 Unmarked questions are ignored, so a release question answered "Approve"
 approves no preview, even in the same turn. Another session's answers never

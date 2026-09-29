@@ -131,7 +131,7 @@ pub fn measure(cwd: &Path, from: &str) -> Option<Drift> {
 /// the only remote there is. Two remotes and no preference is a guess, and a
 /// guess about which remote is authoritative is exactly the wrong thing to
 /// state as a fact — so that is silence.
-fn remote_of(cwd: &Path) -> Option<String> {
+pub(crate) fn remote_of(cwd: &Path) -> Option<String> {
     if let Some(r) = git::stdout_in(cwd, &["config", "--get", "checkout.defaultRemote"]) {
         if !r.is_empty() {
             return Some(r);
@@ -157,7 +157,7 @@ fn remote_of(cwd: &Path) -> Option<String> {
 /// `<remote>/HEAD` is the authority when a clone set it. Older clones and
 /// hand-added remotes have none, so fall back to the two names that cover
 /// nearly every repository, and give up rather than guess further.
-fn default_base(cwd: &Path, remote: &str) -> Option<String> {
+pub(crate) fn default_base(cwd: &Path, remote: &str) -> Option<String> {
     let head_ref = format!("refs/remotes/{remote}/HEAD");
     if let Some(head) = git::stdout_in(cwd, &["symbolic-ref", "-q", "--short", &head_ref]) {
         if !head.is_empty() {
