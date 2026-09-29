@@ -62,6 +62,30 @@ fn normalise(heading: &str) -> String {
     words.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Whether a heading as written names the section `name`: the same words,
+/// emoji, punctuation and case aside — or the section's words followed by a
+/// note, introduced by `(`, a dash or `:` (`Try it (about 2 minutes)`,
+/// `Reference — screenshots`). Other trailing words are a different heading:
+/// `Try it now` is not `Try it`.
+fn names_section(heading: &str, name: &str) -> bool {
+    if normalise(heading) == normalise(name) {
+        return true;
+    }
+    let h = heading.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let Some(head) = h.get(..name.len()) else {
+        return false;
+    };
+    if !head.eq_ignore_ascii_case(name) {
+        return false;
+    }
+    let rest = &h[name.len()..];
+    if rest.chars().next().is_some_and(char::is_alphanumeric) {
+        return false;
+    }
+    let rest = rest.trim_start();
+    rest.is_empty() || rest.starts_with(['(', '-', '–', '—', ':'])
+}
+
 fn h2(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("## ")?;
     Some(rest.trim().trim_end_matches('#').trim())
@@ -107,8 +131,9 @@ pub fn parse(text: &str) -> Guide<'_> {
 impl<'a> Guide<'a> {
     /// The first section whose heading is `name`, emoji and case aside.
     fn section(&self, name: &str) -> Option<&Section<'a>> {
-        let want = normalise(name);
-        self.sections.iter().find(|s| normalise(s.heading) == want)
+        self.sections
+            .iter()
+            .find(|s| names_section(s.heading, name))
     }
 }
 
@@ -771,6 +796,34 @@ The **Save** button moved.
     fn headings_match_without_emoji_or_case() {
         assert_eq!(normalise("📍 Where we are:"), "where we are");
         assert_eq!(normalise("TRY IT"), "try it");
+    }
+
+    #[test]
+    fn a_heading_with_a_trailing_note_matches() {
+        for (heading, name) in [
+            ("👉 Try it (about 2 minutes)", "Try it"),
+            ("Try it — 2 min", "Try it"),
+            ("Reference - screenshots", "Reference"),
+            ("📍 Where we are: the masthead", "Where we are"),
+        ] {
+            assert!(names_section(heading, name), "{heading:?} names {name:?}");
+        }
+        let text = GOOD.replace("## 👉 Try it\n", "## 👉 Try it (about 2 minutes)\n");
+        assert_ne!(text, GOOD, "the fixture has a `## 👉 Try it` heading");
+        let m = check(&text);
+        assert!(!m.iter().any(|m| m.contains("Try it")), "{m:?}");
+    }
+
+    #[test]
+    fn extra_words_are_not_a_note() {
+        for (heading, name) in [
+            ("Try it now", "Try it"),
+            ("Reference material", "Reference"),
+            ("Try items", "Try it"),
+            ("Already", "Already checked"),
+        ] {
+            assert!(!names_section(heading, name), "{heading:?} is not {name:?}");
+        }
     }
 
     #[test]
