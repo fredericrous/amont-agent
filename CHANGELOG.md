@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.23.1
+
+### Fixed
+
+- **`preview register --help` is not a registration.** 2.23.0 told the
+  session that a chained `--help` call "did not bind"; help registers
+  nothing, and binding now ignores it.
+
 ## v2.23.0
 
 ### Added
