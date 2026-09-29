@@ -16,7 +16,8 @@ silence loses a single firing. That trade is the whole posture, and it is why
 the hook payload is parsed with `serde_json::Value` and hand-written accessors
 rather than a derived struct: a field that is missing or has changed type
 becomes "no opinion", not a parse error somebody would be tempted to treat as
-an opinion.
+an opinion. What the hook writes back is emitted by a hand-rolled escaper
+(`src/json.rs`), so the reading and the writing share no representation.
 
 **It does not judge what it cannot read.** Heredocs without terminators,
 unbalanced quotes, `eval` — all opaque, and opaque never fires.

@@ -4,13 +4,10 @@
 command reported success.**
 
 A pipeline's exit status is its **last** command's. `tail` succeeds at tailing
-an error message — so a rejected push, a push killed by a timeout, and a push
-that never left the machine all look identical, and the trimming throws the
-error text away too. The failure is silent in both channels, and the model
-reads its own impatience as a green tick.
-
-No git hook can catch that. The mistake is in the command string and never
-reaches one.
+an error message, so a rejected push, a push killed by a timeout, and a push
+that never left the machine all look identical — and the trimming throws the
+error text away too. No git hook can catch that: the mistake is in the command
+string and never reaches one.
 
 `amont-agent` is a Claude Code `PreToolUse` hook that reads a shell command
 before it runs, and can observe it, advise against it, or refuse it.
@@ -21,11 +18,8 @@ before it runs, and can observe it, advise against it, or refuse it.
 ```console
 $ amont-agent check 'git push origin main 2>&1 | tail -5'
 pipe-to-tail [deny]
-  `git push` pipes into `tail`, so the pipeline reports tail's exit status,
-  not git push's. A failed, rejected or timed-out run reads as success, and
-  the trimming discards the error text as well.
-  → Run `git push` on its own and read its output afterwards. Then verify the
-    effect rather than the exit code.
+  `git push` pipes into `tail`, so the pipeline reports tail's exit status, not git push's. A failed, rejected or timed-out run reads as success, and the trimming discards the error text as well.
+  → Run `git push` on its own and read its output afterwards. Then verify the effect rather than the exit code.
   ▸ git push origin main 2>&1 | tail -5
 ```
 
@@ -35,9 +29,12 @@ pipe-to-tail [deny]
 curl -fsSL https://raw.githubusercontent.com/fredericrous/amont-agent/main/install/install.sh | sh
 ```
 
-Then wire it in — a separate, deliberate step, because a program that can
-refuse your agent's commands should not add itself to your settings as a side
-effect of you downloading it:
+Or `brew install fredericrous/tap/amont-agent`, `cargo install amont-agent`,
+the PowerShell installer, or a
+[prebuilt binary](https://github.com/fredericrous/amont-agent/releases/latest).
+Then wire it in — a separate step, because a program that can refuse your
+agent's commands should not add itself to your settings as a side effect of
+you downloading it:
 
 ```sh
 amont-agent install          # prints the settings block, writes nothing
@@ -45,197 +42,55 @@ amont-agent install --write  # merges it into ~/.claude/settings.json
 amont-agent doctor           # installed, runnable, and actually firing?
 ```
 
-Also: `brew install fredericrous/tap/amont-agent` · `cargo install amont-agent`
-· [prebuilt binaries](https://github.com/fredericrous/amont-agent/releases/latest)
-for Linux (gnu/musl, x86_64 and aarch64), macOS (Intel and Apple silicon) and
-Windows.
-
 ## It measures before it blocks
 
-Five of the six rules ship as `observe` — they record and say nothing at all.
-That is not timidity, it is the method:
+Each rule has a stance: `observe` records the firing and says nothing,
+`advise` puts the reason into the model's context, `deny` refuses the call
+with the reason and the remedy. Of the 32 rules, two ship as `deny` —
+`pipe-to-tail`, and `plan-review-panel`, which refuses a plan at
+`ExitPlanMode` before its review panel ran. A rule is promoted from your own
+transcripts, not from an argument: `mine`, `backtest`, `explain`,
+`corpus check`, `backtest --compliance`, then `graduate`. Demoting is one
+command with no questions. `amont-agent rules` lists every rule with the
+stance in force on your machine and its measured rate.
 
-| stance | effect |
-|---|---|
-| `observe` | records the firing and says nothing |
-| `advise` | puts the reason into the model's context; refuses nothing |
-| `deny` | refuses the tool call, with the reason and the remedy |
-
-`observe` and `advise` are not two ways of saying "not blocking yet".
-`additionalContext` enters the model's context and changes its behaviour,
-which contaminates the rate the observation exists to measure. **A rule that
-talks is intervening.**
-
-So a rule is promoted from your own transcripts, not from an argument:
-
-```sh
-amont-agent mine --since 2026-08-15              # shapes that failed or drew a correction
-amont-agent backtest --since 2026-07-06          # firings per 1,000 tool calls, weekly
-amont-agent explain pipe-to-tail --format cases >> tests/corpus/pipe-to-tail.cases
-$EDITOR tests/corpus/pipe-to-tail.cases          # each `?` becomes match or nomatch
-amont-agent corpus check                         # and this runs in the test suite
-amont-agent backtest --compliance                # did saying it change anything?
-amont-agent graduate pipe-to-tail --to deny
-```
-
-`mine` is the step before a rule exists. It groups every Bash call by command
-*shape* — the parse with the branch, the path and the message masked out —
-and ranks the shapes that failed or drew a near-identical follow-up within a
-few tool calls, which is what a model does when its first attempt did not
-land. It proposes nothing and writes nothing: the rule that ships is still
-written by hand, with its reason and its remedy, because a guard that refuses
-a command because a clustering run found it suspicious cannot explain itself
-to the person whose work it just refused.
-
-`--compliance` closes the other end. `advise` costs context tokens every
-session forever, so for each firing it asks what the model did next: if the
-next equivalent command no longer matches, the habit changed. Per model, per
-week, with the `observe` rules as the control — they say nothing, so their
-share is the rate the habit corrects on its own, and advice is worth its
-tokens only where it beats that.
-
-`amont-agent explain <rule> --sample 20 --rank novelty` picks the twenty
-matches least like each other and least like the cases already reviewed, so
-an hour of labelling moves the precision estimate as far as an hour can.
-
-`pipe-to-tail` is the only rule that blocks, and it blocks because seven
-consecutive weeks of measurement showed no downward trend while every other
-habit halved. A habit the model is already correcting does not need a `deny`.
-
-Demotion is not gated at all — `amont-agent demote <rule>`, no questions. A
-guard that is hard to back out of is one people uninstall instead of demoting,
-and uninstalling takes every rule with it.
-
-[The full method](docs/measuring.md).
-
-## The rules
-
-| rule | ships as | what it catches |
-|---|---|---|
-| `pipe-to-tail` | `deny` | a mutating command whose status is swallowed by a pipe |
-| `bare-stash-pop` | `observe` | `git stash pop` with no ref, where `refs/stash` is shared across worktrees |
-| `gh-pr-merge-auto` | `observe` | `--auto` on a repo with no required checks, which merges immediately |
-| `no-verify` | `observe` | turning the whole commit gate off rather than one check |
-| `git-add-broad` | `observe` | staging the tree instead of the change |
-| `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
-| `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
-| `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers — see [preview approval](docs/preview.md) |
-| `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran; see [the review panel](docs/plan-review.md) |
-| `foreground-poll` | `advise` | a polling loop or `gh run watch` in the foreground, where the tool's ten-minute clock will kill it one poll short |
-| `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
-| `kubectl-gitops` | `advise` | an imperative `kubectl` write in a repository Flux or Argo reconciles |
-| `tag-after-commit` | `advise` | `git tag` chained onto a `git commit` that a hook may have refused |
-| `worktree-remove-force` | `advise` | `git worktree remove --force` on a worktree that still holds uncommitted work |
-| `amend-pushed` | `advise` | `git commit --amend` on a commit the remote already has |
-| `branch-force-delete` | `observe` | `git branch -D` on a branch whose commits are on no remote and not merged |
-| `worktree-isolation` | `observe` | a branch created, or `git reset --hard`, in the primary checkout of a repository that already has linked worktrees |
-| `stdin-hang` | `observe` | a command that will read standard input, with nothing on it — `cat > file`, a bare interpreter, `tee` outside a pipe — which blocks silently until the tool's clock runs out |
-| `glob-in-flag-value` | `advise` | an unquoted glob inside a flag value (`--include=*.ts`), which zsh expands — or fails on — before the program sees it |
-| `glob-no-match` | `advise` | an unquoted glob operand that matches nothing, which under zsh aborts the clause before it starts while a later clause reports success |
-| `equals-separator` | `observe` | a bare word beginning with `=` (`echo ===`, `[ x == y ]`), which zsh reads as a command lookup and whose failure aborts the whole command list |
-| `unsplit-expansion` | `observe` | an unquoted `$var` under `set --` or `for … in`, which zsh leaves as one word: the positionals or the loop get the whole string and the command runs wrong while reporting success |
-| `path-operand-missing` | `advise` | a read of a path that is not there — under the grep shim a warning in mid-stream, for the coreutils one line and carry on — which the chain then reports as success |
-| `stat-bsd-format` | `advise` | `stat -f '%…'` on GNU stat (or `-c` on BSD), which prints a filesystem report where a timestamp was wanted |
-| `whole-file-dump` | `advise` | a file poured whole into the tool result by `cat`/`sed -n`/`head` — 31% of all result bytes measured — where the Read tool would have windowed it |
-| `file-reread` | `advise` | a Read, or a `cat`, of a file this session already has in context and that is unchanged on disk since — answered from the session's own record, not the command |
-| `persisted-output-dump` | `advise` | reading back whole a tool result the harness saved to a file for being too large, paying for it twice |
-
-`stale-base` advises from the start because it refuses nothing and names a
-failure no correcting loop can see: **nothing fails when you build on stale
-code.** The work is correct against the code it can see, and the conflict
-arrives later, from somewhere else. So a session opening in a checkout the
-remote has moved past is told — after a five-second, one-branch fetch that
-never pulls. [Why it never pulls](docs/session-notice.md).
-
-`push-preflight` advises for the same reason. git opens its connection to
-the remote *before* it runs `pre-push` and holds it idle for as long as the
-test gate takes; a remote that closes idle sessions kills the push after the
-gate has already passed, and the model reads "the network" where the cause
-was the gate's placement. With amont ≥ 1.28, `amont rehearse --wait` runs the
-same gate on a snapshot of `HEAD` with no connection open — or follows the
-rehearsal `amont.rehearseOnCommit` already started — and stamps the tree, so
-the push that follows skips the suite (`amont run pre-push` on 1.27). The
-rule speaks only when `confirm` finds all three facts: amont guards this
-repository's pushes, a test gate would run for this push, and `HEAD`'s tree
-carries no stamp yet.
-
-The seven rules added in 2.2.0 came out of the transcripts the same way —
-nineteen thousand Bash calls, sorted by what failed, was killed, or drew a
-correction. Each fires on shape and, where the fact lives in the world,
-confirms it first: whether the call already runs in the background, which
-`sed` is on `PATH`, whether the repository holds a Flux or Argo resource,
-whether the worktree is dirty, whether the remote has the commit, whether
-any other branch has the commits. The one shape-only rule, `tag-after-commit`,
-names a failure every command in the chain reports as success.
-
-## What it will not do
-
-- **It never emits `allow`.** Approving everything it has no objection to would
-  switch off the permission system it was installed beside. Silence is how it
-  says "no objection".
-- **Every failure path is silence.** An unreadable payload, an unknown event, a
-  command it cannot parse, a rule that panics — all exit 0 having written
-  nothing. A hook that fails toward *refusing* gets deleted from
-  `settings.json`, which switches off every rule at once; one that fails toward
-  silence loses a single firing.
-- **It does not judge what it cannot read.** Heredocs without terminators,
-  unbalanced quotes, `eval` — opaque never fires. The unit is the PIPELINE:
-  `git status -s | xargs git add && git commit … | tail -1` has one run we
-  cannot read and one we can, and the second is still judged. `eval`,
-  `source` and `.` are the exception — they run in this shell and can move it,
-  so they hide the whole line.
-- **It does not phone home.** No telemetry, no update checks. Every firing is
-  journalled to `~/.claude/amont-agent/journal.log`, redacted, and it only
-  counts — nothing in it may participate in a decision.
-- **No repository can change a stance.** Stances are read from `--global` and
-  `--system` git config only — never from a committed file, and never from the
-  `.git/config` of the repository the agent is standing in, which is a file
-  that agent could write.
-
-[The reasoning in full](docs/refusals.md).
-
-## Turning it down
+It never emits `allow`, every failure path is silence, it does not phone home,
+and no repository can change a stance — stances live in your `--global` git
+config only:
 
 ```sh
 git config --global amont.agent.pipe-to-tail.stance observe   # one rule
-git config --global amont.agent.stance observe                # all of them
 AMONT_AGENT_OFF=1                                             # this shell
-amont-agent uninstall --write                                 # remove the entries
 ```
 
 ## Documentation
 
-[Installing](docs/install.md) · [Stances](docs/stances.md) ·
-[The rules](docs/rules.md) ·
-[Measuring and graduating](docs/measuring.md) ·
-[The session notice](docs/session-notice.md) ·
-[Configuration](docs/configuration.md) ·
-[What it will not do](docs/refusals.md)
+The [book](https://fredericrous.github.io/amont-agent/), versioned with the
+code:
+
+- [Installing](docs/install.md) — channels, the wiring, `doctor`, turning it off
+- [Stances](docs/stances.md) and [configuration](docs/configuration.md)
+- [The rules](docs/rules.md) and [the assertions](docs/assertions.md)
+- [Measuring and graduating](docs/measuring.md) — the method
+- [Preview approval](docs/preview.md) and [the review panel](docs/plan-review.md)
+- [The session notice](docs/session-notice.md) — a stale checkout, told at session start
+- [What it will not do](docs/refusals.md) and [the shell analysis](docs/analysis.md)
 
 ## Contributing
 
-```sh
-make check    # fmt, clippy -D warnings, tests — exactly what CI runs
-```
-
-One crate, `serde` and `serde_json` its only dependencies, and both only for
-*reading* — Claude Code's payload and your `settings.json`, two shapes defined
-by somebody else. What this binary writes is emitted by a hand-rolled escaper,
-so the reading and the writing share no representation.
+`make check` runs fmt, clippy `-D warnings` and the tests — exactly what CI
+runs. One crate; `serde` and `serde_json` are its only dependencies, and only
+for reading.
 
 ## Related
 
 [amont](https://github.com/fredericrous/amont) — git hooks that catch a bad
 commit before it exists, by the same author. Independent of this: no shared
-code, and neither needs the other. They meet in one optional place, described
-in [the session notice](docs/session-notice.md).
+code, and neither needs the other.
 
 [attest](https://github.com/fredericrous/attest) — the CI end of the same
-story: amont signs a note at pre-push naming the gates that really ran, and
-attest verifies it so CI can skip them. No connection to this guard beyond
-the author and the conviction all three share — trust what was verified,
-never what was reported. The masked push at the top of this page is what
-that looks like when it fails.
+story: CI skips the gates a signed pre-push note says really ran. All three
+share one conviction: trust what was verified, never what was reported.
 
 ## License
 
