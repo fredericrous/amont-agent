@@ -1171,7 +1171,14 @@ fn is_register(cmd: &crate::shell::Simple) -> bool {
         .program()
         .is_some_and(|p| p == "amont-agent" || p.ends_with("/amont-agent"));
     let ops: Vec<&str> = cmd.operands().iter().map(|w| w.text.as_str()).collect();
-    is_us && ops.first() == Some(&"preview") && ops.get(1) == Some(&"register")
+    // `--help` prints usage and registers nothing: telling the session it
+    // "did not bind" was a false alarm (seen 2026-09-29, the first session
+    // on 2.23.0).
+    let help = cmd
+        .words
+        .iter()
+        .any(|w| w.text == "--help" || w.text == "-h");
+    is_us && !help && ops.first() == Some(&"preview") && ops.get(1) == Some(&"register")
 }
 
 // --- marked questions and approval ----------------------------------------

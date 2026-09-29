@@ -543,6 +543,19 @@ fn a_chained_register_is_not_bound() {
 }
 
 #[test]
+fn a_chained_register_help_is_not_a_registration() {
+    let w = World::new("register-help");
+    let said = w.post_bash(
+        "s",
+        "p1",
+        "help",
+        "amont-agent --version && amont-agent preview register --help | grep -c Mockup",
+        "usage: amont-agent preview register …\n",
+    );
+    assert!(!said.contains("NOT bound"), "{said}");
+}
+
+#[test]
 fn a_question_with_the_wrong_label_says_so_and_the_right_one_then_approves() {
     let w = World::new("wrong-label");
     w.commit("app/a.tsx", "1\n");
