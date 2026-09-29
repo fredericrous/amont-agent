@@ -38,6 +38,12 @@ pub enum Decision {
     Advise(String),
     /// Refuse the tool call, with the reason the model will read.
     Deny(String),
+    /// Hand the call to the PERSON: Claude Code shows its permission prompt
+    /// with this reason, whatever the permission mode. The model cannot
+    /// answer it, which is the point — it is what a guard says when it cannot
+    /// establish the fact itself, or has refused often enough that only the
+    /// person may let the call through (`plan-review-panel`).
+    Ask(String),
     /// Text into the model's context at session start. The same field as
     /// `Advise`, on a different event — and there is nothing to refuse at a
     /// session opening, so this is the only shape that event can take.
@@ -79,6 +85,19 @@ impl Decision {
                         json::object(&[
                             json::string_field("hookEventName", "PreToolUse"),
                             json::string_field("permissionDecision", "deny"),
+                            json::string_field("permissionDecisionReason", &clamp(text)),
+                        ])
+                    )])
+                );
+            }
+            Decision::Ask(text) => {
+                println!(
+                    "{}",
+                    json::object(&[format!(
+                        "\"hookSpecificOutput\":{}",
+                        json::object(&[
+                            json::string_field("hookEventName", "PreToolUse"),
+                            json::string_field("permissionDecision", "ask"),
                             json::string_field("permissionDecisionReason", &clamp(text)),
                         ])
                     )])

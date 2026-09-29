@@ -83,6 +83,10 @@ fn decide(raw: &str) -> Decision {
                 None => Decision::Silent,
             }
         }
+        Event::PrePlanExit(plan) => {
+            let stance = crate::stance::resolve(&rules::plan_review_panel::RULE);
+            crate::plan_review::on_plan_exit(&plan, stance)
+        }
         Event::PostAsk(ask) => {
             crate::preview::on_post_ask(&ask);
             Decision::Silent
