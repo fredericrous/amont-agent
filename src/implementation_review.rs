@@ -487,8 +487,10 @@ pub fn store_clause(parsed: &crate::shell::Parsed) -> Option<std::ops::Range<usi
         .map(|cmd| cmd.at..cmd.end)
 }
 
-/// Whether a shell word names the store.
+/// Whether a shell word names the store, spelled with either separator:
+/// Windows writes the same directory with backslashes.
 pub fn names_store(word: &str) -> bool {
+    let word = word.replace('\\', "/");
     word.contains(&format!("amont-agent/{RULE_ID}/"))
         || word.contains(&format!("amont-agent/{RULE_ID}")) && word.ends_with(RULE_ID)
 }
@@ -724,6 +726,9 @@ mod tests {
             "/Users/me/.claude/amont-agent/implementation-review/by-tree/r/x.json"
         ));
         assert!(names_store("~/.claude/amont-agent/implementation-review"));
+        assert!(names_store(
+            "C:\\Users\\me\\.claude\\amont-agent\\implementation-review\\by-tree\\r\\x.json"
+        ));
         assert!(!names_store("~/.claude/amont-agent/journal.log"));
         assert!(!names_store("implementation-review"));
     }
