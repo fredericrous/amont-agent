@@ -1075,38 +1075,16 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
         }
     };
 
-    let Some(root) = root() else {
-        return (
-            Said::Ask("no home directory, so repos= cannot be resolved.".into()),
-            repos,
-            format!("{short} no root"),
-        );
-    };
-    let mut classes: BTreeSet<String> = m.adds.iter().cloned().collect();
-    for name in &m.repos {
-        match repo_areas(&locate(&root, name)) {
-            Ok(Some(a)) => classes.extend(a),
-            Ok(None) => {
-                if !m.adds.iter().any(|a| a.starts_with("lang:")) {
-                    return (
-                        Said::Refuse(format!(
-                            "repos= names `{name}`, which is not a repository at {} (set `git config --global amont.agent.plan-review.{name}.path <dir>` for one kept elsewhere); a plan that creates one declares its language in adds=lang:<language>;",
-                            locate(&root, name).display()
-                        )),
-                        repos,
-                        format!("{short} unknown repo {name}"),
-                    );
-                }
-            }
-            Err(why) => {
-                return (
-                    Said::Ask(format!("{why}, so the panel cannot be computed.")),
-                    repos,
-                    format!("{short} git failed"),
-                )
-            }
+    let classes = match classes_of(&m) {
+        Ok(c) => c,
+        Err(said) => {
+            let what = match &said {
+                Said::Ask(_) => "cannot resolve",
+                _ => "unknown repo",
+            };
+            return (said, repos, format!("{short} {what}"));
         }
-    }
+    };
 
     let base = baseline(&path, &sha);
     let facts = Facts {
@@ -1177,6 +1155,84 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
 
 fn list(s: &BTreeSet<String>) -> String {
     s.iter().cloned().collect::<Vec<_>>().join(", ")
+}
+
+/// The areas of every repository the plan names, plus what it declares.
+/// `Err` carries the answer the hook gives instead.
+fn classes_of(m: &Meta) -> Result<BTreeSet<String>, Said> {
+    let Some(root) = root() else {
+        return Err(Said::Ask(
+            "no home directory, so repos= cannot be resolved.".into(),
+        ));
+    };
+    let mut classes: BTreeSet<String> = m.adds.iter().cloned().collect();
+    for name in &m.repos {
+        match repo_areas(&locate(&root, name)) {
+            Ok(Some(a)) => classes.extend(a),
+            Ok(None) if m.adds.iter().any(|a| a.starts_with("lang:")) => {}
+            Ok(None) => {
+                return Err(Said::Refuse(format!(
+                    "repos= names `{name}`, which is not a repository at {} (set `git config --global amont.agent.plan-review.{name}.path <dir>` for one kept elsewhere); a plan that creates one declares its language in adds=lang:<language>;",
+                    locate(&root, name).display()
+                )))
+            }
+            Err(why) => {
+                return Err(Said::Ask(format!(
+                    "{why}, so the panel cannot be computed."
+                )))
+            }
+        }
+    }
+    Ok(classes)
+}
+
+/// What `amont-agent plan-panel` reports: the reviews this plan still
+/// needs, computed exactly as the hook will.
+pub struct Panel {
+    pub repos: String,
+    pub classes: BTreeSet<String>,
+    pub sha: String,
+    /// `full` (no baseline), `delta` (the body or the areas changed since
+    /// the last pass) or `current` (nothing to review).
+    pub mode: &'static str,
+    pub needed: BTreeSet<String>,
+}
+
+pub fn panel(plan_file: &Path) -> Result<Panel, String> {
+    let text = std::fs::read_to_string(plan_file)
+        .map_err(|e| format!("cannot read {}: {e}", plan_file.display()))?;
+    let m = meta(&text)?;
+    let classes = classes_of(&m).map_err(|said| match said {
+        Said::Refuse(w) | Said::Ask(w) => w.trim_end_matches(';').to_string(),
+        Said::Pass => String::new(),
+    })?;
+    let path = real(plan_file).display().to_string();
+    let sha = body_sha(&text);
+    let (mode, needed) = match baseline(&path, &sha) {
+        None => ("full", roles(&classes)),
+        Some(b) if b.sha == sha && classes.is_subset(&b.classes) => ("current", BTreeSet::new()),
+        Some(b) => {
+            let new: BTreeSet<String> = classes.difference(&b.classes).cloned().collect();
+            let mut need = roles(&new);
+            need.insert("backend".into());
+            ("delta", need)
+        }
+    };
+    Ok(Panel {
+        repos: m.repos.join(","),
+        classes,
+        sha,
+        mode,
+        needed,
+    })
+}
+
+/// The agent to launch for a role, and the `--lang` its block takes.
+pub fn agent_for(role: &str) -> (String, Option<&str>) {
+    match role.strip_prefix("lang:") {
+        Some(l) => (format!("{AGENT_PREFIX}language"), Some(l)),
+        None => (format!("{AGENT_PREFIX}{role}"), None),
+    }
 }
 
 // ---------------------------------------------------------------- sha256

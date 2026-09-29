@@ -26,6 +26,10 @@
   review results never changes it. `--block` prints the
   `<<<PLAN path=… sha=…>>>` line a reviewer's prompt carries. Exit 1 on an
   unreadable file, 2 on a usage error.
+- **`amont-agent plan-panel <plan.md>`** prints the review agents a plan
+  still needs, computed by the same code the hook judges with: the whole
+  panel, the delta since its last accepted body, or nothing (`current`).
+  The `/plan-review` skill launches exactly what it lists.
 - **`Decision::Ask`**: a hook answer of `permissionDecision: "ask"`, which
   hands the call to the person whatever the permission mode.
 - `install` adds a `PreToolUse` block for `ExitPlanMode`.

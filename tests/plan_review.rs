@@ -870,3 +870,66 @@ fn a_large_transcript_is_read_quickly() {
         "took {took:?} (300 ms read + git)"
     );
 }
+
+#[test]
+fn plan_panel_lists_what_the_hook_will_require() {
+    let w = World::new("panel");
+    rust_cli(&w);
+    let panel = |plan: &Path| {
+        let out = w.bin().arg("plan-panel").arg(plan).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let full = panel(&plan);
+    assert!(
+        full.starts_with(&format!(
+            "repos=tool areas=cli,lang:rust body={} panel=full\n",
+            w.short(&plan)
+        )),
+        "{full}"
+    );
+    assert!(full.ends_with("plan-review-backend\nplan-review-language --lang rust\nplan-review-tui\nplan-review-unix\n"), "{full}");
+
+    // Launching exactly what it lists passes the hook.
+    let mut t = Transcript::default();
+    for line in full.lines().skip(1) {
+        let mut parts = line.split_whitespace();
+        let agent = parts.next().unwrap();
+        let lang = parts.nth(1);
+        t.review(&w, agent, &w.block(&plan, lang), Done::Foreground);
+    }
+    assert_eq!(w.present(&plan, &t), Said::Silent);
+    assert!(panel(&plan).trim_end().ends_with("panel=current"));
+
+    // A change the person asks for, adding an interface: the delta.
+    let plan = w.plan(
+        "p.md",
+        &BODY.replace("The work.", "Changed."),
+        "repos=tool adds=ui",
+    );
+    let delta = panel(&plan);
+    assert!(delta.contains("panel=delta\n"), "{delta}");
+    assert!(delta.ends_with("plan-review-backend\nplan-review-game-ux\nplan-review-react\nplan-review-ui-design\nplan-review-ux-research\n"), "{delta}");
+    for line in delta.lines().skip(1) {
+        t.review(&w, line, &w.block(&plan, None), Done::Foreground);
+    }
+    assert_eq!(
+        w.present(&plan, &t),
+        Said::Silent,
+        "the delta it listed is the delta the hook wanted"
+    );
+
+    let bad = w
+        .bin()
+        .arg("plan-panel")
+        .arg(w.plan("q.md", BODY, "adds=ui"))
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("names no repository"));
+}

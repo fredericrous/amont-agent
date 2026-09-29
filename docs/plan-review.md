@@ -51,6 +51,21 @@ by default to `~/Developer/Perso/<name>`. `adds=` declares areas the plan
 creates: `cli`, `ui`, `ops`, `large`, or `lang:<language>`. A repository
 that does not exist yet needs a `lang:` entry.
 
+## Which agents to launch
+
+`amont-agent plan-panel <plan.md>` answers with the hook's own code:
+
+```
+repos=amont-agent areas=cli,lang:rust body=cf3f43c938c4 panel=full
+plan-review-backend
+plan-review-language --lang rust
+plan-review-tui
+plan-review-unix
+```
+
+`panel=delta` lists only the reviews needed since the plan's last accepted
+body. `panel=current` lists none.
+
 ## Binding a review to the plan
 
 `amont-agent plan-sha --block [--lang <l>] <plan.md>` prints the review

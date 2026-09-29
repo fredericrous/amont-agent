@@ -82,6 +82,8 @@ usage: amont-agent <command>
                         and render its guide to a page
   plan-sha [--short] [--block [--lang <l>]] [--] <file|->
                         the sha256 of a plan's canonical body, as reviewed
+  plan-panel <plan.md>  the review agents a plan still needs, as the
+                        plan-review-panel hook will judge it
 
 install/uninstall flags:
   --write               actually edit the file
@@ -127,9 +129,10 @@ enum Sub {
     Rules,
     Preview,
     PlanSha,
+    PlanPanel,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 16] = [
+const SUBCOMMANDS: [(&str, Sub); 17] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -146,6 +149,7 @@ const SUBCOMMANDS: [(&str, Sub); 16] = [
     ("rules", Sub::Rules),
     ("preview", Sub::Preview),
     ("plan-sha", Sub::PlanSha),
+    ("plan-panel", Sub::PlanPanel),
 ];
 
 enum Invocation {
@@ -291,6 +295,7 @@ fn main() -> ExitCode {
             Sub::Rules => run_rules(),
             Sub::Preview => run_preview(&args),
             Sub::PlanSha => run_plan_sha(&args),
+            Sub::PlanPanel => run_plan_panel(&args),
         },
     }
 }
@@ -828,6 +833,60 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         println!("{sha}");
     }
     ExitCode::SUCCESS
+}
+
+const PLAN_PANEL_USAGE: &str = "\
+usage: amont-agent plan-panel <plan.md>
+
+The review agents a plan still needs, computed as the plan-review-panel
+hook will judge it at ExitPlanMode: the areas of every repository in the
+plan's machine comment (`<!-- panel: repos=... adds=... -->`), and whether
+this is the whole panel or a delta since the plan's last accepted body.
+
+First line: repos=<names> areas=<areas> body=<12 hex> panel=full|delta|current
+Then one line per agent to launch: `plan-review-<role>`, and `--lang <l>`
+for a language review (the flag its `plan-sha --block` call takes).
+
+Exit 0, 1 when the plan cannot be read or its comment is wrong (the reason
+on stderr), 2 on a usage error.
+";
+
+fn run_plan_panel(args: &[OsString]) -> ExitCode {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{PLAN_PANEL_USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let [file] = args.as_slice() else {
+        eprint!("amont-agent: plan-panel takes one plan file\n\n{PLAN_PANEL_USAGE}");
+        return ExitCode::from(2);
+    };
+    match plan_review::panel(std::path::Path::new(file)) {
+        Ok(p) => {
+            let areas = p.classes.iter().cloned().collect::<Vec<_>>().join(",");
+            println!(
+                "repos={} areas={} body={} panel={}",
+                p.repos,
+                if areas.is_empty() { "-" } else { &areas },
+                &p.sha[..12],
+                p.mode
+            );
+            for role in &p.needed {
+                match plan_review::agent_for(role) {
+                    (agent, Some(lang)) => println!("{agent} --lang {lang}"),
+                    (agent, None) => println!("{agent}"),
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 const PREVIEW_USAGE: &str = "\
