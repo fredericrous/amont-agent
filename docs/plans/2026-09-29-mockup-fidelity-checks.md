@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/mockup-fidelity
 repos: [amont-agent, application-landscape]
 adrs: [decisions:ADR-0016, decisions:ADR-0023]
@@ -285,12 +285,26 @@ run locally before its push. There is one PR per repo, merged with
 | Unapproved mockup-mode push / plain UI push / observe | deny / advise / not deny | ✅ `an_unapproved_mockup_commit_is_held_and_a_plain_ui_one_is_advised` |
 | `2fcffec/guide.md` registered in #302 at 2fcffec (debug build) | refused | ✅ refused: screen path, viewport, artboard/after, differences |
 | `e115e20/guide.md` in a scratch repo without mockups | registers | ✅ exit 0 |
-| Real session with the released binary (chained register; worktree label) | as the payload tests | pending: needs the release installed |
-| #302 retrofit (edited trigger, three-edit cancel, merge-when-green reads ui-handoff) | per plan | pending: needs #303 merged |
+| Real session on 2.23.0 (brew): a chained `preview register` | PostToolUse context "NOT bound" with a command to run alone | ✅ shown in the session, with the `cd … && amont-agent preview register …` line; it fired on a `--help` call, a false alarm fixed in 2.23.1 (`a_chained_register_help_is_not_a_registration`) |
+| Real session: a question naming the main checkout, from a worktree | approved | not exercised live (no UI preview was asked after the release); covered by `a_worktree_commit_is_approved_under_the_main_checkouts_name` |
+| AL #302 pushed with its old body (281bc86) | ui-handoff red | ✅ `failure` in 16s |
+| #302: proof PNGs committed, body edit only | a run starts from `edited` and goes green | ✅ run queued about 40s after the edit, `success` in 15s: `edited` fires on Forgejo |
+| #302: three body edits in quick succession | one run finishes | ✅ one run (21:23:11), `success`; no pile-up |
+| Merge of #303, #302 through the merge-when-green recipe | ui-handoff read green before merging | ✅ read as its own step each time; merged 8d082a2 and fed5740 |
+| #302 artboard vs after.png, compared before writing the body | every difference fixed or named | ✅ 1 fixed, 6 deliberate (status wording, no "edited" in the demo, no "Current version" row, no divider since Duro Menu has no separator, one sample version, hidden live copy) |
 
 Deviation: refusal lines are not wrapped at 80 columns; the items quote
 absolute paths, and wrapping them would break copy-paste. The paste-ready
 block is short.
+
+## Outcome
+
+Shipped 2026-09-29: application-landscape #303 (ui-handoff check) and #302 (the
+first PR through it), amont-agent #56 and the 2.23.0 release (brew tap
+updated, installed here), dotfiles #12 (skill and guide template, applied).
+2.23.1 fixes a false "NOT bound" on `preview register --help`, found by the
+first session on 2.23.0. Open, outside this plan: a separator part for the
+Duro Menu (design-system gap, upstream).
 
 ## What to measure after release
 - **Previews rejected for not matching the mockup** over 30 days. Source:
