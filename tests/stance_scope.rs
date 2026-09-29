@@ -246,3 +246,36 @@ fn a_ceiling_holds_against_both_keys() {
     assert_eq!(f.stance_of("request-fanout"), "advise");
     assert_eq!(f.stance_of("pipe-to-tail"), "deny");
 }
+
+/// `rules` shows the stance in force, not only what the rule ships as — and
+/// names the shipped default exactly when a key on this machine moved it.
+#[test]
+fn rules_shows_the_stance_in_force() {
+    let line = |f: &Fixture| {
+        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("rules")
+            .current_dir(f.repo())
+            .env("CLAUDE_CONFIG_DIR", f.dir.join("claude"))
+            .env("GIT_CONFIG_GLOBAL", f.dir.join("global"))
+            .env("GIT_CONFIG_SYSTEM", f.dir.join("system"))
+            .env_remove("AMONT_AGENT_OFF")
+            .output()
+            .expect("the binary runs");
+        assert!(out.status.success(), "rules exited {:?}", out.status.code());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find(|l| l.starts_with("git-add-broad"))
+            .expect("a git-add-broad line")
+            .to_string()
+    };
+
+    let f = Fixture::new("rules-default");
+    let shipped = line(&f);
+    assert!(shipped.contains("observe"), "{shipped}");
+    assert!(!shipped.contains("ships as"), "{shipped}");
+
+    f.set("--global", "amont.agent.git-add-broad.stance", "deny");
+    let moved = line(&f);
+    assert!(moved.contains("deny"), "{moved}");
+    assert!(moved.contains("ships as observe"), "{moved}");
+}
