@@ -40,6 +40,7 @@ pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
 pub mod glob_in_flag_value;
 pub mod glob_no_match;
+pub mod implementation_review;
 pub mod kubectl_gitops;
 pub mod no_verify;
 pub mod path_operand_missing;
@@ -419,6 +420,7 @@ pub const RULES: &[Rule] = &[
     push_preflight::RULE,
     push_preview::RULE,
     plan_review_panel::RULE,
+    implementation_review::RULE,
     foreground_poll::RULE,
     sed_in_place::RULE,
     kubectl_gitops::RULE,

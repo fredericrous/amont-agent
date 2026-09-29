@@ -616,9 +616,6 @@ pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
 pub struct Completed {
     pub agent: String,
     pub prompt: String,
-    // Read by `implementation-review`, which lands in the next change; the
-    // plan panel reads only that a review completed.
-    #[allow(dead_code)]
     pub result: String,
 }
 

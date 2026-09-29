@@ -86,7 +86,6 @@ pub struct Ask {
     pub duration_ms: Option<u64>,
     /// `transcript_path`: an `Overrule` of an implementation review is
     /// honoured only when the transcript shows the `rework` it overrules.
-    #[allow(dead_code)] // read by `implementation-review`, the next change
     pub transcript: Option<PathBuf>,
 }
 

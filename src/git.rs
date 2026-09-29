@@ -151,7 +151,6 @@ pub fn ls_tree_z(dir: &std::path::Path, tree: &str) -> std::io::Result<Option<Ve
 /// `<mode> <type> <oid>\t<path>` records split on NUL, in git's own order.
 /// The content of a tree stated without reading any blob, which is what
 /// `implementation-review` hashes into a canonical tree id.
-#[allow(dead_code)] // its reader lands in the next change
 pub fn ls_tree_entries(dir: &std::path::Path, tree: &str) -> std::io::Result<Option<Vec<Vec<u8>>>> {
     let out = bytes_in(
         dir,

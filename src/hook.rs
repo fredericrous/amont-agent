@@ -75,6 +75,7 @@ fn decide(raw: &str) -> Decision {
             Decision::Silent
         }
         Event::PreAsk(ask) => {
+            crate::implementation_review::on_pre_ask(&ask);
             let stance = crate::stance::resolve(&rules::push_preview::RULE);
             match crate::preview::on_pre_ask(&ask, stance) {
                 Some(why) => {
@@ -87,12 +88,26 @@ fn decide(raw: &str) -> Decision {
             let stance = crate::stance::resolve(&rules::plan_review_panel::RULE);
             crate::plan_review::on_plan_exit(&plan, stance)
         }
-        Event::PostAsk(ask) => match crate::preview::on_post_ask(&ask) {
-            Some(text) => {
-                Decision::Assert(decision::phrase(rules::push_preview::RULE.id, &text, ""))
+        Event::PostAsk(ask) => {
+            let mut said: Vec<String> = Vec::new();
+            if let Some(text) = crate::preview::on_post_ask(&ask) {
+                said.push(decision::phrase(rules::push_preview::RULE.id, &text, ""));
             }
-            None => Decision::Silent,
-        },
+            if let Some(text) = crate::implementation_review::on_post_ask(&ask) {
+                if crate::stance::resolve(&rules::implementation_review::RULE) != Stance::Observe {
+                    said.push(decision::phrase(
+                        rules::implementation_review::RULE.id,
+                        &text,
+                        "",
+                    ));
+                }
+            }
+            if said.is_empty() {
+                Decision::Silent
+            } else {
+                Decision::Assert(said.join("\n\n"))
+            }
+        }
         Event::PreFile(op) => on_file(&op),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
@@ -164,6 +179,26 @@ fn stale_checkout_notice(session: &Session) -> Option<String> {
 
 fn on_bash(bash: &Bash) -> Decision {
     let parsed = shell::lex(&bash.command);
+    // A pass file of the implementation review is written by the hook
+    // alone. Refused before any stance is consulted: there is no legitimate
+    // writer to advise, and `observe` turns a rule off, not a boundary.
+    if let Some(span) = crate::implementation_review::store_clause(&parsed) {
+        let rule = &rules::implementation_review::RULE;
+        journal::record(&journal::Entry {
+            rule: rule.id,
+            stance: "deny",
+            outcome: "denied",
+            session: &bash.session,
+            repo: &repo_name(&bash.cwd),
+            mode: &bash.permission_mode,
+            excerpt: &crate::backtest::excerpt(&bash.command, span.start, span.end),
+        });
+        return Decision::Deny(decision::phrase(
+            rule.id,
+            crate::implementation_review::GUARD_REASON,
+            crate::implementation_review::GUARD_REMEDY,
+        ));
+    }
     // No early return on `Parsed::Opaque`: `rules::evaluate` owns that
     // policy, so the hook, `check` and the backtester cannot drift apart on
     // it. Legacy rules are skipped on an unreadable command exactly as they
@@ -400,6 +435,26 @@ fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, c
 /// itself is remembered by [`on_post_file`], once it has happened.
 fn on_file(op: &crate::payload::FileOp) -> Decision {
     if op.writes {
+        // A pass file of the implementation review is written by the hook
+        // alone; a Write or Edit there is refused whatever the rule's
+        // stance, since there is no legitimate writer to advise.
+        if crate::implementation_review::guards_path(&op.path) {
+            let rule = &rules::implementation_review::RULE;
+            journal::record(&journal::Entry {
+                rule: rule.id,
+                stance: "deny",
+                outcome: "denied",
+                session: &op.session,
+                repo: &repo_name(&op.cwd),
+                mode: &op.permission_mode,
+                excerpt: &format!("write {}", op.path.display()),
+            });
+            return Decision::Deny(decision::phrase(
+                rule.id,
+                crate::implementation_review::GUARD_REASON,
+                crate::implementation_review::GUARD_REMEDY,
+            ));
+        }
         crate::session_state::record(&op.session, "write", &op.path, "full");
         return Decision::Silent;
     }
@@ -632,6 +687,7 @@ fn note_with(
 fn attributed_repo(id: &str, bash: &Bash) -> String {
     let pushes = [
         rules::push_preview::RULE.id,
+        rules::implementation_review::RULE.id,
         crate::assertions::push_published::ASSERTION.id,
     ];
     if !pushes.contains(&id) {

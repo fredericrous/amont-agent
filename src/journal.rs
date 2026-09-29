@@ -563,6 +563,39 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The implementation review's lines count under the buckets the soak
+    /// reads: declined pushes by reason, spoken ones by stance.
+    #[test]
+    fn the_tally_keeps_the_implementation_reviews_reasons_apart() {
+        let dir = std::env::temp_dir().join(format!("amont-agent-tally-ir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("journal.log");
+        let now = 2_000_000u64;
+        let t = now - 10;
+        let text = format!(
+            "{FORMAT}\n\
+             F {t} implementation-review unconfirmed reviewed s1 app default git push -u origin feat/x\n\
+             F {t} implementation-review unconfirmed reviewed s1 app default git push -u origin feat/x\n\
+             F {t} implementation-review unconfirmed no-plan s1 app default git push -u origin chore/b\n\
+             F {t} implementation-review unconfirmed overruled s1 app default git push -u origin feat/x\n\
+             F {t} implementation-review advise advised s1 app default tree=5085edae1d66 review=missing verdict=-\n\
+             F {t} implementation-review advise advised s1 app default tree=5085edae1d66 review=stale verdict=-\n\
+             F {t} implementation-review deny denied s1 app default tree=5085edae1d66 review=missing verdict=-\n\
+             F {t} implementation-review observe watched s1 app default tree=5085edae1d66 review=missing verdict=-\n\
+             F {t} implementation-review - overruled s1 app - tree=5085edae1d66 review=overruled verdict=rework\n"
+        );
+        fs::write(&path, text).expect("write journal");
+        let seen = tally_at(&path, 100_000, now);
+        let ir = &seen["implementation-review"];
+        assert_eq!((ir.advised, ir.denied, ir.watched), (2, 1, 1), "{ir:?}");
+        assert_eq!(ir.unconfirmed, 4);
+        assert_eq!(ir.reasons.get("reviewed"), Some(&2));
+        assert_eq!(ir.reasons.get("no-plan"), Some(&1));
+        assert_eq!(ir.reasons.get("overruled"), Some(&1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// Interleaving is only safe if a record is one line with no interior
     /// newline. Cheaper and far less flaky to assert on the builder than to
     /// race real processes.
