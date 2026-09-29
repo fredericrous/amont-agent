@@ -734,7 +734,9 @@ fn only_the_hook_writes_a_pass_file() {
 
     // Bash, by the words it can see, whatever the stance.
     w.set_global("amont.agent.implementation-review.stance", "observe");
-    let cmd = format!("echo '{{}}' > {}", target.display());
+    // Quoted as a session writes it: an unquoted Windows path's backslashes
+    // are shell escapes.
+    let cmd = format!("echo '{{}}' > '{}'", target.display());
     assert!(
         matches!(w.push_cmd(&repo, "s1", None, &cmd), Said::Deny(_)),
         "{cmd}"
