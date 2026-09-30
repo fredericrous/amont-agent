@@ -108,10 +108,12 @@ bound nothing says so in the model's context.
 
 Under `deny` a pass file is a trust boundary. A Write, Edit or MultiEdit
 under `~/.claude/amont-agent/implementation-review/` is refused, with `.`
-and `..` folded before the comparison; a Bash command whose words or
-redirect targets name that directory is refused too, whatever the rule's
-stance. The Bash half is best-effort by nature: a parser cannot see inside
-`python -c`.
+and `..` folded before the comparison; a Bash command that would write
+there — a redirect into it, or `rm`, `cp`, `tee`, `python`, `chezmoi` and
+the like with a word naming it — is refused too, whatever the rule's
+stance. Reading the record (`ls`, `cat`, `find`, `grep`) is allowed. The
+Bash half is best-effort by nature: a parser cannot see inside `python -c`
+beyond its words.
 
 ## What the journal records
 

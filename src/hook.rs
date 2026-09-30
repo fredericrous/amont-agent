@@ -180,8 +180,9 @@ fn stale_checkout_notice(session: &Session) -> Option<String> {
 fn on_bash(bash: &Bash) -> Decision {
     let parsed = shell::lex(&bash.command);
     // A pass file of the implementation review is written by the hook
-    // alone. Refused before any stance is consulted: there is no legitimate
-    // writer to advise, and `observe` turns a rule off, not a boundary.
+    // alone. A command that would write there is refused before any stance
+    // is consulted: there is no legitimate writer to advise, and `observe`
+    // turns a rule off, not a boundary. A read of the record passes.
     if let Some(span) = crate::implementation_review::store_clause(&parsed) {
         let rule = &rules::implementation_review::RULE;
         journal::record(&journal::Entry {
