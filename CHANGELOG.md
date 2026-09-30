@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The pass-file guard refuses writes, not reads.** 2.24.0 refused any
+  Bash command naming `~/.claude/amont-agent/implementation-review/`,
+  `ls` included (#61). It now refuses a redirect into the store or a
+  writing program (`rm`, `cp`, `mv`, `tee`, `python`, `sed`, `chezmoi`,
+  `git`, shells, …) with a word naming it, and lets `ls`, `cat`, `find`,
+  `grep` and the other readers look at the record. The Write/Edit half is
+  unchanged.
+
 ## v2.24.0
 
 ### Added

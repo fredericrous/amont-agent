@@ -471,18 +471,34 @@ pub fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// The first clause of a command that names the store, by any word or
-/// redirect target: the Bash half of the guard, best-effort by nature, since
-/// a parser cannot see inside `python -c`. Returns the clause's span.
+/// Programs whose operand naming the store is taken as a write. A reader
+/// (`ls`, `cat`, `find`, `grep`, `stat`, …) is not on this list, so looking
+/// at the record is allowed; the list is the Bash half of a best-effort
+/// guard, since a parser cannot see inside `python -c` beyond its words.
+const WRITERS: &[&str] = &[
+    "rm", "mv", "cp", "tee", "touch", "install", "truncate", "ln", "chmod", "chown", "mkdir",
+    "rmdir", "dd", "sed", "perl", "ruby", "node", "deno", "python", "python3", "sh", "bash", "zsh",
+    "dash", "fish", "sudo", "xargs", "rsync", "tar", "unzip", "chezmoi", "git",
+];
+
+/// The first clause of a command that would WRITE into the store: a redirect
+/// into it (`> …/by-tree/…`), or a program on [`WRITERS`] with a word naming
+/// it. A read — `ls`, `cat`, `find` of the pass files — passes: the record is
+/// there to be looked at. Returns the clause's span.
 pub fn store_clause(parsed: &crate::shell::Parsed) -> Option<std::ops::Range<usize>> {
     parsed
         .clauses()
         .iter()
         .find(|cmd| {
-            cmd.words
+            let redirected = cmd
+                .redirects
                 .iter()
-                .chain(cmd.redirects.iter().map(|(_, w)| w))
-                .any(|w| names_store(&w.text))
+                .any(|(op, w)| op.contains('>') && names_store(&w.text));
+            let writer = cmd
+                .program()
+                .map(|p| p.rsplit('/').next().unwrap_or(p))
+                .is_some_and(|p| WRITERS.contains(&p) || p.starts_with("python"));
+            redirected || (writer && cmd.words.iter().any(|w| names_store(&w.text)))
         })
         .map(|cmd| cmd.at..cmd.end)
 }
@@ -718,6 +734,31 @@ mod tests {
     #[test]
     fn lexical_folds_dot_and_dotdot() {
         assert_eq!(lexical(Path::new("/a/b/../c/./d")), PathBuf::from("/a/c/d"));
+    }
+
+    #[test]
+    fn a_read_of_the_store_passes_and_a_write_does_not() {
+        use crate::shell::lex;
+        let store = "~/.claude/amont-agent/implementation-review/by-tree/r/x.json";
+        for read in [
+            format!("ls {store}"),
+            format!("cat {store} | head"),
+            "find ~/.claude/amont-agent/implementation-review -type f".to_string(),
+            format!("grep verdict {store}"),
+        ] {
+            assert!(store_clause(&lex(&read)).is_none(), "{read}");
+        }
+        for write in [
+            format!("echo '{{}}' > {store}"),
+            format!("printf x >> {store}"),
+            format!("rm -f {store}"),
+            format!("cp /tmp/x {store}"),
+            format!("python3 -c 'open(\"{store}\",\"w\")'"),
+            format!("tee {store} < /dev/null"),
+            format!("cat x | sudo tee {store}"),
+        ] {
+            assert!(store_clause(&lex(&write)).is_some(), "{write}");
+        }
     }
 
     #[test]

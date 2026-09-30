@@ -741,6 +741,19 @@ fn only_the_hook_writes_a_pass_file() {
         matches!(w.push_cmd(&repo, "s1", None, &cmd), Said::Deny(_)),
         "{cmd}"
     );
+    let cmd = format!("rm -f '{}'", target.display());
+    assert!(
+        matches!(w.push_cmd(&repo, "s1", None, &cmd), Said::Deny(_)),
+        "{cmd}"
+    );
+    // A look at the record is not a write (#61). At a path that exists,
+    // so that `path-operand-missing` has nothing to say either.
+    std::fs::create_dir_all(store.join("by-tree").join("app")).unwrap();
+    for read in ["ls", "find", "stat"] {
+        let cmd = format!("{read} '{}'", store.display());
+        let said = w.push_cmd(&repo, "s1", None, &cmd);
+        assert!(matches!(said, Said::Silent), "{cmd}: {said:?}");
+    }
 }
 
 #[test]
