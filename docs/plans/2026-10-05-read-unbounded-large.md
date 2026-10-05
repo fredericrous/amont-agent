@@ -227,16 +227,55 @@ Integration tests (`tests/hook.rs`). Add `ReadFixture::with_size(name, bytes)`;
    - `<worktree>/src/hook.rs` (28.6 KB), no window → present;
    - the same with `"limit":100` → absent;
    - `~/.claude/plans/tingly-pondering-eclipse.md` → absent (exempt).
-3. `amont-agent rules` lists `read-unbounded-large  advise (max deny)`.
+3. `amont-agent rules` lists `read-unbounded-large  advise`. The plan first
+   expected `advise (max deny)`, but `main.rs` prints a `(max …)` suffix only
+   for a ceiling below `deny`.
+
+### Observed (Phase 1, before the push)
+
+| check | input | expected | actual |
+|---|---|---|---|
+| 1 | `make check` in the worktree | rc 0, clippy clean | rc 0; 507 unit + every integration suite green; `647fb37`'s gate: 25 checks passed |
+| 1 | the 6 named unit + 6 named hook tests, run by name | all run, all pass | 6 + 6 passed (501 / 29 filtered out) |
+| 2 | release build, Read of `src/hook.rs` (30 KB), no window, fresh session, `CLAUDE_CONFIG_DIR=<scratch>` | rc 0, stderr empty, rule present | rc 0, empty, present ("30 KB on disk") |
+| 2 | the same with `"limit":100` | rule absent | rc 0, empty, absent |
+| 2 | `~/.claude/plans/tingly-pondering-eclipse.md` | rule absent (exempt) | rc 0, empty, absent |
+| 3 | `amont-agent rules` | `read-unbounded-large  advise` | `read-unbounded-large    advise    4.6/1000  measured 2026-10-05` |
+| — | `amont-agent status` against the scratch config after the probes | one advised row | `read-unbounded-large  advise  advise  4.6/1000 measured 2026-10-05  1 advised` |
+
+## Phase 2: release and soak (next, after the merge)
+
 4. After release and install, in one real session: an unbounded Read of a
-   file over 16 KB shows the advice. `amont-agent status` then shows a row
-   shaped like the existing `file-reread` one (`file-reread  advise  advise
-   81.1/1000 measured 2026-09-09  112 advised`), i.e.
-   `read-unbounded-large  advise  advise  4.7/1000 measured 2026-10-05  1 advised`.
-5. Soak: run `tools/read-rate.py` two weeks after release. Compare the
-   weekly per-1000 rate against W40 7.8 / W41 11.1, and from the journal,
-   the share of `advised` rows followed by a windowed Read or Grep of the
-   same path within 3 file operations. If neither falls, that is the case
-   for `deny`, made from the journal.
+   file over 16 KB shows the advice, and the `advised` count in
+   `amont-agent status` goes up by exactly one.
+5. Soak, two weeks after release: run `tools/read-rate.py`. Compare the
+   weekly per-1000 rate against the post-exemption baseline (W36–W41: 5.0,
+   2.2, 5.6, 5.8, 3.6, 3.3; mean 4.6), and from the journal, the share of
+   `advised` rows followed by a windowed Read or Grep of the same path within
+   3 file operations. If neither falls, that is the case for `deny`, made
+   from the journal.
+
+## Implementation review
+
+**approve-with-changes**, round 1 plus delta, on tree `2492c403`.
+Fixed: the FIFO test now fails on a `mkfifo` error instead of skipping (`647fb37`). The plan record is closed in this commit.
+deliberate: `Reread { seen, text }` keeps the plan's struct shape, which the panel reviewed. Both callers read only one field each.
+57k + 27k tokens, 56 s + 28 s.
+
+## Decision log
+
+- 2026-10-05: `per_1000` was recounted with the committed `tools/read-rate.py`,
+  applying the rule's exact exemptions: 445 / 96,950 = **4.6** (the plan
+  estimated 4.7). The weekly series is flat. The "rising tail" in the plan
+  (W40 7.8, W41 11.1) was review agents reading plans whole: before the
+  exemptions W40 and W41 had 164 and 60 hits, after them 78 and 19.
+  The evidence comment says so.
+- 2026-10-05: added `tests/corpus/read-unbounded-large.cases` and its `EMBEDDED`
+  entry in `src/corpus.rs`. Every rule needs a corpus, the plan left it out,
+  and the relais run blocked on exactly that (its contract's write scope
+  omitted the two files).
+- 2026-10-05: implemented by a relais worker (sonnet@medium, $0.69). The run
+  ended `blocked` on a scope fault in the contract. The parent applied its
+  candidate patch and finished by hand.
 
 <!-- panel: repos=amont-agent reviewers=backend,lang:rust,tui,unix body-sha=9f0ee6b68bf1 -->
