@@ -256,7 +256,9 @@ fn on_bash(bash: &Bash) -> Decision {
                 &bash.permission_mode,
                 &bash.cwd,
                 &d.path,
-            ) {
+            )
+            .text
+            {
                 match crate::stance::resolve(&rules::file_reread::RULE) {
                     Stance::Deny => deny.push(text),
                     Stance::Advise => advise.push(text),
@@ -463,7 +465,8 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
     let mut deny: Vec<String> = Vec::new();
     let shown = op.path.to_string_lossy().into_owned();
 
-    if op.window == "full" && rules::persisted_output_dump::is_persisted(&shown) {
+    let persisted = op.window == "full" && rules::persisted_output_dump::is_persisted(&shown);
+    if persisted {
         let rule = &rules::persisted_output_dump::RULE;
         let stance = crate::stance::resolve(rule);
         let text = decision::phrase(
@@ -478,18 +481,35 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
             Stance::Observe => {}
         }
     }
-    if let Some(text) = reread_verdict(
+    let reread = reread_verdict(
         &op.session,
         &op.path,
         &op.window,
         &op.permission_mode,
         &op.cwd,
         &shown,
-    ) {
+    );
+    if let Some(text) = reread.text {
         match crate::stance::resolve(&rules::file_reread::RULE) {
             Stance::Deny => deny.push(text),
             Stance::Advise => advise.push(text),
             Stance::Observe => {}
+        }
+    }
+    // Last, and quiet on a file the session has seen whatever `file-reread`'s
+    // stance: its remedy already says to use `offset`/`limit`.
+    if !persisted && !reread.seen {
+        if let Some(bytes) = rules::read_unbounded_large::applies(&op.path, &op.window) {
+            let rule = &rules::read_unbounded_large::RULE;
+            let stance = crate::stance::resolve(rule);
+            let (reason, remedy) = rules::read_unbounded_large::phrase(&shown, bytes);
+            let text = decision::phrase(rule.id, &reason, &remedy);
+            note_file(rule, stance, op, &shown);
+            match stance {
+                Stance::Deny => deny.push(text),
+                Stance::Advise => advise.push(text),
+                Stance::Observe => {}
+            }
         }
     }
     if !deny.is_empty() {
@@ -522,9 +542,19 @@ fn dump_window(extent: &rules::dump::Extent) -> String {
     }
 }
 
+/// The answer to the `file-reread` question.
+struct Reread {
+    /// The session already has this file: a repeat of a whole read, or of the
+    /// same window. True whatever `file-reread`'s stance, so a rule that
+    /// yields to it does not start speaking when it observes.
+    seen: bool,
+    /// What to say, when the rule may speak.
+    text: Option<String>,
+}
+
 /// The `file-reread` question, asked and journalled the same way for a Read
-/// and for a `cat`. `Some(text)` when the session already has this file and
-/// the rule may speak; the journal records the watched case too.
+/// and for a `cat`. `text` is `Some` when the session already has this file
+/// and the rule may speak; the journal records the watched case too.
 fn reread_verdict(
     session: &str,
     path: &std::path::Path,
@@ -532,12 +562,18 @@ fn reread_verdict(
     mode: &str,
     cwd: &std::path::Path,
     shown: &str,
-) -> Option<String> {
-    let seen = crate::session_state::last_read(session, path)?;
+) -> Reread {
+    let unseen = Reread {
+        seen: false,
+        text: None,
+    };
+    let Some(seen) = crate::session_state::last_read(session, path) else {
+        return unseen;
+    };
     // A different window of a file read before is a different read; only a
     // repeat of a whole read, or of the same window, is a re-read.
     if seen.window != "full" && seen.window != window {
-        return None;
+        return unseen;
     }
     let rule = &rules::file_reread::RULE;
     let stance = crate::stance::resolve(rule);
@@ -556,9 +592,12 @@ fn reread_verdict(
         mode,
         excerpt: shown,
     });
-    match stance {
-        Stance::Observe => None,
-        _ => Some(decision::phrase(rule.id, &reason, &remedy)),
+    Reread {
+        seen: true,
+        text: match stance {
+            Stance::Observe => None,
+            _ => Some(decision::phrase(rule.id, &reason, &remedy)),
+        },
     }
 }
 

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **`read-unbounded-large`: a Read with no window over a large file is
+  advised.** A Read with no `offset`/`limit` of a regular file over 16 KiB
+  says what it costs (up to 2,000 lines in every later turn) and how to
+  take the part that is wanted; `offset: 1` with a `limit` is the way
+  through for a deliberate whole read. Ships `advise`, ceiling `deny`.
+  Plans (`.claude/plans`, `docs/plans`), `.diff`/`.patch`, media and
+  `tool-results/` are exempt, and a file the session already read is
+  `file-reread`'s to answer. `tools/read-rate.py` prints the weekly rate
+  from transcripts.
+
 ### Fixed
 
 - **The pass-file guard refuses writes, not reads.** 2.24.0 refused any
