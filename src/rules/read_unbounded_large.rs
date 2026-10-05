@@ -159,11 +159,9 @@ mod tests {
             let made = std::process::Command::new("mkfifo")
                 .arg(&fifo)
                 .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if made {
-                assert_eq!(applies(&fifo, "full"), None);
-            }
+                .expect("mkfifo");
+            assert!(made.success(), "mkfifo {}", fifo.display());
+            assert_eq!(applies(&fifo, "full"), None);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
