@@ -752,7 +752,8 @@ fn a_removed_session_directory_neither_hides_nor_excuses_a_push() {
     let w = World::new("gone-cwd");
     w.commit("app/a.tsx", "1\n");
     let gone = w.root.join("removed-worktree");
-    let cd = format!("cd {} && git push -u origin feat/x", w.work.display());
+    // Quoted, so a Windows path's backslashes reach `cd` as written.
+    let cd = format!("cd '{}' && git push -u origin feat/x", w.work.display());
     let out = w.pre_bash_in(&gone, "s", "t", &cd);
     assert!(
         out.contains("amont-agent/push-preview"),
