@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A delete-only push is not held under deny** (#66). `git push origin
+  --delete <branch>…`, `-d` (also inside a cluster such as `-ud`), and a
+  push whose every refspec is `:<ref>` publish nothing, so `push-preview`
+  and `implementation-review` now pass them (`a delete publishes nothing`
+  and `delete-only` in the journal) instead of holding them as unreadable.
+  A push that deletes and publishes at once, `--delete` with a `src:dst`
+  refspec, and `--prune` are still unreadable, and still held under deny.
+- **A push from a removed session directory is judged, not waved
+  through** (#67). Every confirmed rule used to decline as soon as the
+  session's cwd was gone, so `cd /abs/repo && git push …` from a session
+  left in a torn-down worktree passed every push gate. The test is now
+  whether the matched clause's own directory exists, `cd`s followed. When
+  it does not, `push-preview` and `implementation-review` hold the push
+  under deny, because the shell then runs somewhere the hook cannot name
+  (Claude Code resets it to the project root). Other rules still decline.
+- **A firing hook call no longer spawns git once per key** (#70). Every
+  stance lookup ran `git config` twice (`--global`, then `--system`), so a
+  call firing one rule spawned six git processes and a Bash command firing
+  several spawned more. Each scope's `amont.agent.*` keys are now read once
+  per process with `--get-regexp`, both scopes in parallel. A boolean that
+  is actually set is still normalised by git (`--type=bool`), and the scope
+  rule is unchanged: only `--global` and `--system`, with their includes.
+  Measured on a loaded macOS machine, release build, 100–200 runs each: a
+  firing Read went from 111 to 38 ms p50, and a Bash command firing several
+  rules from 398 to 38 ms p50 (p99 788 → 69 ms). The silent path is
+  unchanged (~10 ms). One git spawn costs ~30 ms here under load, so the
+  issue's 30 ms budget is not met on this machine.
+
 ## v2.27.0
 
 ### Added

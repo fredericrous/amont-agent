@@ -728,6 +728,57 @@ fn under_deny_an_unreadable_push_to_a_ui_repository_is_held() {
 }
 
 #[test]
+fn under_deny_a_delete_only_push_passes() {
+    let w = World::new("deny-delete");
+    w.set_global("amont.agent.push-preview.stance", "deny");
+    w.commit("app/a.tsx", "1\n");
+    for command in [
+        "git push origin --delete old other",
+        "git push -d origin old",
+        "git push origin :old",
+    ] {
+        let out = w.pre_bash("s", "t", command);
+        assert!(!out.contains("push-preview"), "{command}: {out}");
+    }
+    let out = w.pre_bash("s", "t", "git push origin feat/x :old");
+    assert!(out.contains("\"deny\""), "deleting and publishing: {out}");
+}
+
+/// #67: a session left in a removed worktree. The push's own `cd` reaches a
+/// real repository, so the push is judged there; without one, the shell runs
+/// somewhere the hook cannot name, and deny holds it.
+#[test]
+fn a_removed_session_directory_neither_hides_nor_excuses_a_push() {
+    let w = World::new("gone-cwd");
+    w.commit("app/a.tsx", "1\n");
+    let gone = w.root.join("removed-worktree");
+    // Quoted, so a Windows path's backslashes reach `cd` as written.
+    let cd = format!("cd '{}' && git push -u origin feat/x", w.work.display());
+    let out = w.pre_bash_in(&gone, "s", "t", &cd);
+    assert!(
+        out.contains("amont-agent/push-preview"),
+        "judged in the repository the cd reaches: {out}"
+    );
+    let out = w.pre_bash_in(&gone, "s", "t", "git push -u origin feat/x");
+    assert!(
+        !out.contains("push-preview"),
+        "advise: nothing to look at: {out}"
+    );
+
+    w.set_global("amont.agent.push-preview.stance", "deny");
+    let out = w.pre_bash_in(&gone, "s", "t", &cd);
+    assert!(out.contains("\"deny\""), "{out}");
+    let out = w.pre_bash_in(&gone, "s", "t", "git push -u origin feat/x");
+    assert!(
+        out.contains("\"deny\"") && out.contains("does not exist"),
+        "held: {out}"
+    );
+    // A command that is not a push still declines quietly.
+    let out = w.pre_bash_in(&gone, "s", "t", "ls");
+    assert!(!out.contains("\"deny\""), "{out}");
+}
+
+#[test]
 fn a_repository_can_opt_out() {
     let w = World::new("opt-out");
     git(&w.work, &["config", "amont.agent.push-preview.ui", "false"]);

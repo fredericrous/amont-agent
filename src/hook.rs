@@ -273,7 +273,7 @@ fn on_bash(bash: &Bash) -> Decision {
 
     for (rule, finding) in &fired {
         let mut stance = crate::stance::resolve(rule);
-        let Confirmation { floor, said } = match confirmed(rule, finding, bash, &parsed) {
+        let Confirmation { floor, said } = match confirmed(rule, stance, finding, bash, &parsed) {
             Ok(c) => c,
             Err(why) => {
                 // The reason is the record. `status` tallies these, and "why did
@@ -672,6 +672,7 @@ struct Confirmation {
 
 fn confirmed(
     rule: &Rule,
+    stance: Stance,
     finding: &Finding,
     bash: &Bash,
     parsed: &Parsed,
@@ -682,9 +683,6 @@ fn confirmed(
             said: None,
         });
     };
-    if !bash.cwd.is_dir() {
-        return Err("the working directory does not exist");
-    }
     let ctx = Context {
         cwd: &bash.cwd,
         parsed,
@@ -693,6 +691,13 @@ fn confirmed(
         tool_use_id: &bash.tool_use_id,
         transcript: bash.transcript.as_deref(),
     };
+    // The directory that matters is the one the matched clause runs in,
+    // `cd`s followed — not the session's. A session left in a removed
+    // worktree still runs `cd /abs/repo && git push …` in a real repository,
+    // and that push must be judged (#67).
+    if !ctx.cwd_at(finding.span.start).is_dir() {
+        return unknown_directory(rule, stance, finding, bash);
+    }
     match confirm(&ctx, finding) {
         Confirmed::Yes => Ok(Confirmation {
             floor: None,
@@ -712,6 +717,39 @@ fn confirmed(
         }),
         Confirmed::No(why) => Err(why),
     }
+}
+
+/// The matched clause runs in a directory that does not exist. Most rules
+/// have nothing to look at and decline. The publication gates cannot: when
+/// the session's directory is gone the shell does not run there either —
+/// Claude Code resets it to the project root — so a push with no `cd` of
+/// its own publishes from a repository this hook cannot name. Under deny
+/// that is held, like any other push shape the gate cannot read.
+fn unknown_directory(
+    rule: &Rule,
+    stance: Stance,
+    finding: &Finding,
+    bash: &Bash,
+) -> Result<Confirmation, &'static str> {
+    const WHY: &str = "the working directory does not exist";
+    let gates = [
+        rules::push_preview::RULE.id,
+        rules::implementation_review::RULE.id,
+    ];
+    if stance != Stance::Deny || !gates.contains(&rule.id) {
+        return Err(WHY);
+    }
+    let excerpt = crate::backtest::excerpt(&bash.command, finding.span.start, finding.span.end);
+    Ok(Confirmation {
+        floor: None,
+        said: Some((
+            "This push runs in a directory that does not exist, so the repository it \
+             publishes from cannot be named. Start the command with `cd <repository> &&`, \
+             or push with `git -C <repository> push …`."
+                .to_string(),
+            excerpt,
+        )),
+    })
 }
 
 fn note(rule: &Rule, stance: &str, outcome: &str, bash: &Bash, finding: &Finding) {

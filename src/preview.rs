@@ -420,6 +420,7 @@ pub fn needs_preview(
 ) -> Result<bool, &'static str> {
     match push_target::resolve(cwd, cmd) {
         Push::DryRun => Err("a dry run publishes nothing"),
+        Push::DeleteOnly => Err("a delete publishes nothing"),
         Push::Unresolvable { repo, shape } => {
             if repo.as_deref().is_some_and(gated) && stance == Stance::Deny {
                 // Under deny a shape nobody can read is held: `--all` must

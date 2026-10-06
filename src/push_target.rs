@@ -41,6 +41,10 @@ pub enum Push {
     Resolved { repo: PathBuf, targets: Vec<Target> },
     /// A dry run publishes nothing and is not judged at all.
     DryRun,
+    /// Every refspec deletes a remote ref: nothing is published, so there is
+    /// nothing to judge. Whether the delete is wise is another rule's
+    /// question.
+    DeleteOnly,
     /// A push this guard will not interpret, and why.
     Unresolvable {
         repo: Option<PathBuf>,
@@ -61,6 +65,7 @@ pub struct Spec {
 pub enum Read {
     Spec(Spec),
     DryRun,
+    DeleteOnly,
     Unresolvable(&'static str),
 }
 
@@ -101,8 +106,6 @@ const UNRESOLVABLE: &[(&str, &str)] = &[
     ("--mirror", "--mirror pushes every ref"),
     ("--tags", "--tags pushes every tag"),
     ("--follow-tags", "--follow-tags adds tags"),
-    ("--delete", "a delete publishes nothing"),
-    ("-d", "a delete publishes nothing"),
     ("--prune", "--prune deletes remote refs"),
     ("--stdin", "refspecs come from stdin"),
 ];
@@ -143,6 +146,8 @@ pub fn read(cmd: &Simple) -> Read {
     }
     let mut operands: Vec<String> = Vec::new();
     let mut after_ddash = false;
+    // `--delete` turns every refspec into a delete, wherever it stands.
+    let mut delete = false;
     let mut j = i + 1;
     while let Some(w) = words.get(j) {
         j += 1;
@@ -160,6 +165,10 @@ pub fn read(cmd: &Simple) -> Read {
         }
         if t == "--dry-run" || t == "-n" {
             return Read::DryRun;
+        }
+        if t == "--delete" || t == "-d" {
+            delete = true;
+            continue;
         }
         if let Some((_, why)) = UNRESOLVABLE.iter().find(|(f, _)| *f == t) {
             return Read::Unresolvable(why);
@@ -183,10 +192,8 @@ pub fn read(cmd: &Simple) -> Read {
             if letters.contains('n') {
                 return Read::DryRun;
             }
-            if letters.contains('d') {
-                return Read::Unresolvable("a delete publishes nothing");
-            }
-            if letters.chars().all(|c| "ufqv46".contains(c)) {
+            if letters.chars().all(|c| "ufqv46d".contains(c)) {
+                delete |= letters.contains('d');
                 continue;
             }
         }
@@ -199,14 +206,35 @@ pub fn read(cmd: &Simple) -> Read {
             if remote.contains('/') || remote.contains(':') {
                 return Read::Unresolvable("the remote is a URL or path, not a configured name");
             }
-            for r in refspecs {
-                let bare = r.strip_prefix('+').unwrap_or(r);
-                if bare.contains('*') {
-                    return Read::Unresolvable("a glob refspec");
-                }
-                if bare.starts_with(':') || bare.is_empty() {
-                    return Read::Unresolvable("a delete publishes nothing");
-                }
+            if refspecs.iter().any(|r| r.contains('*')) {
+                return Read::Unresolvable("a glob refspec");
+            }
+            if delete {
+                // git itself refuses `--delete` with a `src:dst` refspec, so
+                // only plain ref names delete anything.
+                return if refspecs.iter().all(|r| !r.contains(':')) {
+                    Read::DeleteOnly
+                } else {
+                    Read::Unresolvable("--delete with a src:dst refspec")
+                };
+            }
+            let deletes = refspecs
+                .iter()
+                .filter(|r| r.strip_prefix('+').unwrap_or(r).starts_with(':'))
+                .count();
+            if deletes == refspecs.len() {
+                return Read::DeleteOnly;
+            }
+            if deletes > 0 {
+                // One push that both deletes and publishes: judging only the
+                // publishing half would mean reading git's per-ref outcome.
+                return Read::Unresolvable("a push that both deletes and publishes");
+            }
+            if refspecs
+                .iter()
+                .any(|r| r.strip_prefix('+').unwrap_or(r).is_empty())
+            {
+                return Read::Unresolvable("an empty refspec");
             }
             Read::Spec(Spec {
                 dirs,
@@ -223,6 +251,7 @@ pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
     let spec = match read(cmd) {
         Read::Spec(s) => s,
         Read::DryRun => return Push::DryRun,
+        Read::DeleteOnly => return Push::DeleteOnly,
         Read::Unresolvable(shape) => {
             return Push::Unresolvable {
                 repo: toplevel(cwd),
@@ -434,8 +463,18 @@ mod tests {
             ("git push --all origin", "--all pushes every branch"),
             ("git push --mirror backup", "--mirror pushes every ref"),
             ("git push --tags origin", "--tags pushes every tag"),
-            ("git push origin --delete old", "a delete publishes nothing"),
-            ("git push origin :old", "a delete publishes nothing"),
+            (
+                "git push origin feat/x :old",
+                "a push that both deletes and publishes",
+            ),
+            (
+                "git push --delete origin a:b",
+                "--delete with a src:dst refspec",
+            ),
+            (
+                "git push --prune origin main",
+                "--prune deletes remote refs",
+            ),
             (
                 "git push origin 'refs/heads/*:refs/heads/*'",
                 "a glob refspec",
@@ -455,6 +494,26 @@ mod tests {
         ] {
             assert_eq!(read_of(command), Read::Unresolvable(shape), "{command}");
         }
+    }
+
+    #[test]
+    fn a_delete_only_push_publishes_nothing() {
+        for command in [
+            "git push origin --delete old",
+            "git push --delete origin old other",
+            "git push -d origin old",
+            "git push -ud origin old",
+            "git push origin :old",
+            "git push origin :old +:other",
+            "git -C ../wt push origin --delete chore/a chore/b",
+        ] {
+            assert_eq!(read_of(command), Read::DeleteOnly, "{command}");
+        }
+        // A delete still names a remote and a ref, like any other push.
+        assert_eq!(
+            read_of("git push --delete origin"),
+            Read::Unresolvable("no refspec named; push.default decides")
+        );
     }
 
     #[test]
