@@ -192,6 +192,13 @@ release binary's size before and after is recorded in Verification
 - 2026-10-06 — the worktree-task skill line moves to Phase 3b: it tells
   agents to run `plan-sha --legacy`, which the installed 2.24.0 does not
   have, so it lands in dotfiles once 2.25 is installed.
+- 2026-10-06 — outside the phases, commit 1ff0f1f: `tests/hook.rs` ran the
+  hook with the developer's global git config, so this machine's
+  `amont.agent.implementation-review.stance deny` made
+  `a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not`
+  fail here (on `origin/main` too) while CI passed. It blocked this
+  branch's pre-push gate, so it rides in this PR: the hook now sees an
+  empty global and no system git config, as `tests/plan_review.rs` does.
 
 ## Verification
 
@@ -284,8 +291,13 @@ Each check: input → expected → observed.
 - `make check`: fmt and clippy clean; `cargo test --no-fail-fast`: 517 unit
   tests and every integration suite pass except `tests/hook.rs`
   `a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not`,
-  which fails the same way on `origin/main` (2a3aabb) on this machine and
-  passes in CI there: an environment fault, not this change.
+  which failed the same way on `origin/main` (2a3aabb) on this machine and
+  passes in CI there: the developer's global git config leaking into the
+  test (fixed in 1ff0f1f, see the Decision log).
+- That test, with the global `amont.agent.implementation-review.stance deny`
+  still set: before 1ff0f1f → fails (3 runs here, 1 on `origin/main`),
+  denied as "the refspec source does not resolve to a commit"; after →
+  passes, and `tests/hook.rs` 35/35.
   `make msrv`: builds on 1.85.0.
 - `--legacy --short` and `-`: one stdout line (integration test).
 
@@ -295,6 +307,7 @@ approve-with-changes, then approve-with-changes on the delta; every finding fixe
 Fixed: exhaustive `Event` match; dependency ownership comment; typed `ShaError`; `match=legacy` only when the pass needs the byte sha; tests for panic → `ask`, store migration, a 2.24-only baseline.
 Fixed in the record: observed results and test counts updated, the 300-character journal check stated as by construction.
 Round 1: 66k tokens, 68 s; delta: 35k, 34 s.
+The test-isolation commit (tree ad1ff3f6…): approve-with-changes, 35k, 23 s; both findings were record gaps, now fixed.
 
 ## Outcome
 
