@@ -17,8 +17,8 @@
 ### Fixed
 
 - **`persisted-output-dump` sees a Windows path.** It matched
-  `/tool-results/` only, so on Windows a Read of a saved tool result,
-  spelled `\tool-results\`, went unadvised. Either separator, or a mix
+  `/tool-results/` only, so on Windows a Read, or a `cat`/`head`, of a
+  saved tool result, spelled `\tool-results\`, went unadvised. Either separator, or a mix
   of both, now counts.
 
 - **The pass-file guard refuses writes, not reads.** 2.24.0 refused any
