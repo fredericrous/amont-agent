@@ -130,6 +130,10 @@ fn front_matter_end(lines: &[&str]) -> usize {
 /// ([`crate::plan_words::words`]), 64 lowercase hex: a formatter that only
 /// moves blank lines, list markers or table padding keeps it.
 pub fn body_sha(text: &str) -> String {
+    #[cfg(test)]
+    if tests::PARSER_PANICS.with(|p| p.get()) {
+        panic!("injected parser panic");
+    }
     hex(&sha256(
         crate::plan_words::words(&canonical(text)).as_bytes(),
     ))
@@ -151,16 +155,31 @@ pub struct Shas {
 /// [`body_sha`] and [`legacy_sha`], with a panic in the Markdown parser
 /// caught here: the hook's own guard turns a panic into silence, which for
 /// this rule would let a plan through unreviewed.
-pub fn shas(text: &str) -> Result<Shas, String> {
+pub fn shas(text: &str) -> Result<Shas, ShaError> {
     guarded(|| body_sha(text)).map(|sha| Shas {
         sha,
         legacy: legacy_sha(text),
     })
 }
 
-fn guarded(f: impl FnOnce() -> String) -> Result<String, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-        .map_err(|_| "the plan's sha cannot be computed (the Markdown parser panicked)".to_string())
+fn guarded(f: impl FnOnce() -> String) -> Result<String, ShaError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| ShaError::ParserPanicked)
+}
+
+/// Why a plan's sha could not be computed.
+#[derive(Debug, PartialEq)]
+pub enum ShaError {
+    ParserPanicked,
+}
+
+impl std::fmt::Display for ShaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShaError::ParserPanicked => {
+                f.write_str("the plan's sha cannot be computed (the Markdown parser panicked)")
+            }
+        }
+    }
 }
 
 /// Whether a review or a baseline at `seen` is of this body.
@@ -1278,11 +1297,16 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
                     format!("{short} unreviewed"),
                 );
             }
-            // LEGACY: whether the pass rested on a review or a baseline of
-            // the byte sha. Leads the excerpt, which is cut at MAX_EXCERPT.
-            let on_legacy = legacy != sha
-                && (base.as_ref().is_some_and(|b| b.sha == legacy)
-                    || found.iter().any(|b| b.path == path && b.sha == legacy));
+            // LEGACY: whether the pass needed the byte sha — the same facts
+            // without it fall short. Leads the excerpt, which is cut at
+            // MAX_EXCERPT, so it is never the part that is lost.
+            let on_legacy = !matches!(
+                judge(&Facts {
+                    legacy: "-",
+                    ..facts
+                }),
+                Outcome::Pass(_)
+            );
             let matched = if on_legacy { "legacy" } else { "new" };
             let _ = save(
                 &path,
@@ -1391,7 +1415,7 @@ pub fn panel(plan_file: &Path) -> Result<Panel, String> {
         Said::Pass => String::new(),
     })?;
     let path = real(plan_file).display().to_string();
-    let Shas { sha, legacy } = shas(&text)?;
+    let Shas { sha, legacy } = shas(&text).map_err(|e| e.to_string())?;
     let title = title_key(&text, &m.repos);
     let (mode, needed) = match baseline(&path, &sha, &legacy, title.as_deref()) {
         None => ("full", roles(&classes)),
@@ -1605,11 +1629,42 @@ mod tests {
         assert_ne!(legacy_sha(&formatted), legacy_sha(PLAN));
     }
 
+    thread_local! {
+        /// Makes [`super::body_sha`] panic, as a parser bug would.
+        pub(crate) static PARSER_PANICS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
     #[test]
     fn a_panic_computing_the_sha_is_an_error_not_silence() {
-        let r = guarded(|| panic!("parser bug"));
-        assert!(r.unwrap_err().contains("cannot be computed"));
+        assert_eq!(
+            guarded(|| panic!("parser bug")),
+            Err(ShaError::ParserPanicked)
+        );
         assert!(shas(PLAN).is_ok());
+    }
+
+    #[test]
+    fn a_parser_panic_in_the_hook_goes_to_the_person() {
+        let dir =
+            std::env::temp_dir().join(format!("amont-agent-sha-panic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("p.md");
+        std::fs::write(&plan, PLAN).unwrap();
+        let ev = PlanExit {
+            session: "s".into(),
+            permission_mode: "plan".into(),
+            transcript: None,
+            plan_file: Some(plan),
+        };
+        PARSER_PANICS.with(|p| p.set(true));
+        let (said, _, excerpt) = examine(&ev);
+        PARSER_PANICS.with(|p| p.set(false));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(said, Said::Ask(ref why) if why.contains("cannot be computed")),
+            "{excerpt}"
+        );
+        assert_eq!(excerpt, "sha unavailable");
     }
 
     #[test]

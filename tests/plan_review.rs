@@ -952,6 +952,21 @@ fn a_formatted_copy_keeps_its_review() {
         Said::Silent,
         "formatting is not an edit"
     );
+    let journal = std::fs::read_to_string(
+        w.root
+            .join("claude")
+            .join("amont-agent")
+            .join("journal.log"),
+    )
+    .unwrap();
+    let line = journal
+        .lines()
+        .rfind(|l| l.contains("plan-review-panel"))
+        .unwrap();
+    assert!(
+        line.contains("match=new"),
+        "reviews of the new sha are not counted as legacy: {line}"
+    );
     let edited = w.plan("p.md", &formatted.replace("work", "works"), "repos=tool");
     assert!(
         matches!(w.present(&edited, &t), Said::Deny(ref why) if why.contains("stale")),
@@ -1063,6 +1078,43 @@ fn a_review_bound_before_2_25_still_passes_and_is_journalled() {
         .rfind(|l| l.contains("plan-review-panel"))
         .unwrap();
     assert!(line.contains("match=legacy"), "{line}");
+
+    // The pass saved its baseline under the new sha: the store migrates.
+    let new = w
+        .block(&plan, None)
+        .split("sha=")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(">>>")
+        .to_string();
+    let saved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(w.store().join("by-body").join(format!("{new}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["sha"], new.as_str());
+
+    // A baseline only a 2.24 binary wrote, keyed by the byte sha, found
+    // from a new path: nothing to review.
+    let w2 = World::new("legacy-baseline");
+    rust_cli(&w2);
+    let again = w2.plan("resumed-name.md", BODY, "repos=tool");
+    let by_body = w2.store().join("by-body");
+    std::fs::create_dir_all(&by_body).unwrap();
+    std::fs::write(
+        by_body.join(format!("{old}.json")),
+        serde_json::json!({
+            "sha": old,
+            "roles": ["backend", "lang:rust", "tui", "unix"],
+            "classes": ["cli", "lang:rust"],
+            "path": "/elsewhere/p.md",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = w2.bin().arg("plan-panel").arg(&again).output().unwrap();
+    let panel = String::from_utf8(out.stdout).unwrap();
+    assert!(panel.trim_end().ends_with("panel=current"), "{panel}");
+    assert_eq!(w2.present(&again, &Transcript::default()), Said::Silent);
 
     let both = w
         .bin()

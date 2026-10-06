@@ -57,6 +57,14 @@ serde = "1"
 # PINNED EXACTLY: a parser change may change the sha of every plan and
 # turn every review in flight stale. A bump is its own PR, and the
 # `body_sha` fixture test is what tells you whether it re-hashes.
+#
+# What this owns: pulldown-cmark plus `bitflags`, `memchr` and `unicase`,
+# none with a build script, all with default features off or unused. It is
+# the CommonMark parser rustdoc and mdBook use, released a few times a year;
+# MSRV 1.71.1, under ours. If it were abandoned, the pin keeps building, and
+# the fallback is the rung rejected on 2026-10-06: a hand-rolled block
+# scanner, which would have to own CommonMark's list, quote, fence and
+# container-indent rules — the edge cases the line rules got wrong.
 pulldown-cmark = { version = "=0.13.4", default-features = false }
 
 # NO [dev-dependencies]. `serde_json` above is a normal dependency and is

@@ -38,15 +38,15 @@ pub fn words(markdown: &str) -> String {
         // A code block's text arrives in as many events as the parser likes;
         // it is collected into one item so that the split never counts.
         if let Some(block) = code.as_mut() {
-            match event {
-                Event::Text(t) => block.push_str(&t),
-                Event::End(TagEnd::CodeBlock) => {
-                    out.push(format!("c:{block}"));
-                    code = None;
-                    out.kind(BARE);
-                }
-                _ => {}
+            if let Event::End(TagEnd::CodeBlock) = event {
+                out.push(format!("c:{block}"));
+                code = None;
+                out.kind(BARE);
+            } else if let Event::Text(t) = event {
+                block.push_str(&t);
             }
+            // CommonMark gives a code block only text; anything else inside
+            // one would be a parser change, which the fixture sha catches.
             continue;
         }
         match event {
@@ -59,7 +59,10 @@ pub fn words(markdown: &str) -> String {
                 code = Some(String::new());
             }
             Event::Text(t) => out.prose.push_str(&t),
-            Event::Code(c) => out.push(format!("s:{c}")),
+            Event::Code(c) | Event::InlineMath(c) | Event::DisplayMath(c) => {
+                out.push(format!("s:{c}"));
+            }
+            Event::FootnoteReference(f) => out.push(format!("w:[^{f}]")),
             Event::SoftBreak | Event::HardBreak => out.prose.push(' '),
             Event::Html(h) | Event::InlineHtml(h) => out.prose.push_str(&h),
             Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) => {
@@ -77,8 +80,10 @@ pub fn words(markdown: &str) -> String {
             Event::Start(Tag::Heading { .. }) => out.kind("k:heading"),
             Event::Start(Tag::TableRow | Tag::TableHead) => out.kind("k:row"),
             Event::Start(Tag::TableCell) => out.kind("k:cell"),
+            // Every other block, and every end: a boundary of no kind. A tag
+            // a parser bump adds lands here too, as a boundary, never as
+            // nothing; the `Event` match itself is exhaustive.
             Event::Start(_) | Event::End(_) | Event::Rule => out.kind(BARE),
-            _ => {}
         }
     }
     out.flush();
