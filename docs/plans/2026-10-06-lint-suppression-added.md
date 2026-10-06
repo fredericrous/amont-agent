@@ -143,11 +143,11 @@ the silent path. A firing edit adds the `git config` spawn of
 reported, not budgeted. Both are measured before and after the change.
 
 ## Phases
-- [ ] **Phase 1, Payload.** `FileOp` gains `change: Option<Change>`, where
+- [x] **Phase 1, Payload.** `FileOp` gains `change: Option<Change>`, where
   `Change` is `Write { content }` or `Edits(Vec<Edit { old, new, replace_all }>)`.
   It is parsed in `src/payload.rs:264-314` for PreToolUse writes only. Read
   and Post events are unchanged.
-- [ ] **Phase 2, Rule.** Add `src/rules/lint_suppression_added.rs`:
+- [x] **Phase 2, Rule.** Add `src/rules/lint_suppression_added.rs`:
   - `RULE`: Advise, ceiling Deny, `Examine::Legacy` returning `None` (as in
     `read_unbounded_large.rs:18-38`), evidence 1.02 per 1,000
     (2026-10-06, `Flat`).
@@ -171,14 +171,14 @@ reported, not budgeted. Both are measured before and after the change.
   - each known false negative, including a swap;
   - both forms of `phrase`, with line numbers taken from the hits past the
     before count.
-- [ ] **Phase 3, Wiring.** The write branch of `on_file`
+- [x] **Phase 3, Wiring.** The write branch of `on_file`
   (`src/hook.rs:440-463`) follows the order above, using the stance match
   pattern from `hook.rs:502-513` and `note_file` with the excerpt above. Also:
   - register the rule in `rules/mod.rs`;
   - add `tests/corpus/lint-suppression-added.cases`, with Bash negatives only,
     as for the other file-tool rules;
   - add its `EMBEDDED` entry in `src/corpus.rs`.
-- [ ] **Phase 4, Integration tests** in `tests/hook.rs`, using
+- [x] **Phase 4, Integration tests** in `tests/hook.rs`, using
   `ReadFixture::file_event`:
   - an Edit adding `# type: ignore` advises and does not deny;
   - an Edit that changes code on an already-suppressed line is silent;
@@ -188,7 +188,7 @@ reported, not budgeted. Both are measured before and after the change.
   - the implementation-review guard still denies;
   - an advised Edit followed by a Read of the same file: `file-reread`
     sees the write.
-- [ ] **Phase 5, Measurement and docs.**
+- [x] **Phase 5, Measurement and docs.**
   - **Shared fixture:** `tests/fixtures/suppressions.txt` holds tagged
     lines (`+` for positive, `-` for negative, with a file extension).
   - **Rate script:** add `tools/suppression-rate.py`. It works on fragments
@@ -235,6 +235,43 @@ reported, not budgeted. Both are measured before and after the change.
 - 2026-10-06 — **Implementation path:** Phases 1–5 go through `relais`
   (acceptance `make check`) if `relais doctor` is green. Otherwise they are
   done by hand in the task worktree.
+- 2026-10-06 — **The script self-test runs from a Rust test, not from
+  `make check`.** `tests/suppression_rate.rs` runs `tools/suppression-rate.py
+  --self-test`, because `ci.mirrors-the-local-check` would force a CI workflow
+  change if `make check` ran it.
+- 2026-10-06 — **Known approximation: the reported line can be an earlier
+  occurrence.** When the same marker already exists and the edit adds another,
+  the hits are the occurrences past the first n in line order, so the line
+  reported can be the pre-existing one. A unit test pins it.
+- 2026-10-06 — **A keyword pre-check before any read, and a read cap of
+  256 KiB instead of 1 MiB.** The first latency run showed +26 ms p99 for a
+  silent edit at 1 MiB, over budget. A source file can gain a marker only if
+  the inserted text names one, so `worth_rebuilding` skips the read when it
+  does not. The Rust keywords are attribute forms only, because `.expect(`
+  is in most Rust edits. The full rebuild costs about 22 ms per MiB, so the
+  cap now keeps the worst silent rebuild near 6 ms. A larger file falls back
+  to the fragments and loses only the line number. The pre-check is listed
+  as a known false negative.
+- 2026-10-06 — **The release is 2.26.0, not 2.25.0.** Another session
+  released 2.25.0 (#69) while this branch was open. It carried
+  read-unbounded-large and the #62 fix, so this release carries only this
+  rule.
+- 2026-10-06 — **Test isolation fix in `tests/hook.rs`.** `send_inner` now
+  sets `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`. Since
+  today, the developer's global `implementation-review.stance deny` leaked
+  into `a_push_from_an_unrehearsed_tree_…`, which failed on `main` too. The
+  relais repair attempt found the fix.
+- 2026-10-06 — **Relais outcome.** The first run was interrupted at dispatch
+  by an API outage (ENOTFOUND), with no edits, and was abandoned. In the
+  second run, attempt 1 produced the full candidate and the repair timed out
+  at the 20-minute wall. The candidate was salvaged by hand: the CHANGELOG
+  entry was moved to a fresh `## Unreleased` and the latency fix above was
+  added. The relais decision stays open until the merge, then
+  `--answer salvaged`.
+- 2026-10-06 — **The fire path costs about 100–200 ms, and that predates
+  this rule.** `read-unbounded-large` firing on `main` measures 215 ms p50.
+  The cost is in the shared advise path, not in this rule, and a follow-up
+  issue is filed.
 
 ## Verification
 - **Phases 1–4:** `make check` (fmt, clippy `-D warnings`, `cargo test
@@ -272,6 +309,43 @@ reported, not budgeted. Both are measured before and after the change.
   the tap formula shows `2.25.0` with a matching sha256.
 - **Phase 7:** `amont-agent --version` → 2.25.0, and a piloted Edit through
   the installed binary advises.
+
+### Observed (2026-10-06, before push)
+- `make check` → 735 passed, 0 failed. `make msrv` → builds on 1.85.0.
+  `Cargo.toml` and `Cargo.lock` are unchanged.
+- Piloted run, release and debug builds, with `CLAUDE_CONFIG_DIR` and
+  `GIT_CONFIG_GLOBAL` pointing at a scratch directory. Every case printed
+  only JSON on stdout and 0 bytes on stderr:
+  - adding `# type: ignore[attr-defined]` → advise text in the pinned form,
+    `line 2: # type: ignore[attr-defined]`; journal `x.py:2 type: ignore[attr-defined] (+1) exact`;
+  - `f(1)` → `f(2)` on a suppressed line → silent;
+  - a new `tsconfig.json` with `"strict": false` → advise
+    `line 3: loosens tsconfig.json strict = false`;
+  - `docs/x.md` with `# noqa` → silent;
+  - a FIFO → never opened, journal `fragment:not-file`. A silent FIFO edit
+    takes 8.8 ms median and 9.4 ms max; a firing one takes about 105 ms,
+    the shared fire path;
+  - stance `observe` → silent, journal `watched`.
+- Latency, measured with a Python harness of 200 runs (hyperfine is not
+  installed), release builds, `origin/main` against the branch, as the added
+  p50 / p99:
+  - silent 30 KB: −0.4 / within noise;
+  - silent missing file: +0.0 / noise;
+  - silent 1 MiB (no keyword): +0.2 / +2.3 ms;
+  - silent full rebuild at the 256 KiB cap: +4.5 / −0.3 ms;
+  - silent 1 MiB with a keyword (fragment path): +0.2 / −1.6 ms.
+
+  The silent path is within budget. Firing at 30 KB adds about 80–150 ms,
+  the same order as `read-unbounded-large` firing on `main`, so it is
+  reported, not budgeted. The p99 swings by ±15 ms run to run even where no
+  new code runs, which is process-spawn noise on a loaded machine.
+- Rate script:
+  - `--until 2026-10-06` → 101 edits, 1.01 per 1,000 (99,810 calls);
+  - `| head -1` → exit 0, no traceback;
+  - `--root /nonexistent` → exit 1;
+  - a bad flag → exit 2;
+  - `--self-test` → 66 samples agree;
+  - no row wider than 80 columns.
 
 ## Outcome
 

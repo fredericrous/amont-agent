@@ -459,7 +459,7 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
             ));
         }
         crate::session_state::record(&op.session, "write", &op.path, "full");
-        return Decision::Silent;
+        return lint_suppression(op);
     }
     let mut advise: Vec<String> = Vec::new();
     let mut deny: Vec<String> = Vec::new();
@@ -518,6 +518,39 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
         Decision::Advise(advise.join("\n\n"))
     } else {
         Decision::Silent
+    }
+}
+
+/// An Edit, MultiEdit or Write that adds a lint suppression or loosens a lint
+/// configuration. The file is rebuilt before and after only for a file type the
+/// rule examines; the effects (the bounded read) stay here at the boundary.
+fn lint_suppression(op: &crate::payload::FileOp) -> Decision {
+    use rules::lint_suppression_added as lsa;
+    let Some(change) = &op.change else {
+        return Decision::Silent;
+    };
+    if !lsa::worth_rebuilding(&op.path, change) {
+        return Decision::Silent;
+    }
+    let rebuilt = lsa::reconstruct(&op.path, change);
+    let hits = lsa::examine_change(&op.path, &rebuilt.before, &rebuilt.after);
+    if hits.is_empty() {
+        return Decision::Silent;
+    }
+    let rule = &lsa::RULE;
+    let stance = crate::stance::resolve(rule);
+    let shown = op.path.to_string_lossy().into_owned();
+    note_file(
+        rule,
+        stance,
+        op,
+        &lsa::excerpt(&shown, &hits, &rebuilt.mode),
+    );
+    let text = lsa::phrase(&shown, &hits, &rebuilt.mode);
+    match stance {
+        Stance::Deny => Decision::Deny(text),
+        Stance::Advise => Decision::Advise(text),
+        Stance::Observe => Decision::Silent,
     }
 }
 

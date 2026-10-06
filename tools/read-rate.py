@@ -13,6 +13,9 @@ line numbers the Read tool adds.
     tools/read-rate.py [--root DIR] [--weeks N] [--threshold BYTES]
 
 `--root` defaults to `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
+
+Exit codes: 0 done (also when stdout is closed early, as by `| head`);
+1 no transcripts under --root; 2 usage error.
 """
 
 import argparse
@@ -108,7 +111,7 @@ def scan(root: pathlib.Path, threshold: int):
     return calls, hits, chars
 
 
-def main() -> int:
+def run() -> int:
     default = pathlib.Path(
         os.environ.get("CLAUDE_CONFIG_DIR") or pathlib.Path.home() / ".claude"
     ) / "projects"
@@ -135,6 +138,21 @@ def main() -> int:
         rate = 1000.0 * hits[w] / calls[w] if calls[w] else 0.0
         print(f"{w:<9} {calls[w]:>8} {hits[w]:>10} {rate:>9.1f} {chars[w]:>12}")
     return 0
+
+
+def main() -> int:
+    try:
+        code = run()
+        sys.stdout.flush()
+        return code
+    except BrokenPipeError:
+        # The reader went away (`| head`). Point stdout at the null device so
+        # the interpreter's exit flush does not raise again, and leave quietly.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+        return 0
 
 
 if __name__ == "__main__":

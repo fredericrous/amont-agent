@@ -35,6 +35,7 @@
 | `persisted-output-dump` | `advise` | reading back whole a tool result the harness saved to a file for being too large, paying for it twice |
 | `file-reread` | `advise` | a Read, or a `cat`, of a file this session already has in context and that is unchanged on disk since — answered from the session's own record, not the command |
 | `read-unbounded-large` | `advise` (ceiling `deny`) | a Read with no `offset`/`limit` of a file over 16 KB, where the whole file lands in the context and every later turn carries it; plan files and diffs a reviewer is handed are exempt |
+| `lint-suppression-added` | `advise` (ceiling `deny`) | an Edit, MultiEdit or Write that adds a lint suppression (`# type: ignore`, `# noqa`, `eslint-disable`, `@ts-ignore`, `#[allow]`, `//nolint`) or loosens a lint configuration (tsconfig, eslint, pyright, ruff, Cargo `[lints]`, golangci), where `general.no-disabled-safety` says to fix the finding instead; the file is compared before and after by marker, not by line |
 | `request-fanout` | `observe` (ceiling `advise`) | one command that may make more than 50 explicit network transfers to one destination — a loop following `Link: next`, `gh api --paginate`, a curl URL range — counted by the shell analysis ([analysis.md](analysis.md)) with the loops and calls that multiply them |
 
 Two more checks run after a command rather than before it, on `PostToolUse`:
