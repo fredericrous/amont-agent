@@ -50,6 +50,7 @@ pub mod plan_review_panel;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
 pub mod push_preview;
+pub mod read_unbounded_large;
 pub mod release_tag_push;
 pub mod request_fanout;
 pub mod sed_in_place;
@@ -441,6 +442,7 @@ pub const RULES: &[Rule] = &[
     whole_file_dump::RULE,
     persisted_output_dump::RULE,
     file_reread::RULE,
+    read_unbounded_large::RULE,
     request_fanout::RULE,
 ];
 

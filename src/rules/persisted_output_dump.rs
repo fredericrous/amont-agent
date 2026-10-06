@@ -23,8 +23,11 @@ pub const RULE: Rule = Rule {
     confirm: None,
 };
 
+/// Either separator, or a mix of both: on Windows the Read tool's
+/// `file_path` spells it `\tool-results\`, and a relative path joined onto
+/// the session cwd can come out as `…\tool-results/a.txt`.
 pub fn is_persisted(path: &str) -> bool {
-    path.contains("/tool-results/")
+    path.replace('\\', "/").contains("/tool-results/")
 }
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
@@ -88,5 +91,14 @@ mod tests {
             "cat /Users/x/.claude/projects/p/s/tool-results/a.txt | grep -c error"
         ));
         assert!(!fires("cat src/main.rs"));
+    }
+
+    #[test]
+    fn a_windows_path_is_a_saved_result_too() {
+        assert!(is_persisted(
+            r"C:\Users\x\.claude\projects\p\s\tool-results\a.txt"
+        ));
+        assert!(is_persisted(r"C:\Users\x\scratch\tool-results/a.txt"));
+        assert!(!is_persisted(r"C:\Users\x\src\tool-results.rs"));
     }
 }

@@ -2,7 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **`read-unbounded-large`: a Read with no window over a large file is
+  advised.** A Read with no `offset`/`limit` of a regular file over 16 KiB
+  says what it costs (up to 2,000 lines in every later turn) and how to
+  take the part that is wanted; `offset: 1` with a `limit` is the way
+  through for a deliberate whole read. Ships `advise`, ceiling `deny`.
+  Plans (`.claude/plans`, `docs/plans`), `.diff`/`.patch`, media and
+  `tool-results/` are exempt, and a file the session already read is
+  `file-reread`'s to answer. `tools/read-rate.py` prints the weekly rate
+  from transcripts.
+
 ### Fixed
+
+- **`persisted-output-dump` sees a Windows path.** It matched
+  `/tool-results/` only, so on Windows a Read, or a `cat`/`head`, of a
+  saved tool result, spelled `\tool-results\`, went unadvised. Either separator, or a mix
+  of both, now counts.
 
 - **The pass-file guard refuses writes, not reads.** 2.24.0 refused any
   Bash command naming `~/.claude/amont-agent/implementation-review/`,

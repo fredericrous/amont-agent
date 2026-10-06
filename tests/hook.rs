@@ -657,12 +657,39 @@ struct ReadFixture {
 
 impl ReadFixture {
     fn new(name: &str) -> ReadFixture {
+        ReadFixture::with_size(name, 6000)
+    }
+
+    /// A file of `bytes` bytes (a multiple of 100), in lines of 100.
+    fn with_size(name: &str, bytes: usize) -> ReadFixture {
         let dir = home().join(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let file = dir.join("big.rs");
-        std::fs::write(&file, "x".repeat(6000)).expect("a file worth reading");
+        let line = format!("{}\n", "x".repeat(99));
+        std::fs::write(&file, line.repeat(bytes / 100)).expect("a file worth reading");
         ReadFixture { dir, file }
+    }
+
+    /// As [`ReadFixture::file_event`], with the stance config pinned to `cfg`.
+    fn file_event_with_global(
+        &self,
+        event: &str,
+        tool: &str,
+        session: &str,
+        input: &str,
+        cfg: &str,
+    ) -> Reply {
+        let cwd = serde_json::Value::String(self.dir.display().to_string());
+        let path = serde_json::Value::String(self.file.display().to_string());
+        send_with_global(
+            &format!(
+                r#"{{"hook_event_name":"{event}","tool_name":"{tool}","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default",
+                 "tool_input":{{"file_path":{path}{input}}}}}"#
+            ),
+            cfg,
+        )
     }
 
     fn file_event(&self, event: &str, tool: &str, session: &str, input: &str) -> Reply {
@@ -750,6 +777,86 @@ fn a_file_read_twice_is_advised_and_an_edit_between_resets_it() {
         "a 6 KB cat is a dump too: {}",
         cat.stdout
     );
+}
+
+/// A first Read of a large file with no window is advised, never refused.
+#[test]
+fn a_large_whole_read_is_advised() {
+    let f = ReadFixture::with_size("unbounded-large", 20_000);
+    let first = f.read("ul-1");
+    assert_eq!(first.code, 0);
+    assert!(
+        first.reason().contains("read-unbounded-large"),
+        "{}",
+        first.stdout
+    );
+    assert_eq!(first.decision(), None, "advise, not deny: {}", first.stdout);
+}
+
+/// A window, or a deliberate whole read spelled `offset: 1` plus a `limit`,
+/// is the way through.
+#[test]
+fn a_windowed_or_deliberate_whole_read_is_silent() {
+    let f = ReadFixture::with_size("unbounded-window", 20_000);
+    let windowed = f.file_event("PreToolUse", "Read", "uw-1", r#","limit":200"#);
+    assert!(
+        !windowed.stdout.contains("read-unbounded-large"),
+        "{}",
+        windowed.stdout
+    );
+    let whole = f.file_event("PreToolUse", "Read", "uw-2", r#","offset":1,"limit":200"#);
+    assert!(
+        !whole.stdout.contains("read-unbounded-large"),
+        "{}",
+        whole.stdout
+    );
+}
+
+/// Under the threshold the advice costs more than the read.
+#[test]
+fn a_small_first_read_stays_silent() {
+    let f = ReadFixture::new("unbounded-small");
+    assert_eq!(f.read("us-1").stdout, "");
+}
+
+/// A second whole Read is `file-reread`'s to answer, and only its.
+#[test]
+fn a_reread_says_file_reread_only() {
+    let f = ReadFixture::with_size("unbounded-reread", 20_000);
+    assert!(f.read("ur-1").reason().contains("read-unbounded-large"));
+    f.read_done("ur-1");
+    let second = f.read("ur-1");
+    let said = second.reason();
+    assert!(said.contains("file-reread"), "{}", second.stdout);
+    assert!(!said.contains("read-unbounded-large"), "{}", second.stdout);
+}
+
+/// With `file-reread` observing, a re-read still keeps this rule quiet: it
+/// yields to whether the file was seen, not to whether a message came back.
+#[test]
+fn an_observed_reread_still_suppresses() {
+    let f = ReadFixture::with_size("unbounded-observed", 20_000);
+    let cfg = "[amont \"agent.file-reread\"]\n\tstance = observe";
+    let session = "obsrd-01";
+    // The first read is only remembered, so the journal below holds what the
+    // second one did and nothing else.
+    f.file_event_with_global("PostToolUse", "Read", session, "", cfg);
+    let second = f.file_event_with_global("PreToolUse", "Read", session, "", cfg);
+    assert_eq!(second.stdout, "", "neither rule speaks: {}", second.stdout);
+
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    let rows: Vec<&str> = journal.lines().filter(|l| l.contains(session)).collect();
+    let rereads = rows
+        .iter()
+        .filter(|l| l.contains("file-reread") && l.contains("watched"))
+        .count();
+    let large = rows
+        .iter()
+        .filter(|l| l.contains("read-unbounded-large"))
+        .count();
+    assert_eq!(rereads, 1, "{rows:?}");
+    assert_eq!(large, 0, "{rows:?}");
 }
 
 /// A Read is remembered once it has HAPPENED. One that was refused, or that

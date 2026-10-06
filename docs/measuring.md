@@ -143,6 +143,22 @@ this command", replayed. Where a rule has been widened since, or was
 observing then and advises now, the number is a reconstruction — and it is
 still the only evidence there is.
 
+### The Read tier from transcripts
+
+The Read tool never reaches the backtester, so `read-unbounded-large` is
+measured from the transcripts directly:
+
+```sh
+tools/read-rate.py
+tools/read-rate.py --weeks 8
+```
+
+For each ISO week it prints the tool calls, the Reads over 16 KB with no
+`offset`/`limit` after the same exemptions the rule makes (plans, diffs,
+media, `tool-results/`), that count per 1000 calls, and the characters. Run
+it to recount the rule's `per_1000` and again two weeks after a release, to
+compare against the weeks before.
+
 ## 5. Graduate — promote on the evidence
 
 ```sh
