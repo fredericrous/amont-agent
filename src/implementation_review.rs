@@ -274,6 +274,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     let (repo, targets) = match push_target::resolve(&cwd, cmd) {
         Push::Resolved { repo, targets } => (repo, targets),
         Push::DryRun => return Judged::Decline("dry-run"),
+        Push::DeleteOnly => return Judged::Decline("delete-only"),
         Push::Unresolvable { shape, .. } => {
             // Under `deny` an unreadable shape is held, so `--all` is not the
             // way around the gate; otherwise it is journalled and passes.

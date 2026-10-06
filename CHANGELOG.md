@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A delete-only push is not held under deny** (#66). `git push origin
+  --delete <branch>…`, `-d` (also inside a cluster such as `-ud`), and a
+  push whose every refspec is `:<ref>` publish nothing, so `push-preview`
+  and `implementation-review` now pass them (`a delete publishes nothing`
+  and `delete-only` in the journal) instead of holding them as unreadable.
+  A push that deletes and publishes at once, `--delete` with a `src:dst`
+  refspec, and `--prune` are still unreadable, and still held under deny.
+
 ## v2.26.0
 
 ### Added
