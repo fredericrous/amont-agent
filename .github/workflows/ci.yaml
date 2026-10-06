@@ -51,6 +51,9 @@ jobs:
       # a red `rust` job without pushing.
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      # The release's tap bump, tested here rather than first exercised by a
+      # tag: a publish-tap job that fails runs after the release is public.
+      - run: python3 scripts/test_bump_tap.py
 
   # The floor `rust-version` claims, compiled against.
   #

@@ -78,7 +78,8 @@ usage: amont-agent <command>
   analyze '<command>'   the shell analysis of one command, as JSON — the
                         interface tools/shell-oracle compares against real
                         shells [--dialect, as for check]
-  rules                 every rule, its default stance and its evidence
+  rules [--json]        every rule, its stance and its evidence; --json is
+                        one array, the interface the homebrew tap reads
   preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
                         validate a localhost preview of HEAD for approval
                         and render its guide to a page
@@ -299,7 +300,7 @@ fn main() -> ExitCode {
             Sub::Mine => run_mine(&args),
             Sub::Check => run_check(&args),
             Sub::Analyze => run_analyze(&args),
-            Sub::Rules => run_rules(),
+            Sub::Rules => run_rules(&args),
             Sub::Preview => run_preview(&args),
             Sub::PlanSha => run_plan_sha(&args),
             Sub::PlanPanel => run_plan_panel(&args),
@@ -1298,7 +1299,90 @@ fn stance_shown(now: rules::Stance, ships: rules::Stance) -> String {
     }
 }
 
-fn run_rules() -> ExitCode {
+const RULES_USAGE: &str = "usage: amont-agent rules [--json]\n";
+
+/// `rules` takes `--json` and nothing else. It matches its arguments itself:
+/// `flags()` accepts every flag any subcommand knows and keeps bare words,
+/// so `rules --force` or `rules foo` would pass through it silently, and
+/// until 2.27 `rules` ignored its arguments altogether — `rules --json`
+/// printed the text table and exited 0.
+fn run_rules(args: &[OsString]) -> ExitCode {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    // Help wins wherever it appears, as in the other subcommands.
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{RULES_USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    match args.as_slice() {
+        [] => print_rules_text(),
+        [a] if a == "--json" => print_rules_json(),
+        [a, rest @ ..] if a == "--json" => {
+            eprintln!(
+                "amont-agent: unexpected argument `{}`; `rules` takes only --json",
+                rest[0]
+            );
+            ExitCode::from(2)
+        }
+        [a, ..] => {
+            eprintln!("amont-agent: unknown argument `{a}`; `rules` takes only --json");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// One object per rule, then per assertion, in the order the text prints
+/// them. The keys are an interface — `scripts/bump-tap.py` and the tap's
+/// formula read them — and `tests/rules_json.rs` pins the exact set.
+/// `default_stance` is what ships; `stance` is what is in force here.
+fn print_rules_json() -> ExitCode {
+    let entry = |id: &str,
+                 kind: &str,
+                 ships: rules::Stance,
+                 now: rules::Stance,
+                 max: rules::Stance,
+                 e: &rules::Evidence| {
+        json::object(&[
+            json::string_field("id", id),
+            json::string_field("kind", kind),
+            json::string_field("default_stance", ships.as_str()),
+            json::string_field("stance", now.as_str()),
+            json::string_field("max_stance", max.as_str()),
+            json::float_field("per_1000", e.per_1000),
+            json::string_field("measured", e.measured),
+        ])
+    };
+    let mut items: Vec<String> = rules::RULES
+        .iter()
+        .map(|r| {
+            entry(
+                r.id,
+                "rule",
+                r.default_stance,
+                stance::resolve(r),
+                r.max_stance,
+                &r.evidence,
+            )
+        })
+        .collect();
+    // An assertion has no ceiling, so it reports `deny`: nothing caps it.
+    items.extend(assertions::ASSERTIONS.iter().map(|a| {
+        entry(
+            a.id,
+            "assertion",
+            a.default_stance,
+            stance::resolve_assertion(a),
+            rules::Stance::Deny,
+            &a.evidence,
+        )
+    }));
+    println!("{}", json::array(&items));
+    ExitCode::SUCCESS
+}
+
+fn print_rules_text() -> ExitCode {
     let w = ui::id_column();
     let rule_stances: Vec<String> = rules::RULES
         .iter()

@@ -41,6 +41,16 @@ pub fn int_field(key: &str, value: i64) -> String {
     format!("\"{}\":{value}", escape(key))
 }
 
+/// A measured rate, unquoted. `{}` on the `f32` itself prints the shortest
+/// text that reads back as the same value, so `62.3` stays `62.3` (widening
+/// to `f64` first would print `62.29999923706055`). JSON has no NaN or
+/// infinity, and every value written here is a constant of this crate, so a
+/// non-finite one is a bug, not input.
+pub fn float_field(key: &str, value: f32) -> String {
+    assert!(value.is_finite(), "{key}: {value} is not a JSON number");
+    format!("\"{}\":{value}", escape(key))
+}
+
 pub fn string_array_field(key: &str, values: &[String]) -> String {
     let items: Vec<String> = values
         .iter()
@@ -86,6 +96,19 @@ mod tests {
             "\"rule\":\"pipe-to-tail\""
         );
         assert_eq!(int_field("per_1000", 42), "\"per_1000\":42");
+    }
+
+    #[test]
+    fn a_float_field_prints_the_shortest_exact_form() {
+        assert_eq!(float_field("x", 62.3), "\"x\":62.3");
+        assert_eq!(float_field("x", 0.0), "\"x\":0");
+        assert_eq!(float_field("x", 292.6), "\"x\":292.6");
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a JSON number")]
+    fn a_non_finite_float_is_a_bug() {
+        float_field("x", f32::NAN);
     }
 
     #[test]
