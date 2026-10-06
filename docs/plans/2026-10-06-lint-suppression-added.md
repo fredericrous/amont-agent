@@ -8,7 +8,7 @@ adrs: [decisions:ADR-0011]
 
 ## Review panel
 👉 **Decide:** none — approve if advising on added suppressions, measured over a 2-week soak, is the right first step before deny.
-📍 amont-agent · plan reviewed · next: worktree, Phases 1–5, then release 2.25.0 and brew upgrade. Panel: backend, lang:rust, tui, unix.
+📍 amont-agent · plan reviewed · next: worktree, Phases 1–5, then release 2.26.0 and brew upgrade. Panel: backend, lang:rust, tui, unix.
 **Changed by review:** markers compared instead of whole lines; bounded, FIFO-safe read with journaled fallback reasons; exact advise text and journal excerpt.
 **Carried to implementation** (backend, final pass): a `ReadFixture::with_content` helper for Phase 4; the reported line is approximate when the marker already exists, so it is listed as a known approximation with a test.
 **Verdicts:** round 1: 4 approve-with-changes; round 2 and final: backend approve-with-changes, every finding resolved.
@@ -17,7 +17,8 @@ adrs: [decisions:ADR-0011]
 ## Goal
 Agents add lint suppressions instead of fixing the finding. A transcript scan
 on 2026-10-06 found 101 Edit/Write calls that added one, out of 99,112 tool
-calls: 1.02 per 1,000, or about 1.7% of code edits. Week 41 already has 22.
+calls: 1.02 per 1,000, or about 1.7% of code edits (the planning scan; the
+shipped script measures 1.01 over 99,810 calls, see Observed). Week 41 already has 22.
 Examples: `#[allow(clippy::too_many_arguments)]`,
 `// eslint-disable-next-line react-hooks/exhaustive-deps`, and
 `# pyright: reportPrivate…` headers. A new rule, `lint-suppression-added`,
@@ -149,7 +150,7 @@ reported, not budgeted. Both are measured before and after the change.
   and Post events are unchanged.
 - [x] **Phase 2, Rule.** Add `src/rules/lint_suppression_added.rs`:
   - `RULE`: Advise, ceiling Deny, `Examine::Legacy` returning `None` (as in
-    `read_unbounded_large.rs:18-38`), evidence 1.02 per 1,000
+    `read_unbounded_large.rs:18-38`), evidence 1.01 per 1,000
     (2026-10-06, `Flat`).
   - The pure functions `examine_change`, `markers` and `phrase`.
   - `reconstruct(path, change) -> Rebuilt { before, after, mode: Exact | Fragment(Reason) }`,
@@ -310,7 +311,7 @@ reported, not budgeted. Both are measured before and after the change.
   path is reported.
 - **Rate script:**
   - `python3 tools/suppression-rate.py --until 2026-10-06` → 101 edits,
-    1.02 per 1,000;
+    about 1.0 per 1,000;
   - `… | head -1; echo $?` → no traceback, exit 0;
   - `--root /nonexistent` → exit 1.
 - **Phase 6:** `gh run view <release run> --json conclusion` → `success`;
@@ -319,7 +320,8 @@ reported, not budgeted. Both are measured before and after the change.
   the installed binary advises.
 
 ### Observed (2026-10-06, before push)
-- `make check` → 735 passed, 0 failed. `make msrv` → builds on 1.85.0.
+- `make check` → 735 passed, 0 failed; after the implementation-review fixes,
+  736 passed, 0 failed. `make msrv` → builds on 1.85.0.
   `Cargo.toml` and `Cargo.lock` are unchanged.
 - Piloted run, release and debug builds, with `CLAUDE_CONFIG_DIR` and
   `GIT_CONFIG_GLOBAL` pointing at a scratch directory. Every case printed
@@ -349,6 +351,7 @@ reported, not budgeted. Both are measured before and after the change.
   new code runs, which is process-spawn noise on a loaded machine.
 - Rate script:
   - `--until 2026-10-06` → 101 edits, 1.01 per 1,000 (99,810 calls);
+    stderr empty (0 bytes), so no file or line was skipped;
   - `| head -1` → exit 0, no traceback;
   - `--root /nonexistent` → exit 1;
   - a bad flag → exit 2;

@@ -1,8 +1,8 @@
 //! `lint-suppression-added` — an edit that adds a lint suppression, or makes a
 //! lint configuration looser.
 //!
-//! Measured over 99,112 tool calls (2026-10-06): 101 Edit/Write calls added a
-//! suppression, 1.02 per 1,000 calls or about 1.7% of code edits. The agent
+//! Measured over 99,810 tool calls (2026-10-06): 101 Edit/Write calls added a
+//! suppression, 1.01 per 1,000 calls or about 1.7% of code edits. The agent
 //! reaches for `#[allow(..)]`, `# type: ignore` or `eslint-disable` instead of
 //! fixing the finding (`general.no-disabled-safety`).
 //!
