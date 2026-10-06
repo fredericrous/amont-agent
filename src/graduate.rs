@@ -133,6 +133,8 @@ pub fn set(rule: &Rule, to: Stance) -> Result<(), String> {
         .args(["config", "--global", &key, to.as_str()])
         .output()
         .map_err(|e| format!("could not run git: {e}"))?;
+    // A read later in this process must see the stance just written.
+    crate::gitconfig::forget();
     if out.status.success() {
         Ok(())
     } else {

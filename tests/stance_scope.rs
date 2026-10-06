@@ -144,6 +144,40 @@ fn system_is_the_floor_and_global_outranks_it() {
     assert_eq!(f.stance_of("git-add-broad"), "observe");
 }
 
+/// Git's boolean dialect still reaches the guard: `no`, `off` and `0` all
+/// switch it off, though the keys are now read in one snapshot (#70).
+#[test]
+fn the_switch_speaks_gits_boolean_dialect() {
+    for off in ["no", "OFF", "0"] {
+        let f = Fixture::new(&format!("dialect-{off}"));
+        f.set("--global", "amont.agent.enabled", off);
+        assert_eq!(f.stance_of("pipe-to-tail"), "observe", "enabled = {off}");
+    }
+}
+
+/// A value git refuses is a mistake in the user's file: it is not answered
+/// by `--system`, and the default holds.
+#[test]
+fn a_malformed_value_in_the_users_file_is_not_answered_by_the_machines() {
+    let f = Fixture::new("malformed");
+    f.set("--system", "amont.agent.git-add-broad.stance", "advise");
+    f.set("--global", "amont.agent.git-add-broad.stance", "sometimes");
+    assert_eq!(f.stance_of("git-add-broad"), "observe");
+
+    let f = Fixture::new("malformed-bool");
+    f.set("--global", "amont.agent.enabled", "maybe");
+    assert_eq!(f.stance_of("pipe-to-tail"), "deny");
+}
+
+/// The section and the variable name are case-insensitive, as git reads
+/// them.
+#[test]
+fn a_key_written_in_another_case_still_counts() {
+    let f = Fixture::new("case");
+    f.set("--global", "AMONT.agent.git-add-broad.STANCE", "advise");
+    assert_eq!(f.stance_of("git-add-broad"), "advise");
+}
+
 /// The blanket floor works the same way, and a repository cannot set it.
 #[test]
 fn the_blanket_floor_is_the_machines_too() {

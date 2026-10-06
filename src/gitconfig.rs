@@ -94,10 +94,156 @@ pub enum Value<T> {
 /// rather than falling through to the machine's — a mistake in the file you
 /// edited must not be answered by a file you have never seen.
 fn read(key: &str, ty: Option<&str>) -> Value<String> {
-    match read_in("--global", key, ty) {
+    match read_scope(0, "--global", key, ty) {
         Value::Set(v) => Value::Set(v),
         Value::Bad { why } => Value::Bad { why },
-        Value::Unset => read_in("--system", key, ty),
+        Value::Unset => read_scope(1, "--system", key, ty),
+    }
+}
+
+/// One scope's answer: from its snapshot for this crate's own keys, from
+/// git directly for anything else.
+fn read_scope(index: usize, scope: &str, key: &str, ty: Option<&str>) -> Value<String> {
+    if key.starts_with(PREFIX) {
+        read_cached(index, scope, key, ty)
+    } else {
+        ask_git(scope, key, ty)
+    }
+}
+
+/// Every key this crate reads lives under this prefix, so one
+/// `--get-regexp` per scope answers all of them.
+const PREFIX: &str = "amont.agent.";
+
+/// One scope's `amont.agent.*` keys, read once per process.
+///
+/// Measured (#70): a `git config` spawn costs ~40 ms on a loaded macOS
+/// machine, and the firing path read three keys in two scopes — six spawns,
+/// 120 ms of a 140 ms hook call whose silent path costs 17 ms. A snapshot is
+/// two spawns, whatever the number of keys. The scope argument above is
+/// unchanged: the same two files, with what they include, and nothing else.
+enum Snapshot {
+    /// `(key, value)` in file order; `None` is a valueless key.
+    Keys(Vec<(String, Option<String>)>),
+    /// Git refused the scope (a malformed file, an unreadable include):
+    /// every key read from it is that mistake, as a per-key read reported.
+    Refused(String),
+}
+
+type Snapshots = [Option<Snapshot>; 2];
+
+fn snapshots() -> &'static Mutex<Snapshots> {
+    static CELL: OnceLock<Mutex<Snapshots>> = OnceLock::new();
+    CELL.get_or_init(|| Mutex::new([None, None]))
+}
+
+/// Drop the snapshots, so the next read sees a value this process just
+/// wrote (`graduate`).
+pub fn forget() {
+    if let Ok(mut s) = snapshots().lock() {
+        *s = [None, None];
+    }
+}
+
+fn snapshot_of(scope: &str) -> Snapshot {
+    let Some(out) = git::output(&[
+        "config",
+        scope,
+        "--includes",
+        "--null",
+        "--get-regexp",
+        r"^amont\.agent\.",
+    ]) else {
+        // Git did not run: every key takes its default, as before.
+        return Snapshot::Keys(Vec::new());
+    };
+    match out.code {
+        0 => Snapshot::Keys(parse_null(&out.stdout)),
+        1 => Snapshot::Keys(Vec::new()),
+        _ => Snapshot::Refused(first_line(&out.stderr)),
+    }
+}
+
+/// Read both scopes at once. Nearly every lookup needs both — `--system`
+/// answers whenever the user's file is silent, which for most keys is
+/// always — and a git spawn is the whole cost (~30 ms each on a loaded
+/// machine), so two in parallel cost the wall time of one.
+fn fill(all: &mut Snapshots) {
+    let want = [all[0].is_none(), all[1].is_none()];
+    if want == [false, false] {
+        return;
+    }
+    let read = |i: usize| {
+        let scope = if i == 0 { "--global" } else { "--system" };
+        snapshot_of(scope)
+    };
+    let got = std::thread::scope(|sc| {
+        let handles = [0, 1].map(|i| want[i].then(|| sc.spawn(move || read(i))));
+        // A reader that panicked answers nothing: the defaults, as when git
+        // does not run at all.
+        handles.map(|h| h.map(|h| h.join().unwrap_or(Snapshot::Keys(Vec::new()))))
+    });
+    for (slot, snap) in all.iter_mut().zip(got) {
+        if let Some(snap) = snap {
+            *slot = Some(snap);
+        }
+    }
+}
+
+/// `--null` output: `key\nvalue\0` per entry, `key\0` for a valueless key.
+fn parse_null(raw: &str) -> Vec<(String, Option<String>)> {
+    raw.split('\0')
+        .filter(|e| !e.is_empty())
+        .map(|e| match e.split_once('\n') {
+            Some((k, v)) => (k.to_string(), Some(v.to_string())),
+            None => (e.to_string(), None),
+        })
+        .collect()
+}
+
+/// Git's key equality: section and variable name ignore case, the
+/// subsection between them does not.
+fn canonical(key: &str) -> String {
+    match (key.find('.'), key.rfind('.')) {
+        (Some(first), Some(last)) if first < last => format!(
+            "{}{}{}",
+            key[..first].to_ascii_lowercase(),
+            &key[first..last],
+            key[last..].to_ascii_lowercase()
+        ),
+        _ => key.to_ascii_lowercase(),
+    }
+}
+
+/// What one scope says about `key`, untyped: the LAST value, as `--get`.
+fn lookup(scope_index: usize, scope: &str, key: &str) -> Value<Option<String>> {
+    let Ok(mut all) = snapshots().lock() else {
+        return Value::Unset;
+    };
+    fill(&mut all);
+    let snap = all[scope_index].get_or_insert_with(|| snapshot_of(scope));
+    match snap {
+        Snapshot::Refused(why) => Value::Bad { why: why.clone() },
+        Snapshot::Keys(keys) => {
+            let want = canonical(key);
+            match keys.iter().rev().find(|(k, _)| canonical(k) == want) {
+                Some((_, v)) => Value::Set(v.clone()),
+                None => Value::Unset,
+            }
+        }
+    }
+}
+
+/// [`ask_git`], answered from the scope's snapshot. A typed read of a key
+/// that IS set still asks git, so git alone parses the dialect; the common
+/// case — the key is unset — costs no spawn at all.
+fn read_cached(scope_index: usize, scope: &str, key: &str, ty: Option<&str>) -> Value<String> {
+    match lookup(scope_index, scope, key) {
+        Value::Unset => Value::Unset,
+        Value::Bad { why } => Value::Bad { why },
+        Value::Set(_) if ty.is_some() => ask_git(scope, key, ty),
+        // A valueless key reads as the empty string, as `--get` prints it.
+        Value::Set(v) => Value::Set(v.unwrap_or_default()),
     }
 }
 
@@ -117,7 +263,7 @@ fn read(key: &str, ty: Option<&str>) -> Value<String> {
 /// interfering with what the agent is doing. A scope whose file does not
 /// exist at all exits 1, the same as a key nobody set — which is the answer
 /// we want for a machine with no `/etc/gitconfig`.
-fn read_in(scope: &str, key: &str, ty: Option<&str>) -> Value<String> {
+fn ask_git(scope: &str, key: &str, ty: Option<&str>) -> Value<String> {
     let type_flag = ty.map(|t| format!("--type={t}"));
     let mut args: Vec<&str> = vec!["config", scope, "--includes"];
     if let Some(tf) = &type_flag {
@@ -267,6 +413,42 @@ mod tests {
         assert_eq!(
             pick("nonsense"),
             Err("\"nonsense\" is not one of observe, advise, deny".to_string())
+        );
+    }
+
+    #[test]
+    fn null_output_keeps_values_whole_and_valueless_keys_apart() {
+        let raw = "amont.agent.enabled\0amont.agent.stance\nadvise\0\
+                   amont.agent.x.stance\nline one\nline two\0amont.agent.y.stance\n\0";
+        assert_eq!(
+            parse_null(raw),
+            vec![
+                ("amont.agent.enabled".to_string(), None),
+                ("amont.agent.stance".to_string(), Some("advise".to_string())),
+                (
+                    "amont.agent.x.stance".to_string(),
+                    Some("line one\nline two".to_string())
+                ),
+                ("amont.agent.y.stance".to_string(), Some(String::new())),
+            ]
+        );
+    }
+
+    /// `git config` folds the section and the variable name to lower case
+    /// and keeps the subsection as written.
+    #[test]
+    fn keys_compare_the_way_git_compares_them() {
+        assert_eq!(
+            canonical("amont.agent.agentsMdNotice"),
+            canonical("amont.agent.agentsmdnotice")
+        );
+        assert_eq!(
+            canonical("AMONT.agent.pipe-to-tail.Stance"),
+            "amont.agent.pipe-to-tail.stance"
+        );
+        assert_ne!(
+            canonical("amont.Agent.stance"),
+            canonical("amont.agent.stance")
         );
     }
 

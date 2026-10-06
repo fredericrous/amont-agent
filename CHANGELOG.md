@@ -19,6 +19,18 @@
   it does not, `push-preview` and `implementation-review` hold the push
   under deny, because the shell then runs somewhere the hook cannot name
   (Claude Code resets it to the project root). Other rules still decline.
+- **A firing hook call no longer spawns git once per key** (#70). Every
+  stance lookup ran `git config` twice (`--global`, then `--system`), so a
+  call firing one rule spawned six git processes and a Bash command firing
+  several spawned more. Each scope's `amont.agent.*` keys are now read once
+  per process with `--get-regexp`, both scopes in parallel. A boolean that
+  is actually set is still normalised by git (`--type=bool`), and the scope
+  rule is unchanged: only `--global` and `--system`, with their includes.
+  Measured on a loaded macOS machine, release build, 100–200 runs each: a
+  firing Read went from 111 to 38 ms p50, and a Bash command firing several
+  rules from 398 to 38 ms p50 (p99 788 → 69 ms). The silent path is
+  unchanged (~10 ms). One git spawn costs ~30 ms here under load, so the
+  issue's 30 ms budget is not met on this machine.
 
 ## v2.26.0
 
