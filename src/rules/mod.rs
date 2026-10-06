@@ -478,6 +478,18 @@ mod tests {
     use super::*;
     use crate::shell::lex;
 
+    /// `rules --json` writes every rate as a JSON number, and JSON has no
+    /// NaN or infinity: `json::float_field` asserts it, this keeps it true.
+    #[test]
+    fn every_measured_rate_is_a_json_number() {
+        for r in RULES {
+            assert!(r.evidence.per_1000.is_finite(), "{}", r.id);
+        }
+        for a in crate::assertions::ASSERTIONS {
+            assert!(a.evidence.per_1000.is_finite(), "{}", a.id);
+        }
+    }
+
     fn at_of(parsed: &Parsed, needle: &str) -> usize {
         parsed
             .clauses()

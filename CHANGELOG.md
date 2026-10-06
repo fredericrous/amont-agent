@@ -32,6 +32,25 @@
   unchanged (~10 ms). One git spawn costs ~30 ms here under load, so the
   issue's 30 ms budget is not met on this machine.
 
+## v2.27.0
+
+### Added
+
+- **`amont-agent rules --json`.** One array, one object per rule and per
+  assertion, with `id`, `kind`, `default_stance` (what ships), `stance`
+  (what is in force here), `max_stance`, `per_1000` and `measured`. The
+  keys are an interface: the homebrew tap reads them. `rules` now refuses
+  any other argument (exit 2); until now it ignored them, so `rules --json`
+  printed the text table.
+
+### Fixed
+
+- **The brew caveat names every rule that refuses by default.** It said
+  only `pipe-to-tail` refuses, false since `plan-review-panel` shipped at
+  deny in 2.22.0. The release now writes the list from the published
+  binary's `rules --json` (`scripts/bump-tap.py`), and from 2.27.0 the
+  formula's `brew test` checks it against the brewed binary.
+
 ## v2.26.0
 
 ### Added

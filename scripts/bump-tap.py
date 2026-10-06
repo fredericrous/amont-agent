@@ -10,21 +10,60 @@ refuses loudly on ANY surprise — a checksum file for the wrong version, a
 target the formula wants that the release did not build, a rewrite count
 other than what the formula carries, a stale version string surviving.
 
+It also writes the caveat's list of rules that refuse by default, from the
+released binary's own `amont-agent rules --json`: the `%w[...]` line inside
+the formula's `def refusing_by_default`. That list was hand-written once
+and went stale for four releases (it said only pipe-to-tail refuses, while
+plan-review-panel had shipped at deny since 2.22.0); the formula's `brew
+test` now checks it against the brewed binary as well.
+
 Idempotent on purpose: re-run against a formula already at the version it
 produces byte-identical output, so the workflow's "nothing to commit" path
 is how a resumed release run no-ops.
 
-Usage: bump-tap.py <version> <SHA256SUMS> <Formula/amont-agent.rb>
+Usage: bump-tap.py <version> <SHA256SUMS> <rules.json> <Formula/amont-agent.rb>
 """
 
+import json
 import pathlib
 import re
 import sys
 
 
+def refusing_by_default(rules_path: str) -> list[str]:
+    """The rules (not assertions) that ship at deny, sorted."""
+    entries = json.loads(pathlib.Path(rules_path).read_text())
+    assert isinstance(entries, list), f"{rules_path} is not a JSON array"
+    ids = sorted(
+        e["id"]
+        for e in entries
+        if e["kind"] == "rule" and e["default_stance"] == "deny"
+    )
+    # A release where nothing refuses is a surprise worth a red run, not a
+    # caveat that says "none".
+    assert ids, f"no rule ships at deny in {rules_path} — wrong file?"
+    return ids
+
+
+def rewrite_refusing(text: str, ids: list[str]) -> str:
+    """Replace the one `%w[...]` line of `def refusing_by_default`."""
+    method = re.compile(
+        r"(?P<head>  def refusing_by_default\n    )%w\[[^\]\n]*\](?P<tail>\n  end\n)"
+    )
+    text, n = method.subn(
+        lambda m: f"{m.group('head')}%w[{' '.join(ids)}]{m.group('tail')}", text
+    )
+    assert n == 1, (
+        f"expected one `def refusing_by_default` holding a %w[...] line, found {n}"
+    )
+    return text
+
+
 def main() -> None:
-    version, sums_path, formula_path = sys.argv[1:4]
+    assert len(sys.argv) == 5, __doc__.strip().splitlines()[-1]
+    version, sums_path, rules_path, formula_path = sys.argv[1:5]
     version = version.lstrip("v")
+    refusing = refusing_by_default(rules_path)
 
     sums: dict[str, tuple[str, str]] = {}
     for line in pathlib.Path(sums_path).read_text().splitlines():
@@ -71,8 +110,11 @@ def main() -> None:
     stale = set(re.findall(r"amont-agent-([0-9.]+)-", text)) - {version}
     assert not stale, f"stale release versions survived the rewrite: {stale}"
 
+    text = rewrite_refusing(text, refusing)
+
     formula.write_text(text)
-    print(f"formula -> {version} ({n} targets)")
+    print(f"formula -> {version} ({n} targets; refusing: {' '.join(refusing)})")
 
 
-main()
+if __name__ == "__main__":
+    main()
