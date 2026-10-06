@@ -126,9 +126,59 @@ fn front_matter_end(lines: &[&str]) -> usize {
         .map_or(0, |(i, _)| i + 1)
 }
 
-/// sha256 of the canonical body, 64 lowercase hex.
+/// sha256 of what the canonical body says, read as CommonMark
+/// ([`crate::plan_words::words`]), 64 lowercase hex: a formatter that only
+/// moves blank lines, list markers or table padding keeps it.
 pub fn body_sha(text: &str) -> String {
+    hex(&sha256(
+        crate::plan_words::words(&canonical(text)).as_bytes(),
+    ))
+}
+
+// LEGACY: the byte sha every review was bound to before 2.25. Accepted
+// alongside `body_sha` until the journal shows no `match=legacy` for 14 days.
+/// sha256 of the canonical body's bytes, 64 lowercase hex.
+pub fn legacy_sha(text: &str) -> String {
     hex(&sha256(canonical(text).as_bytes()))
+}
+
+/// Both shas of a plan.
+pub struct Shas {
+    pub sha: String,
+    pub legacy: String,
+}
+
+/// [`body_sha`] and [`legacy_sha`], with a panic in the Markdown parser
+/// caught here: the hook's own guard turns a panic into silence, which for
+/// this rule would let a plan through unreviewed.
+pub fn shas(text: &str) -> Result<Shas, String> {
+    guarded(|| body_sha(text)).map(|sha| Shas {
+        sha,
+        legacy: legacy_sha(text),
+    })
+}
+
+fn guarded(f: impl FnOnce() -> String) -> Result<String, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .map_err(|_| "the plan's sha cannot be computed (the Markdown parser panicked)".to_string())
+}
+
+/// Whether a review or a baseline at `seen` is of this body.
+fn of_body(seen: &str, sha: &str, legacy: &str) -> bool {
+    seen == sha || seen == legacy
+}
+
+/// The plan's H1 outside any fence, which names it across sessions: the
+/// same plan presented from a new session gets a new random file name.
+fn title(text: &str) -> Option<String> {
+    let mut fence = Fence::default();
+    canonical(text).lines().find_map(|l| {
+        fence.h2(l);
+        if fence.open.is_some() {
+            return None;
+        }
+        l.strip_prefix("# ").map(|t| t.trim().to_string())
+    })
 }
 
 /// The review block a reviewer's prompt carries.
@@ -845,6 +895,8 @@ pub struct Baseline {
 
 pub struct Facts<'a> {
     pub sha: &'a str,
+    /// LEGACY: the byte sha, accepted alongside `sha`.
+    pub legacy: &'a str,
     pub path: &'a str,
     pub classes: &'a BTreeSet<String>,
     pub bindings: &'a [Binding],
@@ -880,7 +932,7 @@ pub fn judge(f: &Facts) -> Outcome {
             .filter(|b| b.role == r && b.path == f.path)
             .collect()
     };
-    let now = |r: &str| of_plan(r).iter().any(|b| b.sha == f.sha);
+    let now = |r: &str| of_plan(r).iter().any(|b| of_body(&b.sha, f.sha, f.legacy));
     let ever = |r: &str| !of_plan(r).is_empty();
     let need_now: BTreeSet<String>;
     let need_ever: BTreeSet<String>;
@@ -889,7 +941,7 @@ pub fn judge(f: &Facts) -> Outcome {
             need_ever = roles(f.classes);
             need_now = BTreeSet::from(["backend".to_string()]);
         }
-        Some(b) if b.sha == f.sha && f.classes.is_subset(&b.classes) => {
+        Some(b) if is_current(b, f.sha, f.legacy, f.classes) => {
             return Outcome::Pass(b.roles.clone());
         }
         Some(b) => {
@@ -918,6 +970,12 @@ pub fn judge(f: &Facts) -> Outcome {
     } else {
         Outcome::Short { missing, stale }
     }
+}
+
+/// A baseline of this body with no area it lacks: nothing to review. Shared
+/// by [`judge`] and [`panel`], so `plan-panel` and the hook never disagree.
+fn is_current(b: &Baseline, sha: &str, legacy: &str, classes: &BTreeSet<String>) -> bool {
+    of_body(&b.sha, sha, legacy) && classes.is_subset(&b.classes)
 }
 
 // ---------------------------------------------------------------- the store
@@ -949,12 +1007,31 @@ fn load(file: &Path) -> Option<Baseline> {
     })
 }
 
-/// The plan's baseline: by its path, else by its body under any path — the
-/// same plan presented from a new session gets a new random file name.
-pub fn baseline(path: &str, sha: &str) -> Option<Baseline> {
+/// The key that names a plan across sessions: its H1 and its repositories.
+fn title_key(text: &str, repos: &[String]) -> Option<String> {
+    let mut repos = repos.to_vec();
+    repos.sort();
+    Some(key(&format!("{}\n{}", title(text)?, repos.join(","))))
+}
+
+/// The plan's baseline, most specific first: by its path at this body; by
+/// this body under any path (the same plan from a new session gets a new
+/// random file name); then, for a delta, by its path at an older body, and
+/// by its title at an older body. An older baseline is what [`judge`] needs
+/// to ask for backend plus the reviewers of new areas instead of the whole
+/// panel. Two plans with the same H1 and repositories share a title
+/// baseline; backend still reviews the body.
+pub fn baseline(path: &str, sha: &str, legacy: &str, title: Option<&str>) -> Option<Baseline> {
     let s = store()?;
-    load(&s.join("by-path").join(format!("{}.json", key(path))))
-        .or_else(|| load(&s.join("by-body").join(format!("{sha}.json"))))
+    let by_path = load(&s.join("by-path").join(format!("{}.json", key(path))));
+    let by_body = |b: &str| load(&s.join("by-body").join(format!("{b}.json")));
+    by_path
+        .clone()
+        .filter(|b| of_body(&b.sha, sha, legacy))
+        .or_else(|| by_body(sha))
+        .or_else(|| by_body(legacy)) // LEGACY
+        .or(by_path)
+        .or_else(|| load(&s.join("by-title").join(format!("{}.json", title?))))
 }
 
 fn private_dir(dir: &Path) -> Option<()> {
@@ -965,7 +1042,7 @@ fn private_dir(dir: &Path) -> Option<()> {
 
 /// Written only on a verified pass: after an `ask` the hook cannot see what
 /// the person answered.
-fn save(path: &str, b: &Baseline) -> Option<()> {
+fn save(path: &str, title: Option<&str>, b: &Baseline) -> Option<()> {
     let s = store()?;
     private_dir(&s)?;
     let body = serde_json::json!({
@@ -975,10 +1052,14 @@ fn save(path: &str, b: &Baseline) -> Option<()> {
         "path": path,
     })
     .to_string();
-    for (dir, name) in [
+    let mut places = vec![
         ("by-path", format!("{}.json", key(path))),
         ("by-body", format!("{}.json", b.sha)),
-    ] {
+    ];
+    if let Some(t) = title {
+        places.push(("by-title", format!("{t}.json")));
+    }
+    for (dir, name) in places {
         let d = s.join(dir);
         private_dir(&d)?;
         let f = d.join(name);
@@ -1106,7 +1187,18 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
         }
     };
     let path = real(plan_file).display().to_string();
-    let sha = body_sha(&text);
+    let Shas { sha, legacy } = match shas(&text) {
+        Ok(s) => s,
+        Err(why) => {
+            return (
+                Said::Ask(format!(
+                    "{why}; approve only to accept the plan unreviewed."
+                )),
+                "-".into(),
+                "sha unavailable".into(),
+            )
+        }
+    };
     let short = &sha[..12];
 
     let m = match meta(&text) {
@@ -1165,9 +1257,11 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
         }
     };
 
-    let base = baseline(&path, &sha);
+    let title = title_key(&text, &m.repos);
+    let base = baseline(&path, &sha, &legacy, title.as_deref());
     let facts = Facts {
         sha: &sha,
+        legacy: &legacy,
         path: &path,
         classes: &classes,
         bindings: &found,
@@ -1184,8 +1278,15 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
                     format!("{short} unreviewed"),
                 );
             }
+            // LEGACY: whether the pass rested on a review or a baseline of
+            // the byte sha. Leads the excerpt, which is cut at MAX_EXCERPT.
+            let on_legacy = legacy != sha
+                && (base.as_ref().is_some_and(|b| b.sha == legacy)
+                    || found.iter().any(|b| b.path == path && b.sha == legacy));
+            let matched = if on_legacy { "legacy" } else { "new" };
             let _ = save(
                 &path,
+                title.as_deref(),
                 &Baseline {
                     sha: sha.clone(),
                     roles: bound.clone(),
@@ -1196,7 +1297,11 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
                 },
             );
             let listed = bound.into_iter().collect::<Vec<_>>().join(",");
-            (Said::Pass, repos, format!("{short} {listed}"))
+            (
+                Said::Pass,
+                repos,
+                format!("match={matched} {short} {listed}"),
+            )
         }
         Outcome::Short { missing, stale } => {
             if sec.unreviewed {
@@ -1286,10 +1391,11 @@ pub fn panel(plan_file: &Path) -> Result<Panel, String> {
         Said::Pass => String::new(),
     })?;
     let path = real(plan_file).display().to_string();
-    let sha = body_sha(&text);
-    let (mode, needed) = match baseline(&path, &sha) {
+    let Shas { sha, legacy } = shas(&text)?;
+    let title = title_key(&text, &m.repos);
+    let (mode, needed) = match baseline(&path, &sha, &legacy, title.as_deref()) {
         None => ("full", roles(&classes)),
-        Some(b) if b.sha == sha && classes.is_subset(&b.classes) => ("current", BTreeSet::new()),
+        Some(b) if is_current(&b, &sha, &legacy, &classes) => ("current", BTreeSet::new()),
         Some(b) => {
             let new: BTreeSet<String> = classes.difference(&b.classes).cloned().collect();
             let mut need = roles(&new);
@@ -1459,8 +1565,10 @@ mod tests {
         assert_eq!(body_sha(&landed), body_sha(PLAN));
         assert_eq!(canonical(&canonical(&landed)), canonical(&landed));
         // Not front matter: no closing fence, or not on the first line.
+        // (Its `---` is then a thematic break, which says nothing, so the
+        // sha over the CommonMark reading does not see it; the bytes do.)
         let open = format!("---\n{PLAN}");
-        assert_ne!(body_sha(&open), body_sha(PLAN));
+        assert_ne!(legacy_sha(&open), legacy_sha(PLAN));
         let later = PLAN.replace("Body.", "Body.\n\n---\n\nMore.\n\n---");
         assert!(canonical(&later).contains("---\n\nMore."));
     }
@@ -1473,6 +1581,43 @@ mod tests {
             .replace("body-sha=abc", "body-sha=def reviewers=backend");
         assert_eq!(body_sha(&edited), body_sha(PLAN));
         assert_ne!(body_sha(&PLAN.replace("Body.", "Body!")), body_sha(PLAN));
+    }
+
+    /// Both values are pinned: a `pulldown-cmark` bump that re-hashes plans
+    /// fails here, and the legacy value is what 2.24.0's `plan-sha` printed
+    /// for this plan, so every review bound before 2.25 still matches.
+    #[test]
+    fn the_shas_of_a_fixed_plan_do_not_move() {
+        assert_eq!(
+            body_sha(PLAN),
+            "ab25150b6b847cc4ed344aad0d38ae282422b111a37f8f48c14863dff74ed788"
+        );
+        assert_eq!(
+            legacy_sha(PLAN),
+            "db6b774afd48bd8c7bd4edb3b8758a4417beae2c3ce26d4245cba7bc36e396dd"
+        );
+    }
+
+    #[test]
+    fn formatting_the_plan_keeps_the_sha_and_the_legacy_sha_does_not() {
+        let formatted = PLAN.replace("## Context\n\nBody.", "## Context\n\n\nBody.");
+        assert_eq!(body_sha(&formatted), body_sha(PLAN));
+        assert_ne!(legacy_sha(&formatted), legacy_sha(PLAN));
+    }
+
+    #[test]
+    fn a_panic_computing_the_sha_is_an_error_not_silence() {
+        let r = guarded(|| panic!("parser bug"));
+        assert!(r.unwrap_err().contains("cannot be computed"));
+        assert!(shas(PLAN).is_ok());
+    }
+
+    #[test]
+    fn the_title_is_the_first_h1_outside_a_fence() {
+        assert_eq!(title(PLAN).as_deref(), Some("Title"));
+        let fenced = "```md\n# Not this\n```\n\n# This one\n";
+        assert_eq!(title(fenced).as_deref(), Some("This one"));
+        assert_eq!(title("no heading\n"), None);
     }
 
     #[test]
@@ -1573,6 +1718,7 @@ mod tests {
         ];
         let f = Facts {
             sha: &new,
+            legacy: "-",
             path: "/p.md",
             classes: &classes,
             bindings: &bs,
@@ -1603,6 +1749,7 @@ mod tests {
         let bs = [other];
         let f = Facts {
             sha: &sha,
+            legacy: "-",
             path: "/p.md",
             classes: &classes,
             bindings: &bs,
@@ -1629,6 +1776,7 @@ mod tests {
         let bs = vec![b("backend", &new)];
         let f = Facts {
             sha: &new,
+            legacy: "-",
             path: "/p.md",
             classes: &classes,
             bindings: &bs,
@@ -1649,6 +1797,53 @@ mod tests {
             classes: &old_classes,
             bindings: &[],
             ..f
+        };
+        assert!(matches!(judge(&f), Outcome::Pass(_)));
+    }
+
+    #[test]
+    fn a_review_bound_to_the_legacy_sha_still_counts() {
+        let classes = set(&["lang:rust"]);
+        let (new, old) = ("2".repeat(64), "1".repeat(64));
+        let bs = vec![b("lang:rust", &old), b("backend", &old)];
+        let f = Facts {
+            sha: &new,
+            legacy: &old,
+            path: "/p.md",
+            classes: &classes,
+            bindings: &bs,
+            baseline: None,
+        };
+        assert!(
+            matches!(judge(&f), Outcome::Pass(_)),
+            "backend at the legacy sha is current"
+        );
+        let f = Facts { legacy: "-", ..f };
+        assert!(
+            matches!(judge(&f), Outcome::Short { ref stale, .. } if stale.contains("backend")),
+            "without the legacy sha it is an older body"
+        );
+    }
+
+    #[test]
+    fn a_baseline_at_the_legacy_sha_is_current_for_judge_and_panel_alike() {
+        let classes = set(&["lang:rust"]);
+        let (new, old) = ("2".repeat(64), "1".repeat(64));
+        let base = Baseline {
+            sha: old.clone(),
+            roles: set(&["backend", "lang:rust"]),
+            classes: classes.clone(),
+        };
+        assert!(is_current(&base, &new, &old, &classes));
+        assert!(!is_current(&base, &new, "-", &classes));
+        assert!(!is_current(&base, &new, &old, &set(&["lang:rust", "ui"])));
+        let f = Facts {
+            sha: &new,
+            legacy: &old,
+            path: "/p.md",
+            classes: &classes,
+            bindings: &[],
+            baseline: Some(&base),
         };
         assert!(matches!(judge(&f), Outcome::Pass(_)));
     }

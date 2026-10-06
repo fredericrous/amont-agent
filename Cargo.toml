@@ -28,8 +28,9 @@ categories = ["development-tools", "command-line-utilities"]
 rust-version = "1.85.0"
 
 [dependencies]
-# For READING, not writing. Two things need a real parser and neither is
-# ours: Claude Code's hook payload, and the user's `settings.json`.
+# For READING, not writing. Three things need a real parser and none is
+# ours: Claude Code's hook payload, the user's `settings.json`, and the
+# Markdown of a plan (below).
 #
 # Deliberately no `serde` derive. The payload's shape is defined by somebody
 # else and grows between releases; `Value` plus hand-written accessors turns
@@ -46,6 +47,17 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # `settings.json` keeps the indentation the user chose instead of being
 # reformatted to serde_json's default.
 serde = "1"
+
+# A plan's sha (`plan_review::body_sha`) is taken over the Markdown as
+# CommonMark reads it, so a formatter that only moves blank lines, list
+# markers or table padding keeps the review bound, while `a * b` and a list
+# item `* b` stay different things. Telling those apart needs block context:
+# a parser, not a line rule (2026-10-06, docs/plans/2026-10-06-plan-sha-ignores-formatting.md).
+#
+# PINNED EXACTLY: a parser change may change the sha of every plan and
+# turn every review in flight stale. A bump is its own PR, and the
+# `body_sha` fixture test is what tells you whether it re-hashes.
+pulldown-cmark = { version = "=0.13.4", default-features = false }
 
 # NO [dev-dependencies]. `serde_json` above is a normal dependency and is
 # therefore already in scope for this crate's tests — restating it buys

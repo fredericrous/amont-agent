@@ -933,3 +933,146 @@ fn plan_panel_lists_what_the_hook_will_require() {
     assert_eq!(bad.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&bad.stderr).contains("names no repository"));
 }
+
+#[test]
+fn a_formatted_copy_keeps_its_review() {
+    let w = World::new("formatted");
+    rust_cli(&w);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let mut t = Transcript::default();
+    full_panel(&w, &mut t, &plan);
+    assert_eq!(w.present(&plan, &t), Said::Silent);
+    // What a formatter does: blank lines, another list marker, emphasis.
+    let formatted = BODY
+        .replace("The work.", "The\n_work_.\n\n")
+        .replace("- [ ] one", "* [ ] one");
+    let plan = w.plan("p.md", &formatted, "repos=tool");
+    assert_eq!(
+        w.present(&plan, &t),
+        Said::Silent,
+        "formatting is not an edit"
+    );
+    let edited = w.plan("p.md", &formatted.replace("work", "works"), "repos=tool");
+    assert!(
+        matches!(w.present(&edited, &t), Said::Deny(ref why) if why.contains("stale")),
+        "a word is"
+    );
+}
+
+#[test]
+fn an_edited_plan_in_a_new_session_is_a_delta_not_a_full_panel() {
+    let w = World::new("titled");
+    rust_cli(&w);
+    let panel = |plan: &Path| {
+        let out = w.bin().arg("plan-panel").arg(plan).output().unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let mut t = Transcript::default();
+    full_panel(&w, &mut t, &plan);
+    assert_eq!(w.present(&plan, &t), Said::Silent);
+
+    // A new session: a new random file name, one line edited.
+    let moved = w.plan(
+        "resumed-name.md",
+        &BODY.replace("The work.", "The work, edited."),
+        "repos=tool",
+    );
+    let delta = panel(&moved);
+    assert!(delta.contains("panel=delta\n"), "{delta}");
+    assert!(
+        delta.ends_with("panel=delta\nplan-review-backend\n"),
+        "{delta}"
+    );
+    let mut fresh = Transcript::default();
+    fresh.review(
+        &w,
+        "plan-review-backend",
+        &w.block(&moved, None),
+        Done::Foreground,
+    );
+    assert_eq!(w.present(&moved, &fresh), Said::Silent);
+
+    // Another plan at another path: no history, the whole panel.
+    let other = w.plan(
+        "other-name.md",
+        &BODY.replace("# Plan", "# Another plan"),
+        "repos=tool",
+    );
+    assert!(panel(&other).contains("panel=full\n"));
+}
+
+#[test]
+fn a_review_bound_before_2_25_still_passes_and_is_journalled() {
+    let w = World::new("legacy");
+    rust_cli(&w);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let legacy = |plan: &Path| {
+        let out = w
+            .bin()
+            .args(["plan-sha", "--legacy"])
+            .arg(plan)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr).trim(),
+            "amont-agent: --legacy is removed after the transition"
+        );
+        let s = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(s.lines().count(), 1, "one line on stdout");
+        s.trim().to_string()
+    };
+    let old = legacy(&plan);
+    assert_ne!(
+        old,
+        w.block(&plan, None)
+            .split("sha=")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(">>>")
+    );
+    // Reviews whose blocks a 2.24 binary printed: the byte sha.
+    let mut t = Transcript::default();
+    let at_old = |b: String| {
+        let (head, _) = b.split_once("sha=").unwrap();
+        let lang = b
+            .split_once(" lang=")
+            .map(|(_, l)| format!(" lang={}", l.trim_end_matches(">>>")));
+        format!("{head}sha={old}{}>>>", lang.unwrap_or_default())
+    };
+    t.review(
+        &w,
+        "plan-review-language",
+        &at_old(w.block(&plan, Some("rust"))),
+        Done::Foreground,
+    );
+    for agent in ["plan-review-backend", "plan-review-unix", "plan-review-tui"] {
+        t.review(&w, agent, &at_old(w.block(&plan, None)), Done::Foreground);
+    }
+    assert_eq!(w.present(&plan, &t), Said::Silent);
+    let journal = std::fs::read_to_string(
+        w.root
+            .join("claude")
+            .join("amont-agent")
+            .join("journal.log"),
+    )
+    .unwrap();
+    let line = journal
+        .lines()
+        .rfind(|l| l.contains("plan-review-panel"))
+        .unwrap();
+    assert!(line.contains("match=legacy"), "{line}");
+
+    let both = w
+        .bin()
+        .args(["plan-sha", "--legacy", "--block"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(both.status.code(), Some(2));
+    assert!(both.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&both.stderr).contains("--legacy only prints a sha; drop --block")
+    );
+}

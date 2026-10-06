@@ -39,6 +39,7 @@ mod json;
 mod mine;
 mod payload;
 mod plan_review;
+mod plan_words;
 mod plans;
 mod preview;
 mod push_target;
@@ -81,7 +82,7 @@ usage: amont-agent <command>
   preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
                         validate a localhost preview of HEAD for approval
                         and render its guide to a page
-  plan-sha [--short] [--block [--lang <l>]] [--] <file|->
+  plan-sha [--short] [--block [--lang <l>]] [--legacy] [--] <file|->
                         the sha256 of a plan's canonical body, as reviewed
   plan-panel <plan.md>  the review agents a plan still needs, as the
                         plan-review-panel hook will judge it
@@ -733,24 +734,36 @@ fn run_analyze(args: &[OsString]) -> ExitCode {
 }
 
 const PLAN_SHA_USAGE: &str = "\
-usage: amont-agent plan-sha [--short] [--block [--lang <language>]] [--] <file|->
+usage: amont-agent plan-sha [--short] [--block [--lang <language>]] [--legacy] [--] <file|->
 
-The sha256 of a plan's canonical body: the plan without its YAML front
-matter, its `## Review panel` section, its `## Full reviews` section and
-its machine comment
-(`<!-- panel: ... -->` on the last line), CRLF read as LF and trailing
-blanks trimmed. Writing review results into the plan never changes it
-(ADR-0022, work.plan-review-panel).
+The sha256 of what a plan says, which its review binds to (ADR-0022,
+work.plan-review-panel). The plan is read without its YAML front matter,
+its `## Review panel` section, its `## Full reviews` section and its
+machine comment (`<!-- panel: ... -->` on the last line), so writing review
+results into it never changes the sha. The rest is read as CommonMark:
+
+  counts         every word, number and operator; code blocks and code
+                 spans exactly as written; link destinations; the kind of
+                 each block (list item, quote, heading, table cell, an
+                 ordered list's start)
+  does not count blank lines, line wrapping, indentation outside code,
+                 table padding, list-marker style (`*`/`-`), emphasis
+                 style (`*x*`/`_x_`), escapes (`\\_`), CRLF
+
+So a formatter such as prettier keeps the sha, unless it rewrites code.
 
   --short            the first 12 hex characters, for the machine comment
   --block            the review block a plan-review-* agent's prompt carries:
                      <<<PLAN path=<realpath> sha=<64 hex>>>>
   --lang <language>  with --block, for plan-review-language: adds lang=<l>
+  --legacy           the byte sha from before 2.25, to check a plan whose
+                     machine comment was written then; temporary, removed
+                     after the transition (not with --block)
   -                  read the plan from stdin (not with --block, which
                      needs the file's path)
 
-Prints one line on stdout. Exit 0, 1 when the file cannot be read (the
-reason on stderr), 2 on a usage error.
+Prints one line on stdout. Exit 0, 1 when the file cannot be read or its
+sha cannot be computed (the reason on stderr), 2 on a usage error.
 ";
 
 fn run_plan_sha(args: &[OsString]) -> ExitCode {
@@ -759,6 +772,7 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let (mut short, mut block, mut lang, mut file) = (false, false, None, None);
+    let mut legacy = false;
     let mut i = 0;
     let mut operands_only = false;
     while i < args.len() {
@@ -780,6 +794,7 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
             }
             "--short" => short = true,
             "--block" => block = true,
+            "--legacy" => legacy = true,
             "--lang" => {
                 i += 1;
                 match args.get(i) {
@@ -807,6 +822,8 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         Some("--lang only goes with --block")
     } else if block && file == "-" {
         Some("--block needs the plan's file, not stdin")
+    } else if block && legacy {
+        Some("--legacy only prints a sha; drop --block")
     } else {
         None
     };
@@ -831,7 +848,18 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
             }
         }
     };
-    let sha = plan_review::body_sha(&text);
+    let sha = if legacy {
+        eprintln!("amont-agent: --legacy is removed after the transition");
+        plan_review::legacy_sha(&text)
+    } else {
+        match plan_review::shas(&text) {
+            Ok(s) => s.sha,
+            Err(why) => {
+                eprintln!("amont-agent: {why}");
+                return ExitCode::from(1);
+            }
+        }
+    };
     if block {
         let path = plan_review::real(std::path::Path::new(&file));
         println!("{}", plan_review::block(&path, &sha, lang.as_deref()));
