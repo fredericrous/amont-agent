@@ -11,6 +11,14 @@
   and `delete-only` in the journal) instead of holding them as unreadable.
   A push that deletes and publishes at once, `--delete` with a `src:dst`
   refspec, and `--prune` are still unreadable, and still held under deny.
+- **A push from a removed session directory is judged, not waved
+  through** (#67). Every confirmed rule used to decline as soon as the
+  session's cwd was gone, so `cd /abs/repo && git push …` from a session
+  left in a torn-down worktree passed every push gate. The test is now
+  whether the matched clause's own directory exists, `cd`s followed. When
+  it does not, `push-preview` and `implementation-review` hold the push
+  under deny, because the shell then runs somewhere the hook cannot name
+  (Claude Code resets it to the project root). Other rules still decline.
 
 ## v2.26.0
 
