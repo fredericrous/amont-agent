@@ -87,6 +87,11 @@ fn send_inner(payload: &str, path: String) -> Reply {
         // The guard must not be silenced by the developer's own environment
         // while its own tests are running.
         .env_remove("AMONT_AGENT_OFF")
+        // Nor steered by it: a developer's `amont.agent.<rule>.stance` in
+        // their global git config (implementation-review at deny, say)
+        // would otherwise decide what these tests observe.
+        .env("GIT_CONFIG_GLOBAL", home().join("no-global-gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
