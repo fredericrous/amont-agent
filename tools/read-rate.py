@@ -38,7 +38,7 @@ def exempt(path: str) -> bool:
     for a, b in zip(parts, parts[1:]):
         if b == "plans" and a in (".claude", "docs"):
             return True
-    return "/tool-results/" in path
+    return "/tool-results/" in path.replace("\\", "/")
 
 
 def text_of(content) -> str:

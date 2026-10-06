@@ -16,6 +16,11 @@
 
 ### Fixed
 
+- **`persisted-output-dump` sees a Windows path.** It matched
+  `/tool-results/` only, so on Windows a Read of a saved tool result,
+  spelled `\tool-results\`, went unadvised. Either separator, or a mix
+  of both, now counts.
+
 - **The pass-file guard refuses writes, not reads.** 2.24.0 refused any
   Bash command naming `~/.claude/amont-agent/implementation-review/`,
   `ls` included (#61). It now refuses a redirect into the store or a
