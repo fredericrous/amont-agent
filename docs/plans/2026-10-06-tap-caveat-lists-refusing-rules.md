@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/rules-json-tap-caveat
 repos: [amont-agent, homebrew-tap]
 adrs: []
@@ -87,18 +87,19 @@ its use:
   away:" and `amont-agent status`. One per line keeps it under 80 columns
   as the list grows.
 - `test do` (with `require "json"`) is gated on the formula's own version:
-  `if version >= Version.new("2.26.0")` it runs `rules --json` on the brewed
+  `if version >= Version.new("2.27.0")` (2.26.0 as first planned; see the
+  Decision log) it runs `rules --json` on the brewed
   binary, parses it strictly (a parse failure fails the test), and checks
   that the set of `kind == "rule"` entries with `default_stance == "deny"`
-  equals `refusing_by_default`; otherwise (2.25.0, which ignores `--json`
+  equals `refusing_by_default`; otherwise (up to 2.26.0, which ignore `--json`
   and prints the text table with exit 0) it keeps today's `assert_match
   "pipe-to-tail"`. It reads `default_stance`, not `stance`, so a user's git
   config cannot change the answer. It prints which branch ran.
 - The header comment is updated: bump-tap.py also rewrites this method.
-- Once the formula is at 2.26.0 the old branch is dead code; a later tap
+- Once the formula is at 2.27.0 the old branch is dead code; a later tap
   change may delete it, but nothing depends on that happening.
-- If the next release is not 2.26.0 (a 2.25.1 that already ships
-  `--json`), its JSON check stays off until 2.26.0. Acceptable: bump-tap.py
+- If the next release is not 2.27.0 (a 2.26.1 that already ships
+  `--json`), its JSON check stays off until 2.27.0. Acceptable: bump-tap.py
   still writes the list from the binary on every release.
 
 **3. `scripts/bump-tap.py`** (amont-agent). A new argument, the path to the
@@ -141,16 +142,16 @@ and the old bump-tap.py leaves the method alone.
 
 ## Phases
 
-- [ ] Phase 1 — homebrew-tap: the method, the caveat, the guarded
+- [x] Phase 1 — homebrew-tap: the method, the caveat, the guarded
   `test do`, the header.
-- [ ] Phase 2 — amont-agent: `rules --json`, its argument handling,
+- [x] Phase 2 — amont-agent: `rules --json`, its argument handling,
   `float_field`; integration tests in the style of `tests/stance_scope.rs`
   (temporary `GIT_CONFIG_GLOBAL`).
-- [ ] Phase 3 — amont-agent: bump-tap.py + `publish-tap` step; a test of
+- [x] Phase 3 — amont-agent: bump-tap.py + `publish-tap` step; a test of
   bump-tap.py against a fixture formula and a fixture JSON (one rewrite,
   idempotence, refusal on an empty list and on a missing method, an
   assertion shipping `deny` left out).
-- [ ] Phase 4 — CHANGELOG `Unreleased`, the `rules` line in usage.
+- [x] Phase 4 — CHANGELOG `Unreleased`, the `rules` line in usage.
 
 ## Decision log
 
@@ -167,6 +168,20 @@ and the old bump-tap.py leaves the method alone.
   broken `--json` later cannot pass silently and no guard removal has to be
   remembered; the step sets `pipefail` itself; exact archive path; test (b)
   picks its rule from `RULES`.
+- 2026-10-06 — implementation: v2.26.0 was released from another session
+  at 12:18 (`lint-suppression-added`, #71/#72) without `rules --json`, so
+  the tap test's gate is 2.27.0, the first release that has it; a 2.26.0
+  gate would have failed `brew test` on the live formula. v2.26.0's deny
+  list is unchanged (`pipe-to-tail`, `plan-review-panel`).
+- 2026-10-06 — implementation: `rules --json --json` says "unexpected
+  argument" (the first word is valid, the second is not); every refusal is
+  still one line ending "`rules` takes only --json". Help wins wherever
+  `-h`/`--help` appears, as in the other subcommands (implementation
+  review). An assertion reports `max_stance: "deny"`: assertions have no
+  ceiling (`resolve_assertion` caps nothing).
+- 2026-10-06 — implementation: the tap carries a pointer file
+  (`docs/plans/`, phases [1]), and its formula header no longer describes
+  a placeholder with zero checksums (tap implementation review).
 
 ## Verification
 
@@ -190,16 +205,58 @@ and the old bump-tap.py leaves the method alone.
   JSON with no deny rule → assertion failure; formula without the method →
   assertion failure; an assertion with `default_stance: "deny"` → not
   listed; `ruby -c` on the result → `Syntax OK`.
-- Tap, against 2.25.0: `brew install --formula ./Formula/amont-agent.rb`
-  from the clone shows the new caveat, each line ≤ 80 columns; `brew test`
-  passes and prints that it took the pre-2.26.0 branch.
-- The formula's `test do` against the new binary (run by hand, outside
-  brew): the JSON branch passes; with a third rule added to
-  `refusing_by_default` it fails.
-- After merge and the next release: `verify-brew`'s `brew test` passes on
-  the JSON branch, and the published caveat lists the deny rules.
+- Tap, at 2.26.0 (the formula's version when built): the caveat renders
+  through brew's loader with each line ≤ 80 columns, and the gate takes the
+  pre-2.27.0 branch. `brew test` itself is not run here: it needs the
+  formula installed, which would replace the person's active guard.
+- The formula's `test do` comparison, loaded through brew at `version
+  "2.27.0"` and run against the new binary: passes; with a third rule
+  added to `refusing_by_default` it fails.
 - `make check` clean.
 
+### Observed (2026-10-06, before the push)
+
+- `tests/rules_json.rs` 4/4: (a) 37 entries, same ids and order as the text
+  table, exactly the seven keys, an assertion present; (b) a rule shipping
+  below deny, raised by a temporary global config → `stance: "deny"`, its
+  `default_stance` unchanged, empty config → both the shipped value;
+  (c) the deny rules are exactly `pipe-to-tail`, `plan-review-panel`;
+  (d) `--bogus`, `--force`, `foo`, `--json --json` → exit 2, empty stdout,
+  one stderr line; `-h`, `--help`, `--bogus --help`, `--json -h` → exit 0,
+  `usage: amont-agent rules [--json]`.
+- Unit: `float_field` 62.3 → `62.3`, 0.0 → `0`, 292.6 → `292.6`; NaN
+  panics; every rule's and assertion's rate is finite.
+- `rules --json 2>err | head -c 10` → `err` empty, pipestatus 0 0.
+- `scripts/test_bump_tap.py` 5/5 (sorted deny list, assertion left out,
+  idempotent, no-deny refused with nothing written, missing method refused,
+  only the `%w` line changes). Against the real tap formula, the new
+  binary's JSON and v2.26.0's SHA256SUMS: output byte-identical to the
+  tap's formula, second run identical, `ruby -c` OK.
+- The release step's shell, run against the real v2.26.0 release:
+  checksum `OK`, binary at `rel/amont-agent-2.26.0-x86_64-unknown-linux-musl/amont-agent`
+  (static ELF; its `rules --json` runs in CI only, not on this Mac).
+- Tap: caveat via `Formulary.from_contents` aligned, widest line 74;
+  2.26.0 → pre-2.27.0 branch, whose `assert_match "pipe-to-tail"` holds on
+  the text table; a 2.27.0 copy against the new binary → PASS, with
+  `no-verify` added → FAIL; `brew style` no offenses; `ruby -c` OK.
+- `make check`: fmt, clippy, the bump-tap tests, 568 unit tests and every
+  integration suite green.
+
+## Implementation review
+
+amont-agent: approve-with-changes, then approve-with-changes on the delta; fixed: help anywhere, test temp dirs, the tap pointer, this record.
+homebrew-tap: approve-with-changes; fixed: the formula header; the 2.27.0 gate and Phase 1 results recorded here.
+amont-agent round 1: 54k tokens, 43 s; delta: 28k, 21 s. homebrew-tap round 1: 39k, 30 s.
+
 ## Outcome
+
+Shipped on the two branches: `rules --json`, the generated tap caveat, its
+`brew test` check from 2.27.0, the tested bump-tap.py.
+Follow-up, after the 2.27.0 release: `verify-brew`'s log shows the JSON
+branch ("checking refusing_by_default…") and the published caveat lists
+the deny rules. Order: tap PR #6 merges before amont-agent's PR, or the
+next `publish-tap` fails its assertion.
+Surprise: v2.26.0 shipped mid-task from another session, which moved the
+gate.
 
 <!-- panel: repos=amont-agent,homebrew-tap reviewers=backend,lang:rust,tui,unix body-sha=8a7fb43fecd3 -->
