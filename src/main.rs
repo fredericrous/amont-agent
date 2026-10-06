@@ -1311,13 +1311,14 @@ fn run_rules(args: &[OsString]) -> ExitCode {
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    // Help wins wherever it appears, as in the other subcommands.
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{RULES_USAGE}");
+        return ExitCode::SUCCESS;
+    }
     match args.as_slice() {
         [] => print_rules_text(),
         [a] if a == "--json" => print_rules_json(),
-        [a] if a == "-h" || a == "--help" => {
-            print!("{RULES_USAGE}");
-            ExitCode::SUCCESS
-        }
         [a, rest @ ..] if a == "--json" => {
             eprintln!(
                 "amont-agent: unexpected argument `{}`; `rules` takes only --json",

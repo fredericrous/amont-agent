@@ -8,6 +8,7 @@ Standard library only, like the script it tests.
 import importlib.util
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,7 @@ def rule(id_: str, ships: str, kind: str = "rule") -> dict:
 class BumpTap(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
         self.formula = self.dir / "amont-agent.rb"
         self.formula.write_text(FORMULA)
         self.sums = self.dir / "SHA256SUMS"

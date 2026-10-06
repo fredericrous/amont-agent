@@ -157,8 +157,13 @@ fn rules_takes_only_json() {
             "{args:?}: {err}"
         );
     }
-    for help in ["-h", "--help"] {
-        let out = h.rules(&[help]);
+    for help in [
+        &["-h"][..],
+        &["--help"][..],
+        &["--bogus", "--help"][..],
+        &["--json", "-h"][..],
+    ] {
+        let out = h.rules(help);
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(
             String::from_utf8(out.stdout).unwrap(),
