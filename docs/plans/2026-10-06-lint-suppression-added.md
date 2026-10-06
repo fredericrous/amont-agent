@@ -358,6 +358,16 @@ reported, not budgeted. Both are measured before and after the change.
   - `--self-test` → 66 samples agree;
   - no row wider than 80 columns.
 
+## Implementation review
+**approve** (round 1 approve-with-changes, then 2 deltas). Round-1 fixes:
+- a Write over an unreadable file is silent;
+- `Origin` enum and an exhaustive `File` match;
+- the rate script counts skipped files and lines;
+- the test-harness env pins are deduplicated;
+- the figures are current.
+
+No finding kept as deliberate. About 129k tokens and 128 s over the 3 passes. Next: Phase 6, release 2.26.0.
+
 ## Outcome
 
 <!-- panel: repos=amont-agent adds= reviewers=backend,language,tui,unix body-sha=1fe8b954d11c -->
