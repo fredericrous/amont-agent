@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/lint-suppression-added
 repos: [amont-agent]
 adrs: [decisions:ADR-0011]
@@ -209,12 +209,12 @@ reported, not budgeted. Both are measured before and after the change.
     --self-test`.
   - **Docs:** a `docs/measuring.md` section next to the Read-tier one, a
     `docs/rules.md` row, and a CHANGELOG `### Added` entry under Unreleased.
-- [ ] **Phase 6, Release** (asked for by the person, `work.release-on-request`).
+- [x] **Phase 6, Release** (asked for by the person, `work.release-on-request`).
   After the merge, open the release PR `chore: release 2.26.0`. It is minor
   because it adds a rule (2.25.0 shipped meanwhile; see the Decision log).
   Tag with the `tag-release` skill. Check that the release run concluded
   `success` and that `publish-tap` pushed `Formula/amont-agent.rb` at 2.26.0.
-- [ ] **Phase 7, Upgrade.** `brew update && brew upgrade amont amont-agent`.
+- [x] **Phase 7, Upgrade.** `brew update && brew upgrade amont amont-agent`.
   Then check that `amont-agent --version` is 2.26.0, record
   `amont --version`, and close #65 from the PR.
 
@@ -366,8 +366,34 @@ reported, not budgeted. Both are measured before and after the change.
 - the test-harness env pins are deduplicated;
 - the figures are current.
 
-No finding kept as deliberate. About 129k tokens and 128 s over the 3 passes. Next: Phase 6, release 2.26.0.
+No finding kept as deliberate. About 129k tokens and 128 s over the 3 passes. Phases 6–7 followed the merge (#71).
+
+### Observed, Phases 6–7 (2026-10-06)
+- Release PR #72 merged as `e4ddc84`. Before tagging, that commit was
+  checked: `Cargo.toml` 2.26.0, CHANGELOG `## v2.26.0`, and #71 among its
+  ancestors. Tag `v2.26.0` points at `e4ddc84`.
+- Release run 37462011452 → `conclusion: success`, all 12 jobs.
+- crates.io `max_version` → 2.26.0. The GitHub release has the 6 platform
+  archives and `SHA256SUMS`. The tap formula reads `version "2.26.0"`, and
+  its sha256 values match `SHA256SUMS`.
+- `brew upgrade amont amont-agent` → `amont-agent 2.26.0`; `amont` stays at
+  1.47.0, already current. With the installed binary, an Edit adding
+  `# type: ignore[no-untyped-def]` advises and an Edit removing `# noqa` is
+  silent. `amont-agent status` lists `lint-suppression-added advise
+  1.0/1000`, and `doctor` lists it among the rules it acts on.
+- #65 was closed by the merge of #71 ("Closes #65" in its commit message).
 
 ## Outcome
+Shipped in 2.26.0: `lint-suppression-added` at `advise`, ceiling `deny`.
+The soak decides deny after about 2 weeks: compare the journal's fires
+(split by marker kind, and exact against fragment) with the 1.01 per 1,000
+baseline.
+
+What surprised:
+- Another session released 2.25.0 mid-branch.
+- A global stance at deny leaked into a hook test.
+- The first latency run broke the 1 MiB budget, which led to the keyword
+  pre-check and the 256 KiB cap.
+- Firing costs about 100–200 ms for every advising file rule, filed as #70.
 
 <!-- panel: repos=amont-agent adds= reviewers=backend,language,tui,unix body-sha=1fe8b954d11c -->
