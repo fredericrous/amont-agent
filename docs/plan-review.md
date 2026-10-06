@@ -75,12 +75,35 @@ block that each reviewer's prompt carries:
 <<<PLAN path=/Users/me/.claude/plans/p.md sha=<64 hex>>>>
 ```
 
-The sha is that of the **canonical body**: the plan without its front
-matter, its review section, its full reviews and its machine comment, with
-CRLF read as LF and blanks trimmed at both ends. A landed copy in
-`docs/plans/`, which gains front matter, therefore hashes like the
-approved plan. Writing the review results into the plan therefore
-never makes a review stale. Editing the body does.
+The sha is that of what the **canonical body** says: the plan without its
+front matter, its review section, its full reviews and its machine comment,
+read as CommonMark. Every word, number and operator counts, code blocks and
+code spans count exactly as written, and so do link destinations and the
+kind of each block (list item, quote, heading, table cell, an ordered
+list's start). Blank lines, line wrapping, indentation outside code, table
+padding, list-marker and emphasis style and escapes do not. A landed copy in
+`docs/plans/`, which gains front matter and may pass through a formatter
+such as prettier, therefore hashes like the approved plan, unless the
+formatter rewrites code. Writing the review results into the plan never
+makes a review stale. Editing the body does.
+
+The Markdown parser is `pulldown-cmark`, pinned exactly: a new version may
+read a plan differently, so a bump is its own change, and a fixture test
+fails when it re-hashes.
+
+**Until the transition ends** (2.25 onward), a review or a baseline bound
+to the byte sha that 2.24 and earlier computed still counts. The hook's
+journal line for a pass starts `match=legacy` when it rested on one, and
+`plan-sha --legacy` prints that sha, for a plan whose machine comment was
+written before. Both go once the journal shows no `match=legacy` for
+14 days.
+
+**A delta in a new session.** A plan's baseline is found by its path, by
+its body, and, last, by its H1 and `repos=`: the same plan presented from a
+new session has a new file name, and after an edit only its title still
+names it. Two plans with the same H1 and repositories therefore share a
+baseline; backend still reviews the body. If the sha cannot be computed
+(the parser panicked), the hook asks the person instead of passing.
 
 A review counts only when Claude Code recorded it as completed:
 

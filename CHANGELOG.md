@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Changed
+
+- **A plan's sha ignores formatting.** `plan-sha` and the
+  `plan-review-panel` hook read the plan as CommonMark (`pulldown-cmark`,
+  pinned exactly), so a formatter that adds blank lines, rewraps lines,
+  pads tables or changes list-marker or emphasis style keeps the review
+  bound. Every word, number and operator still counts, code blocks and
+  spans count exactly as written, and so does the kind of each block
+  (`a * b` ≠ a list item `* b`). On the 44 of 47 real plans that prettier
+  changes, 36 keep their sha; the 8 others had code or text rewritten.
+  Reviews and baselines bound to the old byte sha still count during a
+  transition: the hook journals `match=legacy` when one is used, and
+  `plan-sha --legacy` prints that sha. Both are removed once the journal
+  shows no `match=legacy` for 14 days.
+- **An edited plan in a new session is a delta.** Its baseline is now also
+  found by its H1 and `repos=`, so backend plus the reviewers of any new
+  area are asked for, not the whole panel.
+- **A plan whose sha cannot be computed is asked about, not passed.** A
+  panic in the Markdown parser goes to the person; `plan-sha` exits 1.
+
 ### Added
 
 - **`read-unbounded-large`: a Read with no window over a large file is
