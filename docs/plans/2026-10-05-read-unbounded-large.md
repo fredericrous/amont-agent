@@ -242,6 +242,7 @@ Integration tests (`tests/hook.rs`). Add `ReadFixture::with_size(name, bytes)`;
 | 2 | `~/.claude/plans/tingly-pondering-eclipse.md` | rule absent (exempt) | rc 0, empty, absent |
 | 3 | `amont-agent rules` | `read-unbounded-large  advise` | `read-unbounded-large    advise    4.6/1000  measured 2026-10-05` |
 | — | `amont-agent status` against the scratch config after the probes | one advised row | `read-unbounded-large  advise  advise  4.6/1000 measured 2026-10-05  1 advised` |
+| — | `cargo test --bin amont-agent -- persisted_output_dump read_unbounded_large`, after the Windows fix | new `a_windows_path_is_a_saved_result_too` passes | 9 passed; fmt and clippy clean; the gate on `aef64c0` and `505b992` passed 25 checks |
 
 ## Phase 2: release and soak (next, after the merge)
 
@@ -261,6 +262,7 @@ Integration tests (`tests/hook.rs`). Add `ReadFixture::with_size(name, bytes)`;
 Fixed: the FIFO test now fails on a `mkfifo` error instead of skipping (`647fb37`). The plan record is closed in this commit.
 deliberate: `Reread { seen, text }` keeps the plan's struct shape, which the panel reviewed. Both callers read only one field each.
 57k + 27k tokens, 56 s + 28 s.
+After the Windows fix, tree `5fcab0da` got its own round 1 plus delta. Fixed: the CHANGELOG now names `cat`/`head` too (`505b992`), and this plan records the fix. 44k tokens, 36 s, plus the delta.
 
 ## Decision log
 
@@ -277,5 +279,14 @@ deliberate: `Reread { seen, text }` keeps the plan's struct shape, which the pan
 - 2026-10-05: implemented by a relais worker (sonnet@medium, $0.69). The run
   ended `blocked` on a scope fault in the contract. The parent applied its
   candidate patch and finished by hand.
+- 2026-10-06: PR #64 CI went red on `tests (windows-latest)`: `exempt_paths_are_silent`
+  panicked on `tool-results/x.txt`. The cause was `persisted_output_dump::is_persisted`,
+  which matched only `/tool-results/`. On Windows the path is `\tool-results\`, or
+  mixed once joined onto a cwd, so `persisted-output-dump` had never fired on
+  Windows at all. The fix is at the shared function
+  (`change.fix-at-the-defects-locus`): normalize `\` to `/` before matching, with a
+  Windows-path unit test. `tools/read-rate.py` normalizes the same way. The same
+  run's `architecture decisions resolve` was cancelled after 15 min having run
+  zero steps (the runner never started it). That is infrastructure, not code.
 
 <!-- panel: repos=amont-agent reviewers=backend,lang:rust,tui,unix body-sha=9f0ee6b68bf1 -->
