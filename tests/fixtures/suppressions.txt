@@ -1,0 +1,75 @@
+# Tagged sample lines for lint-suppression-added, one per line:
+#   <tag> TAB <file name> TAB <sample>
+# `+` the rule fires on a fragment holding the sample, `-` it stays silent. The
+# file name decides the file type; `\n` in a sample is a line break. A fragment
+# has no file around it, so samples that need a section carry their header.
+#
+# Two classifiers read this file and must agree: the Rust one in
+# src/rules/lint_suppression_added.rs (a unit test) and the transcript scanner
+# tools/suppression-rate.py (--self-test, run by tests/suppression_rate.rs).
++	x.py	x = f()  # type: ignore
++	x.py	x = f()  # type: ignore[arg-type]
++	x.py	import os  # noqa
++	x.py	import os  # noqa: F401
++	x.pyi	x: int  # pyright: ignore[reportGeneralTypeIssues]
++	x.py	# pyright: basic
++	x.py	# pyright: reportMissingImports=false
++	x.py	# ruff: noqa
+-	x.py	x = f()  # typed
+-	x.py	x = "# noqa"
+-	x.py	# pyright: strict
+-	x.py	"""\n# noqa\n"""
++	x.ts	foo();  // eslint-disable-next-line react-hooks/exhaustive-deps
++	x.tsx	/* eslint-disable no-console */
++	x.js	// @ts-ignore
++	x.vue	// @ts-expect-error: upstream bug
++	x.mjs	// @ts-nocheck
+-	x.ts	const s = "// eslint-disable-next-line";
+-	x.ts	// eslint-enable
+-	x.js	// @ts-check
++	x.rs	#[allow(clippy::too_many_arguments)]
++	x.rs	    #![allow(dead_code)]
++	x.rs	#[expect(unused)]
++	x.rs	    #[cfg_attr(test, allow(dead_code))]
+-	x.rs	let s = "#[allow(dead_code)]";
+-	x.rs	#[derive(Debug)]
+-	x.rs	// #[allow(dead_code)]
++	x.go	f() //nolint:errcheck
++	x.go	f() //nolint
+-	x.go	// nolint is prose
+-	x.go	s := "//nolint"
++	tsconfig.json	"strict": false
++	tsconfig.app.json	"noImplicitAny": false,
++	tsconfig.json	"strictNullChecks": false
+-	tsconfig.json	"strict": true
+-	package.json	"strict": false
++	.eslintrc.json	"no-console": "off",
++	eslint.config.js	'react/x': 'warn',
++	.eslintrc.js	semi: 0,
+-	.eslintrc.json	"no-console": "error"
++	pyrightconfig.json	"reportMissingImports": "none"
++	pyrightconfig.json	"typeCheckingMode": "off"
++	pyrightconfig.json	"enableTypeIgnoreComments": true
+-	pyrightconfig.json	"reportFoo": "error"
++	pyproject.toml	[tool.pyright]\ntypeCheckingMode = "basic"
+-	pyproject.toml	typeCheckingMode = "basic"
+-	pyproject.toml	[tool.black]\ntypeCheckingMode = "basic"
++	ruff.toml	[lint]\nignore = ["E501"]
++	pyproject.toml	[tool.ruff.lint]\nextend-ignore = ["D"]
++	ruff.toml	[lint.per-file-ignores]\n"tests/*" = ["S101"]
+-	ruff.toml	[lint]\nselect = ["E"]
+-	ruff.toml	lint.ignore = ["E501"]
++	Cargo.toml	[lints.clippy]\ntoo_many_arguments = "allow"
++	Cargo.toml	[workspace.lints.rust]\nunused = "allow"
++	Cargo.toml	[lints.clippy.x]\nlevel = "allow"
+-	Cargo.toml	[lints.clippy]\nx = "deny"
+-	Cargo.toml	x = "allow"
+-	Cargo.toml	[lints.clippy]\nx = { level = "allow" }
++	.golangci.yml	linters:\n  disable:\n    - errcheck
++	.golangci.yaml	linters:\n  disable-all: true
++	.golangci.yml	linters:\n  default: none
++	.golangci.yml	issues:\n  exclude-rules:\n    - path: _test\.go
+-	.golangci.yml	linters:\n  enable:\n    - errcheck
+-	.golangci.yml	linters:\n  disable: [errcheck]
+-	README.md	# noqa
+-	README.md	#[allow(dead_code)]

@@ -98,6 +98,24 @@ pub struct FileOp {
     pub cwd: PathBuf,
     pub session: String,
     pub permission_mode: String,
+    /// What a `PreToolUse` Edit, MultiEdit or Write is about to do to the
+    /// file. `None` for a Read, after a call, or when the input held no
+    /// usable text.
+    pub change: Option<Change>,
+}
+
+/// The text a write tool was handed, before anything is applied.
+pub enum Change {
+    /// `Write`: the whole new content.
+    Write { content: String },
+    /// `Edit` (one entry) or `MultiEdit`, in the order they apply.
+    Edits(Vec<EditPart>),
+}
+
+pub struct EditPart {
+    pub old: String,
+    pub new: String,
+    pub replace_all: bool,
 }
 
 pub struct Session {
@@ -154,6 +172,37 @@ pub enum Event {
     /// panel (`plan-review-panel`)?
     PrePlanExit(Box<PlanExit>),
     NotOurs,
+}
+
+/// The text an Edit, MultiEdit or Write carries; anything else, or a field of
+/// the wrong type, is `None`.
+fn change_of(tool: &str, input: Option<&serde_json::Value>) -> Option<Change> {
+    let input = input?;
+    let text = |v: &serde_json::Value, key: &str| -> Option<String> {
+        v.get(key).and_then(|x| x.as_str()).map(str::to_string)
+    };
+    let part = |v: &serde_json::Value| -> Option<EditPart> {
+        Some(EditPart {
+            old: text(v, "old_string")?,
+            new: text(v, "new_string")?,
+            replace_all: v
+                .get("replace_all")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+        })
+    };
+    match tool {
+        "Write" => Some(Change::Write {
+            content: text(input, "content")?,
+        }),
+        "Edit" => Some(Change::Edits(vec![part(input)?])),
+        "MultiEdit" => {
+            let parts: Option<Vec<EditPart>> =
+                input.get("edits")?.as_array()?.iter().map(part).collect();
+            parts.map(Change::Edits)
+        }
+        _ => None,
+    }
 }
 
 pub fn parse(raw: &str) -> Event {
@@ -294,6 +343,11 @@ pub fn parse(raw: &str) -> Event {
                     l.map_or("-".to_string(), |l| l.to_string())
                 ),
             };
+            let change = if stage == "PreToolUse" {
+                change_of(tool, input)
+            } else {
+                None
+            };
             let op = Box::new(FileOp {
                 path,
                 writes: tool != "Read",
@@ -301,6 +355,7 @@ pub fn parse(raw: &str) -> Event {
                 cwd,
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
+                change,
             });
             if stage == "PreToolUse" {
                 Event::PreFile(op)
@@ -440,6 +495,47 @@ mod tests {
             }
             _ => panic!("expected a finished Bash call"),
         }
+    }
+
+    /// A write carries what it is about to do, before it runs; a Read, and a
+    /// write that has run, carry nothing.
+    #[test]
+    fn a_pre_write_carries_its_change() {
+        let pre = |tool: &str, input: &str| {
+            let raw = format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"{tool}","cwd":"/tmp",
+                     "tool_input":{input}}}"#
+            );
+            match parse(&raw) {
+                Event::PreFile(op) => op.change,
+                _ => panic!("expected a file call"),
+            }
+        };
+        match pre("Write", r#"{"file_path":"a.py","content":"x"}"#) {
+            Some(Change::Write { content }) => assert_eq!(content, "x"),
+            _ => panic!("expected a Write"),
+        }
+        match pre(
+            "Edit",
+            r#"{"file_path":"a.py","old_string":"a","new_string":"b","replace_all":true}"#,
+        ) {
+            Some(Change::Edits(e)) => {
+                assert_eq!(e.len(), 1);
+                assert_eq!((e[0].old.as_str(), e[0].new.as_str()), ("a", "b"));
+                assert!(e[0].replace_all);
+            }
+            _ => panic!("expected an Edit"),
+        }
+        match pre(
+            "MultiEdit",
+            r#"{"file_path":"a.py","edits":[{"old_string":"a","new_string":"b"},
+                                            {"old_string":"c","new_string":"d"}]}"#,
+        ) {
+            Some(Change::Edits(e)) => assert_eq!(e.len(), 2),
+            _ => panic!("expected a MultiEdit"),
+        }
+        assert!(pre("Read", r#"{"file_path":"a.py"}"#).is_none());
+        assert!(pre("Edit", r#"{"file_path":"a.py","old_string":1}"#).is_none());
     }
 
     /// A Read that ran is the one moment the file is known to be in context;

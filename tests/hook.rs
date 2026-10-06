@@ -676,6 +676,17 @@ impl ReadFixture {
         ReadFixture { dir, file }
     }
 
+    /// A scratch file named `file_name` holding `text`, for the write tools:
+    /// the rule rebuilds the file from disk, so the file has to say something.
+    fn with_content(name: &str, file_name: &str, text: &str) -> ReadFixture {
+        let dir = home().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let file = dir.join(file_name);
+        std::fs::write(&file, text).expect("a file worth editing");
+        ReadFixture { dir, file }
+    }
+
     /// As [`ReadFixture::file_event`], with the stance config pinned to `cfg`.
     fn file_event_with_global(
         &self,
@@ -1133,4 +1144,157 @@ fn a_fanout_is_never_refused() {
     );
     assert_ne!(r.decision().as_deref(), Some("deny"));
     assert!(r.reason().contains("ghcr.io"));
+}
+
+fn journal_rows(session: &str) -> Vec<String> {
+    std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal")
+        .lines()
+        .filter(|l| l.contains(session))
+        .map(str::to_string)
+        .collect()
+}
+
+const ADD_IGNORE: &str =
+    r#","old_string":"return g(a)","new_string":"return g(a)  # type: ignore""#;
+
+/// An Edit that adds a suppression is advised, never refused, and the advice
+/// names the line it is on.
+#[test]
+fn lint_suppression_an_edit_adding_a_type_ignore_is_advised() {
+    let f = ReadFixture::with_content("lsa-add", "x.py", "def f(a):\n    return g(a)\n");
+    let said = f.file_event("PreToolUse", "Edit", "lsa-add1", ADD_IGNORE);
+    assert_eq!(said.code, 0);
+    assert!(
+        said.reason().contains("lint-suppression-added"),
+        "{}",
+        said.stdout
+    );
+    assert!(
+        said.reason().contains("line 2: # type: ignore"),
+        "{}",
+        said.stdout
+    );
+    assert_eq!(said.decision(), None, "advise, not deny: {}", said.stdout);
+    let rows = journal_rows("lsa-add1");
+    assert!(
+        rows.iter().any(|r| r.contains("lint-suppression-added")
+            && r.contains(" advised ")
+            && r.contains("x.py:2 type: ignore[] (+1) exact")),
+        "{rows:?}"
+    );
+}
+
+/// Changing code on a line that keeps its suppression is not adding one.
+#[test]
+fn lint_suppression_an_edit_on_an_already_suppressed_line_is_silent() {
+    let f = ReadFixture::with_content("lsa-kept", "x.py", "x = f(a)  # type: ignore\n");
+    let said = f.file_event(
+        "PreToolUse",
+        "Edit",
+        "lsa-kept1",
+        r#","old_string":"f(a)","new_string":"f(b)""#,
+    );
+    assert_eq!(said.stdout, "", "{}", said.stdout);
+}
+
+/// A Write has no file to read for a new path, and a config is looked at
+/// too: loosening `strict` is advised.
+#[test]
+fn lint_suppression_a_new_tsconfig_with_strict_off_is_advised() {
+    let f = ReadFixture::with_content("lsa-ts", "tsconfig.json", "");
+    std::fs::remove_file(&f.file).expect("a new file");
+    let said = f.file_event(
+        "PreToolUse",
+        "Write",
+        "lsa-ts-1",
+        r#","content":"{\"compilerOptions\": {\"strict\": false}}""#,
+    );
+    assert!(
+        said.reason().contains("lint-suppression-added"),
+        "{}",
+        said.stdout
+    );
+    assert!(
+        said.reason()
+            .contains("loosens tsconfig.json strict = false"),
+        "{}",
+        said.stdout
+    );
+    assert_eq!(said.decision(), None, "advise, not deny: {}", said.stdout);
+}
+
+/// `observe` through the git config: nothing said, and the journal shows the
+/// rule watched.
+#[test]
+fn lint_suppression_observed_is_silent_and_journalled_as_watched() {
+    let f = ReadFixture::with_content("lsa-obs", "x.py", "def f(a):\n    return g(a)\n");
+    let cfg = "[amont \"agent.lint-suppression-added\"]\n\tstance = observe";
+    let session = "lsaobs-1";
+    let said = f.file_event_with_global("PreToolUse", "Edit", session, ADD_IGNORE, cfg);
+    assert_eq!(said.stdout, "", "{}", said.stdout);
+    let rows = journal_rows(session);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("lint-suppression-added") && r.contains(" watched ")),
+        "{rows:?}"
+    );
+}
+
+/// The implementation-review guard comes first and still refuses, whatever the
+/// content says.
+#[test]
+fn lint_suppression_leaves_the_pass_file_guard_denying() {
+    let f = ReadFixture::with_content("lsa-guard", "x.py", "");
+    let target = home()
+        .join("amont-agent")
+        .join("implementation-review")
+        .join("by-tree")
+        .join("app")
+        .join("z.py");
+    let cwd = serde_json::Value::String(f.dir.display().to_string());
+    let path = serde_json::Value::String(target.display().to_string());
+    let said = send(&format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"Write","cwd":{cwd},
+             "session_id":"lsa-gd-1","permission_mode":"default",
+             "tool_input":{{"file_path":{path},"content":"x = 1  # noqa\n"}}}}"#
+    ));
+    assert_eq!(said.decision().as_deref(), Some("deny"), "{}", said.stdout);
+    assert!(
+        said.reason().contains("implementation-review"),
+        "{}",
+        said.stdout
+    );
+    assert!(
+        !said.reason().contains("lint-suppression-added"),
+        "{}",
+        said.stdout
+    );
+}
+
+/// The write is recorded before any advice is built, so an advised Edit still
+/// resets what the session knows of the file, and `file-reread` sees it.
+#[test]
+fn lint_suppression_an_advised_edit_is_a_write_for_file_reread() {
+    let f = ReadFixture::with_content("lsa-reread", "x.py", "def f(a):\n    return g(a)\n");
+    let session = "lsarr-01";
+    f.read_done(session);
+    let again = f.read(session);
+    assert!(
+        again.reason().contains("file-reread"),
+        "control: {}",
+        again.stdout
+    );
+
+    let edit = f.file_event("PreToolUse", "Edit", session, ADD_IGNORE);
+    assert!(
+        edit.reason().contains("lint-suppression-added"),
+        "{}",
+        edit.stdout
+    );
+    assert_eq!(
+        f.read(session).stdout,
+        "",
+        "a read after the edit is a different read"
+    );
 }

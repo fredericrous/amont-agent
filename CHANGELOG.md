@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`lint-suppression-added`: an edit that adds a lint suppression is
+  advised.** On an Edit, MultiEdit or Write the hook rebuilds the file
+  before and after (a bounded read that never opens a FIFO) and compares
+  suppression markers, not lines: `# type: ignore`, `# noqa`,
+  `# pyright:` headers, `eslint-disable`, `@ts-ignore`, `#[allow]`/`#[expect]`,
+  `//nolint`, and a lint configuration made looser (tsconfig, eslint,
+  pyright, ruff, Cargo `[lints]`, `.golangci.yml`). Editing a line that
+  keeps its suppression, or moving one, is silent. The advice points at
+  `general.no-disabled-safety`; the journal records the marker kind and
+  whether the file was read whole or only the fragments were seen.
+  Ships `advise`, ceiling `deny`. `tools/suppression-rate.py` prints the
+  weekly rate from transcripts.
+
 ## v2.25.0
 
 ### Changed
@@ -33,6 +50,7 @@
   `tool-results/` are exempt, and a file the session already read is
   `file-reread`'s to answer. `tools/read-rate.py` prints the weekly rate
   from transcripts.
+
 
 ### Fixed
 

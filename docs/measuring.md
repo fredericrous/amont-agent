@@ -159,6 +159,30 @@ media, `tool-results/`), that count per 1000 calls, and the characters. Run
 it to recount the rule's `per_1000` and again two weeks after a release, to
 compare against the weeks before.
 
+### The write tier from transcripts
+
+`lint-suppression-added` never reaches the backtester either: an Edit or Write
+is not a command. It is measured from the transcripts with
+`tools/suppression-rate.py`:
+
+```sh
+tools/suppression-rate.py
+tools/suppression-rate.py --weeks 8
+tools/suppression-rate.py --until 2026-10-06
+```
+
+For each ISO week it prints the tool calls, the Edit, MultiEdit and Write calls
+that add a suppression or loosen a lint setting, and that count per 1000 calls.
+Run it to recount the rule's `per_1000` and again two weeks after a release.
+
+The script sees **fragments only**: a transcript holds what the model sent,
+never the file, so it compares `old_string` with `new_string`, as the hook's
+fragment fallback does. With no section around the text it undercounts the
+config rows that need one (`[tool.pyright]`, `[tool.ruff*]`, `[lints.*]`,
+`.golangci.yml` `disable:` and `exclude*`), unless the edit carries the header
+itself. `--self-test` classifies `tests/fixtures/suppressions.txt`, which a
+Rust unit test classifies too; `tests/suppression_rate.rs` runs it.
+
 ## 5. Graduate — promote on the evidence
 
 ```sh

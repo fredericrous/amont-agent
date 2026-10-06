@@ -42,6 +42,7 @@ pub mod glob_in_flag_value;
 pub mod glob_no_match;
 pub mod implementation_review;
 pub mod kubectl_gitops;
+pub mod lint_suppression_added;
 pub mod no_verify;
 pub mod path_operand_missing;
 pub mod persisted_output_dump;
@@ -443,6 +444,7 @@ pub const RULES: &[Rule] = &[
     persisted_output_dump::RULE,
     file_reread::RULE,
     read_unbounded_large::RULE,
+    lint_suppression_added::RULE,
     request_fanout::RULE,
 ];
 
