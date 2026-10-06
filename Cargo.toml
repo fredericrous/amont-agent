@@ -1,6 +1,6 @@
 [package]
 name = "amont-agent"
-version = "2.24.0"
+version = "2.25.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/fredericrous/amont-agent"
@@ -59,7 +59,9 @@ serde = "1"
 # `body_sha` fixture test is what tells you whether it re-hashes.
 #
 # What this owns: pulldown-cmark plus `bitflags`, `memchr` and `unicase`,
-# none with a build script, all with default features off or unused. It is
+# all with default features off or unused. Only pulldown-cmark has a build
+# script, and without its `gen-tests` feature it compiles to an empty
+# `main` (spec-test generation); the other three have none. It is
 # the CommonMark parser rustdoc and mdBook use, released a few times a year;
 # MSRV 1.71.1, under ours. If it were abandoned, the pin keeps building, and
 # the fallback is the rung rejected on 2026-10-06: a hand-rolled block
