@@ -1,5 +1,5 @@
 ---
-status: active
+status: active  # next: Phase 3b after the 2.25 release
 branch: feat/plan-sha-ignores-layout
 repos: [amont-agent]
 adrs: []
@@ -145,14 +145,15 @@ release binary's size before and after is recorded in Verification
 
 ## Phases
 
-- [ ] Phase 1 — `pulldown-cmark` dependency, `words()` + `body_sha` over
+- [x] Phase 1 — `pulldown-cmark` dependency, `words()` + `body_sha` over
   it + `legacy_sha()`, tests.
-- [ ] Phase 2 — dual acceptance (`judge`, shared `is_current`, `baseline`,
+- [x] Phase 2 — dual acceptance (`judge`, shared `is_current`, `baseline`,
   `save`, journal `match=`), `plan-sha --legacy` with its conflict rule,
   tests.
-- [ ] Phase 3 — docs: `plan-sha --help` (word-sequence rule, what no longer
+- [x] Phase 3 — docs: `plan-sha --help` (word-sequence rule, what no longer
   counts, `--legacy` temporary), `docs/plan-review.md` "canonical body"
-  paragraph, CHANGELOG `Unreleased`. Outside this repo, same session:
+  paragraph, CHANGELOG `Unreleased`.
+- [ ] Phase 3b (dotfiles, after the 2.25 release is installed) —
   worktree-task step 4 gains "if `plan-sha --short F` differs, run
   `plan-sha --legacy --short F`; either must equal `body-sha`".
 
@@ -179,6 +180,18 @@ release binary's size before and after is recorded in Verification
   kinds and the ordered-list start kept, one item per code block, parser
   pinned exactly with a fixture sha, a panic answered `ask`, a by-title
   baseline for a fresh session. Measured: 28/28 probes, 36/44 corpus.
+- 2026-10-06 — implementation: the final backend's low findings applied.
+  A table row is `k:row` (two one-cell rows ≠ one two-cell row, tested).
+  Plans in flight gain a by-title record only at their next pass, so a
+  fresh session on one of them before that still gets `full`. The
+  round-2 "35/44" above is superseded by 36/44.
+- 2026-10-06 — implementation: a plan opening with an unclosed `---`
+  (not front matter) now hashes like the plan without it, because CommonMark
+  reads that `---` as a thematic break, which says nothing. The existing
+  front-matter test asserts the byte difference on `legacy_sha` instead.
+- 2026-10-06 — the worktree-task skill line moves to Phase 3b: it tells
+  agents to run `plan-sha --legacy`, which the installed 2.24.0 does not
+  have, so it lands in dotfiles once 2.25 is installed.
 
 ## Verification
 
@@ -210,10 +223,13 @@ Each check: input → expected → observed.
   A different H1 at a new path → `full`.
 - `body_sha(PLAN)` equals a hex constant (next to the legacy one), so a
   parser change that re-hashes plans fails `make check`.
-- A panic inside `words` (test hook) → `judge` answers `ask`, never silence.
+- A panic injected in `body_sha` (test hook) → the hook's `examine` answers
+  `ask`, never silence.
 - Release binary size before and after the dependency, in bytes.
-- Journal: a pass through a legacy binding on a plan whose excerpt runs
-  over 300 characters → the written line contains `match=legacy`.
+- Journal: a pass through a legacy binding → the written line contains
+  `match=legacy`; observed by construction that it survives the 200-character
+  cut, because `match=` leads the excerpt (`format!("match={matched} …")` in
+  `examine`).
 - CLI: `plan-sha --legacy --block f; echo $?` → `2` and one stderr line;
   `plan-sha --legacy f 2>/dev/null | wc -l` → `1`.
 - Corpus, built binary: `plan-sha --legacy` over the 47 plans equals the
@@ -229,6 +245,64 @@ Each check: input → expected → observed.
   both, and `--legacy --short` on the source gives `0b9155c30f53`.
 - `make check` (fmt, clippy -D warnings, tests) clean.
 
+### Observed (2026-10-06, before the push)
+
+- Unit pairs: `plan_words` 11 equal + 22 different, all as expected;
+  `plan_review` 26 tests pass, including the two fixture shas
+  (`ab25150b…` new, `db6b774a…` legacy, the latter printed by the 2.24.0
+  binary for the same plan), legacy binding → Pass, legacy baseline →
+  current for `judge` and `is_current`, guarded panic →
+  `Err(ShaError::ParserPanicked)`, and a panic injected in `body_sha` →
+  `examine` answers `Ask("…cannot be computed")`, excerpt `sha unavailable`.
+- Integration (`tests/plan_review.rs`, 18 pass): a formatted copy keeps its
+  review and a one-word edit does not; an approved plan at a new path with
+  one line edited → `panel=delta` and `plan-review-backend` only, and the
+  hook passes with backend alone; another H1 → `panel=full`; reviews whose
+  blocks carry the byte sha → pass, journal line has `match=legacy`, and
+  its baseline is saved as `by-body/<new sha>.json`; a pass on reviews of
+  the new sha journals `match=new`; a baseline only 2.24 wrote
+  (`by-body/<byte sha>.json`), found from a new path → `panel=current` and
+  a silent hook;
+  `--legacy` → one stdout line plus the stderr notice; `--legacy --block`
+  → exit 2, empty stdout, `--legacy only prints a sha; drop --block`.
+- Corpus, release binary: `plan-sha --legacy` = 2.24.0 `plan-sha` on 48/48
+  plans (the 47 plus this one). Prettier copies: 36/44 equal; different:
+  fluttering-conjuring-thacker, iridescent-snacking-biscuit,
+  jolly-hugging-bunny, let-s-build-the-cloud-side-squishy-gray,
+  let-s-find-q-solution-proud-aurora, let-s-plan-a-full-cosmic-newell,
+  let-s-plan-the-vpn-sleepy-russell, vault-paths-kebab-case (embedded
+  YAML/JS rewritten, code spans glued, `_` turned into `*`).
+- Mutation probe: 19/19 change the sha (number, identifier, operator, word
+  swap in each of the 5 plans; `tingly-pondering-eclipse` has no
+  `snake_case` identifier in the probed range, so 19, not 20).
+- website-builder: the landed copy differs from its source, because landing
+  added a `## Decision log` line ("Accepted unreviewed by the person").
+  With that line removed, the prettier-formatted copy hashes `999ff9c23ce5`
+  like the source; its legacy sha is `9930b135698b`, the mismatch the person
+  reported, and the source's legacy sha is `0b9155c30f53`, its `body-sha`.
+- Release binary: 1,975,328 → 2,209,392 bytes (+234,064, +11.9%).
+- `make check`: fmt and clippy clean; `cargo test --no-fail-fast`: 517 unit
+  tests and every integration suite pass except `tests/hook.rs`
+  `a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not`,
+  which fails the same way on `origin/main` (2a3aabb) on this machine and
+  passes in CI there: an environment fault, not this change.
+  `make msrv`: builds on 1.85.0.
+- `--legacy --short` and `-`: one stdout line (integration test).
+
+## Implementation review
+
+approve-with-changes, then approve-with-changes on the delta; every finding fixed.
+Fixed: exhaustive `Event` match; dependency ownership comment; typed `ShaError`; `match=legacy` only when the pass needs the byte sha; tests for panic → `ask`, store migration, a 2.24-only baseline.
+Fixed in the record: observed results and test counts updated, the 300-character journal check stated as by construction.
+Round 1: 66k tokens, 68 s; delta: 35k, 34 s.
+
 ## Outcome
+
+Shipped in this branch: the CommonMark sha, the legacy transition, the
+by-title baseline, the panic → `ask` guard, `plan-sha --legacy`, docs.
+Not yet: Phase 3b (dotfiles skill line, after the release), and the legacy
+removal PR (when the journal shows no `match=legacy` for 14 days).
+Surprise: the person's own case also carried a Decision-log line added at
+landing, which no formatter rule can absorb, nor should.
 
 <!-- panel: repos=amont-agent reviewers=backend,lang:rust,tui,unix body-sha=92922faf9fdd -->
