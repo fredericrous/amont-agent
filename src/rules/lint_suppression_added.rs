@@ -41,7 +41,10 @@
 //! - in a source file, a marker the inserted text does not name: an edit
 //!   whose `new_string` or `content` carries none of the type's keywords is
 //!   answered without a read ([`worth_rebuilding`]), so a marker assembled
-//!   only by deleting the text between its halves is not seen.
+//!   only by deleting the text between its halves is not seen;
+//! - a Write over an existing file the hook cannot read (over the read cap,
+//!   not UTF-8, an I/O error): what it held is unknown, so nothing is
+//!   reported rather than every suppression it already had.
 //!
 //! A comment marker is required: a string literal that merely contains
 //! `# noqa` or `eslint-disable` does not fire. Markdown and every other file
@@ -61,8 +64,8 @@ pub const RULE: Rule = Rule {
     max_stance: Stance::Deny,
     evidence: Evidence {
         // `tools/suppression-rate.py --until 2026-10-06`: 101 Edit/Write
-        // calls adding a suppression in 99,112 tool calls.
-        per_1000: 1.02,
+        // calls adding a suppression in 99,810 tool calls.
+        per_1000: 1.01,
         measured: "2026-10-06",
         trend: Trend::Flat(6),
     },
@@ -88,21 +91,30 @@ pub struct Marker {
     pub kind: String,
     /// One code of the marker, `""` when it has none; or a setting's value.
     pub codes: String,
-    /// A setting's section, `""` for a comment marker and for flat formats.
-    pub section: String,
-    /// A configuration setting, not a comment.
-    pub config: bool,
     /// 1-based, in the text the marker was found in.
     pub line: usize,
-    /// How the marker reads, for the advice. Not part of its identity.
-    pub shown: String,
+    /// Where the marker came from: a comment or a configuration setting.
+    pub origin: Origin,
+}
+
+/// A comment marker, or a setting in a configuration file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// How the comment reads, for the advice. Not part of its identity.
+    Comment { shown: String },
+    /// The setting's section, `""` for flat formats. Part of its identity.
+    Setting { section: String },
 }
 
 pub type Hit = Marker;
 
 impl Marker {
     fn key(&self) -> (String, String, String) {
-        (self.kind.clone(), self.codes.clone(), self.section.clone())
+        let section = match &self.origin {
+            Origin::Comment { .. } => String::new(),
+            Origin::Setting { section } => section.clone(),
+        };
+        (self.kind.clone(), self.codes.clone(), section)
     }
 }
 
@@ -110,10 +122,8 @@ fn comment(kind: &str, code: &str, line: usize, shown: String) -> Marker {
     Marker {
         kind: kind.to_string(),
         codes: code.to_string(),
-        section: String::new(),
-        config: false,
         line,
-        shown,
+        origin: Origin::Comment { shown },
     }
 }
 
@@ -121,10 +131,10 @@ fn setting(section: &str, key: &str, value: &str, line: usize) -> Marker {
     Marker {
         kind: key.to_string(),
         codes: value.to_string(),
-        section: section.to_string(),
-        config: true,
         line,
-        shown: String::new(),
+        origin: Origin::Setting {
+            section: section.to_string(),
+        },
     }
 }
 
@@ -199,7 +209,15 @@ pub fn worth_rebuilding(path: &Path, change: &Change) -> bool {
         // Attribute forms only: `.expect(` is in most Rust edits.
         Some(File::Rust) => &["#[allow", "#![allow", "#[expect", "#![expect", "cfg_attr"],
         Some(File::Go) => &["nolint"],
-        Some(_) => return true,
+        Some(
+            File::Tsconfig
+            | File::Eslint
+            | File::PyrightJson
+            | File::Pyproject
+            | File::Ruff
+            | File::Cargo
+            | File::Golangci,
+        ) => return true,
     };
     let names_one = |text: &str| {
         let text = text.to_ascii_lowercase();
@@ -1027,8 +1045,12 @@ pub fn reconstruct(path: &Path, change: &Change) -> Rebuilt {
                 after: content.clone(),
                 mode: Mode::Exact,
             },
+            // The file exists but cannot be read, so what it held is unknown.
+            // Comparing against nothing would report every suppression it
+            // already had as added; comparing the content with itself is
+            // silent, a known false negative.
             Err(why) => Rebuilt {
-                before: String::new(),
+                before: content.clone(),
                 after: content.clone(),
                 mode: Mode::Fragment(why),
             },
@@ -1094,7 +1116,9 @@ pub fn phrase(shown: &str, hits: &[Hit], mode: &Mode) -> String {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(shown);
-    let config = hits.first().is_some_and(|h| h.config);
+    let config = hits
+        .first()
+        .is_some_and(|h| matches!(h.origin, Origin::Setting { .. }));
     let n = hits.len();
     let mut text = if config {
         format!(
@@ -1113,15 +1137,16 @@ pub fn phrase(shown: &str, hits: &[Hit], mode: &Mode) -> String {
             Mode::Exact => format!("line {}", h.line),
             Mode::Fragment(_) => "(line unknown)".to_string(),
         };
-        let what = if h.config {
-            let section = if h.section.is_empty() {
-                String::new()
-            } else {
-                format!("[{}] ", h.section)
-            };
-            format!("loosens {file} {section}{} = {}", h.kind, h.codes)
-        } else {
-            h.shown.clone()
+        let what = match &h.origin {
+            Origin::Setting { section } => {
+                let section = if section.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{section}] ")
+                };
+                format!("loosens {file} {section}{} = {}", h.kind, h.codes)
+            }
+            Origin::Comment { shown } => shown.clone(),
         };
         text.push_str(&format!("\n  {at}: {what}"));
     }
@@ -1777,6 +1802,25 @@ mod tests {
             },
         );
         assert_eq!((new.before.as_str(), new.mode), ("", Mode::Exact));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_write_over_an_unreadable_file_reports_nothing() {
+        let dir = scratch("write-unreadable");
+        let content = "a  # noqa\nb  # type: ignore\n".to_string();
+        let big = dir.join("big.py");
+        std::fs::write(&big, vec![b'a'; MAX_READ as usize + 1]).unwrap();
+        let binary = dir.join("bin.py");
+        std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+        for (f, why) in [(&big, Reason::TooLarge), (&binary, Reason::NotUtf8)] {
+            let write = Change::Write {
+                content: content.clone(),
+            };
+            let r = reconstruct(f, &write);
+            assert_eq!(r.mode, Mode::Fragment(why));
+            assert!(examine_change(f, &r.before, &r.after).is_empty());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

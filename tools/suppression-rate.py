@@ -644,15 +644,21 @@ def change_of(name, inp):
 def scan(root, until):
     calls = defaultdict(int)
     hits = defaultdict(int)
+    # Counted, not dropped quietly: the total is the rule's evidence.
+    skipped = {"files": 0, "lines": 0}
     for log in root.rglob("*.jsonl"):
         try:
             lines = log.read_text(errors="replace").splitlines()
         except OSError:
+            skipped["files"] += 1
             continue
         for raw in lines:
+            if not raw.strip():
+                continue
             try:
                 rec = json.loads(raw)
             except ValueError:
+                skipped["lines"] += 1
                 continue
             msg = rec.get("message")
             if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
@@ -671,7 +677,7 @@ def scan(root, until):
                 change = change_of(block.get("name"), inp)
                 if change and added(path, *change) > 0:
                     hits[week] += 1
-    return calls, hits
+    return calls, hits, skipped
 
 
 def run(argv):
@@ -697,7 +703,7 @@ def run(argv):
     if not args.root.is_dir():
         print(f"suppression-rate: no transcripts under {args.root}", file=sys.stderr)
         return 1
-    calls, hits = scan(args.root, args.until)
+    calls, hits, skipped = scan(args.root, args.until)
     weeks = sorted(calls)
     if args.weeks > 0:
         weeks = weeks[-args.weeks:]
@@ -709,6 +715,9 @@ def run(argv):
     found = sum(hits[w] for w in weeks)
     rate = 1000.0 * found / total if total else 0.0
     print(f"{'total':<9} {total:>8} {found:>7} {rate:>9.2f}")
+    if skipped["files"] or skipped["lines"]:
+        print(f"suppression-rate: skipped {skipped['files']} unreadable "
+              f"file(s), {skipped['lines']} malformed line(s)", file=sys.stderr)
     return 0
 
 

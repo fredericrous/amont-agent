@@ -209,13 +209,12 @@ reported, not budgeted. Both are measured before and after the change.
   - **Docs:** a `docs/measuring.md` section next to the Read-tier one, a
     `docs/rules.md` row, and a CHANGELOG `### Added` entry under Unreleased.
 - [ ] **Phase 6, Release** (asked for by the person, `work.release-on-request`).
-  After the merge, open the release PR `chore: release 2.25.0`. It is minor
-  because it adds rules, and it also carries the unreleased
-  read-unbounded-large rule and the #62 guard fix. Tag with the
-  `tag-release` skill. Check that the release run concluded `success` and
-  that `publish-tap` pushed `Formula/amont-agent.rb` at 2.25.0.
+  After the merge, open the release PR `chore: release 2.26.0`. It is minor
+  because it adds a rule (2.25.0 shipped meanwhile; see the Decision log).
+  Tag with the `tag-release` skill. Check that the release run concluded
+  `success` and that `publish-tap` pushed `Formula/amont-agent.rb` at 2.26.0.
 - [ ] **Phase 7, Upgrade.** `brew update && brew upgrade amont amont-agent`.
-  Then check that `amont-agent --version` is 2.25.0, record
+  Then check that `amont-agent --version` is 2.26.0, record
   `amont --version`, and close #65 from the PR.
 
 ## Decision log
@@ -257,7 +256,8 @@ reported, not budgeted. Both are measured before and after the change.
   read-unbounded-large and the #62 fix, so this release carries only this
   rule.
 - 2026-10-06 — **Test isolation fix in `tests/hook.rs`.** `send_inner` now
-  sets `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`. Since
+  points `GIT_CONFIG_GLOBAL` at a file under the test home that does not
+  exist, and sets `GIT_CONFIG_NOSYSTEM=1`. Since
   today, the developer's global `implementation-review.stance deny` leaked
   into `a_push_from_an_unrehearsed_tree_…`, which failed on `main` too. The
   relais repair attempt found the fix.
@@ -268,6 +268,14 @@ reported, not budgeted. Both are measured before and after the change.
   entry was moved to a fresh `## Unreleased` and the latency fix above was
   added. The relais decision stays open until the merge, then
   `--answer salvaged`.
+- 2026-10-06 — **A Write over an existing file the hook cannot read is
+  silent** (implementation review). Comparing the content against an empty
+  "before" reported every suppression the file already held. The content is
+  now compared with itself, which is listed as a known false negative and
+  pinned by a test. Also from that review: `Marker` carries an `Origin` enum
+  instead of a `config` flag, the `File` match is exhaustive, the rate script
+  counts skipped files and lines on stderr, and the evidence is 1.01 per
+  1,000 over 99,810 calls.
 - 2026-10-06 — **The fire path costs about 100–200 ms, and that predates
   this rule.** `read-unbounded-large` firing on `main` measures 215 ms p50.
   The cost is in the shared advise path, not in this rule, and a follow-up
@@ -306,8 +314,8 @@ reported, not budgeted. Both are measured before and after the change.
   - `… | head -1; echo $?` → no traceback, exit 0;
   - `--root /nonexistent` → exit 1.
 - **Phase 6:** `gh run view <release run> --json conclusion` → `success`;
-  the tap formula shows `2.25.0` with a matching sha256.
-- **Phase 7:** `amont-agent --version` → 2.25.0, and a piloted Edit through
+  the tap formula shows `2.26.0` with a matching sha256.
+- **Phase 7:** `amont-agent --version` → 2.26.0, and a piloted Edit through
   the installed binary advises.
 
 ### Observed (2026-10-06, before push)

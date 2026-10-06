@@ -84,10 +84,6 @@ fn send_inner(payload: &str, path: String) -> Reply {
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", home())
         .env("PATH", path)
-        // Nor the developer's own stance config: a rule they set to `deny`
-        // must not change what these tests see.
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         // The guard must not be silenced by the developer's own environment
         // while its own tests are running.
         .env_remove("AMONT_AGENT_OFF")
