@@ -183,6 +183,28 @@ config rows that need one (`[tool.pyright]`, `[tool.ruff*]`, `[lints.*]`,
 itself. `--self-test` classifies `tests/fixtures/suppressions.txt`, which a
 Rust unit test classifies too; `tests/suppression_rate.rs` runs it.
 
+### What came before a publish, from transcripts
+
+`publish-without-skill` asks a question the backtester cannot: whether the
+`tag-release` or `merge-when-green` skill was called in this turn or the one
+before. Its `confirm` reads the transcript, and the backtester never runs
+`confirm`. It is measured with `tools/skill-rate.py`:
+
+```sh
+tools/skill-rate.py
+tools/skill-rate.py --since 2026-10-07 --list
+```
+
+It prints the publishing Bash calls per 1000 (a `v*` tag pushed, `gh pr
+merge`, a merge sent to `/pulls/<n>/merge`), split by what preceded them:
+`no-skill`, `stale` (called two or more prompts back), `allowance` (covered only
+by the one prompt the window allows) and `covered`. It prints the same counts per
+unique command per session, since a refused command is retried. Then it prints
+how old the covering call was, and the uncovered rate by week. The matcher is a
+regular expression. Against the Rust lexer it overcounts by about 6% (1,551
+against 1,461 on 2026-10-07), so `backtest --rule publish-without-skill` remains
+the count of matches. Run it again two weeks after a release.
+
 ## 5. Graduate — promote on the evidence
 
 ```sh

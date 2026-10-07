@@ -57,6 +57,11 @@ pub struct Bash {
     /// recorded. Read by `implementation-review`'s `confirm` for a push;
     /// `None` when the payload carried none.
     pub transcript: Option<PathBuf>,
+    /// `agent_transcript_path`: inside a subagent, that subagent's own
+    /// transcript (its `transcript_path` is then the parent's). Read by
+    /// `publish-without-skill`'s `confirm`, since a subagent's Skill calls
+    /// are written there and nowhere else.
+    pub agent_transcript: Option<PathBuf>,
 }
 
 /// A prompt the person typed and submitted.
@@ -441,6 +446,7 @@ pub fn parse(raw: &str) -> Event {
                 .and_then(|o| o.as_str())
                 .map(str::to_string);
             let transcript = transcript();
+            let agent_transcript = path_at(v.get("agent_transcript_path").and_then(|x| x.as_str()));
             let bash = Box::new(Bash {
                 command,
                 cwd,
@@ -452,6 +458,7 @@ pub fn parse(raw: &str) -> Event {
                 prompt_id: str_at("prompt_id"),
                 stdout,
                 transcript,
+                agent_transcript,
             });
             if stage == "PreToolUse" {
                 Event::PreBash(bash)

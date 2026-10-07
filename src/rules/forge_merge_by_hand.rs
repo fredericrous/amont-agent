@@ -87,37 +87,6 @@ pub const RULE: Rule = Rule {
     confirm: None,
 };
 
-/// True for a URL path that merges a pull request on either forge:
-/// `…/pulls/<digits>/merge`, with anything or nothing after it.
-///
-/// The digits matter. `/pulls/10` reads a pull request and `/pulls` lists
-/// them; only the numbered `merge` child mutates, so requiring an index is
-/// what keeps every read-only call out of this rule.
-fn is_pr_merge_path(text: &str) -> bool {
-    let mut rest = text;
-    while let Some(i) = rest.find("/pulls/") {
-        let after = &rest[i + "/pulls/".len()..];
-        let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        if digits > 0 {
-            let tail = &after[digits..];
-            if tail == "/merge" || tail.starts_with("/merge?") || tail.starts_with("/merge/") {
-                return true;
-            }
-        }
-        rest = after;
-    }
-    false
-}
-
-/// The HTTP clients a shell reaches for. `gh api` is included: it is the same
-/// raw endpoint with authentication attached, and skips the same checks.
-fn is_http_client(program: &str) -> bool {
-    matches!(
-        program,
-        "curl" | "wget" | "http" | "https" | "httpie" | "xh"
-    )
-}
-
 fn examine(parsed: &Parsed) -> Option<Finding> {
     for cmd in parsed.judgeable() {
         // `else { continue }`, never `?`. A `?` here would return from
@@ -125,18 +94,7 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
         // merge is rarely the first clause — the corpus case that caught this
         // opens with a bare `TOK=$(awk …)` assignment, which has no program at
         // all, so the rule went silent before it ever reached the `curl`.
-        let Some(program) = cmd.program() else {
-            continue;
-        };
-        let raw_client = is_http_client(program);
-        let gh_api = program == "gh" && cmd.subcommand() == Some("api");
-        if !raw_client && !gh_api {
-            continue;
-        }
-        // Scan every argument, quoted included: a URL in quotes is still a
-        // URL. (`has_flag` skips quoted words because a quoted word is never a
-        // flag; that reasoning does not extend to an operand.)
-        let Some(hit) = cmd.args().iter().find(|w| is_pr_merge_path(&w.text)) else {
+        let Some((program, span)) = crate::publish_cmd::api_merge(cmd) else {
             continue;
         };
         return Some(Finding {
@@ -151,39 +109,8 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
                      the merge into one command — the merge runs regardless of what the \
                      poll printed."
                 .to_string(),
-            span: hit.at..cmd.end,
+            span,
         });
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_pr_merge_path;
-
-    #[test]
-    fn matches_a_numbered_merge_child() {
-        assert!(is_pr_merge_path(
-            "https://git.daddyshome.fr/api/v1/repos/fredericrous/sre-agent/pulls/10/merge"
-        ));
-        assert!(is_pr_merge_path(
-            "https://api.github.com/repos/o/r/pulls/1234/merge?foo=1"
-        ));
-    }
-
-    #[test]
-    fn ignores_reads_and_unnumbered_paths() {
-        // Reading a pull request, listing them, and checking mergeability are
-        // all the same prefix — the index plus `/merge` is the whole signal.
-        assert!(!is_pr_merge_path(
-            "https://git.daddyshome.fr/api/v1/repos/o/r/pulls/10"
-        ));
-        assert!(!is_pr_merge_path(
-            "https://git.daddyshome.fr/api/v1/repos/o/r/pulls"
-        ));
-        assert!(!is_pr_merge_path(
-            "https://git.daddyshome.fr/api/v1/repos/o/r/pulls/merge"
-        ));
-        assert!(!is_pr_merge_path("https://example.com/merge"));
-    }
 }

@@ -209,6 +209,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/release-tag-push.cases"),
     ),
     (
+        "publish-without-skill",
+        include_str!("../tests/corpus/publish-without-skill.cases"),
+    ),
+    (
         "sed-in-place",
         include_str!("../tests/corpus/sed-in-place.cases"),
     ),
