@@ -136,7 +136,28 @@ pub struct PlanExit {
     pub plan_file: Option<PathBuf>,
 }
 
+/// The model finished a turn and is about to hand control back.
+// holds-until: the `plan-phases-open` Stop arm reads it (same branch)
+#[allow(dead_code)]
+pub struct Stop {
+    pub session: String,
+    /// `None` when the payload's `cwd` is absent or empty: unlike the tool
+    /// events there is no fallback to the process cwd, which says nothing
+    /// about where the session was.
+    pub cwd: Option<PathBuf>,
+    pub permission_mode: Option<String>,
+    /// `last_assistant_message`: what the model said as it stopped.
+    pub last_message: Option<String>,
+    /// `background_tasks` is a non-empty array: work is still running.
+    pub background_busy: bool,
+    /// A previous `Stop` hook already kept this turn going.
+    pub stop_hook_active: bool,
+}
+
 pub enum Event {
+    /// A turn ending. Dispatched, not yet judged.
+    #[allow(dead_code)]
+    Stop(Stop),
     /// A Bash tool call we can have an opinion about.
     PreBash(Box<Bash>),
     /// A Bash tool call that has already run, and SUCCEEDED.
@@ -236,6 +257,23 @@ pub fn parse(raw: &str) -> Event {
     let transcript = || path_at(v.get("transcript_path").and_then(|x| x.as_str()));
 
     match v.get("hook_event_name").and_then(|x| x.as_str()) {
+        Some("Stop") => {
+            let opt = |key: &str| v.get(key).and_then(|x| x.as_str()).map(str::to_string);
+            Event::Stop(Stop {
+                session: str_at("session_id"),
+                cwd: opt("cwd").filter(|c| !c.is_empty()).map(PathBuf::from),
+                permission_mode: opt("permission_mode"),
+                last_message: opt("last_assistant_message"),
+                background_busy: v
+                    .get("background_tasks")
+                    .and_then(|b| b.as_array())
+                    .is_some_and(|b| !b.is_empty()),
+                stop_hook_active: v
+                    .get("stop_hook_active")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false),
+            })
+        }
         Some("SessionStart") => Event::SessionStart(Session {
             cwd,
             session: str_at("session_id"),
@@ -626,6 +664,53 @@ mod tests {
         match parse(&pre("")) {
             Event::PreAsk(a) => assert!(!a.prefilled),
             _ => panic!("expected a question"),
+        }
+    }
+
+    #[test]
+    fn a_full_stop_payload_is_read_field_by_field() {
+        let raw = r#"{"hook_event_name":"Stop","session_id":"s","cwd":"/work",
+                      "permission_mode":"plan","last_assistant_message":"done",
+                      "background_tasks":[{"id":"b1"}],"stop_hook_active":true}"#;
+        match parse(raw) {
+            Event::Stop(s) => {
+                assert_eq!(s.session, "s");
+                assert_eq!(s.cwd, Some(PathBuf::from("/work")));
+                assert_eq!(s.permission_mode.as_deref(), Some("plan"));
+                assert_eq!(s.last_message.as_deref(), Some("done"));
+                assert!(s.background_busy);
+                assert!(s.stop_hook_active);
+            }
+            _ => panic!("expected a Stop"),
+        }
+    }
+
+    #[test]
+    fn a_minimal_stop_payload_leaves_the_rest_absent() {
+        let raw = r#"{"hook_event_name":"Stop","session_id":"s","cwd":"/work",
+                      "background_tasks":[]}"#;
+        match parse(raw) {
+            Event::Stop(s) => {
+                assert_eq!(s.cwd, Some(PathBuf::from("/work")));
+                assert!(s.permission_mode.is_none());
+                assert!(s.last_message.is_none());
+                assert!(!s.background_busy, "an empty list is nothing running");
+                assert!(!s.stop_hook_active);
+            }
+            _ => panic!("expected a Stop"),
+        }
+    }
+
+    #[test]
+    fn an_empty_stop_cwd_is_none_not_the_process_cwd() {
+        for raw in [
+            r#"{"hook_event_name":"Stop","session_id":"s","cwd":""}"#,
+            r#"{"hook_event_name":"Stop","session_id":"s"}"#,
+        ] {
+            match parse(raw) {
+                Event::Stop(s) => assert!(s.cwd.is_none()),
+                _ => panic!("expected a Stop"),
+            }
         }
     }
 

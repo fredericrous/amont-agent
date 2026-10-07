@@ -20,9 +20,13 @@ impl Reply {
         serde_json::from_str(&self.stdout).ok()
     }
     fn decision(&self) -> Option<String> {
+        let json = self.json()?;
+        // A `Stop` decision is top-level; every other event nests it.
+        if let Some(d) = json.get("decision").and_then(|d| d.as_str()) {
+            return Some(d.to_string());
+        }
         Some(
-            self.json()?
-                .get("hookSpecificOutput")?
+            json.get("hookSpecificOutput")?
                 .get("permissionDecision")?
                 .as_str()?
                 .to_string(),
@@ -148,6 +152,19 @@ fn stdout_is_empty_when_nothing_fires() {
         assert_eq!(r.stdout, "", "expected silence for {command:?}");
         assert_eq!(r.code, 0);
     }
+}
+
+/// No rule judges a turn ending yet: a `Stop` is answered with nothing.
+#[test]
+fn a_stop_event_is_silent() {
+    let r = send(
+        r#"{"hook_event_name":"Stop","session_id":"sess1234","cwd":"/tmp",
+            "permission_mode":"default","last_assistant_message":"done",
+            "background_tasks":[],"stop_hook_active":false}"#,
+    );
+    assert_eq!(r.stdout, "");
+    assert_eq!(r.decision(), None);
+    assert_eq!(r.code, 0);
 }
 
 /// Every one of these WILL arrive: a new event, a new tool, a truncated write,

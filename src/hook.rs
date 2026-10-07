@@ -108,6 +108,8 @@ fn decide(raw: &str) -> Decision {
                 Decision::Assert(said.join("\n\n"))
             }
         }
+        // No rule judges a turn ending yet.
+        Event::Stop(_) => Decision::Silent,
         Event::PreFile(op) => on_file(&op),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),

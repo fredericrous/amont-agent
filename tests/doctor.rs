@@ -140,6 +140,24 @@ fn installing_covers_the_session_start_event_too() {
     assert!(!out.contains("1 of 2 events"), "{out}");
 }
 
+/// Stop is a target like the rest: an install is written with it, and one
+/// made before it existed is reported as lacking it.
+#[test]
+fn a_settings_file_without_stop_is_reported_as_missing_it() {
+    let h = Home::new("no-stop");
+    h.with_a_session();
+    let (code, out) = h.run(&["install", "--write"]);
+    assert_eq!(code, 0, "{out}");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(h.settings()).unwrap()).unwrap();
+    let stop = doc["hooks"]["Stop"].as_array().expect("Stop installed");
+    assert!(stop[0].get("matcher").is_none(), "no matcher: {doc}");
+    doc["hooks"].as_object_mut().unwrap().remove("Stop");
+    std::fs::write(h.settings(), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    let (_, out) = h.run(&["doctor"]);
+    assert!(out.contains("missing event: Stop"), "{out}");
+}
+
 /// The bug this test was written for: with no SessionStart entry there is no
 /// heartbeat, and the first version reported "the guard has never run" — on a
 /// machine where it had refused a command minutes earlier. Absence of a
