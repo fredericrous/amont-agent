@@ -39,16 +39,14 @@ fn judge(stop: &Stop, stance: impl FnOnce() -> Stance) -> Option<Decision> {
     if !root.join("docs/plans").is_dir() {
         return None;
     }
-    let branch = crate::git::stdout_in(&root, &["symbolic-ref", "-q", "--short", "HEAD"])
-        .filter(|b| !b.is_empty())?;
-    let remote = crate::stale::remote_of(&root)?;
-    let base = crate::stale::default_base(&root, &remote)?;
-    if base.strip_prefix(&format!("{remote}/")) == Some(branch.as_str()) {
+    // This runs at the end of every turn, and each git spawn costs 15–30 ms on
+    // a busy machine: the branch and the usual default base come from one.
+    let (branch, base) = branch_and_base(&root)?;
+    if base.split_once('/').map(|(_, b)| b) == Some(branch.as_str()) {
         return None;
     }
-    let mb = crate::git::stdout_in(&root, &["merge-base", "HEAD", &base])?;
 
-    let plan = choose(&root, &candidates(&root, &mb)?, &branch)?;
+    let plan = choose(&root, &candidates(&root, &base)?, &branch)?;
     let line = next_open(&plan.body)?;
     let label = label_of(&line);
 
@@ -198,9 +196,34 @@ fn repo_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// The plan files that differ between the merge base and the working tree,
-/// plus the ones not yet added. `None` when git cannot be asked.
-fn candidates(root: &Path, mb: &str) -> Option<Vec<String>> {
+/// The checked-out branch and the remote default branch (`origin/main`).
+/// `None` on a detached HEAD, which `--abbrev-ref` prints as `HEAD`.
+fn branch_and_base(root: &Path) -> Option<(String, String)> {
+    let out = crate::git::stdout_in(root, &["rev-parse", "--abbrev-ref", "HEAD", "origin/HEAD"]);
+    let mut lines = out.as_deref().unwrap_or("").lines();
+    let branch = match lines.next() {
+        Some(b) if !b.is_empty() && b != "HEAD" => b.to_string(),
+        // rev-parse fails as a whole when `origin/HEAD` is missing, so the
+        // branch is asked again on its own before giving up.
+        None => crate::git::stdout_in(root, &["symbolic-ref", "-q", "--short", "HEAD"])
+            .filter(|b| !b.is_empty())?,
+        Some(_) => return None,
+    };
+    if let Some(base) = lines
+        .next()
+        .filter(|b| !b.is_empty() && *b != "origin/HEAD")
+    {
+        return Some((branch, base.to_string()));
+    }
+    // A remote not named origin, or no `origin/HEAD`: the slow, general path.
+    let remote = crate::stale::remote_of(root)?;
+    let base = crate::stale::default_base(root, &remote)?;
+    Some((branch, base))
+}
+
+/// The plan files that differ between the merge base with `base` and the
+/// working tree, plus the ones not yet added. `None` when git cannot be asked.
+fn candidates(root: &Path, base: &str) -> Option<Vec<String>> {
     let changed = crate::git::bytes_in(
         root,
         &[
@@ -208,7 +231,8 @@ fn candidates(root: &Path, mb: &str) -> Option<Vec<String>> {
             "-z",
             "--name-only",
             "--diff-filter=d",
-            mb,
+            "--merge-base",
+            base,
             "--",
             "docs/plans/",
         ],
