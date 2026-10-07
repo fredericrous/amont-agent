@@ -169,6 +169,7 @@ before the push.
 Fixed: verification actuals and misses recorded; on_prompt journals a failed reset; fast-path tests; a stale test comment.
 deliberate: `sweep` ignores delete errors like session_state/preview/plan_review sweeps; a crate-wide change, not this one.
 deliberate: 329-byte reason and 68 ms p50 on a plan branch (see Verification); the person may overrule before merge.
+After push: CI's Windows build failed on a Unix-only mode test, now `#[cfg(unix)]` like its neighbours; delta **approve** (25k, 9 s). On Windows, nothing checks that the counter file is private.
 
 ## Outcome
 Shipped as planned: the Stop rule at `deny`, its escapes, the cap with a
