@@ -119,8 +119,14 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
         ),
         excerpt: format!("skill={skill} window=unknown:{tag} {}", p.what),
     };
-    if !installed(skill, ctx.cwd) {
-        return unknown("it is not installed here", "not-installed");
+    // The directory the publish runs in, `cd`s followed: a project skill
+    // lives in that repository, not in the session's directory.
+    match installed(skill, &ctx.cwd_at(p.span.start)) {
+        Found::Yes => {}
+        Found::No => return unknown("it is not installed here", "not-installed"),
+        Found::Unreadable => {
+            return unknown("the skill folders could not be read", "skills-unreadable");
+        }
     }
     let mut best: Option<Window> = None;
     let mut failed: Option<&'static str> = None;
@@ -151,53 +157,108 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
     }
 }
 
+/// Whether a skill's `SKILL.md` was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Found {
+    Yes,
+    No,
+    /// A folder that should have been searched could not be read, so "not
+    /// installed" cannot be claimed.
+    Unreadable,
+}
+
 /// Whether `skill` can be called here: a `SKILL.md` under the user's skills,
 /// the project's (`.claude/skills` in the working directory or a parent), or
 /// an installed plugin's. A refusal that asks for a skill this machine does
 /// not have could not be obeyed.
-fn installed(skill: &str, cwd: &std::path::Path) -> bool {
-    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".claude")));
+fn installed(skill: &str, cwd: &std::path::Path) -> Found {
+    let config = crate::settings::config_dir();
     let leaf = std::path::Path::new("skills").join(skill).join("SKILL.md");
     if let Some(config) = &config {
         if config.join(&leaf).is_file() {
-            return true;
+            return Found::Yes;
         }
     }
     if cwd
         .ancestors()
         .any(|d| d.join(".claude").join(&leaf).is_file())
     {
-        return true;
+        return Found::Yes;
     }
     // Plugins: `plugins/cache/<marketplace>/<plugin>/<version>/skills/…` and
     // `plugins/marketplaces/<marketplace>/…`. Walked to a bounded depth, and
     // only on a publish, which is a few commands in a thousand.
-    config.is_some_and(|c| plugin_has(&c.join("plugins"), &leaf, 6))
+    match config {
+        Some(c) => plugin_has(&c.join("plugins"), &leaf, 6),
+        None => Found::No,
+    }
 }
 
-fn plugin_has(dir: &std::path::Path, leaf: &std::path::Path, depth: u8) -> bool {
+/// At most this many subfolders are followed per folder: a plugin cache is a
+/// handful of marketplaces, plugins and versions, never thousands.
+const PLUGIN_FANOUT: usize = 200;
+
+fn plugin_has(dir: &std::path::Path, leaf: &std::path::Path, depth: u8) -> Found {
     if dir.join(leaf).is_file() {
-        return true;
+        return Found::Yes;
     }
     if depth == 0 {
-        return false;
+        return Found::No;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Found::No,
+        Err(_) => return Found::Unreadable,
     };
-    entries
-        .flatten()
-        .take(200)
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .filter(|e| e.file_name() != "node_modules" && e.file_name() != ".git")
-        .any(|e| plugin_has(&e.path(), leaf, depth - 1))
+    let mut found = Found::No;
+    let mut followed = 0;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            found = Found::Unreadable;
+            continue;
+        };
+        let name = entry.file_name();
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) || name == "node_modules" || name == ".git"
+        {
+            continue;
+        }
+        if followed == PLUGIN_FANOUT {
+            break;
+        }
+        followed += 1;
+        match plugin_has(&entry.path(), leaf, depth - 1) {
+            Found::Yes => return Found::Yes,
+            Found::Unreadable => found = Found::Unreadable,
+            Found::No => {}
+        }
+    }
+    found
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_skill_is_found_past_many_files() {
+        let root = std::env::temp_dir().join(format!("pws-plugins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let market = root.join("cache/market");
+        // More files than the fan-out, which counts folders only.
+        std::fs::create_dir_all(&market).unwrap();
+        for i in 0..(PLUGIN_FANOUT + 5) {
+            std::fs::write(market.join(format!("f{i}")), "").unwrap();
+        }
+        let skill = market.join("tools/1.0.0/skills/tag-release");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), "").unwrap();
+        let leaf = std::path::Path::new("skills/tag-release/SKILL.md");
+        assert_eq!(plugin_has(&root, leaf, 6), Found::Yes);
+        let other = std::path::Path::new("skills/merge-when-green/SKILL.md");
+        assert_eq!(plugin_has(&root, other, 6), Found::No);
+        assert_eq!(plugin_has(&root.join("absent"), leaf, 6), Found::No);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_refusal_leads_with_the_skill() {

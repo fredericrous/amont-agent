@@ -297,6 +297,22 @@ fn a_skill_not_installed_advises() {
 }
 
 #[test]
+fn a_project_skill_is_found_where_the_command_runs() {
+    let w = World::new("project");
+    std::fs::remove_dir_all(w.root.join("claude/skills/tag-release")).unwrap();
+    let repo = w.root.join("repo");
+    let skill = repo.join(".claude/skills/tag-release");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "---\nname: tag-release\n---\n").unwrap();
+    let t = w.transcript("t", &[human("x")]);
+    // From the session's directory, `cd` into the repository: refused, not
+    // "not installed".
+    let cmd = format!("cd {} && git push origin v0.10.0", repo.display());
+    let said = w.publish(&cmd, &t);
+    assert!(matches!(said, Said::Deny(_)), "{said:?}");
+}
+
+#[test]
 fn a_missing_working_directory_is_still_judged() {
     let w = World::new("nocwd");
     let gone = w.root.join("removed-worktree");
