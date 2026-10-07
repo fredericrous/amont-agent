@@ -198,6 +198,10 @@ This plan adds a gate built like `implementation-review`. A publishing command i
   - Through the whole hook, a tiny transcript and the 85 MB one have p50 27.4 ms and 41.6 ms, so the scan adds about 14 ms.
   - The other ~15 ms over the 12 ms baseline is what every firing rule costs (stance and journal).
   - Max over the 50 runs was 135 ms, on a loaded machine.
+- Windows CI on PR #80 (`tests (windows-latest)`, tree 6b285a1). Expected: all pass.
+  - `actual:` `a_project_skill_is_found_where_the_command_runs` was advised "it is not installed here" instead of refused. The test built `cd <absolute path>`, and a Windows path's backslashes are escapes to the shell lexer. The rule itself needs no change.
+  - Fixed in 3d00b36 with a relative `cd ../repo`. 2841fbf asserts which rule refuses and the reason text.
+  - Local re-run: 16/16 end-to-end tests and the gate (25/25). The Windows re-run is in PR #80's checks.
 - Live run.
   - **Deliberate deviation:** the release binary was driven with real `PreToolUse` payloads under an isolated `CLAUDE_CONFIG_DIR` and `GIT_CONFIG_GLOBAL` (`publish-without-skill` set to `deny`), against copies of real transcripts: this session's own (0b7a0e6f), with Skill-call, typed-command and human-prompt lines taken from other real sessions (d6f512fd, ed9ae12e) and this session's own subagent files. It was not installed with `install --write`, which would replace the live hook binary that parallel sessions use.
   - The hook judges a command before it runs, so the pushes and merges themselves never executed.
@@ -224,6 +228,8 @@ This plan adds a gate built like `implementation-review`. A publishing command i
   - A plugin folder that cannot be read now reports `unknown:skills-unreadable` instead of "not installed", and the fan-out counts folders only.
   - Project skills are looked up where the command runs, after its `cd`s.
 - Delta: approve (36k tokens, 24 s). Rounds 1's three findings are resolved.
+- Round 1 on the Windows test fix (3d00b36): approve-with-changes (41k tokens, 33 s). The test should assert which rule refused (fixed in 2841fbf), and the plan should record the CI failure (above).
+- Delta (2841fbf): approve-with-changes (27k tokens, 14 s). The test finding is resolved, and the record is the line above.
 - deliberate: the `Found::Unreadable` branches have no test. Making a folder unreadable needs `chmod 000`, which is ignored when the tests run as root, so such a test would be flaky. Either way the result is advise, never a refusal.
 - deliberate: the user and project skill checks use `Path::is_file`, which reads a permission error as "absent". Both results advise, so the gap can only cost a warning, never a wrong refusal.
 
