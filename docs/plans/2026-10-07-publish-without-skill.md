@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/publish-without-skill
 repos: [amont-agent]
 adrs: [ADR-0008, ADR-0022]
@@ -189,27 +189,49 @@ This plan adds a gate built like `implementation-review`. A publishing command i
 
 ## Verification
 
-- CI's commands, run locally: `make check` (fmt, clippy `-D warnings`, test), `amont-agent corpus check`, and `tests/rules_json.rs`. Expected: all pass. `actual:`
-- Timing: the Phase 4 tool on the largest local transcript, 10 runs. Expected: p99 under 50 ms. `actual:`
-- Live run in a scratch repo with a throwaway remote, with a local build installed through `install --write`, and `amont.agent.publish-without-skill.stance deny` set. Fill in an `actual:` for each step:
+- CI's commands, run locally: `make check` (fmt, clippy `-D warnings`, test), `amont-agent corpus check`, and `tests/rules_json.rs`. Expected: all pass.
+  - `actual:` `make check` exits 0; all 18 test binaries pass, including the 16 end-to-end tests in `tests/publish_without_skill.rs` (15 at d78826f, plus 1 after the review).
+  - `corpus check`: `publish-without-skill` 23 reviewed, precision 100%; `release-tag-push` 17 reviewed, 100%.
+  - The pre-commit gate passed 25 of 25 checks on every commit.
+- Timing: the hook on the 5 largest local transcripts (44–85 MB), 10 runs each, release build. Expected: the scan adds under 50 ms at p99.
+  - `actual:` the scan alone (in-process) takes 11–19 ms on the 85 MB transcript.
+  - Through the whole hook, a tiny transcript and the 85 MB one have p50 27.4 ms and 41.6 ms, so the scan adds about 14 ms.
+  - The other ~15 ms over the 12 ms baseline is what every firing rule costs (stance and journal).
+  - Max over the 50 runs was 135 ms, on a loaded machine.
+- Live run.
+  - **Deliberate deviation:** the release binary was driven with real `PreToolUse` payloads under an isolated `CLAUDE_CONFIG_DIR` and `GIT_CONFIG_GLOBAL` (`publish-without-skill` set to `deny`), against copies of real transcripts: this session's own (0b7a0e6f), with Skill-call, typed-command and human-prompt lines taken from other real sessions (d6f512fd, ed9ae12e) and this session's own subagent files. It was not installed with `install --write`, which would replace the live hook binary that parallel sessions use.
+  - The hook judges a command before it runs, so the pushes and merges themselves never executed.
+  - Record: `~/.claude/amont-agent/attestations/d78826f/`, rerun on the reviewed tree after the review fixes: `attestations/4685fe0/`. All 11 steps passed both times.
 
-  | # | Action | Expected |
-  |---|---|---|
-  | 1 | `git push --dry-run origin v0.0.1` | silent |
-  | 2 | `git push origin v0.0.1` with no skill call | denied, names `tag-release`, journal `no-skill` |
-  | 3 | Call the `tag-release` skill, then push | allowed |
-  | 4 | Two new human prompts, then push again | denied, `stale-turn` |
-  | 5 | `gh pr merge` on a throwaway GitHub PR, without and then with `merge-when-green` | denied, then allowed |
-  | 6 | Forgejo curl `/pulls/<n>/merge` on a throwaway PR, without and then with the skill | denied, then allowed |
-  | 7 | Type `/merge-when-green` myself, then merge | allowed |
-  | 8 | A subagent pushes a tag after the parent called the skill | the result Phase 0 decided |
-  | 9 | Step 2 with `transcript_path` unreadable | advised, not denied |
-  | 10 | Step 3 from a deleted working directory | allowed |
-  | 11 | A subagent calls `merge-when-green` itself, then merges | allowed |
+  | # | Action | Expected | Actual |
+  |---|---|---|---|
+  | 1 | `git push --dry-run origin v0.0.1` | silent | silent |
+  | 2 | `git push origin v0.0.1` with no skill call | denied, names `tag-release` | denied, "Call the tag-release skill first: `v0.0.1` publishes a release…"; journal `window=outside` |
+  | 3 | Call the `tag-release` skill, then push | allowed | silent; journal `unconfirmed skill_called_in_this_turn` |
+  | 4 | Two new human prompts, then push again | denied, `window=outside` | denied |
+  | 5 | `gh pr merge`, without and then with `merge-when-green` | denied, then allowed | denied, then silent |
+  | 6 | Forgejo curl `/pulls/<n>/merge`, without and then with the skill | denied, then allowed | denied with no `forge-merge-by-hand` text; then only `forge-merge-by-hand` advises |
+  | 7 | `/merge-when-green` typed by the person (real line), then merge | allowed | silent |
+  | 8 | A subagent pushes a tag after the parent called the skill | allowed (Phase 0) | silent |
+  | 9 | Step 2 with `transcript_path` unreadable | advised, not denied | advised, "Whether the tag-release skill ran cannot be told (the transcript could not be opened)…" |
+  | 10 | Step 3 from a deleted working directory | allowed | silent |
+  | 11 | A subagent calls `merge-when-green` itself, then merges | allowed | silent |
 
 ## Implementation review
 
-(Filled in by worktree-task F4b.)
+- Round 1: approve-with-changes (70k tokens, 82 s). Fixed in 4685fe0:
+  - `installed()` now uses `settings::config_dir()`, which falls back to `USERPROFILE`.
+  - A plugin folder that cannot be read now reports `unknown:skills-unreadable` instead of "not installed", and the fan-out counts folders only.
+  - Project skills are looked up where the command runs, after its `cd`s.
+- Delta: approve (36k tokens, 24 s). Rounds 1's three findings are resolved.
+- deliberate: the `Found::Unreadable` branches have no test. Making a folder unreadable needs `chmod 000`, which is ignored when the tests run as root, so such a test would be flaky. Either way the result is advise, never a refusal.
+- deliberate: the user and project skill checks use `Path::is_file`, which reads a permission error as "absent". Both results advise, so the gap can only cost a warning, never a wrong refusal.
+
+## Outcome
+
+All five phases shipped on `feat/publish-without-skill`.
+- The rule ships at `advise`. Turning it to `deny` stays the person's decision (👉 in the Review panel), now backed by measured evidence: 8.4–28.3 uncovered publishes per 1,000 Bash calls by week, falling.
+- Most misses are stale (the skill was called earlier in the session), not a skill never called.
 
 ## Outcome
 
