@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.29.0
 
 ### Added
 
