@@ -452,6 +452,8 @@ fn the_counter_resets_on_a_prompt() {
     assert!(w.stop().blocks());
 }
 
+// File modes are a Unix notion; Windows has no 0600 to check.
+#[cfg(unix)]
 #[test]
 fn the_counter_file_is_private() {
     use std::os::unix::fs::PermissionsExt;
