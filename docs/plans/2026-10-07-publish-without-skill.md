@@ -110,7 +110,7 @@ This plan adds a gate built like `implementation-review`. A publishing command i
 - [x] Phase 2 — **The rule.**
   - `src/rules/publish_without_skill.rs` holds a pure `examine` (`classify`) and a `confirm` that reads `ctx.transcript`, checks that `SKILL.md` exists, and calls `skill_window`.
   - Wiring: `src/rules/mod.rs` (the `pub mod` line and `RULES`), the `src/corpus.rs` `include_str!`, and `tests/corpus/publish-without-skill.cases`.
-- [ ] Phase 3 — **End-to-end tests.** `tests/publish_without_skill.rs`, using the `World`/`Transcript` builder pattern from `tests/implementation_review.rs:281-380`, with this rule's own stance key set to `deny` and the other rules at their defaults, as on this machine. Each case and its expected result:
+- [x] Phase 3 — **End-to-end tests.** `tests/publish_without_skill.rs`, using the `World`/`Transcript` builder pattern from `tests/implementation_review.rs:281-380`, with this rule's own stance key set to `deny` and the other rules at their defaults, as on this machine. Each case and its expected result:
 
   | Case | Expected |
   |---|---|
