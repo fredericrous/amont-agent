@@ -285,6 +285,24 @@ fn the_default_branch_is_silent() {
     assert!(w.stop().silent());
 }
 
+/// A clone sets `origin/HEAD`, which a fetch does not: one `rev-parse` then
+/// names the branch and the base, and the general path is never taken.
+#[test]
+fn with_origin_head_set_a_branch_still_blocks() {
+    let w = with_open_plan("head-set");
+    git(&w.repo, &["remote", "set-head", "origin", "main"]);
+    assert!(w.stop().blocks());
+}
+
+#[test]
+fn with_origin_head_set_the_default_branch_is_silent() {
+    let w = with_open_plan("head-set-main");
+    git(&w.repo, &["remote", "set-head", "origin", "main"]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    w.plan("2026-10-07-y.md", &plan_text("main", "active", OPEN_2));
+    assert!(w.stop().silent());
+}
+
 #[test]
 fn an_untracked_plan_blocks() {
     let w = World::new("untracked");

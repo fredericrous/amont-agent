@@ -133,8 +133,24 @@ fn judge(stop: &Stop, stance: impl FnOnce() -> Stance) -> Option<Decision> {
 
 /// A prompt from the person: three fresh continuations.
 pub fn on_prompt(prompt: &Prompt) {
-    if let Some(file) = counter_file(&prompt.session) {
-        let _ = std::fs::remove_file(file);
+    let Some(file) = counter_file(&prompt.session) else {
+        return;
+    };
+    match std::fs::remove_file(&file) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            // The person's "continue" bought no fresh continuations: say so
+            // where `status` will count it, rather than nowhere.
+            journal::record(&journal::Entry {
+                rule: RULE.id,
+                stance: "-",
+                outcome: "error",
+                session: &prompt.session,
+                repo: "-",
+                mode: "-",
+                excerpt: &format!("counter not reset: {e}"),
+            });
+        }
+        _ => {}
     }
 }
 

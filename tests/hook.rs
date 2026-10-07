@@ -154,7 +154,7 @@ fn stdout_is_empty_when_nothing_fires() {
     }
 }
 
-/// No rule judges a turn ending yet: a `Stop` is answered with nothing.
+/// A `Stop` outside any repository is answered with nothing.
 #[test]
 fn a_stop_event_is_silent() {
     let r = send(
