@@ -137,8 +137,6 @@ pub struct PlanExit {
 }
 
 /// The model finished a turn and is about to hand control back.
-// holds-until: the `plan-phases-open` Stop arm reads it (same branch)
-#[allow(dead_code)]
 pub struct Stop {
     pub session: String,
     /// `None` when the payload's `cwd` is absent or empty: unlike the tool
@@ -155,8 +153,7 @@ pub struct Stop {
 }
 
 pub enum Event {
-    /// A turn ending. Dispatched, not yet judged.
-    #[allow(dead_code)]
+    /// A turn ending: `plan-phases-open` judges it.
     Stop(Stop),
     /// A Bash tool call we can have an opinion about.
     PreBash(Box<Bash>),

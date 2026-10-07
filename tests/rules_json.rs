@@ -110,7 +110,10 @@ fn the_rules_that_refuse_by_default() {
         .map(|e| e["id"].as_str().unwrap())
         .collect();
     deny.sort_unstable();
-    assert_eq!(deny, ["pipe-to-tail", "plan-review-panel"]);
+    assert_eq!(
+        deny,
+        ["pipe-to-tail", "plan-phases-open", "plan-review-panel"]
+    );
 }
 
 #[test]

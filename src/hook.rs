@@ -67,11 +67,13 @@ fn decide(raw: &str) -> Decision {
             heartbeat();
             crate::session_state::sweep();
             crate::preview::sweep();
+            crate::plan_phases::sweep();
             on_session_start(&session)
         }
         Event::NotOurs => Decision::Silent,
         Event::Prompt(prompt) => {
             crate::preview::on_prompt(&prompt);
+            crate::plan_phases::on_prompt(&prompt);
             Decision::Silent
         }
         Event::PreAsk(ask) => {
@@ -108,8 +110,9 @@ fn decide(raw: &str) -> Decision {
                 Decision::Assert(said.join("\n\n"))
             }
         }
-        // No rule judges a turn ending yet.
-        Event::Stop(_) => Decision::Silent,
+        Event::Stop(stop) => crate::plan_phases::on_stop(&stop, || {
+            crate::stance::resolve(&rules::plan_phases_open::RULE)
+        }),
         Event::PreFile(op) => on_file(&op),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),

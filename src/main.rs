@@ -38,6 +38,7 @@ mod journal;
 mod json;
 mod mine;
 mod payload;
+mod plan_phases;
 mod plan_review;
 mod plan_words;
 mod plans;

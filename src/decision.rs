@@ -61,13 +61,9 @@ pub enum Decision {
     /// Keep the turn going: a `Stop` hook's top-level `decision: "block"`,
     /// whose reason the model reads as what to do next. Not a
     /// `hookSpecificOutput`; that shape does not exist for `Stop`.
-    // holds-until: the `plan-phases-open` Stop arm emits it (same branch)
-    #[allow(dead_code)]
     Continue(String),
     /// A note to the PERSON, never the model, from a `Stop` hook:
     /// the top-level `systemMessage`. The turn ends as it would have.
-    // holds-until: the `plan-phases-open` Stop arm emits it (same branch)
-    #[allow(dead_code)]
     UserNote(String),
 }
 
