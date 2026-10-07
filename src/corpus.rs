@@ -161,6 +161,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/file-reread.cases"),
     ),
     (
+        "plan-phases-open",
+        include_str!("../tests/corpus/plan-phases-open.cases"),
+    ),
+    (
         "read-unbounded-large",
         include_str!("../tests/corpus/read-unbounded-large.cases"),
     ),

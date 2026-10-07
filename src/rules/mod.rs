@@ -47,6 +47,7 @@ pub mod no_verify;
 pub mod path_operand_missing;
 pub mod persisted_output_dump;
 pub mod pipe_to_tail;
+pub mod plan_phases_open;
 pub mod plan_review_panel;
 pub mod poll_blank_verdict;
 pub mod push_preflight;
@@ -422,6 +423,7 @@ pub const RULES: &[Rule] = &[
     push_preflight::RULE,
     push_preview::RULE,
     plan_review_panel::RULE,
+    plan_phases_open::RULE,
     implementation_review::RULE,
     foreground_poll::RULE,
     sed_in_place::RULE,

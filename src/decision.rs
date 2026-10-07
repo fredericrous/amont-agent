@@ -58,6 +58,13 @@ pub enum Decision {
     /// since the tool has already run — but it would be a second channel for
     /// one decision, which the module note above rejects. So: JSON, exit 0.
     Assert(String),
+    /// Keep the turn going: a `Stop` hook's top-level `decision: "block"`,
+    /// whose reason the model reads as what to do next. Not a
+    /// `hookSpecificOutput`; that shape does not exist for `Stop`.
+    Continue(String),
+    /// A note to the PERSON, never the model, from a `Stop` hook:
+    /// the top-level `systemMessage`. The turn ends as it would have.
+    UserNote(String),
 }
 
 impl Decision {
@@ -115,6 +122,8 @@ impl Decision {
                     )])
                 );
             }
+            Decision::Continue(text) => println!("{}", continue_json(text)),
+            Decision::UserNote(text) => println!("{}", note_json(text)),
             Decision::Context(text) => {
                 println!(
                     "{}",
@@ -131,6 +140,17 @@ impl Decision {
         // Always zero. See the module note.
         ExitCode::SUCCESS
     }
+}
+
+fn continue_json(text: &str) -> String {
+    json::object(&[
+        json::string_field("decision", "block"),
+        json::string_field("reason", &clamp(text)),
+    ])
+}
+
+fn note_json(text: &str) -> String {
+    json::object(&[json::string_field("systemMessage", &clamp(text))])
 }
 
 /// Sanitize, then cap, then let the emitter escape.
@@ -197,6 +217,18 @@ mod tests {
     fn newlines_between_findings_survive_the_emitter() {
         let out = clamp("first\n\nsecond\u{1b}[0m");
         assert_eq!(out, "first\n\nsecond\\x1b[0m");
+    }
+
+    /// `Stop` takes top-level fields; a `hookSpecificOutput` there is ignored.
+    #[test]
+    fn the_stop_shapes_are_top_level() {
+        assert_eq!(
+            continue_json("go on\u{1b}"),
+            r#"{"decision":"block","reason":"go on\\x1b"}"#
+        );
+        assert_eq!(note_json("fyi"), r#"{"systemMessage":"fyi"}"#);
+        assert!(!continue_json("x").contains("hookSpecificOutput"));
+        assert!(!note_json("x").contains("hookSpecificOutput"));
     }
 
     #[test]

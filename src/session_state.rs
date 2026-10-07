@@ -34,8 +34,13 @@ pub struct Seen {
     pub window: String,
 }
 
+/// A session id that is safe to use as a file name.
+pub(crate) fn usable_id(session: &str) -> bool {
+    !(session.is_empty() || session.contains('/') || session.contains(".."))
+}
+
 fn file_for(session: &str) -> Option<PathBuf> {
-    if session.is_empty() || session.contains('/') || session.contains("..") {
+    if !usable_id(session) {
         return None;
     }
     Some(

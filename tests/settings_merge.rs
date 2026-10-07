@@ -70,7 +70,7 @@ fn an_unrelated_hook_survives_install_and_uninstall() {
                 "PreToolUse": [
                     {"matcher": "Write", "hooks": [{"type": "command", "command": "/usr/bin/true"}]}
                 ],
-                "Stop": [
+                "Notification": [
                     {"hooks": [{"type": "command", "command": "/usr/bin/false"}]}
                 ]
             }
@@ -88,7 +88,11 @@ fn an_unrelated_hook_survives_install_and_uninstall() {
     // (review panel).
     assert_eq!(pre.len(), 5, "ours were added beside theirs");
     assert_eq!(pre[0]["matcher"], "Write");
-    assert!(after.get("Stop").is_some(), "an unrelated event survived");
+    assert_eq!(
+        after.get("Notification"),
+        hooks_of(&before).get("Notification"),
+        "an event we do not install for is left exactly as it was"
+    );
 
     let (code, _, err) = h.run(&["uninstall", "--write"]);
     assert_eq!(code, 0, "uninstall failed: {err}");

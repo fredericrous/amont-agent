@@ -104,7 +104,15 @@ fn installed_in() -> Vec<Install> {
         let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
             continue;
         };
+        // Each event once: TARGETS names PreToolUse several times, and
+        // scanning it per entry counted every PreToolUse handler thrice,
+        // hiding a missing event behind the surplus.
+        let mut seen: Vec<&str> = Vec::new();
         for (event, _) in settings::TARGETS {
+            if seen.contains(event) {
+                continue;
+            }
+            seen.push(event);
             let Some(list) = doc
                 .get("hooks")
                 .and_then(|h| h.get(*event))
@@ -166,12 +174,26 @@ fn configured(installs: &[Install]) -> Finding {
     let events = installs.len();
     let want = settings::TARGETS.len();
     if events < want {
+        // TARGETS interleaves events, so each is kept once by look-up, not
+        // by `dedup`, which only folds neighbours.
+        let mut missing: Vec<&str> = Vec::new();
+        for (event, _) in settings::TARGETS {
+            if !missing.contains(event) && !installs.iter().any(|i| i.event == *event) {
+                missing.push(event);
+            }
+        }
+        let named = if missing.is_empty() {
+            String::new()
+        } else {
+            format!("missing event: {}. ", missing.join(", "))
+        };
         return Finding::warn(
             format!("installed for {events} of {want} events"),
-            "re-run `amont-agent install --write`: the SessionStart entry is what \
-             proves the guard is alive, and the Read|Edit|Write and PostToolUse Read \
-             entries are what let `file-reread` see a file opened twice"
-                .to_string(),
+            format!(
+                "{named}re-run `amont-agent install --write`: the SessionStart entry is what \
+                 proves the guard is alive, and the Read|Edit|Write and PostToolUse Read \
+                 entries are what let `file-reread` see a file opened twice"
+            ),
         );
     }
     Finding::good(format!("installed in {}", files[0].display()))

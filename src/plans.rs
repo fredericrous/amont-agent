@@ -62,12 +62,7 @@ fn scan(dir: &Path) -> Vec<String> {
 /// The notice line for one plan file, or `None` when it is closed.
 pub fn line_for(name: &str, text: &str) -> Option<String> {
     let (front, body) = split_front_matter(text);
-    let field = |k: &str| {
-        front.lines().find_map(|l| {
-            let (key, v) = l.split_once(':')?;
-            (key.trim() == k).then(|| v.split('#').next().unwrap_or("").trim().to_string())
-        })
-    };
+    let field = |k: &str| field(front, k);
     let status = field("status");
     match status.as_deref() {
         None | Some("") => return Some(format!("{name}: no `status` in its front matter")),
@@ -100,7 +95,15 @@ pub fn line_for(name: &str, text: &str) -> Option<String> {
     })
 }
 
-fn split_front_matter(text: &str) -> (&str, &str) {
+/// One front-matter field, its trailing `# comment` dropped.
+pub(crate) fn field(front: &str, k: &str) -> Option<String> {
+    front.lines().find_map(|l| {
+        let (key, v) = l.split_once(':')?;
+        (key.trim() == k).then(|| v.split('#').next().unwrap_or("").trim().to_string())
+    })
+}
+
+pub(crate) fn split_front_matter(text: &str) -> (&str, &str) {
     let Some(rest) = text.strip_prefix("---\n") else {
         return ("", text);
     };

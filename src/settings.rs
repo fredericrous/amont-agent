@@ -275,6 +275,8 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // The review panel (ADR-0022, `work.plan-review-panel`): a plan is
     // checked for its reviews the moment it is about to be presented.
     ("PreToolUse", Some("ExitPlanMode")),
+    // The turn ending: the one moment a plan left open can be seen.
+    ("Stop", None),
 ];
 
 /// Add our handler to one event, joining an existing block rather than adding a
