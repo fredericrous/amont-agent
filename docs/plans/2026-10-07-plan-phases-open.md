@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/plan-phases-open
 repos: [amont-agent]
 adrs: [ADR-0022]
@@ -122,6 +122,11 @@ any of these may be absent.
   of the session.
 - 2026-10-07 — (review) A released cap tells the person, because a silent
   release is the very stall this rule exists to surface.
+- 2026-10-07 — Phases 1–2 ran as relais contracts; Phase 2's touched
+  `tests/rules_json.rs` (the deny-list pin) outside its scope, a contract
+  omission, accepted after review. One rev-parse names branch and
+  origin/HEAD, and `diff --merge-base` replaces `merge-base`, after the
+  first build measured 129 ms p50 on a plan branch.
 
 ## Verification
 Drive the release binary on real input. Each entry gets an `actual:` filled
@@ -129,25 +134,47 @@ before the push.
 - A scratch repo with an `origin`, a branch carrying an active plan, and
   Phases `[x] 1, [ ] 2`; pipe a Stop payload → stdout is `decision: block`,
   the reason names `Phase 2` and is under 300 bytes even when the phase line
-  is 500 → actual:
-- Tick Phase 2 → silent; make the next box `🧑 decision:` → silent → actual:
+  is 500 → actual: block naming "Phase 2" (label cut from a 500-char line);
+  the JSON is 329 bytes, fixed by the remedy text, so the 300 target is missed
+  — deliberate: the remedy names all three escapes.
+- Tick Phase 2 → silent; make the next box `🧑 decision:` → silent → actual: silent, silent.
 - `last_assistant_message` "…
-  WAITING: preview at :5173" → silent → actual:
+  WAITING: preview at :5173" → silent → actual: silent.
 - The same blocked payload 5 times → 3 blocks, then a `systemMessage`
   (`released`), then silent; then a UserPromptSubmit payload and the same
-  Stop → blocks again → actual:
-- This repo's primary checkout on main (plan-sha's open Phase 3b) → silent → actual:
+  Stop → blocks again → actual: block ×3, released `systemMessage`, silent;
+  after the prompt, block. Journal: denied 1–3, released, watched, denied 1.
+- This repo's primary checkout on main (plan-sha's open Phase 3b) → silent → actual: silent.
 - `permission_mode: plan` → silent; stance `advise` via git config →
-  `systemMessage` with no `WAITING:` → actual:
+  `systemMessage` with no `WAITING:` → actual: silent; `systemMessage` "the agent
+  stopped with "Phase 3" open …; say "continue" to run it."
 - `session_id: "../x"` → silent, and `find "$CLAUDE_CONFIG_DIR" -newer <stamp>`
-  shows nothing outside `plan-phases-open/` → actual:
+  shows nothing outside `plan-phases-open/` → actual: silent on Stop and on
+  UserPromptSubmit; the sentinel `<journal dir>/x` survives; no file written.
 - `amont-agent install` into a temp `CLAUDE_CONFIG_DIR` → a matcher-less
   `Stop` entry, and `doctor` green; the old settings.json → `doctor` names
-  Stop as missing → actual:
+  Stop as missing → actual: `"Stop": [{"hooks": […]}]` with no matcher; doctor ✓;
+  without Stop: "installed for 9 of 10 events" / "missing event: Stop".
 - Latency: `hyperfine` of the Stop hook, p50/p95, on main, on a branch with
   a plan, and in a repo without `docs/plans/`; budget p50 < 60 ms on the
-  branch → actual:
+  branch → actual (30 runs, python timer; hyperfine is not installed):
+  first build 62/129/8.5 ms p50; after `perf(rules)` primary checkout
+  21.7/22.3, plan branch 68.0/69.4, no `docs/plans/` 8.2/14.8 ms p50/p95. The
+  plan branch misses 60 by 8 ms — deliberate: three git calls (rev-parse,
+  diff --merge-base, ls-files) plus the stance read are the floor, paid only
+  on a branch that carries a plan.
+
+## Implementation review
+**approve-with-changes** (round 1, 70k, 64 s) → delta **approve-with-changes** (29k, 21 s).
+Fixed: verification actuals and misses recorded; on_prompt journals a failed reset; fast-path tests; a stale test comment.
+deliberate: `sweep` ignores delete errors like session_state/preview/plan_review sweeps; a crate-wide change, not this one.
+deliberate: 329-byte reason and 68 ms p50 on a plan branch (see Verification); the person may overrule before merge.
 
 ## Outcome
+Shipped as planned: the Stop rule at `deny`, its escapes, the cap with a
+note to the person, the reset on a prompt, install and doctor support, docs.
+Not shipped: the 300-byte reason and the 60 ms budget (both above, deliberate).
+Surprise: the first build spent 62 ms on a primary checkout just to learn
+it should be silent; most of that was three git spawns.
 
 <!-- panel: repos=amont-agent reviewers=backend,language,tui,unix body-sha=d4c7f2b7d0f1 -->
