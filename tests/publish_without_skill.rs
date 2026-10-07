@@ -309,7 +309,11 @@ fn a_project_skill_is_found_where_the_command_runs() {
     // "not installed". A relative path, because a Windows absolute path's
     // backslashes are escapes to the shell lexer.
     let said = w.publish("cd ../repo && git push origin v0.10.0", &t);
-    assert!(matches!(said, Said::Deny(_)), "{said:?}");
+    assert!(matches!(said, Said::Deny(_)) && said.ours(), "{said:?}");
+    assert!(
+        said.text().contains("Call the tag-release skill first"),
+        "{said:?}"
+    );
 }
 
 #[test]
