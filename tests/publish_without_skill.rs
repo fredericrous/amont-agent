@@ -306,9 +306,9 @@ fn a_project_skill_is_found_where_the_command_runs() {
     std::fs::write(skill.join("SKILL.md"), "---\nname: tag-release\n---\n").unwrap();
     let t = w.transcript("t", &[human("x")]);
     // From the session's directory, `cd` into the repository: refused, not
-    // "not installed".
-    let cmd = format!("cd {} && git push origin v0.10.0", repo.display());
-    let said = w.publish(&cmd, &t);
+    // "not installed". A relative path, because a Windows absolute path's
+    // backslashes are escapes to the shell lexer.
+    let said = w.publish("cd ../repo && git push origin v0.10.0", &t);
     assert!(matches!(said, Said::Deny(_)), "{said:?}");
 }
 
