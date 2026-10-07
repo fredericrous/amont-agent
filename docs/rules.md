@@ -13,6 +13,7 @@
 | `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
 | `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
+| `plan-phases-open` | `deny` | a turn ending while the plan this branch carries still has an open phase that is not a `🧑 decision:` — the agent is sent on to it |
 | `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |
 | `foreground-poll` | `advise` | a polling loop or `gh run watch` in the foreground, where the tool's ten-minute clock will kill it one poll short |
 | `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
@@ -47,7 +48,7 @@ with the stance in force on this machine rather than the shipped one: a rule
 you promoted in `~/.gitconfig` reads `deny (ships as observe)`, and a rule
 with a ceiling names it, `(max advise)`.
 
-## Why only two of them deny
+## Why only three of them deny
 
 `pipe-to-tail` blocks because seven consecutive weeks of measurement showed no
 downward trend while every other habit halved. That is the bar: a rule earns
@@ -61,6 +62,23 @@ and checks a fact — whether the review panel the plan calls for ran on the pla
 being presented — naming the missing roles when it did not. After two refusals
 of the same plan, or whenever it cannot check, it hands the call to the person
 as `ask` instead. See [the review panel](plan-review.md).
+
+`plan-phases-open` is the third, also the person's choice. It fires on
+`Stop`, the moment the agent ends its turn. ADR-0022 makes a plan one branch
+and one pull request with its phases as commits, so a turn that ends with
+a phase still open is a stall, not a handoff. The rule reads only the
+`active` plans changed on the current branch (against the merge-base with
+the remote default branch), never one already on main, and sends the agent
+on to the first open `- [ ] ` under `## Phases`. It is silent when that
+phase is a `🧑 decision:`, in plan mode, while background tasks are still
+running, and when the agent's last message has a line starting with
+`WAITING: <reason>` (a preview awaiting approval, a deferred phase, a
+blocker). After three continuations on the same phase in one session it lets
+the turn end and tells the person, with a note only they see; their next
+prompt resets the count. Anything it cannot establish — no repository, a git
+failure, an unreadable plan, a session id it will not use as a file name —
+lets the turn end. To turn it off without uninstalling:
+`git config --global amont.agent.plan-phases-open.stance observe`.
 
 `stale-base` advises from the start because it refuses nothing, speaks only
 after measuring a real gap, and names a failure no correcting loop can see —

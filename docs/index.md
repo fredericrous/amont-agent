@@ -28,7 +28,7 @@ Three stances, and the middle one is the point:
 | `advise` | puts the reason into the model's context; refuses nothing |
 | `deny` | refuses the tool call, with the reason and the remedy |
 
-Of the 32 rules, two ship as `deny`, eighteen as `advise` and twelve as
+Of the 36 rules, three ship as `deny`, twenty as `advise` and thirteen as
 `observe`. A rule is promoted only once your own transcripts say it should be
 — see [measuring and graduating](measuring.md) — and `amont-agent rules` shows
 the stance in force on your machine.

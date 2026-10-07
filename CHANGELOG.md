@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`plan-phases-open`: an agent no longer stops between plan phases.** A
+  new `Stop` hook, shipped as `deny`: when the agent ends its turn while the
+  `active` plan its branch carries (`docs/plans/`, changed since the
+  merge-base with the remote default branch) still has an open phase that
+  is not a `🧑 decision:`, the turn continues with that phase. It lets the
+  turn end in plan mode, while background tasks run, on a last-message line
+  starting with `WAITING: <reason>`, and after three continuations on one
+  phase, when it tells the person instead. **Existing installs must re-run
+  `amont-agent install --write`** to add the `Stop` entry; `doctor` now
+  names the events an install lacks.
+
 ## v2.27.1
 
 ### Fixed
