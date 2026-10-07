@@ -71,33 +71,10 @@ pub const RULE: Rule = Rule {
     confirm: None,
 };
 
-/// `v` followed by a digit: `v1`, `v0.9.1`, `v2.0.0-rc1`. Deliberately not
-/// every tag — a docs or checkpoint tag publishes nothing, and firing on it
-/// would put this in front of ordinary tagging.
-fn is_version_tag(text: &str) -> bool {
-    let rest = match text.strip_prefix("refs/tags/") {
-        Some(r) => r,
-        None => text,
-    };
-    matches!(rest.strip_prefix('v'), Some(r) if r.starts_with(|c: char| c.is_ascii_digit()))
-}
-
 fn examine(parsed: &Parsed) -> Option<Finding> {
     for cmd in parsed.judgeable() {
-        if cmd.program() != Some("git") || cmd.subcommand() != Some("push") || cmd.is_dry_run() {
+        let Some((what, span)) = crate::publish_cmd::tag_push(cmd) else {
             continue;
-        }
-        // Deleting a tag publishes nothing.
-        if cmd.has_flag("--delete") || cmd.has_flag("-d") {
-            continue;
-        }
-        // `--tags` pushes every tag there is, version ones included.
-        let all_tags = cmd.has_flag("--tags");
-        let named = cmd.args().iter().find(|w| is_version_tag(&w.text));
-        let (what, span) = match (all_tags, named) {
-            (_, Some(w)) => (w.text.clone(), w.at..cmd.end),
-            (true, None) => ("--tags".to_string(), cmd.at..cmd.end),
-            (false, None) => continue,
         };
         return Some(Finding {
             reason: format!(
@@ -116,21 +93,4 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
         });
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_version_tag;
-
-    #[test]
-    fn version_tags_only() {
-        assert!(is_version_tag("v0.9.1"));
-        assert!(is_version_tag("v2"));
-        assert!(is_version_tag("refs/tags/v1.0.0-rc2"));
-        // Not a release: no digit after the v, or no v at all.
-        assert!(!is_version_tag("verify"));
-        assert!(!is_version_tag("main"));
-        assert!(!is_version_tag("docs-snapshot"));
-        assert!(!is_version_tag("feat/v2-rewrite"));
-    }
 }

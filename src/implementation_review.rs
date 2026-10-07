@@ -424,6 +424,7 @@ pub fn confirm_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Confirmed {
         Judged::Decline(why) => Confirmed::No(why),
         Judged::Say { reason, excerpt } => Confirmed::YesSaying {
             floor: None,
+            ceiling: None,
             reason,
             excerpt,
         },

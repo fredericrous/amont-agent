@@ -251,6 +251,7 @@ fn on_bash(bash: &Bash) -> Decision {
                 timeout_ms: bash.timeout_ms,
                 tool_use_id: &bash.tool_use_id,
                 transcript: bash.transcript.as_deref(),
+                agent_transcript: bash.agent_transcript.as_deref(),
             };
             let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
             let window = dump_window(&d.extent);
@@ -278,7 +279,11 @@ fn on_bash(bash: &Bash) -> Decision {
 
     for (rule, finding) in &fired {
         let mut stance = crate::stance::resolve(rule);
-        let Confirmation { floor, said } = match confirmed(rule, stance, finding, bash, &parsed) {
+        let Confirmation {
+            floor,
+            ceiling,
+            said,
+        } = match confirmed(rule, stance, finding, bash, &parsed) {
             Ok(c) => c,
             Err(why) => {
                 // The reason is the record. `status` tallies these, and "why did
@@ -313,6 +318,9 @@ fn on_bash(bash: &Bash) -> Decision {
         } else {
             stance.min(Stance::Advise)
         };
+        // A `confirm` that could not establish its fact may cap itself, so
+        // that not knowing never refuses.
+        let stance = ceiling.map_or(stance, |c| stance.min(c));
         match stance {
             Stance::Observe => note_with(rule, "observe", "watched", bash, finding, excerpt),
             Stance::Advise => {
@@ -378,6 +386,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
         timeout_ms: bash.timeout_ms,
         tool_use_id: &bash.tool_use_id,
         transcript: bash.transcript.as_deref(),
+        agent_transcript: bash.agent_transcript.as_deref(),
     };
 
     // A `cat`-shaped dump that has now run is a read the session should
@@ -672,8 +681,14 @@ fn resolve_path(cwd: &std::path::Path, text: &str) -> std::path::PathBuf {
 /// excerpt to use instead of the finding's.
 struct Confirmation {
     floor: Option<Stance>,
+    ceiling: Option<Stance>,
     said: Option<(String, String)>,
 }
+
+/// Rules whose `confirm` reads nothing from the working directory, so a
+/// session left in a removed worktree is judged like any other. Next to the
+/// publication gates in [`unknown_directory`], which need one.
+const NEEDS_NO_DIRECTORY: [&str; 1] = [rules::publish_without_skill::RULE.id];
 
 fn confirmed(
     rule: &Rule,
@@ -685,6 +700,7 @@ fn confirmed(
     let Some(confirm) = rule.confirm else {
         return Ok(Confirmation {
             floor: None,
+            ceiling: None,
             said: None,
         });
     };
@@ -695,29 +711,34 @@ fn confirmed(
         timeout_ms: bash.timeout_ms,
         tool_use_id: &bash.tool_use_id,
         transcript: bash.transcript.as_deref(),
+        agent_transcript: bash.agent_transcript.as_deref(),
     };
     // The directory that matters is the one the matched clause runs in,
     // `cd`s followed — not the session's. A session left in a removed
     // worktree still runs `cd /abs/repo && git push …` in a real repository,
     // and that push must be judged (#67).
-    if !ctx.cwd_at(finding.span.start).is_dir() {
+    if !ctx.cwd_at(finding.span.start).is_dir() && !NEEDS_NO_DIRECTORY.contains(&rule.id) {
         return unknown_directory(rule, stance, finding, bash);
     }
     match confirm(&ctx, finding) {
         Confirmed::Yes => Ok(Confirmation {
             floor: None,
+            ceiling: None,
             said: None,
         }),
         Confirmed::YesAt(floor) => Ok(Confirmation {
             floor: Some(floor),
+            ceiling: None,
             said: None,
         }),
         Confirmed::YesSaying {
             floor,
+            ceiling,
             reason,
             excerpt,
         } => Ok(Confirmation {
             floor,
+            ceiling,
             said: Some((reason, excerpt)),
         }),
         Confirmed::No(why) => Err(why),
@@ -747,6 +768,7 @@ fn unknown_directory(
     let excerpt = crate::backtest::excerpt(&bash.command, finding.span.start, finding.span.end);
     Ok(Confirmation {
         floor: None,
+        ceiling: None,
         said: Some((
             "This push runs in a directory that does not exist, so the repository it \
              publishes from cannot be named. Start the command with `cd <repository> &&`, \
@@ -818,6 +840,7 @@ fn attributed_repo(id: &str, bash: &Bash) -> String {
             timeout_ms: bash.timeout_ms,
             tool_use_id: &bash.tool_use_id,
             transcript: bash.transcript.as_deref(),
+            agent_transcript: bash.agent_transcript.as_deref(),
         };
         crate::push_target::repository(&ctx.cwd_at(cmd.at), cmd)
     });

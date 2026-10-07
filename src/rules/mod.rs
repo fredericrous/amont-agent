@@ -50,6 +50,7 @@ pub mod pipe_to_tail;
 pub mod plan_phases_open;
 pub mod plan_review_panel;
 pub mod poll_blank_verdict;
+pub mod publish_without_skill;
 pub mod push_preflight;
 pub mod push_preview;
 pub mod read_unbounded_large;
@@ -164,9 +165,13 @@ pub enum Confirmed {
     /// looking: `reason` replaces the finding's, and `excerpt` replaces the
     /// command span in the journal line, so a rule whose fact is "which
     /// tree, which review" can name it without a second journal line.
-    /// `floor` is [`Confirmed::YesAt`]'s.
+    /// `floor` is [`Confirmed::YesAt`]'s. `ceiling` caps the stance the
+    /// other way: a rule that could not establish its fact may still speak,
+    /// but never refuse on not knowing (`publish-without-skill`, whose
+    /// transcript may be unreadable).
     YesSaying {
         floor: Option<Stance>,
+        ceiling: Option<Stance>,
         reason: String,
         excerpt: String,
     },
@@ -333,6 +338,9 @@ pub struct Context<'a> {
     /// `confirm` that asks what this session's agents completed
     /// (`implementation-review`); `None` where there is no session.
     pub transcript: Option<&'a std::path::Path>,
+    /// A subagent's own transcript, when the call runs inside one: the
+    /// payload's `agent_transcript_path`. `transcript` is then the parent's.
+    pub agent_transcript: Option<&'a std::path::Path>,
 }
 
 impl Context<'_> {
@@ -415,6 +423,7 @@ pub const RULES: &[Rule] = &[
     pipe_to_tail::RULE,
     bare_stash_pop::RULE,
     gh_pr_merge_auto::RULE,
+    publish_without_skill::RULE,
     forge_merge_by_hand::RULE,
     forge_status_stale_row::RULE,
     no_verify::RULE,
@@ -513,6 +522,7 @@ mod tests {
             timeout_ms: None,
             tool_use_id: "",
             transcript: None,
+            agent_transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -536,6 +546,7 @@ mod tests {
             timeout_ms: None,
             tool_use_id: "",
             transcript: None,
+            agent_transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -553,6 +564,7 @@ mod tests {
             timeout_ms: None,
             tool_use_id: "",
             transcript: None,
+            agent_transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -570,6 +582,7 @@ mod tests {
             timeout_ms: None,
             tool_use_id: "",
             transcript: None,
+            agent_transcript: None,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -589,6 +602,7 @@ mod tests {
                 timeout_ms: None,
                 tool_use_id: "",
                 transcript: None,
+                agent_transcript: None,
             };
             assert_eq!(
                 ctx.cwd_at(at_of(&parsed, "stash")),
@@ -608,6 +622,7 @@ mod tests {
             timeout_ms: None,
             tool_use_id: "",
             transcript: None,
+            agent_transcript: None,
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));

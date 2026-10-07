@@ -32,11 +32,7 @@ pub const RULE: Rule = Rule {
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
     for cmd in parsed.judgeable() {
-        if cmd.program() != Some("gh") || cmd.subcommand() != Some("pr") {
-            continue;
-        }
-        // operands()[0] is `pr`; the action follows.
-        if cmd.operands().get(1).map(|w| w.text.as_str()) != Some("merge") {
+        if !crate::publish_cmd::gh_pr_merge(cmd) {
             continue;
         }
         // `has_flag` skips quoted words, so `gh pr create --body "use --auto"`

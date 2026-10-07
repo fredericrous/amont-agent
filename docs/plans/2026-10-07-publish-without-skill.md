@@ -88,7 +88,7 @@ This plan adds a gate built like `implementation-review`. A publishing command i
 
 ## Phases
 
-- [ ] Phase 0 — **Capture the real shapes.** No code in this phase. From transcripts under `~/.claude/projects`, record:
+- [x] Phase 0 — **Capture the real shapes.** No code in this phase. From transcripts under `~/.claude/projects`, record:
   - the assistant `Skill` `tool_use` and its result, both plain and plugin-qualified;
   - the skill-body `user` entry that follows a Skill call;
   - a typed `/tag-release` prompt;
@@ -102,12 +102,12 @@ This plan adds a gate built like `implementation-review`. A publishing command i
   - the stance keys: `git config --get-regexp 'amont\.agent\..*stance'`.
 
   Then time a stub forward scan on the largest local transcript, 10 runs, p50 and p99. Write all the findings in the decision log.
-- [ ] Phase 1 — **The shared pieces.**
+- [x] Phase 1 — **The shared pieces.**
   - `src/publish_cmd.rs` holds `classify`. `release_tag_push`, `forge_merge_by_hand` and `gh_pr_merge_auto` switch to it. Existing corpus lines stay green, and new lines cover the `+` and `--mirror` cases.
   - `skill_window(reader, skill) -> Result<Window, Unknown>` lives next to `completed_agents` in `src/plan_review.rs`, or in `src/transcript.rs`, whichever reads better. It returns one of: in the current turn, in the previous turn, stale, or unknown.
   - The `ceiling` field on `Confirmed`, applied in `hook.rs`. The list of rules that need no working directory, in `hook.rs`.
   - Unit tests: forged text, a task-notification inside the turn, the skill-body entry, a slash command, the plugin-qualified name, one intervening human prompt (still valid), two intervening prompts (stale), and a truncated last line.
-- [ ] Phase 2 — **The rule.**
+- [x] Phase 2 — **The rule.**
   - `src/rules/publish_without_skill.rs` holds a pure `examine` (`classify`) and a `confirm` that reads `ctx.transcript`, checks that `SKILL.md` exists, and calls `skill_window`.
   - Wiring: `src/rules/mod.rs` (the `pub mod` line and `RULES`), the `src/corpus.rs` `include_str!`, and `tests/corpus/publish-without-skill.cases`.
 - [ ] Phase 3 — **End-to-end tests.** `tests/publish_without_skill.rs`, using the `World`/`Transcript` builder pattern from `tests/implementation_review.rs:281-380`, with this rule's own stance key set to `deny` and the other rules at their defaults, as on this machine. Each case and its expected result:
@@ -155,6 +155,16 @@ This plan adds a gate built like `implementation-review`. A publishing command i
 - 2026-10-07 (review) — The rule is not a missing-cwd gate. A list of ids next to the gates list lets `confirm` run without a directory. `--follow-tags` is out of scope.
 - 2026-10-07 (review) — A round-2 blocker assumed a global `amont.agent.stance deny`. Checking the machine showed only per-rule keys, so the two related rules keep their observe and advise stances and are not touched. Denying is an explicit per-rule key, which the person sets.
 - 2026-10-07 (review) — The window has no time limit, and Phase 4 measures the age of the skill call before any cap is added.
+- 2026-10-07 (Phase 0) — Shapes captured from this machine's transcripts:
+  - A model Skill call is an assistant `tool_use` with `name: "Skill"` and `input.skill`. It is followed by a `tool_result` (`toolUseResult: {success, commandName}`) and a skill-body `user` entry with `isMeta` and `turnCompanion` set. Neither of those has an `origin`.
+  - A typed skill is a `user` entry with `origin.kind: "human"` whose string content starts `<command-message>tag-release</command-message>\n<command-name>/tag-release</command-name>`.
+  - Human prompts carry `origin.kind: "human"`.
+  - Task notifications carry `origin.kind: "task-notification"`, plugin messages `"plugin"`, `/loop` wakeups `isMeta` with no origin, and compaction summaries `isCompactSummary`.
+  - A task notification opens a new `promptId`, so `promptId` is not a turn. The boundary is `origin.kind == "human"`.
+- 2026-10-07 (Phase 0) — In a subagent, the hook's `transcript_path` is the parent's file, and `agent_transcript_path` is the subagent's own (`<session>/subagents/agent-<id>.jsonl`, per the Claude Code hooks reference). The subagent's file has no human prompt. `confirm` reads both files and takes the nearer call, so a skill called by the parent within the window, or by the subagent itself, both count.
+- 2026-10-07 (Phase 1) — The scan lives in its own module, `src/skill_window.rs`, rather than in `plan_review.rs` (1,928 lines) or the backtest scanner `transcript.rs`.
+  - A typed slash command counts only when the prompt starts with Claude Code's `<command-` tags. Prose that quotes the tag is not a call.
+  - Any unparseable last line counts as unknown, not only one that mentions a skill: where a line was cut cannot be known.
 
 ## Verification
 

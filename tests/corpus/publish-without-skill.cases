@@ -1,0 +1,38 @@
+# amont-agent-cases-v1
+# Reviewed judgements for this rule. `amont-agent corpus check` replays every
+# line through `examine`, which is pure: whether the skill was called is the
+# `confirm`'s question (tests/publish_without_skill.rs), not this file's. A
+# `match` here is a command that publishes.
+#
+# match   the rule SHOULD fire here
+# nomatch the rule must stay silent here
+# ?       nobody has looked yet; never counts as evidence
+
+# --- a release tag is pushed ---
+match	git push origin v0.10.0
+match	git push origin refs/tags/v0.10.0
+match	git push origin +refs/tags/v1.2.3
+match	git push --tags
+match	git push --mirror backup
+match	git tag -a v0.9.1 -m "v0.9.1" && git push origin v0.9.1
+match	cd /Users/x/Developer/Perso/relais && git push origin v0.10.0
+
+# --- a pull request is merged ---
+match	gh pr merge 23 --repo fredericrous/relais --squash
+match	gh pr merge --auto 12
+match	curl -sS -X POST -H "Authorization: token $TOK" "https://git.daddyshome.fr/api/v1/repos/fredericrous/relais/pulls/23/merge" -d '{"Do":"merge"}'
+match	gh api -X PUT repos/fredericrous/relais/pulls/23/merge
+
+# --- nothing is published ---
+nomatch	git push -u origin feat/publish-without-skill
+nomatch	git push origin main
+nomatch	git push --follow-tags origin main
+nomatch	git push --dry-run origin v0.10.0
+nomatch	git push --delete origin v0.10.0
+nomatch	git push origin feat/v2-rewrite
+nomatch	git tag v0.10.0
+nomatch	gh pr view 23 --json state
+nomatch	gh pr checks 23
+nomatch	gh pr create --title x --body "then gh pr merge it"
+nomatch	curl -sS https://git.daddyshome.fr/api/v1/repos/fredericrous/relais/pulls/23
+nomatch	echo "git push origin v1.0.0"

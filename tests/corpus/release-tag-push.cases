@@ -16,6 +16,10 @@ match	git tag -a v0.9.1 3669b7b -m "v0.9.1" && git push origin v0.9.1
 match	git push --tags
 match	git push origin refs/tags/v1.0.0-rc2
 match	git push origin v2
+# A forced refspec, and a mirror push (every ref, tags included): widened
+# 2026-10-07 with publish-without-skill, which shares this matcher.
+match	git push origin +refs/tags/v1.2.3
+match	git push --mirror backup
 
 # --- the rule must stay silent ---
 # Ordinary branch work publishes nothing.
@@ -31,3 +35,5 @@ nomatch	git push --delete origin v0.9.1
 nomatch	git push --dry-run origin v0.9.1
 # Creating the tag is not pushing it — `tag-after-commit` owns the chained form.
 nomatch	git tag -a v0.9.1 -m "release"
+# Whether --follow-tags carries a v* tag is not in the command.
+nomatch	git push --follow-tags origin main
