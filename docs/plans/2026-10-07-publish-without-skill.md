@@ -131,7 +131,7 @@ This plan adds a gate built like `implementation-review`. A publishing command i
   - `gh pr merge --auto` is still denied by `gh-pr-merge-auto`.
   - A curl merge made without the skill: the output is this refusal alone, because the hook drops advice when there is a refusal (`hook.rs:336-341`). The skill name and the next step fit in the first 80 columns.
   - The same merge with this rule at advise: both pieces of advice show, this rule's first.
-- [ ] Phase 4 — **Evidence and docs.**
+- [x] Phase 4 — **Evidence and docs.**
   - The backtester never runs `confirm` (`src/rules/mod.rs:153-155`), so the measure comes from a one-off pass in `tools/`. It runs `classify` and then `skill_window` over local transcripts and reports, per 1,000 Bash calls:
     - matched commands;
     - refusals without the skill;
@@ -165,6 +165,27 @@ This plan adds a gate built like `implementation-review`. A publishing command i
 - 2026-10-07 (Phase 1) — The scan lives in its own module, `src/skill_window.rs`, rather than in `plan_review.rs` (1,928 lines) or the backtest scanner `transcript.rs`.
   - A typed slash command counts only when the prompt starts with Claude Code's `<command-` tags. Prose that quotes the tag is not a call.
   - Any unparseable last line counts as unknown, not only one that mentions a skill: where a line was cut cannot be known.
+- 2026-10-07 (Phase 4) — The scan reads BACKWARDS, not forwards, despite Behaviour 4.
+  - A forward pass over the largest transcript (85 MB) took 140 ms, and the raw read alone 66 ms, so no forward design meets the 50 ms budget.
+  - The scan reads 256 KB chunks from the end. It stops at the most recent call of the skill, or at the second human prompt back, whichever comes first.
+  - Reading back past 16 MB is unknown and caps at advise.
+  - The hook can no longer tell "never called" from "called two or more prompts ago". Both journal as `window=outside` (not `no-skill` / `stale-turn`); `tools/skill-rate.py` keeps the split.
+- 2026-10-07 (Phase 4) — The measure is `tools/skill-rate.py`, Python like `read-rate.py`, rather than a Rust pass. The crate is a binary with no library to call `skill_window` from, and a new subcommand would be CLI surface the plan did not review.
+  - The script's regular-expression matcher overcounts the Rust lexer by about 6% (1,551 against 1,461 with `backtest --rule`).
+  - It judges a subagent against its own file only.
+- 2026-10-07 (Phase 4) — Evidence over 79,267 Bash calls:
+
+  | Measure | Value |
+  |---|---|
+  | Publishes | 1,560, 19.7 per 1,000 |
+  | No skill call | 270 |
+  | Stale (called two or more prompts back) | 909 |
+  | Covered only by the one-prompt allowance | 82 |
+  | Covered in the same turn | 299 |
+  | Unique commands per session | 1,552 |
+  | Age of the covering call | p50 9.1 min, max 74.6 h |
+
+  The uncovered rate per 1,000 by week was 17.3, 28.3, 16.7, 19.9, 14.2, 11.6 and 8.4, so it is falling. `Evidence` records `per_1000: 28.3` (the weekly p95) and `Trend::Improving`. Most misses are stale: a skill called once in a session, then every later merge done from memory.
 
 ## Verification
 

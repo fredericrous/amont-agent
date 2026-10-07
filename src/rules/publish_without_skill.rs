@@ -25,10 +25,28 @@
 //! then advises — capped by `ceiling` — whatever its stance: an unreadable
 //! file must never block a release.
 //!
-//! ## Ships at `Advise`, ceiling `Deny`
+//! ## Measured 2026-10-07, and shipping at `Advise`
 //!
-//! The fleet pattern. A person who wants the refusal sets
-//! `amont.agent.publish-without-skill.stance deny`; `observe` turns it off.
+//! `tools/skill-rate.py` over 79,267 Bash calls: 1,560 publishes. Of those,
+//! 270 had no skill call in the transcript before them, 909 had one two or
+//! more prompts back, 82 were covered only by the one-prompt allowance, and
+//! 299 had one in the same turn. By week, uncovered publishes per 1,000
+//! calls:
+//!
+//! ```text
+//! 2026-08-24  17.3     2026-09-21  14.2
+//! 2026-08-31  28.3     2026-09-28  11.6
+//! 2026-09-07  16.7     2026-10-05   8.4
+//! 2026-09-14  19.9
+//! ```
+//!
+//! Falling, and still roughly one Bash call in 120. Most of the misses are
+//! "stale", not "never": the skill was called earlier in the session, and
+//! every merge after it ran from memory. That is the 2026-10-07 incident.
+//!
+//! It ships at `Advise`, the fleet pattern, with a `Deny` ceiling. A person
+//! who wants the refusal sets
+//! `amont.agent.publish-without-skill.stance deny`, and `observe` turns it off.
 
 use crate::publish_cmd::{self, Kind};
 use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
@@ -40,9 +58,10 @@ pub const RULE: Rule = Rule {
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {
-        per_1000: 0.0,
+        // p95 of the weekly uncovered rate (weeks of 300+ Bash calls).
+        per_1000: 28.3,
         measured: "2026-10-07",
-        trend: Trend::Rare,
+        trend: Trend::Improving,
     },
     examine: Examine::Legacy(examine),
     confirm: Some(confirm),
@@ -51,19 +70,16 @@ pub const RULE: Rule = Rule {
 fn examine(parsed: &Parsed) -> Option<Finding> {
     let p = publish_cmd::classify(parsed)?;
     Some(Finding {
-        reason: missing(p.kind, &p.what, None),
+        reason: missing(p.kind, &p.what),
         remedy: remedy(p.kind.skill()),
         span: p.span,
     })
 }
 
 /// What the publish does, and that the skill was not called.
-fn missing(kind: Kind, what: &str, ago: Option<u32>) -> String {
+fn missing(kind: Kind, what: &str) -> String {
     let skill = kind.skill();
-    let when = match ago {
-        None => "no call of it is in this turn or the one before".to_string(),
-        Some(n) => format!("its last call was {n} prompts ago"),
-    };
+    let when = "no call of it is in this turn or the one before";
     match kind {
         Kind::TagPush => format!(
             "Call the {skill} skill first: `{what}` publishes a release, and {when}. \
@@ -111,7 +127,7 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
     for path in [ctx.transcript, ctx.agent_transcript].into_iter().flatten() {
         match std::fs::File::open(path)
             .map_err(|_| "the transcript could not be opened")
-            .and_then(|f| skill_window::skill_window(std::io::BufReader::new(f), skill))
+            .and_then(|f| skill_window::skill_window(f, skill))
         {
             Ok(w) => best = Some(best.map_or(w, |b| b.nearer(w))),
             Err(why) => failed = Some(why),
@@ -126,17 +142,11 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
     match window {
         Window::Current => Confirmed::No("skill called in this turn"),
         Window::Previous => Confirmed::No("skill called in the previous turn"),
-        Window::Stale(n) => Confirmed::YesSaying {
+        Window::Outside => Confirmed::YesSaying {
             floor: None,
             ceiling: None,
-            reason: missing(p.kind, &p.what, Some(n)),
-            excerpt: format!("skill={skill} window=stale-turn:{n} {}", p.what),
-        },
-        Window::Absent => Confirmed::YesSaying {
-            floor: None,
-            ceiling: None,
-            reason: missing(p.kind, &p.what, None),
-            excerpt: format!("skill={skill} window=no-skill {}", p.what),
+            reason: missing(p.kind, &p.what),
+            excerpt: format!("skill={skill} window=outside {}", p.what),
         },
     }
 }
@@ -196,17 +206,12 @@ mod tests {
         let head = format!(
             "amont-agent/{}: {}",
             RULE.id,
-            missing(Kind::PrMerge, "gh pr merge", None)
+            missing(Kind::PrMerge, "gh pr merge")
         );
         let first: String = head.chars().take(80).collect();
         assert!(
             first.contains("Call the merge-when-green skill first"),
             "{first}"
         );
-    }
-
-    #[test]
-    fn a_stale_call_says_how_long_ago() {
-        assert!(missing(Kind::TagPush, "v1.0.0", Some(3)).contains("3 prompts ago"));
     }
 }

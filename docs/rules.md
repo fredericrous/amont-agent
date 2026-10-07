@@ -5,6 +5,7 @@
 | `pipe-to-tail` | `deny` | a mutating command whose status is swallowed by a pipe |
 | `bare-stash-pop` | `observe` | `git stash pop` with no ref, where `refs/stash` is shared across worktrees |
 | `gh-pr-merge-auto` | `observe` | `--auto` on a repository with no required checks, which merges immediately |
+| `publish-without-skill` | `advise` | a `v*` tag pushed or a pull request merged with no call of the `tag-release` / `merge-when-green` skill in this turn or the one before, so the procedure ran from memory |
 | `forge-merge-by-hand` | `advise` | merging a pull request by POSTing to the forge's merge endpoint, which answers `200` whether the checks passed, failed or never started |
 | `forge-status-stale-row` | `observe` | keeping the first row of a commit's append-only `/statuses` list, so a stale `pending` reads as the present and the wait never ends |
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |

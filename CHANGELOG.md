@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`publish-without-skill`: a release or a merge needs its skill.** A new
+  rule, shipped as `advise` (ceiling `deny`). It fires on three commands:
+  - a `git push` that publishes a `v*` tag (`--tags` and `--mirror` included);
+  - `gh pr merge`;
+  - an HTTP client sent to `/pulls/<n>/merge`.
+
+  The rule looks for a call of the `tag-release` or `merge-when-green` skill
+  (a Skill call, or the person typing `/tag-release`) in this turn or in the
+  human turn before it. A skill called within that window passes silently.
+  - **Reading the transcript.** It is read backwards from its end, and only
+    as far as the second human prompt.
+  - **Subagents.** A subagent's own transcript (`agent_transcript_path`) is
+    read too.
+  - **When it cannot tell, it never refuses.** That covers a missing,
+    unreadable or truncated transcript, a turn longer than 16 MB, or a skill
+    that is not installed.
+  - **To refuse:** `git config --global amont.agent.publish-without-skill.stance deny`.
+  - **Measured on 2026-10-07:** 8.4–28.3 uncovered publishes per 1000 Bash
+    calls by week, falling. Count with `tools/skill-rate.py`.
+
+### Changed
+
+- **`release-tag-push` also matches `+refs/tags/v…` and `--mirror`.** It now
+  shares its matcher with `publish-without-skill`. `--follow-tags` stays
+  unmatched.
+
 ## v2.28.0
 
 ### Added

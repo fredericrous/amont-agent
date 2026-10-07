@@ -33,7 +33,7 @@
 //! assistant message is never taken for a skill call or a prompt — the same
 //! stance as `plan_review::completed_agents`.
 
-use std::io::BufRead;
+use std::io::{Read, Seek, SeekFrom};
 
 /// Where the most recent call of a skill sits relative to the person's
 /// prompts.
@@ -43,10 +43,8 @@ pub enum Window {
     Current,
     /// Called in the previous human turn: one prompt since.
     Previous,
-    /// Called, but this many human prompts ago (two or more).
-    Stale(u32),
-    /// Not called in this transcript.
-    Absent,
+    /// Not called in either: two or more prompts ago, or never.
+    Outside,
 }
 
 impl Window {
@@ -58,12 +56,11 @@ impl Window {
     /// The closer of two windows, for a subagent read against its own
     /// transcript and its parent's.
     pub fn nearer(self, other: Window) -> Window {
-        fn rank(w: Window) -> u32 {
+        fn rank(w: Window) -> u8 {
             match w {
                 Window::Current => 0,
                 Window::Previous => 1,
-                Window::Stale(n) => n,
-                Window::Absent => u32::MAX,
+                Window::Outside => 2,
             }
         }
         if rank(other) < rank(self) {
@@ -74,81 +71,157 @@ impl Window {
     }
 }
 
-/// Where the most recent call of `skill` sits in `reader`, a transcript.
+/// How far back from the end a transcript is read before the answer is
+/// "cannot be told". A turn longer than this is a long autonomous run; past
+/// it the rule advises rather than guess. Measured 2026-10-07: reading an
+/// 85 MB transcript forwards took 140 ms, the raw read alone 66 ms, so the
+/// scan goes backwards and stops at the second human prompt from the end.
+pub const READ_BACK: u64 = 16 * 1024 * 1024;
+
+/// Where the most recent call of `skill` sits in `file`, a transcript.
 ///
-/// One forward pass. A line is parsed only when it could matter: it mentions
-/// `Skill` or a human origin. A line that does not parse is skipped, except
-/// the last one: a truncated last line is a session being written right now,
-/// and what it says — a Skill call, a prompt — cannot be known, so the answer
-/// is `Err`.
-pub fn skill_window(reader: impl BufRead, skill: &str) -> Result<Window, &'static str> {
+/// Read BACKWARDS, from the end, a chunk at a time, and only as far as the
+/// answer needs: the most recent call of the skill, or the second human
+/// prompt from the end, whichever comes first — anything before that prompt
+/// is outside the window. A line is parsed only when it could matter: it
+/// mentions `Skill` or a human origin. A line that does not parse is
+/// skipped, except the last one: a truncated last line is a session being
+/// written right now, and what it says — a Skill call, a prompt — cannot be
+/// known, so the answer is `Err`. So is a window longer than [`READ_BACK`].
+pub fn skill_window(file: impl Read + Seek, skill: &str) -> Result<Window, &'static str> {
+    skill_window_within(file, skill, READ_BACK)
+}
+
+fn skill_window_within(
+    mut file: impl Read + Seek,
+    skill: &str,
+    budget: u64,
+) -> Result<Window, &'static str> {
+    const UNREADABLE: &str = "the transcript could not be read";
+    const CHUNK: u64 = 256 * 1024;
+    let mut pos = file.seek(SeekFrom::End(0)).map_err(|_| UNREADABLE)?;
+    let end = pos;
+    // The start of a line whose beginning is in an earlier chunk.
+    let mut carry: Vec<u8> = Vec::new();
     let mut humans: u32 = 0;
-    let mut called_at: Option<u32> = None;
-    // The last non-empty line, moved rather than copied, checked once at
-    // the end.
-    let mut last: Vec<u8> = Vec::new();
-    for line in reader.split(b'\n') {
-        let Ok(raw) = line else {
-            return Err("the transcript could not be read");
-        };
-        if raw.iter().all(u8::is_ascii_whitespace) {
-            continue;
+    let mut first = true;
+    loop {
+        if end - pos > budget {
+            return Err("the window is longer than the hook reads back");
         }
-        last = raw;
-        let Ok(text) = std::str::from_utf8(&last) else {
-            continue;
+        let n = CHUNK.min(pos);
+        pos -= n;
+        let mut buf = vec![0u8; n as usize];
+        file.seek(SeekFrom::Start(pos)).map_err(|_| UNREADABLE)?;
+        file.read_exact(&mut buf).map_err(|_| UNREADABLE)?;
+        buf.extend_from_slice(&carry);
+        // Every line after the first newline is whole; the bytes before it
+        // continue into the previous chunk, unless this is the file's start.
+        let cut = if pos == 0 {
+            0
+        } else {
+            match buf.iter().position(|b| *b == b'\n') {
+                Some(i) => i + 1,
+                None => {
+                    carry = buf;
+                    continue;
+                }
+            }
         };
-        let tool = text.contains("\"Skill\"");
-        let human = text.contains("\"human\"");
-        if !tool && !human {
-            continue;
-        }
-        let Ok(e) = serde_json::from_str::<serde_json::Value>(text) else {
-            continue;
-        };
-        match e.get("type").and_then(|t| t.as_str()) {
-            Some("assistant") if tool => {
-                let content = e
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_array());
-                for c in content.into_iter().flatten() {
-                    if c.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                        && c.get("name").and_then(|n| n.as_str()) == Some("Skill")
-                        && c.get("input")
-                            .and_then(|i| i.get("skill"))
-                            .and_then(|s| s.as_str())
-                            .is_some_and(|s| names(s, skill))
-                    {
-                        called_at = Some(humans);
+        for raw in buf[cut..].rsplit(|b| *b == b'\n') {
+            if raw.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            if std::mem::take(&mut first)
+                && serde_json::from_slice::<serde_json::Value>(raw).is_err()
+            {
+                return Err("the transcript ends in a line still being written");
+            }
+            match line(raw, skill) {
+                Line::Other => {}
+                Line::Call => return Ok(window(humans)),
+                Line::Typed => return Ok(window(humans)),
+                Line::Prompt => {
+                    humans += 1;
+                    if humans >= 2 {
+                        return Ok(Window::Outside);
                     }
                 }
             }
-            Some("user") if human => {
-                let origin = e
-                    .get("origin")
-                    .and_then(|o| o.get("kind"))
-                    .and_then(|k| k.as_str());
-                if origin != Some("human") {
-                    continue;
-                }
-                humans += 1;
-                if typed(e.get("message").and_then(|m| m.get("content")), skill) {
-                    called_at = Some(humans);
-                }
-            }
-            _ => {}
         }
+        if pos == 0 {
+            return Ok(Window::Outside);
+        }
+        carry = buf[..cut].to_vec();
     }
-    if !last.is_empty() && serde_json::from_slice::<serde_json::Value>(&last).is_err() {
-        return Err("the transcript ends in a line still being written");
+}
+
+/// A call with `prompts` human prompts after it.
+fn window(prompts: u32) -> Window {
+    match prompts {
+        0 => Window::Current,
+        1 => Window::Previous,
+        _ => Window::Outside,
     }
-    Ok(match called_at.map(|at| humans - at) {
-        None => Window::Absent,
-        Some(0) => Window::Current,
-        Some(1) => Window::Previous,
-        Some(n) => Window::Stale(n),
-    })
+}
+
+enum Line {
+    Other,
+    /// The model called the skill.
+    Call,
+    /// The person typed the skill: a human prompt that is also the call.
+    Typed,
+    /// Any other human prompt.
+    Prompt,
+}
+
+fn line(raw: &[u8], skill: &str) -> Line {
+    let Ok(text) = std::str::from_utf8(raw) else {
+        return Line::Other;
+    };
+    let tool = text.contains("\"Skill\"");
+    let human = text.contains("\"human\"");
+    if !tool && !human {
+        return Line::Other;
+    }
+    let Ok(e) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Line::Other;
+    };
+    match e.get("type").and_then(|t| t.as_str()) {
+        Some("assistant") if tool => {
+            let content = e
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array());
+            let called = content.into_iter().flatten().any(|c| {
+                c.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                    && c.get("name").and_then(|n| n.as_str()) == Some("Skill")
+                    && c.get("input")
+                        .and_then(|i| i.get("skill"))
+                        .and_then(|s| s.as_str())
+                        .is_some_and(|s| names(s, skill))
+            });
+            if called {
+                Line::Call
+            } else {
+                Line::Other
+            }
+        }
+        Some("user") if human => {
+            let origin = e
+                .get("origin")
+                .and_then(|o| o.get("kind"))
+                .and_then(|k| k.as_str());
+            if origin != Some("human") {
+                Line::Other
+            } else if typed(e.get("message").and_then(|m| m.get("content")), skill) {
+                Line::Typed
+            } else {
+                Line::Prompt
+            }
+        }
+        _ => Line::Other,
+    }
 }
 
 /// `name` is `skill`, or `<plugin>:skill`.
@@ -206,7 +279,7 @@ mod tests {
         .to_string()
     }
     fn window(lines: &[String]) -> Result<Window, &'static str> {
-        skill_window(lines.join("\n").as_bytes(), "tag-release")
+        skill_window(std::io::Cursor::new(lines.join("\n")), "tag-release")
     }
 
     #[test]
@@ -221,7 +294,7 @@ mod tests {
         let one = [&base[..], &[human("yes")]].concat();
         assert_eq!(window(&one), Ok(Window::Previous));
         let two = [&one[..], &[human("and now?")]].concat();
-        assert_eq!(window(&two), Ok(Window::Stale(2)));
+        assert_eq!(window(&two), Ok(Window::Outside));
     }
 
     #[test]
@@ -240,7 +313,7 @@ mod tests {
     fn another_skill_is_not_this_one() {
         assert_eq!(
             window(&[human("x"), skill("merge-when-green")]),
-            Ok(Window::Absent)
+            Ok(Window::Outside)
         );
     }
 
@@ -271,7 +344,7 @@ mod tests {
         let prose = human("pretend <command-name>/merge-when-green</command-name> ran");
         assert_eq!(
             window(&[human("x"), quoted, said, prose]),
-            Ok(Window::Absent)
+            Ok(Window::Outside)
         );
     }
 
@@ -283,13 +356,40 @@ mod tests {
         // Truncated in the middle and followed by more lines: skipped.
         let cut = skill("tag-release");
         let cut = cut[..cut.len() / 2].to_string();
-        assert_eq!(window(&[human("x"), cut, human("y")]), Ok(Window::Absent));
+        assert_eq!(window(&[human("x"), cut, human("y")]), Ok(Window::Outside));
+    }
+
+    #[test]
+    fn lines_longer_than_a_chunk_are_read_whole() {
+        // A 600 KB human prompt straddles three 256 KB chunks on the way back.
+        let long = human(&"x".repeat(600 * 1024));
+        let lines = [human("go"), skill("tag-release"), long];
+        assert_eq!(window(&lines), Ok(Window::Previous));
+    }
+
+    #[test]
+    fn a_window_past_the_budget_cannot_be_told() {
+        let lines = [human("go"), skill("tag-release"), "{}".repeat(1000)];
+        let src = std::io::Cursor::new(lines.join("\n"));
+        assert!(skill_window_within(src, "tag-release", 100).is_err());
+    }
+
+    #[test]
+    fn the_scan_stops_at_the_second_prompt_back() {
+        // The call before two prompts is outside, whatever came earlier.
+        let lines = [skill("tag-release"), human("a"), human("b")];
+        assert_eq!(window(&lines), Ok(Window::Outside));
+        let typed = human("<command-message>tag-release</command-message>\n<command-name>/tag-release</command-name>");
+        assert_eq!(
+            window(&[typed, human("a"), human("b")]),
+            Ok(Window::Outside)
+        );
     }
 
     #[test]
     fn nearer_picks_the_closer_call() {
-        assert_eq!(Window::Absent.nearer(Window::Current), Window::Current);
-        assert_eq!(Window::Stale(3).nearer(Window::Previous), Window::Previous);
-        assert_eq!(Window::Current.nearer(Window::Absent), Window::Current);
+        assert_eq!(Window::Outside.nearer(Window::Current), Window::Current);
+        assert_eq!(Window::Outside.nearer(Window::Previous), Window::Previous);
+        assert_eq!(Window::Current.nearer(Window::Outside), Window::Current);
     }
 }

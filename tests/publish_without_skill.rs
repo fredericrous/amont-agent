@@ -198,7 +198,7 @@ fn no_skill_call_is_refused() {
         said.text().contains("Call the tag-release skill first"),
         "{said:?}"
     );
-    assert!(w.journal().contains("window=no-skill"), "{}", w.journal());
+    assert!(w.journal().contains("window=outside"), "{}", w.journal());
 }
 
 #[test]
@@ -230,14 +230,10 @@ fn one_reply_passes_two_prompts_do_not() {
     let said = w.publish(MERGE, &t);
     assert!(matches!(said, Said::Deny(_)), "{said:?}");
     assert!(
-        said.text().contains("its last call was 2 prompts ago"),
+        said.text().contains("this turn or the one before"),
         "{said:?}"
     );
-    assert!(
-        w.journal().contains("window=stale-turn:2"),
-        "{}",
-        w.journal()
-    );
+    assert!(w.journal().contains("window=outside"), "{}", w.journal());
 }
 
 #[test]
