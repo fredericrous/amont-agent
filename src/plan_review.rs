@@ -700,16 +700,50 @@ pub struct Completed {
 /// `queued_command` has `commandMode: task-notification`). Nothing inside a
 /// tool result or assistant text is read as a notification.
 pub fn completed_agents(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
+    scan(reader, prefix, false)
+}
+
+/// [`completed_agents`], plus every round a launched agent was RESUMED for
+/// with `SendMessage`, each as a completion of its own: the agent launched,
+/// the message as its prompt, the round's notification as its result.
+///
+/// The shape, from a real session (2026-10-08,
+/// `tests/fixtures/sendmessage-resume.jsonl`): the launch's result carries
+/// `toolUseResult.agentId`; a `SendMessage` whose `input.to` is that id is
+/// answered with `toolUseResult.resumedAgentId` = the same id; and the
+/// round's task notification carries `<tool-use-id>` = THAT SendMessage's id
+/// and `<task-id>` = the agent id, so the launch's own result is never
+/// overwritten. A round counts only when all three agree, and only on a
+/// structured notification, as a launch does.
+///
+/// Only the implementation review reads this: the plan-review panel counts
+/// fresh launches alone.
+pub fn completed_agents_resumable(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
+    scan(reader, prefix, true)
+}
+
+fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
     // id → (agent, prompt), and the launch order, since a HashMap has none.
+    // A resumed round is keyed by its SendMessage's id.
     let mut launched: HashMap<String, (String, String)> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     let mut done: HashMap<String, String> = HashMap::new();
+    // agentId → the agent type it was launched as.
+    let mut agents: HashMap<String, String> = HashMap::new();
+    // SendMessage id → (to, message), until its result says it resumed.
+    let mut sends: HashMap<String, (String, String)> = HashMap::new();
+    // A resumed round's id → the agentId its notification must carry.
+    let mut rounds: HashMap<String, String> = HashMap::new();
     for line in reader.split(b'\n') {
         let Ok(raw) = line else { break };
         let Ok(text) = std::str::from_utf8(&raw) else {
             continue;
         };
-        let review = text.contains(prefix);
+        let review = text.contains(prefix)
+            || (resumable
+                && (text.contains("SendMessage")
+                    || text.contains("agentId")
+                    || text.contains("AgentId")));
         let notice = text.contains("task-notification");
         if !review && !notice {
             continue;
@@ -722,48 +756,49 @@ pub fn completed_agents(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
             .get("message")
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_array());
+        let mut notified: Vec<Notification> = Vec::new();
         match e.get("type").and_then(|t| t.as_str()) {
             Some("assistant") if review => {
                 for c in content.into_iter().flatten() {
-                    if c.get("type").and_then(|t| t.as_str()) != Some("tool_use")
-                        || !matches!(
-                            c.get("name").and_then(|n| n.as_str()),
-                            Some("Agent" | "Task")
-                        )
-                    {
+                    if c.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
                         continue;
                     }
-                    let input = c.get("input");
-                    let Some(agent) = input
-                        .and_then(|i| i.get("subagent_type"))
-                        .and_then(|s| s.as_str())
-                        .filter(|s| s.starts_with(prefix))
-                    else {
-                        continue;
-                    };
                     let Some(id) = c.get("id").and_then(|i| i.as_str()) else {
                         continue;
                     };
-                    let prompt = input
-                        .and_then(|i| i.get("prompt"))
-                        .and_then(|p| p.as_str())
-                        .unwrap_or("");
-                    if !launched.contains_key(id) {
-                        order.push(id.to_string());
-                        launched.insert(id.to_string(), (agent.to_string(), prompt.to_string()));
+                    let input = c.get("input");
+                    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(|v| v.as_str());
+                    match c.get("name").and_then(|n| n.as_str()) {
+                        Some("Agent" | "Task") => {
+                            let Some(agent) =
+                                field("subagent_type").filter(|s| s.starts_with(prefix))
+                            else {
+                                continue;
+                            };
+                            let prompt = field("prompt").unwrap_or("");
+                            if !launched.contains_key(id) {
+                                order.push(id.to_string());
+                                launched.insert(
+                                    id.to_string(),
+                                    (agent.to_string(), prompt.to_string()),
+                                );
+                            }
+                        }
+                        Some("SendMessage") if resumable => {
+                            if let (Some(to), Some(message)) = (field("to"), field("message")) {
+                                sends.insert(id.to_string(), (to.to_string(), message.to_string()));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
             Some("user") => {
                 if review {
                     let result = e.get("toolUseResult");
-                    let completed = result
-                        .and_then(|r| r.get("status"))
-                        .and_then(|s| s.as_str())
-                        == Some("completed");
-                    let agent_type = result
-                        .and_then(|r| r.get("agentType"))
-                        .and_then(|s| s.as_str());
+                    let field = |k: &str| result.and_then(|r| r.get(k)).and_then(|s| s.as_str());
+                    let completed = field("status") == Some("completed");
+                    let agent_type = field("agentType");
                     for c in content.into_iter().flatten() {
                         if c.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
                             continue;
@@ -775,6 +810,21 @@ pub fn completed_agents(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
                             if completed && agent_type == Some(agent.as_str()) {
                                 done.insert(id.to_string(), text_of(c.get("content")));
                             }
+                            if resumable {
+                                if let Some(agent_id) = field("agentId") {
+                                    agents.insert(agent_id.to_string(), agent.clone());
+                                }
+                            }
+                        } else if let Some((to, message)) = sends.remove(id) {
+                            let Some(agent) = agents.get(&to) else {
+                                continue;
+                            };
+                            if field("resumedAgentId") != Some(to.as_str()) {
+                                continue;
+                            }
+                            order.push(id.to_string());
+                            launched.insert(id.to_string(), (agent.clone(), message));
+                            rounds.insert(id.to_string(), to);
                         }
                     }
                 }
@@ -792,7 +842,7 @@ pub fn completed_agents(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
                             .join("\n"),
                         _ => String::new(),
                     };
-                    done.extend(completed_results(&body));
+                    notified = notifications(&body);
                 }
             }
             Some("attachment") if notice => {
@@ -801,10 +851,20 @@ pub fn completed_agents(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
                 if field("type") == Some("queued_command")
                     && field("commandMode") == Some("task-notification")
                 {
-                    done.extend(completed_results(field("prompt").unwrap_or("")));
+                    notified = notifications(field("prompt").unwrap_or(""));
                 }
             }
             _ => {}
+        }
+        for n in notified {
+            // A resumed round completes only on its own agent's notification.
+            if rounds
+                .get(&n.tool_use_id)
+                .is_some_and(|agent_id| *agent_id != n.task_id)
+            {
+                continue;
+            }
+            done.insert(n.tool_use_id, n.result);
         }
     }
     order
@@ -843,9 +903,18 @@ fn completed_ids(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The tool-use ids a task notification reports `completed`, each with the
-/// text of its `<result>` (the whole chunk when it carries none).
-fn completed_results(text: &str) -> Vec<(String, String)> {
+/// One `completed` entry of a task notification.
+pub struct Notification {
+    /// `<tool-use-id>`: the launch, or the `SendMessage` that resumed it.
+    pub tool_use_id: String,
+    /// `<task-id>`: the agent's id; empty when the notification has none.
+    pub task_id: String,
+    /// The `<result>` text (the whole chunk when it carries none).
+    pub result: String,
+}
+
+/// The `completed` entries of a task notification.
+pub fn notifications(text: &str) -> Vec<Notification> {
     let tag = |chunk: &str, name: &str| -> Option<String> {
         let open = format!("<{name}>");
         let close = format!("</{name}>");
@@ -857,10 +926,22 @@ fn completed_results(text: &str) -> Vec<(String, String)> {
         .skip(1)
         .filter(|c| tag(c, "status").as_deref() == Some("completed"))
         .filter_map(|c| {
-            let id = tag(c, "tool-use-id")?;
-            let result = tag(c, "result").unwrap_or_else(|| c.trim().to_string());
-            Some((id, result))
+            Some(Notification {
+                tool_use_id: tag(c, "tool-use-id")?,
+                task_id: tag(c, "task-id").unwrap_or_default(),
+                result: tag(c, "result").unwrap_or_else(|| c.trim().to_string()),
+            })
         })
+        .collect()
+}
+
+/// The tool-use ids a task notification reports `completed`, each with the
+/// text of its `<result>` (the whole chunk when it carries none).
+#[cfg(test)]
+fn completed_results(text: &str) -> Vec<(String, String)> {
+    notifications(text)
+        .into_iter()
+        .map(|n| (n.tool_use_id, n.result))
         .collect()
 }
 
