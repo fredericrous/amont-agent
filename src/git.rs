@@ -64,6 +64,23 @@ pub fn stdout_in(dir: &std::path::Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Does pushing `rev` bring nothing that some remote-tracking ref does not
+/// already reach? Seeding a fork from an upstream clone is the case: every
+/// commit is on `upstream/*`, none is this session's work, and a guard that
+/// diffed against the (empty) target remote judged upstream's whole history
+/// as new (amont#301, the same mistake in the pre-push gate).
+///
+/// `false` whenever it cannot be told: with no remote-tracking ref at all
+/// `--not --remotes` excludes nothing and the walk lists the whole history,
+/// and a failed `rev-list` is not evidence of anything.
+pub fn nothing_new(dir: &std::path::Path, rev: &str) -> bool {
+    stdout_in(
+        dir,
+        &["rev-list", "--max-count=1", rev, "--not", "--remotes"],
+    )
+    .is_some_and(|out| out.is_empty())
+}
+
 /// Did a git command run inside `dir` succeed? Output discarded; `false`
 /// covers "git could not be asked" too.
 pub fn succeeds_in(dir: &std::path::Path, args: &[&str]) -> bool {

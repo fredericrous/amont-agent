@@ -290,6 +290,12 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         return Judged::Decline("no-branch");
     };
     let pushed = target.src.as_str();
+    // Commits some remote already has are not this push's work: seeding a
+    // fork reaches here with no default branch on the fork, and used to ask
+    // for a review of upstream's history.
+    if git::nothing_new(&repo, pushed) {
+        return Judged::Decline("nothing-new");
+    }
     let Some(base) = default_base(&repo, &target.remote) else {
         return unknown(
             None,
