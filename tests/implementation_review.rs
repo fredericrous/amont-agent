@@ -650,6 +650,9 @@ fn the_base_is_the_remotes_default_branch_and_no_base_is_unknown() {
     );
 
     // A remote with neither HEAD, main nor master: unknown, never no-plan.
+    // It holds `feat/x~1`, not the tip: the push still brings a commit no
+    // remote has, so it is judged (a push of commits some remote already
+    // reaches is `nothing-new`, covered in its own case).
     let other = w.root.join("other.git");
     Command::new("git")
         .args(["init", "-q", "--bare", "--template="])
@@ -660,7 +663,7 @@ fn the_base_is_the_remotes_default_branch_and_no_base_is_unknown() {
         &repo,
         &["remote", "add", "other", &other.display().to_string()],
     );
-    git(&repo, &["push", "-q", "other", "feat/x:dev"]);
+    git(&repo, &["push", "-q", "other", "feat/x~1:refs/heads/dev"]);
     git(&repo, &["fetch", "-q", "other"]);
     let said = w.push_cmd(&repo, "s1", Some(&empty), "git push -u other feat/x");
     assert!(advised(&said).contains("cannot be told"), "{said:?}");
@@ -681,6 +684,53 @@ fn the_base_is_the_remotes_default_branch_and_no_base_is_unknown() {
     assert!(w.last_line().contains("review=unknown"));
     let said = w.push_cmd(&repo, "s1", None, "git push -u upstream feat/x");
     assert!(advised(&said).contains("no transcript_path"), "{said:?}");
+}
+
+/// Seeding a fork pushes work that is not this session's: every commit is
+/// already on another remote. The fork has no default branch yet, which used
+/// to read as "cannot be told" and asked for a review of upstream's history.
+/// A push that brings nothing no remote already has is not judged at all —
+/// and a push that does bring a new commit is still judged as before.
+#[test]
+fn a_push_of_commits_already_on_a_remote_needs_no_review() {
+    let w = World::new("seed");
+    let repo = w.repo("app");
+    // `feat/x` (a plan and a code change) is already on the original remote.
+    git(&repo, &["push", "-q", "origin", "feat/x"]);
+    git(&repo, &["remote", "rename", "origin", "upstream"]);
+    git(&repo, &["fetch", "-q", "upstream"]);
+    let fork = w.root.join("fork.git");
+    Command::new("git")
+        .args(["init", "-q", "--bare", "--template="])
+        .arg(&fork)
+        .output()
+        .unwrap();
+    git(
+        &repo,
+        &["remote", "add", "origin", &fork.display().to_string()],
+    );
+    let empty = w.transcript("empty", &Transcript::default());
+
+    let said = w.push_cmd(&repo, "s1", Some(&empty), "git push origin feat/x");
+    assert_eq!(
+        said,
+        Said::Silent,
+        "nothing in this push is new to any remote"
+    );
+    assert!(
+        w.last_line().contains(" unconfirmed nothing-new "),
+        "{}",
+        w.last_line()
+    );
+
+    // One new commit on top is this session's work again: judged as before
+    // (here: no default branch on the fork, so it is unknown, not silent).
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let said = w.push_cmd(&repo, "s1", Some(&empty), "git push origin feat/x");
+    assert!(advised(&said).contains("cannot be told"), "{said:?}");
 }
 
 #[test]

@@ -145,6 +145,15 @@ struct Published {
 /// established without guessing.
 fn published(repo: &Path, t: &Target) -> Option<Published> {
     let short = t.dst.strip_prefix("refs/heads/")?;
+    // Every commit already on some remote: nothing here is new to preview.
+    // Those commits were either previewed when they were pushed there, or
+    // were never this session's (seeding a fork from an upstream clone).
+    if crate::git::nothing_new(repo, &t.src) {
+        return Some(Published {
+            base: None,
+            files: Vec::new(),
+        });
+    }
     let tracking = format!("refs/remotes/{}/{}", t.remote, short);
     let base = if git(repo, &["rev-parse", "--verify", "--quiet", &tracking]).is_some() {
         Some(tracking)

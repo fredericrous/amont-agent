@@ -306,6 +306,41 @@ fn an_unapproved_ui_push_is_advised_and_a_docs_only_one_is_not() {
     assert!(w.push_advised("s"));
 }
 
+/// Seeding a fork: the UI commit is already on `upstream`, and it is pushed to
+/// a brand-new remote with no branches. The files used to be listed with
+/// `--not --remotes=<that remote>`, which excludes nothing, so upstream's
+/// whole history read as an unapproved interface change. Commits any remote
+/// already has were previewed (or were never this session's): only what is
+/// new to every remote is judged — and that is still judged.
+#[test]
+fn a_ui_commit_already_on_another_remote_needs_no_preview() {
+    let w = World::new("seed");
+    w.commit("app/routes/home.tsx", "export default 1\n");
+    git(&w.work, &["push", "-q", "origin", "feat/x"]);
+    git(&w.work, &["remote", "rename", "origin", "upstream"]);
+    git(&w.work, &["fetch", "-q", "upstream"]);
+    let fork = w.root.join("fork.git");
+    Command::new("git")
+        .args(["init", "-q", "--bare", "--template="])
+        .arg(&fork)
+        .output()
+        .unwrap();
+    git(
+        &w.work,
+        &["remote", "add", "origin", &fork.display().to_string()],
+    );
+    assert!(
+        !w.push_advised("s"),
+        "every pushed commit is on upstream; nothing here is new to preview"
+    );
+
+    w.commit("app/routes/about.tsx", "export default 2\n");
+    assert!(
+        w.push_advised("s"),
+        "a UI commit new to every remote still needs its preview"
+    );
+}
+
 #[test]
 fn a_change_is_judged_by_its_nearest_package_not_the_repository() {
     // Seen 2026-09-28 in duro-design-system: the root has a `dev` script, a
