@@ -92,9 +92,7 @@ fn decide(raw: &str) -> Decision {
         }
         Event::PostAsk(ask) => {
             let mut said: Vec<String> = Vec::new();
-            if let Some(text) = crate::preview::on_post_ask(&ask) {
-                said.push(decision::phrase(rules::push_preview::RULE.id, &text, ""));
-            }
+            crate::preview::on_post_ask(&ask);
             if let Some(text) = crate::implementation_review::on_post_ask(&ask) {
                 if crate::stance::resolve(&rules::implementation_review::RULE) != Stance::Observe {
                     said.push(decision::phrase(

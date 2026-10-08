@@ -556,43 +556,34 @@ fn a_chained_register_help_is_not_a_registration() {
 }
 
 #[test]
-fn a_question_with_the_wrong_label_says_so_and_the_right_one_then_approves() {
-    let w = World::new("wrong-label");
+fn a_marked_question_with_the_id_and_no_label_approves() {
+    // Seen 2026-10-08 (Duro 5.5): the question carried `[preview <id>]` and
+    // no label, the approval bound nothing, and the person was asked twice.
+    let w = World::new("id-only");
+    w.commit("app/a.tsx", "1\n");
+    let id = w.register("s", "p1");
+    let q = format!("[preview {id}] Ship the 28px small controls?");
+    assert!(!q.contains(&w.label()));
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    let said = w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    assert!(!said.contains("bound NOTHING"), "{said}");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("approved"), "{}", w.journal());
+}
+
+#[test]
+fn a_marker_naming_no_pending_id_approves_nothing() {
+    let w = World::new("id-unknown");
     w.commit("app/a.tsx", "1\n");
     let id = w.register("s", "p1");
     let sha = git(&w.work, &["rev-parse", "HEAD"]);
-    // Another repository's name at the same commit is not this preview.
-    let wrong = format!("[preview {id}] Ship other-repo@{}?", &sha[..7]);
-    w.ask("PreToolUse", ("s", "p1"), "q1", &wrong, None, false);
-    let said = w.ask(
-        "PostToolUse",
-        ("s", "p1"),
-        "q1",
-        &wrong,
-        Some("Approve"),
-        false,
-    );
-    assert!(
-        said.contains("bound NOTHING"),
-        "the session is told: {said}"
-    );
-    assert!(
-        said.contains(&w.label()),
-        "it names the label to show: {said}"
-    );
-    assert!(w.push_advised("s"), "nothing was approved");
-
-    let right = format!("[preview {id}] Ship {}?", w.label());
-    w.ask("PreToolUse", ("s", "p1"), "q2", &right, None, false);
-    w.ask(
-        "PostToolUse",
-        ("s", "p1"),
-        "q2",
-        &right,
-        Some("Approve"),
-        false,
-    );
-    assert!(!w.push_advised("s"), "{}", w.journal());
+    // The right sha7 and label, but an id nobody registered.
+    let q = format!("[preview {}fffffff] Ship {}?", &sha[..7], w.label());
+    assert!(!q.contains(&id));
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(!w.journal().contains("approved"), "{}", w.journal());
 }
 
 #[test]
