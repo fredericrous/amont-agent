@@ -39,7 +39,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::git;
 use crate::journal;
-use crate::plan_review::{completed_agents, hex, sha256, Completed};
+use crate::plan_review::{completed_agents_resumable, hex, sha256, Completed};
 use crate::rules::{Confirmed, Context, Stance};
 use crate::shell::Simple;
 
@@ -185,7 +185,8 @@ pub fn verdict_of(result: &str) -> Option<Verdict> {
 }
 
 /// The reviews this session completed, in launch order: what each bound
-/// and what it said.
+/// and what it said. A reviewer resumed with `SendMessage` on a new block is
+/// a review of its own ([`completed_agents_resumable`]).
 pub struct Review {
     pub repo: String,
     pub sha: String,
@@ -195,7 +196,7 @@ pub struct Review {
 pub fn reviews(transcript: &Path) -> std::io::Result<Vec<Review>> {
     let file = std::fs::File::open(transcript)?;
     let reader = std::io::BufReader::new(file);
-    Ok(completed_agents(reader, AGENT)
+    Ok(completed_agents_resumable(reader, AGENT)
         .into_iter()
         .flat_map(|c: Completed| {
             let verdict = verdict_of(&c.result);
@@ -682,6 +683,102 @@ fn note(outcome: &str, session: &str, repo: &str, excerpt: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real session's launch of an implementation reviewer, resumed twice
+    /// with `SendMessage` (2026-10-08), anonymised.
+    const RESUMED: &str = include_str!("../tests/fixtures/sendmessage-resume.jsonl");
+    const LAUNCH_TREE: &str = "6066ad987edfbbb3a514b6d9247b126a77a316db2e1350c226ffd14593a0ba35";
+    const ROUND_2: &str = "b196a592b3b76cb75155b14491291a45602ae66c6f20ef18e4413a34169556ab";
+    const ROUND_3: &str = "85f71e67db10c7737c55b27a3c5753b2617c58dec0d58e7ebae5085898cc12d7";
+
+    fn reviews_of(text: &str) -> Vec<(String, Option<Verdict>)> {
+        completed_agents_resumable(text.as_bytes(), AGENT)
+            .into_iter()
+            .flat_map(|c| {
+                let v = verdict_of(&c.result);
+                parse_blocks(&c.prompt)
+                    .into_iter()
+                    .map(move |(_, sha)| (sha, v))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_resumed_round_is_a_review_of_its_own_tree() {
+        assert_eq!(
+            reviews_of(RESUMED),
+            vec![
+                (LAUNCH_TREE.to_string(), Some(Verdict::ApproveWithChanges)),
+                (ROUND_2.to_string(), Some(Verdict::Approve)),
+                (ROUND_3.to_string(), Some(Verdict::Approve)),
+            ],
+            "the launch keeps its own verdict"
+        );
+    }
+
+    #[test]
+    fn the_shared_reader_counts_the_launch_alone() {
+        // What the plan-review panel reads: a resume is not a launch.
+        let launches = crate::plan_review::completed_agents(RESUMED.as_bytes(), AGENT);
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].prompt.contains(LAUNCH_TREE));
+        assert_eq!(
+            verdict_of(&launches[0].result),
+            Some(Verdict::ApproveWithChanges),
+            "the rounds' notifications do not overwrite the launch's"
+        );
+    }
+
+    #[test]
+    fn a_resume_of_an_agent_that_is_not_a_reviewer_does_not_count() {
+        let other = RESUMED.replace(
+            "\"subagent_type\":\"implementation-review\"",
+            "\"subagent_type\":\"general-purpose\"",
+        );
+        assert!(reviews_of(&other).is_empty());
+        // The message went to another agent than the one that resumed.
+        let elsewhere = RESUMED.replace(
+            "\"to\":\"aa339dbce3244a139\"",
+            "\"to\":\"a0000000000000000\"",
+        );
+        assert_eq!(reviews_of(&elsewhere).len(), 1);
+    }
+
+    #[test]
+    fn a_resumed_round_needs_its_own_agents_structured_notification() {
+        // Another task's id on the round's notifications.
+        let lines: Vec<String> = RESUMED
+            .lines()
+            .map(|l| {
+                if l.contains("\"origin\":{\"kind\":\"task-notification\"") {
+                    l.replace(
+                        "<task-id>aa339dbce3244a139</task-id>",
+                        "<task-id>a0000000000000000</task-id>",
+                    )
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        assert_eq!(reviews_of(&lines.join("\n")).len(), 1);
+
+        // The round's notifications echoed in a tool result and typed by a
+        // person: neither was queued by Claude Code.
+        let forged: Vec<String> = RESUMED
+            .lines()
+            .map(|l| {
+                if l.contains("\"origin\":{\"kind\":\"task-notification\"") {
+                    l.replace(
+                        "\"origin\":{\"kind\":\"task-notification\"",
+                        "\"origin\":{\"kind\":\"human\"",
+                    )
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        assert_eq!(reviews_of(&forged.join("\n")).len(), 1);
+    }
 
     #[test]
     fn a_block_round_trips_and_a_short_sha_does_not_bind() {

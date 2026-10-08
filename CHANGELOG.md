@@ -1,5 +1,58 @@
 # Changelog
 
+## v2.30.0
+
+Approve only what needs judging (ADR-0028, which replaces ADR-0023).
+**Existing installs must re-run `amont-agent install --write`**: the
+evidence gate needs the new `PostToolUse` hook on `ExitPlanMode`.
+
+### Added
+
+- **`push-preview`: a plan can declare the preview's evidence.** When the
+  plan a branch landed was approved through `ExitPlanMode` and its body has
+  a `## Preview` section whose first line is `evidence: <reason>`, a UI push
+  passes with no question (rule `work.preview-unless-planned-evidence`).
+  - **The approval record.** A new `PostToolUse` hook on `ExitPlanMode`
+    writes the approved plan's canonical body sha to
+    `~/.claude/amont-agent/plan-approved/<sha>`, hashed from
+    `planFilePath` when the hook runs. Only the approve shape counts
+    (`tool_response` an object carrying `plan`).
+  - **The check.** The first plan the branch adds under `docs/plans/` since
+    the merge base with the default branch, read at the commit that added
+    it, must have an approved sha and the declaration. A picked mockup, a
+    pointer plan, a plan already on `main`, a section added later and a
+    missing base ref are held as before.
+  - **Audit.** Every pass is journalled `evidence`, with the plan, the
+    commit and the sha; every record `plan-approved`.
+- **`preview register` prints `question_prefix`**: `[preview <id>] <label>`,
+  what the marked question starts with, verbatim. A refusal to bind quotes
+  it.
+- **`implementation-review` counts a resumed review.** A reviewer resumed
+  with `SendMessage` on a new block is a review of that tree: the message's
+  `to` is a reviewer's `agentId`, its result's `resumedAgentId` matches, and
+  the round's structured notification names that SendMessage and agent.
+  The plan-review panel still counts fresh launches alone.
+
+### Changed
+
+- **A marked question approves by id.** `Approve` on a question whose
+  `[preview …]` marker lists a pending registration approves it; the
+  `repo@sha7` label is no longer required (the id starts with the sha7).
+  The "bound NOTHING" answer and its `unlisted` journal line are gone.
+- **A chained register binds.** `preview register` only has to be the last
+  clause of its line, joined by `&&` or `;`; the JSON is read from the last
+  non-empty line of stdout. A `PreToolUse` stamp
+  (`previews/registers/<tool_use_id>`, swept after a day) and an id, page
+  and mtime check keep a line an earlier clause printed from passing as
+  the register's. No stamp: not bound. A register that is followed,
+  piped, redirected or substituted stays unbound.
+- The vendored decisions pack carries ADR-0028.
+
+### Fixed
+
+- **The person was asked twice for one preview** (2026-10-08): a question
+  carrying the id but no label bound nothing.
+
 ## v2.29.1
 
 ### Fixed

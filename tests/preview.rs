@@ -224,6 +224,9 @@ impl World {
             "amont-agent preview register --url http://localhost:5173/ --guide '{}'",
             record.display()
         );
+        // The PreToolUse stamp comes first, as it does in a session: the
+        // bind requires a page written after the call began.
+        self.pre_bash(session, "reg", &command);
         let (code, out, err) = self.register_cli("http://localhost:5173/", &record);
         assert_eq!(code, 0, "register refused: {err}");
         self.post_bash(session, prompt, "reg", &command, &out);
@@ -504,28 +507,29 @@ fn registration_refuses_a_dirty_tree_and_a_record_inside_the_worktree() {
 }
 
 #[test]
-fn a_chained_register_is_not_bound() {
-    let w = World::new("chained");
+fn a_register_that_is_not_last_is_not_bound_and_says_how() {
+    let w = World::new("not-last");
     w.commit("app/a.tsx", "1\n");
     let record = w.guide();
-    let (_, out, _) = w.register_cli("http://localhost:1/", &record);
-    let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let command = format!(
-        "npm test && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        "amont-agent preview register --url http://localhost:1/ --guide '{}' && echo done",
         record.display()
     );
-    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    let (id, said) = stamped(&w, &w.work, "reg", &command, "", "done\n");
     // Seen 2026-09-29 (PR #302): this failure was silent, so the session
     // asked, the person approved, and the approval bound nothing.
     assert!(said.contains("NOT bound"), "the session is told: {said}");
+    assert!(said.contains("LAST command"), "{said}");
     w.answer("s", "p1", &id, Some("Approve"));
     assert!(w.push_advised("s"));
-    assert!(w.journal().contains("not a standalone command"));
+    assert!(
+        w.journal().contains("not the last command"),
+        "{}",
+        w.journal()
+    );
 
-    // The command it prints binds when run as printed.
+    // The command it prints binds when run as printed, and the refusal
+    // quotes the question to ask.
     let v: serde_json::Value = serde_json::from_str(&said).unwrap();
     let context = v["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -536,10 +540,114 @@ fn a_chained_register_is_not_bound() {
         .map(|rest| format!("cd {rest}"))
         .expect("a command to run");
     assert!(again.contains("amont-agent preview register"), "{again}");
-    assert!(!again.contains("npm test"), "{again}");
-    let bound = w.post_bash("s", "p2", "reg2", &again, &out);
+    assert!(!again.contains("echo done"), "{again}");
+    let (_, bound) = stamped(&w, &w.work, "reg2", &again, "", "");
     assert!(!bound.contains("NOT bound"), "{bound}");
     assert!(w.journal().contains("registered"), "{}", w.journal());
+}
+
+#[test]
+fn a_refusal_quotes_the_question_prefix() {
+    let w = World::new("refusal-prefix");
+    w.commit("app/a.tsx", "1\n");
+    let command = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}' | tee /dev/null",
+        w.guide().display()
+    );
+    let (id, said) = stamped(&w, &w.work, "reg", &command, "", "");
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        said.contains(&format!("[preview {id}] {}", w.label())),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_register_chained_after_other_commands_is_bound() {
+    let w = World::new("chained");
+    w.commit("app/a.tsx", "1\n");
+    let record = w.guide();
+    let command = format!(
+        "curl -s http://localhost:1/ ; cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        w.work.display(),
+        record.display()
+    );
+    // curl printed first; the JSON is the last line.
+    let (id, said) = stamped(&w, &w.root, "reg", &command, "<html>ok</html>\n", "\n");
+    assert!(!said.contains("NOT bound"), "{said}");
+    assert!(w.journal().contains("registered"), "{}", w.journal());
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_plain_register_binds() {
+    let w = World::new("plain");
+    w.commit("app/a.tsx", "1\n");
+    let command = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        w.guide().display()
+    );
+    let (id, said) = stamped(&w, &w.work, "reg", &command, "", "");
+    assert!(!said.contains("NOT bound"), "{said}");
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_register_with_no_pretooluse_stamp_is_not_bound() {
+    let w = World::new("no-stamp");
+    w.commit("app/a.tsx", "1\n");
+    let record = w.guide();
+    let command = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        record.display()
+    );
+    let (_, out, _) = w.register_cli("http://localhost:1/", &record);
+    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        w.journal().contains("no record of the call"),
+        "{}",
+        w.journal()
+    );
+}
+
+#[test]
+fn a_json_line_printed_before_a_failed_register_is_not_bound() {
+    // `printf '<json naming the real HEAD>'; amont-agent preview register
+    // --bad`: the line is a real registration's, of the real HEAD, but its
+    // page was written before this call began.
+    let w = World::new("forged");
+    w.commit("app/a.tsx", "1\n");
+    let (_, out, _) = w.register_cli("http://localhost:1/", &w.guide());
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let command = format!(
+        "printf '%s\\n' '{}'; amont-agent preview register --bad",
+        out.trim()
+    );
+    w.pre_bash("s", "reg", &command);
+    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        w.journal().contains("not written by this call"),
+        "{}",
+        w.journal()
+    );
+
+    // A line whose id does not start with the commit's sha7.
+    let mut v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    v["id"] = serde_json::json!("0000000aaaa");
+    let forged = v.to_string();
+    w.pre_bash("s", "reg2", &command);
+    let said = w.post_bash("s", "p1", "reg2", &command, &forged);
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        w.journal().contains("does not start with the commit"),
+        "{}",
+        w.journal()
+    );
+    assert!(!w.journal().contains("registered"), "{}", w.journal());
 }
 
 #[test]
@@ -556,43 +664,50 @@ fn a_chained_register_help_is_not_a_registration() {
 }
 
 #[test]
-fn a_question_with_the_wrong_label_says_so_and_the_right_one_then_approves() {
-    let w = World::new("wrong-label");
+fn a_marked_question_with_the_id_and_no_label_approves() {
+    // Seen 2026-10-08 (Duro 5.5): the question carried `[preview <id>]` and
+    // no label, the approval bound nothing, and the person was asked twice.
+    let w = World::new("id-only");
+    w.commit("app/a.tsx", "1\n");
+    let id = w.register("s", "p1");
+    let q = format!("[preview {id}] Ship the 28px small controls?");
+    assert!(!q.contains(&w.label()));
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    let said = w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    assert!(!said.contains("bound NOTHING"), "{said}");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("approved"), "{}", w.journal());
+}
+
+#[test]
+fn the_register_json_carries_the_question_prefix() {
+    let w = World::new("question-prefix");
+    w.commit("app/a.tsx", "1\n");
+    let (code, out, err) = w.register_cli("http://localhost:1/", &w.guide());
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim().lines().count(), 1, "one line: {out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let id = v["id"].as_str().unwrap();
+    assert_eq!(
+        v["question_prefix"].as_str(),
+        Some(format!("[preview {id}] {}", w.label()).as_str()),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_marker_naming_no_pending_id_approves_nothing() {
+    let w = World::new("id-unknown");
     w.commit("app/a.tsx", "1\n");
     let id = w.register("s", "p1");
     let sha = git(&w.work, &["rev-parse", "HEAD"]);
-    // Another repository's name at the same commit is not this preview.
-    let wrong = format!("[preview {id}] Ship other-repo@{}?", &sha[..7]);
-    w.ask("PreToolUse", ("s", "p1"), "q1", &wrong, None, false);
-    let said = w.ask(
-        "PostToolUse",
-        ("s", "p1"),
-        "q1",
-        &wrong,
-        Some("Approve"),
-        false,
-    );
-    assert!(
-        said.contains("bound NOTHING"),
-        "the session is told: {said}"
-    );
-    assert!(
-        said.contains(&w.label()),
-        "it names the label to show: {said}"
-    );
-    assert!(w.push_advised("s"), "nothing was approved");
-
-    let right = format!("[preview {id}] Ship {}?", w.label());
-    w.ask("PreToolUse", ("s", "p1"), "q2", &right, None, false);
-    w.ask(
-        "PostToolUse",
-        ("s", "p1"),
-        "q2",
-        &right,
-        Some("Approve"),
-        false,
-    );
-    assert!(!w.push_advised("s"), "{}", w.journal());
+    // The right sha7 and label, but an id nobody registered.
+    let q = format!("[preview {}fffffff] Ship {}?", &sha[..7], w.label());
+    assert!(!q.contains(&id));
+    w.ask("PreToolUse", ("s", "p1"), "q1", &q, None, false);
+    w.ask("PostToolUse", ("s", "p1"), "q1", &q, Some("Approve"), false);
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(!w.journal().contains("approved"), "{}", w.journal());
 }
 
 #[test]
@@ -618,6 +733,12 @@ fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
     let sha = git(&wt, &["rev-parse", "HEAD"]);
 
     let record = w.guide();
+    let command = format!(
+        "cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        wt.display(),
+        record.display()
+    );
+    w.pre_bash_in(&wt, "s", "reg", &command);
     let (code, out, err) = w.run(
         &[
             "preview",
@@ -645,11 +766,6 @@ fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
         "{aliases:?}"
     );
     let id = v["id"].as_str().unwrap().to_string();
-    let command = format!(
-        "cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
-        wt.display(),
-        record.display()
-    );
     w.post_bash_in(&wt, "s", "p1", "reg", &command, &out);
 
     let q = format!("[preview {id}] Ship app@{}?", &sha[..7]);
@@ -660,17 +776,28 @@ fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
     assert!(!pushed.contains("amont-agent/push-preview"), "{pushed}");
 }
 
-/// Run `preview register` in the worktree and return (id, printed JSON,
-/// guide path).
-fn validated(w: &World) -> (String, String, PathBuf) {
-    let record = w.guide();
-    let (code, out, err) = w.register_cli("http://localhost:1/", &record);
+/// A register call as a session makes it, from a session sitting in `cwd`:
+/// the PreToolUse stamp, the CLI run in the worktree, then the PostToolUse
+/// bind of `command` with `before` + the printed JSON + `after` as stdout.
+/// Returns (id, what the bind said).
+fn stamped(
+    w: &World,
+    cwd: &Path,
+    tool_use_id: &str,
+    command: &str,
+    before: &str,
+    after: &str,
+) -> (String, String) {
+    w.pre_bash_in(cwd, "s", tool_use_id, command);
+    let (code, out, err) = w.register_cli("http://localhost:1/", &w.guide());
     assert_eq!(code, 0, "{err}");
     let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
-    (id, out, record)
+    let stdout = format!("{before}{out}{after}");
+    let said = w.post_bash_in(cwd, "s", "p1", tool_use_id, command, &stdout);
+    (id, said)
 }
 
 #[test]
@@ -679,40 +806,66 @@ fn a_register_after_leading_cds_is_bound_in_the_repository_they_reach() {
     // from a session whose cwd was another directory was `unbound`.
     let w = World::new("cd-chained");
     w.commit("app/a.tsx", "1\n");
-    let (id, out, record) = validated(&w);
     let command = format!(
         "cd '{}' && cd app && amont-agent preview register --url http://localhost:1/ --guide '{}'",
         w.root.display(),
-        record.display()
+        w.guide().display()
     );
     // The session sits in the claude dir, not in the repository.
-    w.post_bash_in(&w.root.join("claude"), "s", "p1", "reg", &command, &out);
+    let (id, _) = stamped(&w, &w.root.join("claude"), "reg", &command, "", "");
     assert!(w.journal().contains("registered"), "{}", w.journal());
     w.answer("s", "p1", &id, Some("Approve"));
     assert!(!w.push_advised("s"), "{}", w.journal());
 }
 
 #[test]
-fn a_cd_chain_with_anything_else_stays_unbound() {
-    let w = World::new("cd-other");
+fn a_register_joined_by_semicolons_or_after_a_build_is_bound() {
+    let w = World::new("cd-other-bound");
     w.commit("app/a.tsx", "1\n");
-    let (id, out, record) = validated(&w);
+    let work = w.work.display();
     let tail = format!(
         "amont-agent preview register --url http://localhost:1/ --guide '{}'",
-        record.display()
+        w.guide().display()
     );
-    let work = w.work.display();
-    for command in [
+    for (i, command) in [
         format!("cd '{work}'; {tail}"),
         format!("cd '{work}' && npm test && {tail}"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (_, said) = stamped(&w, &w.root, &format!("reg{i}"), command, "", "");
+        assert!(!said.contains("NOT bound"), "{command}: {said}");
+    }
+}
+
+#[test]
+fn a_register_that_is_not_last_piped_or_substituted_stays_unbound() {
+    let w = World::new("cd-other");
+    w.commit("app/a.tsx", "1\n");
+    let tail = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        w.guide().display()
+    );
+    let work = w.work.display();
+    let mut last = String::new();
+    for (i, command) in [
         format!("cd '{work}' || {tail}"),
         format!("cd $(git rev-parse --show-toplevel) && {tail}"),
+        format!("cd '{work}' && {tail} && echo done"),
         format!("cd '{work}' && {tail} | tee /dev/null"),
-    ] {
-        w.post_bash_in(&w.root, "s", "p1", "reg", &command, &out);
+        format!("cd '{work}' && echo $({tail})"),
+        format!("cd '{work}' && {tail} > /tmp/out.json"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (id, said) = stamped(&w, &w.root, &format!("reg{i}"), command, "", "");
+        assert!(said.contains("NOT bound"), "{command}: {said}");
+        last = id;
     }
     assert!(!w.journal().contains("registered"), "{}", w.journal());
-    w.answer("s", "p1", &id, Some("Approve"));
+    w.answer("s", "p1", &last, Some("Approve"));
     assert!(w.push_advised("s"));
 }
 
@@ -1208,4 +1361,237 @@ fn under_deny_a_push_of_an_existing_tag_passes() {
     git(&w.work, &["tag", "v9.9.9"]);
     let out = w.pre_bash("s", "t", "git push origin v9.9.9");
     assert!(!out.contains("amont-agent/push-preview"), "{out}");
+}
+
+// --- the plan approval record (ADR-0028) -----------------------------------
+
+/// The PostToolUse payloads of an `ExitPlanMode`. The approve shape is the
+/// one recorded in real transcripts (`toolUseResult` = `{plan, isAgent,
+/// filePath}`, no `is_error`).
+const EXIT_APPROVE: &str = include_str!("fixtures/exitplanmode-approve.json");
+// The reject shape: all 16 rejected ExitPlanModes recorded in transcripts up
+// to 2026-10-08 are `is_error` results whose payload is this "Error: The user
+// doesn't want to proceed …" string, never an object carrying `plan` (and all
+// 102 recorded approvals are `{plan, isAgent: false, filePath}`).
+const EXIT_REJECT: &str = include_str!("fixtures/exitplanmode-reject.json");
+
+/// Send an ExitPlanMode PostToolUse fixture whose plan file is `plan`.
+fn plan_answered(w: &World, fixture: &str, plan: &Path) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(fixture).unwrap();
+    v["tool_input"]["planFilePath"] = serde_json::json!(plan);
+    if v["tool_response"].is_object() {
+        v["tool_response"]["filePath"] = serde_json::json!(plan);
+    }
+    v["cwd"] = serde_json::json!(w.work);
+    w.hook(v)
+}
+
+fn plan_sha(w: &World, plan: &Path) -> String {
+    let (code, out, err) = w.run(&["plan-sha", plan.to_str().unwrap()], None);
+    assert_eq!(code, 0, "{err}");
+    out.trim().to_string()
+}
+
+fn approved_plans(w: &World) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(w.root.join("claude/amont-agent/plan-approved"))
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+const PLAN: &str = "\
+# Small controls at 28px
+
+## Context
+
+The person decided the small controls grow to 28px.
+
+## Preview
+
+evidence: the person already decided the only visible change, 28px small controls.
+";
+
+#[test]
+fn an_approved_plan_is_recorded_by_its_body_sha_as_the_file_reads_now() {
+    let w = World::new("plan-approved");
+    let plan = w.root.join("plan.md");
+    // The file, not the payload's `plan`: the person may edit it first.
+    std::fs::write(&plan, PLAN).unwrap();
+    let said = plan_answered(&w, EXIT_APPROVE, &plan);
+    assert!(said.trim().is_empty(), "silent: {said}");
+    assert_eq!(approved_plans(&w), vec![plan_sha(&w, &plan)]);
+    assert!(w.journal().contains("plan-approved"), "{}", w.journal());
+}
+
+#[test]
+fn a_rejected_plan_records_nothing() {
+    let w = World::new("plan-rejected");
+    let plan = w.root.join("plan.md");
+    std::fs::write(&plan, PLAN).unwrap();
+    plan_answered(&w, EXIT_REJECT, &plan);
+    assert!(approved_plans(&w).is_empty());
+
+    // An object with no `plan` is not the approve shape either.
+    let mut odd: serde_json::Value = serde_json::from_str(EXIT_APPROVE).unwrap();
+    odd["tool_response"] = serde_json::json!({"filePath": "x"});
+    plan_answered(&w, &odd.to_string(), &plan);
+    assert!(approved_plans(&w).is_empty());
+}
+
+#[test]
+fn a_subagents_exit_plan_records_nothing() {
+    let w = World::new("plan-subagent");
+    let plan = w.root.join("plan.md");
+    std::fs::write(&plan, PLAN).unwrap();
+    let mut agent: serde_json::Value = serde_json::from_str(EXIT_APPROVE).unwrap();
+    agent["tool_response"]["isAgent"] = serde_json::json!(true);
+    plan_answered(&w, &agent.to_string(), &plan);
+    assert!(approved_plans(&w).is_empty());
+}
+
+// --- planned evidence (ADR-0028, work.preview-unless-planned-evidence) -----
+
+/// The person approves `body` through ExitPlanMode, from a plan file
+/// outside the repository, as plan mode writes it.
+fn approve_plan(w: &World, body: &str) {
+    let file = w.root.join("approved-plan.md");
+    std::fs::write(&file, body).unwrap();
+    plan_answered(w, EXIT_APPROVE, &file);
+    assert_eq!(approved_plans(w).len(), 1, "{}", w.journal());
+}
+
+/// The plan as it lands on the branch: front matter added.
+fn landed(body: &str) -> String {
+    format!("---\nstatus: active\nbranch: feat/x\n---\n\n{body}")
+}
+
+#[test]
+fn an_approved_plan_declaring_evidence_lets_a_later_ui_push_through() {
+    let w = World::new("evidence");
+    approve_plan(&w, PLAN);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/routes/home.tsx", "export default 1\n");
+    w.commit("app/routes/home.tsx", "export default 2\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    let journal = w.journal();
+    let line = journal
+        .lines()
+        .find(|l| l.contains(" evidence "))
+        .expect("an evidence line");
+    let head = git(&w.work, &["rev-parse", "HEAD"]);
+    assert!(line.contains("docs/plans/2026-10-08-small.md"), "{line}");
+    assert!(line.contains(&format!("commit={}", &head[..7])), "{line}");
+    assert!(
+        line.contains(&format!("sha={}", &approved_plans(&w)[0][..12])),
+        "{line}"
+    );
+}
+
+#[test]
+fn evidence_the_person_did_not_approve_is_held_as_before() {
+    let w = World::new("evidence-unapproved");
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn a_preview_section_added_after_the_plan_landed_does_not_count() {
+    let w = World::new("evidence-later");
+    let without = PLAN.split("## Preview").next().unwrap().to_string();
+    // The person approved both bodies; the plan landed without the section.
+    approve_plan(&w, PLAN);
+    let first = w.root.join("first-plan.md");
+    std::fs::write(&first, &without).unwrap();
+    plan_answered(&w, EXIT_APPROVE, &first);
+    assert_eq!(approved_plans(&w).len(), 2);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(&without));
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn no_plan_a_pointer_plan_or_a_plan_already_on_main_is_held_as_before() {
+    // No plan on the branch.
+    let w = World::new("evidence-no-plan");
+    approve_plan(&w, PLAN);
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+
+    // A pointer plan, with the approved body under it.
+    let w = World::new("evidence-pointer");
+    approve_plan(&w, PLAN);
+    w.commit(
+        "docs/plans/2026-10-08-small.md",
+        &format!("---\ncanonical: decisions:docs/plans/2026-10-08-small.md\n---\n\n{PLAN}"),
+    );
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+
+    // The plan landed on main before the branch started.
+    let w = World::new("evidence-on-main");
+    approve_plan(&w, PLAN);
+    git(&w.work, &["checkout", "-q", "main"]);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    git(&w.work, &["push", "-q", "origin", "main"]);
+    git(&w.work, &["checkout", "-q", "-b", "feat/y"]);
+    w.commit("app/a.tsx", "1\n");
+    let out = w.pre_bash("s", "push1", "git push -u origin feat/y");
+    assert!(out.contains("amont-agent/push-preview"), "{out}");
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn with_no_base_ref_the_evidence_is_not_looked_for() {
+    let w = World::new("evidence-no-base");
+    approve_plan(&w, PLAN);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/a.tsx", "1\n");
+    // The only remote has no default branch to diff against.
+    let empty = w.root.join("empty.git");
+    Command::new("git")
+        .args(["init", "-q", "--bare", "--template="])
+        .arg(&empty)
+        .output()
+        .unwrap();
+    git(&w.work, &["remote", "remove", "origin"]);
+    git(
+        &w.work,
+        &["remote", "add", "fresh", &empty.display().to_string()],
+    );
+    let out = w.pre_bash("s", "push1", "git push -u fresh feat/x");
+    assert!(out.contains("amont-agent/push-preview"), "{out}");
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn evidence_never_stands_for_a_picked_mockups_preview() {
+    let w = World::new("evidence-mockup");
+    approve_plan(&w, PLAN);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    mockup_branch(&w);
+    let out = w.pre_bash("s", "push1", "git push -u origin feat/x");
+    assert!(out.contains("\"deny\""), "held: {out}");
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn a_preview_heading_inside_a_code_fence_is_not_a_declaration() {
+    let w = World::new("evidence-fenced");
+    let fenced = PLAN.replace(
+        "## Preview\n\nevidence: the person already decided the only visible change, 28px small controls.\n",
+        "```md\n## Preview\n\nevidence: an example in a template\n```\n",
+    );
+    assert_ne!(fenced, PLAN);
+    approve_plan(&w, &fenced);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(&fenced));
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
 }

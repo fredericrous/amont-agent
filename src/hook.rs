@@ -90,11 +90,13 @@ fn decide(raw: &str) -> Decision {
             let stance = crate::stance::resolve(&rules::plan_review_panel::RULE);
             crate::plan_review::on_plan_exit(&plan, stance)
         }
+        Event::PostPlanExit(plan) => {
+            crate::preview::on_plan_answered(&plan);
+            Decision::Silent
+        }
         Event::PostAsk(ask) => {
             let mut said: Vec<String> = Vec::new();
-            if let Some(text) = crate::preview::on_post_ask(&ask) {
-                said.push(decision::phrase(rules::push_preview::RULE.id, &text, ""));
-            }
+            crate::preview::on_post_ask(&ask);
             if let Some(text) = crate::implementation_review::on_post_ask(&ask) {
                 if crate::stance::resolve(&rules::implementation_review::RULE) != Stance::Observe {
                     said.push(decision::phrase(
@@ -205,6 +207,9 @@ fn on_bash(bash: &Bash) -> Decision {
             crate::implementation_review::GUARD_REMEDY,
         ));
     }
+    // When a `preview register` call started, for `preview::bind` to tell
+    // its own output from a line an earlier clause printed.
+    crate::preview::stamp_register(bash, &parsed);
     // No early return on `Parsed::Opaque`: `rules::evaluate` owns that
     // policy, so the hook, `check` and the backtester cannot drift apart on
     // it. Legacy rules are skipped on an unreadable command exactly as they

@@ -1,0 +1,18 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000002",
+  "transcript_path": "/home/user/.claude/projects/-home-user-Developer/00000000-0000-4000-8000-000000000002.jsonl",
+  "cwd": "/home/user/Developer/scratch-ui",
+  "permission_mode": "plan",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "ExitPlanMode",
+  "tool_input": {
+    "plan": "# Scratch plan\n\n## Context\n\nA throwaway plan.\n\n## Preview\n\nevidence: the person already decided the 28px controls.\n",
+    "planFilePath": "/home/user/.claude/plans/scratch-plan.md"
+  },
+  "tool_response": {
+    "plan": "# Scratch plan\n\n## Context\n\nA throwaway plan.\n\n## Preview\n\nevidence: the person already decided the 28px controls.\n",
+    "isAgent": false,
+    "filePath": "/home/user/.claude/plans/scratch-plan.md"
+  },
+  "tool_use_id": "toolu_01ExitPlanModeApprove0001"
+}

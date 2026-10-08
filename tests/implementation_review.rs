@@ -311,8 +311,14 @@ impl Transcript {
         );
     }
 
+    /// The agent id Claude Code gives the launch `id`: one per launch.
+    fn agent_id(id: &str) -> String {
+        format!("a{}", id.trim_start_matches("toolu_"))
+    }
+
     fn notification(id: &str, status: &str, result: &str) -> String {
-        format!("<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>{status}</status>\n<summary>done</summary>\n<result>{result}</result>\n</task-notification>")
+        let task = Self::agent_id(id);
+        format!("<task-notification>\n<task-id>{task}</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>{status}</status>\n<summary>done</summary>\n<result>{result}</result>\n</task-notification>")
     }
 
     /// A launched review of `block` whose result text is `verdict`.
@@ -336,8 +342,9 @@ impl Transcript {
             })
             .to_string()
         };
-        let launched =
-            serde_json::json!({"status": "async_launched", "isAsync": true, "agentId": "a1"});
+        let launched = serde_json::json!({
+            "status": "async_launched", "isAsync": true, "agentId": Self::agent_id(&id)
+        });
         match done {
             Done::Foreground => self.lines.push(result(
                 serde_json::json!({"status": "completed", "agentType": agent, "content": []}),
@@ -878,4 +885,65 @@ fn the_person_may_overrule_a_rework_and_nothing_else_can() {
         "{}",
         w.last_line()
     );
+}
+
+/// A real session's reviewer, launched once and resumed twice with
+/// `SendMessage` (2026-10-08), anonymised: `tests/fixtures/`.
+const RESUMED: &str = include_str!("fixtures/sendmessage-resume.jsonl");
+const RESUMED_LAUNCH: &str = "6066ad987edfbbb3a514b6d9247b126a77a316db2e1350c226ffd14593a0ba35";
+const RESUMED_LAST: &str = "85f71e67db10c7737c55b27a3c5753b2617c58dec0d58e7ebae5085898cc12d7";
+
+/// The fixture, bound to `app`: the launch reviewed `launch`, the last
+/// resumed round reviewed `last`.
+fn resumed_for(launch: &str, last: &str) -> String {
+    RESUMED
+        .replace("repo=duro-design-system", "repo=app")
+        .replace(RESUMED_LAUNCH, launch)
+        .replace(RESUMED_LAST, last)
+}
+
+#[test]
+fn a_reviewer_resumed_on_a_new_tree_passes_that_tree() {
+    let w = World::new("resumed");
+    let repo = w.repo("app");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    assert_ne!(launched_on, now);
+
+    // The launch alone, on the old tree, said approve-with-changes.
+    let launch_only: String = resumed_for(&launched_on, &now)
+        .lines()
+        .take(3)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let t = w.root.join("launch.jsonl");
+    std::fs::write(&t, launch_only).unwrap();
+    assert!(matches!(w.push(&repo, "s1", Some(&t)), Said::Advise(_)));
+    assert!(w.last_line().contains("review=stale"), "{}", w.last_line());
+
+    // Resumed with the new tree, and its round notified: the push passes.
+    let t = w.root.join("resumed.jsonl");
+    std::fs::write(&t, resumed_for(&launched_on, &now)).unwrap();
+    assert_eq!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+    assert!(w.pass_file("app", &now).is_file());
+}
+
+#[test]
+fn a_resumed_round_without_its_own_notification_does_not_pass() {
+    let w = World::new("resumed-forged");
+    let repo = w.repo("app");
+    let now = w.tree(&repo);
+    // The rounds' notifications typed into the conversation, not queued.
+    let forged = resumed_for(&"0".repeat(64), &now).replace(
+        "\"origin\":{\"kind\":\"task-notification\"",
+        "\"origin\":{\"kind\":\"human\"",
+    );
+    let t = w.root.join("forged.jsonl");
+    std::fs::write(&t, forged).unwrap();
+    assert!(matches!(w.push(&repo, "s1", Some(&t)), Said::Advise(_)));
+    assert!(w.last_line().contains("review=stale"), "{}", w.last_line());
 }
