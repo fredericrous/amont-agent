@@ -62,6 +62,7 @@ pub mod stat_bsd_format;
 pub mod stdin_hang;
 pub mod tag_after_commit;
 pub mod tool_shell;
+pub mod unbounded_background_push;
 pub mod unsplit_expansion;
 pub mod whole_file_dump;
 pub mod worktree_isolation;
@@ -438,6 +439,7 @@ pub const RULES: &[Rule] = &[
     plan_phases_open::RULE,
     implementation_review::RULE,
     foreground_poll::RULE,
+    unbounded_background_push::RULE,
     sed_in_place::RULE,
     kubectl_gitops::RULE,
     tag_after_commit::RULE,

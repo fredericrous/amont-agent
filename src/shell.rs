@@ -805,6 +805,29 @@ impl Simple {
         self.program_at().map(|(_, t)| t)
     }
 
+    /// Whether the program runs under `wrapper` (`timeout 90 git push` is
+    /// wrapped by `timeout`). Read with the same walk as [`Self::program`], so
+    /// a wrapper's own flags and the name appearing as an argument are never
+    /// mistaken for one another.
+    pub fn wrapped_by(&self, wrapper: &str) -> bool {
+        let Some(end) = self.program_index() else {
+            return false;
+        };
+        let mut idx = 0;
+        while idx < end {
+            let w = &self.words[idx];
+            if !w.quoted && WRAPPERS.contains(&w.text.as_str()) {
+                if w.text == wrapper {
+                    return true;
+                }
+                idx = self.past_wrapper_args(&w.text, idx + 1);
+            } else {
+                idx += 1;
+            }
+        }
+        false
+    }
+
     /// The same answer with its INDEX, which is what every caller that needs
     /// to read past the program actually wants.
     ///
