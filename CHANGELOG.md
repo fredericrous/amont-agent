@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.30.2
+
+### Fixed
+
+- **Pushing commits some remote already has needs no preview and no
+  implementation review.** Seeding a fork (`git remote rename origin
+  upstream`, add the fork as `origin`, push a branch) publishes nothing this
+  session wrote: every commit is already on `upstream/*`. `push-preview`
+  listed the files with `--not --remotes=<target remote>`, which excludes
+  nothing on an empty fork, so upstream's whole history read as an
+  unapproved interface change; `implementation-review` found no default
+  branch on the fork and asked for a review of it. Both guards now stop at
+  "nothing new to any remote" (`git rev-list <src> --not --remotes` is
+  empty); a commit new to every remote is still judged exactly as before.
+  The same mistake in amont's pre-push gate was amont#301 (1.47.2).
+
 ## v2.30.1
 
 ### Fixed
