@@ -1035,6 +1035,63 @@ fn a_poll_is_judged_against_the_calls_timeout() {
     );
 }
 
+/// A push sent to the background has no clock but its own (amont-agent#86).
+///
+/// The pre-push gate runs inside the push: a test suite, a lint pass. In the
+/// foreground the tool's timeout ends it; in the background nothing does, and
+/// on 2026-10-08 a seeding push held a session for 40 minutes before anybody
+/// asked. `timeout <s> git push …` bounds it, and the push guards read
+/// through that wrapper.
+#[test]
+fn a_background_push_without_a_deadline_is_advised() {
+    let cwd = serde_json::Value::String(home().display().to_string());
+    let payload = |background: bool, cmd: &str| {
+        let bg = if background {
+            r#","run_in_background":true"#
+        } else {
+            ""
+        };
+        send(&format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+                 "session_id":"bgpush-1","permission_mode":"default",
+                 "tool_input":{{"command":"{cmd}"{bg}}}}}"#
+        ))
+    };
+    assert!(
+        payload(true, "git push origin dev > /tmp/push.log 2>&1")
+            .reason()
+            .contains("unbounded-background-push"),
+        "a background push with no deadline"
+    );
+    assert!(
+        !payload(
+            true,
+            "timeout 1800 git push origin dev > /tmp/push.log 2>&1"
+        )
+        .reason()
+        .contains("unbounded-background-push"),
+        "`timeout` is the deadline"
+    );
+    assert!(
+        !payload(true, "timeout -k 30 1800 git push -u origin feat/x")
+            .reason()
+            .contains("unbounded-background-push"),
+        "timeout's own flags do not hide it"
+    );
+    assert!(
+        !payload(false, "git push origin dev")
+            .reason()
+            .contains("unbounded-background-push"),
+        "in the foreground the tool's own timeout bounds it"
+    );
+    assert!(
+        !payload(true, "git push --dry-run origin dev")
+            .reason()
+            .contains("unbounded-background-push"),
+        "a dry run runs no gate"
+    );
+}
+
 /// A pipeline we cannot read costs us that pipeline, not the line.
 ///
 /// The `xargs` run is unreadable; the `git commit … | tail -1` beside it is

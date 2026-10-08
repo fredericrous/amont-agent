@@ -46,7 +46,7 @@ amont-agent doctor           # installed, runnable, and actually firing?
 
 Each rule has a stance: `observe` records the firing and says nothing,
 `advise` puts the reason into the model's context, `deny` refuses the call
-with the reason and the remedy. Of the 37 rules, three ship as `deny` —
+with the reason and the remedy. Of the 38 rules, three ship as `deny` —
 `pipe-to-tail`; `plan-review-panel`, which refuses a plan at
 `ExitPlanMode` before its review panel ran; and `plan-phases-open`, which
 sends an agent on when it stops with a plan phase still open. A rule is promoted from your own
