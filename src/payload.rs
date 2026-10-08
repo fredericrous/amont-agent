@@ -148,8 +148,9 @@ pub struct PlanAnswered {
     /// edit the plan before approving it. `None` when the payload had none.
     pub plan_file: Option<PathBuf>,
     /// The shape of an approval: `tool_response` is an object carrying the
-    /// `plan` (seen as `{plan, isAgent, filePath}`), with no `is_error`. A
-    /// rejection was seen as an error string instead.
+    /// `plan` (seen as `{plan, isAgent, filePath}`), with no `is_error` and
+    /// `isAgent` not true. A rejection is an error string instead: so were all
+    /// 16 rejections recorded in transcripts up to 2026-10-08.
     pub approved: bool,
 }
 

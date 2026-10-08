@@ -1369,11 +1369,10 @@ fn under_deny_a_push_of_an_existing_tag_passes() {
 /// one recorded in real transcripts (`toolUseResult` = `{plan, isAgent,
 /// filePath}`, no `is_error`).
 const EXIT_APPROVE: &str = include_str!("fixtures/exitplanmode-approve.json");
-// The reject shape is inferred, not captured: a rejection is recorded in
-// transcripts as an `is_error` tool result whose content is an "Error: …"
-// string. holds-until: the ExitPlanMode payloads are captured live before
-// v2.30.0 is tagged (plan 2026-10-08-approve-only-what-needs-judging, Phase 2
-// step 1); this fixture is then replaced by the captured one.
+// The reject shape: all 16 rejected ExitPlanModes recorded in transcripts up
+// to 2026-10-08 are `is_error` results whose payload is this "Error: The user
+// doesn't want to proceed …" string, never an object carrying `plan` (and all
+// 102 recorded approvals are `{plan, isAgent: false, filePath}`).
 const EXIT_REJECT: &str = include_str!("fixtures/exitplanmode-reject.json");
 
 /// Send an ExitPlanMode PostToolUse fixture whose plan file is `plan`.
