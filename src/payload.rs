@@ -322,6 +322,8 @@ pub fn parse(raw: &str) -> Event {
                 && response.is_some_and(|r| {
                     r.get("plan").is_some_and(|p| p.is_string())
                         && r.get("is_error").and_then(|e| e.as_bool()) != Some(true)
+                        // A subagent's ExitPlanMode is answered by no person.
+                        && r.get("isAgent").and_then(|b| b.as_bool()) != Some(true)
                 });
             Event::PostPlanExit(Box::new(PlanAnswered {
                 session: str_at("session_id"),

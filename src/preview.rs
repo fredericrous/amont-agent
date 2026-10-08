@@ -1046,7 +1046,13 @@ fn printed_by_this_call(printed: &Registered, started_ms: u64) -> Result<(), &'s
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64);
-    if written_ms.is_none_or(|w| w < started_ms) {
+    // A filesystem that keeps whole-second mtimes is compared in seconds;
+    // a finer one in milliseconds, so a page from earlier that second fails.
+    let before = |w: u64| match w % 1000 {
+        0 => w / 1000 < started_ms / 1000,
+        _ => w < started_ms,
+    };
+    if written_ms.is_none_or(before) {
         return Err("the page it names was not written by this call");
     }
     Ok(())
@@ -1357,8 +1363,6 @@ pub fn on_post_ask(ask: &crate::payload::Ask) {
         }
         match label {
             APPROVE => {
-                // Every approved commit must be visible in the question itself,
-                // under any name the person knows the checkout by.
                 // The id in the marker is enough: it begins with the commit's
                 // sha7, which the person sees, and the registration it names is
                 // bound to this session, this prompt and this question already.

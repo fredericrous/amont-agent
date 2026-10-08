@@ -1371,8 +1371,9 @@ fn under_deny_a_push_of_an_existing_tag_passes() {
 const EXIT_APPROVE: &str = include_str!("fixtures/exitplanmode-approve.json");
 // The reject shape is inferred, not captured: a rejection is recorded in
 // transcripts as an `is_error` tool result whose content is an "Error: …"
-// string. Replace this fixture with a captured PostToolUse payload once
-// v2.30.0 is installed (plan 2026-10-08-approve-only-what-needs-judging).
+// string. holds-until: the ExitPlanMode payloads are captured live before
+// v2.30.0 is tagged (plan 2026-10-08-approve-only-what-needs-judging, Phase 2
+// step 1); this fixture is then replaced by the captured one.
 const EXIT_REJECT: &str = include_str!("fixtures/exitplanmode-reject.json");
 
 /// Send an ExitPlanMode PostToolUse fixture whose plan file is `plan`.
@@ -1440,6 +1441,17 @@ fn a_rejected_plan_records_nothing() {
     let mut odd: serde_json::Value = serde_json::from_str(EXIT_APPROVE).unwrap();
     odd["tool_response"] = serde_json::json!({"filePath": "x"});
     plan_answered(&w, &odd.to_string(), &plan);
+    assert!(approved_plans(&w).is_empty());
+}
+
+#[test]
+fn a_subagents_exit_plan_records_nothing() {
+    let w = World::new("plan-subagent");
+    let plan = w.root.join("plan.md");
+    std::fs::write(&plan, PLAN).unwrap();
+    let mut agent: serde_json::Value = serde_json::from_str(EXIT_APPROVE).unwrap();
+    agent["tool_response"]["isAgent"] = serde_json::json!(true);
+    plan_answered(&w, &agent.to_string(), &plan);
     assert!(approved_plans(&w).is_empty());
 }
 
