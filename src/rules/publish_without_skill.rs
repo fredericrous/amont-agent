@@ -110,6 +110,7 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
     };
     let skill = p.kind.skill();
     let unknown = |why: &str, tag: &str| Confirmed::YesSaying {
+        remedy: None,
         floor: None,
         ceiling: Some(Stance::Advise),
         reason: format!(
@@ -149,6 +150,7 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
         Window::Current => Confirmed::No("skill called in this turn"),
         Window::Previous => Confirmed::No("skill called in the previous turn"),
         Window::Outside => Confirmed::YesSaying {
+            remedy: None,
             floor: None,
             ceiling: None,
             reason: missing(p.kind, &p.what),

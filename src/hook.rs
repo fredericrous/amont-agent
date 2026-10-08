@@ -303,11 +303,15 @@ fn on_bash(bash: &Bash) -> Decision {
         // A `confirm` that learned the reason by looking speaks and journals
         // it in place of the finding's; every other rule keeps the finding's
         // reason and the command span.
-        let (reason, excerpt): (&str, Option<&str>) = match &said {
-            Some((reason, excerpt)) => (reason.as_str(), Some(excerpt.as_str())),
-            None => (finding.reason.as_str(), None),
+        let (reason, excerpt, remedy): (&str, Option<&str>, &str) = match &said {
+            Some((reason, excerpt, remedy)) => (
+                reason.as_str(),
+                Some(excerpt.as_str()),
+                remedy.as_deref().unwrap_or(&finding.remedy),
+            ),
+            None => (finding.reason.as_str(), None, finding.remedy.as_str()),
         };
-        let text = decision::phrase(rule.id, reason, &finding.remedy);
+        let text = decision::phrase(rule.id, reason, remedy);
         // Never refuse on half a reading. A `deny` derived from a command we
         // only partly understood is the worst outcome available here: total
         // opacity would have let it run. It still advises, and it is still
@@ -682,7 +686,7 @@ fn resolve_path(cwd: &std::path::Path, text: &str) -> std::path::PathBuf {
 struct Confirmation {
     floor: Option<Stance>,
     ceiling: Option<Stance>,
-    said: Option<(String, String)>,
+    said: Option<(String, String, Option<String>)>,
 }
 
 /// Rules whose `confirm` reads nothing from the working directory, so a
@@ -736,10 +740,11 @@ fn confirmed(
             ceiling,
             reason,
             excerpt,
+            remedy,
         } => Ok(Confirmation {
             floor,
             ceiling,
-            said: Some((reason, excerpt)),
+            said: Some((reason, excerpt, remedy)),
         }),
         Confirmed::No(why) => Err(why),
     }
@@ -771,10 +776,14 @@ fn unknown_directory(
         ceiling: None,
         said: Some((
             "This push runs in a directory that does not exist, so the repository it \
-             publishes from cannot be named. Start the command with `cd <repository> &&`, \
-             or push with `git -C <repository> push …`."
+             publishes from cannot be named."
                 .to_string(),
             excerpt,
+            Some(
+                "Start the command with `cd <repository> &&`, or push with \
+                 `git -C <repository> push …`."
+                    .to_string(),
+            ),
         )),
     })
 }
