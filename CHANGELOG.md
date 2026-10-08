@@ -9,7 +9,8 @@
   lint pass — and with `run_in_background` no clock ends it and nothing says
   it is still going: on 2026-10-08 a push seeding a fork held a session for
   forty minutes before anyone asked (#86). The rule advises on a background
-  `git push` with no `timeout` wrapper and points at `timeout <s> git push
+  `git push` whose output goes to a file (`> push.log 2>&1`, the shape a
+  backgrounded push takes) and no `timeout` wrapper, and points at `timeout <s> git push
   …`, which push-preview and implementation-review read through, plus
   `amont rehearse --wait` so the push itself skips the suite. A foreground
   push (the tool's own timeout bounds it) and a dry run stay silent.

@@ -11,12 +11,17 @@
 //! `timeout <s> git push …` ends at the deadline with a failure that says so,
 //! instead of holding the session open.
 //!
-//! ## `confirm` reads the flag, not the command
+//! ## What `examine` can see, and what `confirm` decides
 //!
-//! Whether the call runs in the background is a sibling field of the payload,
-//! so `examine` sees only the command and `confirm` declines a foreground
-//! push. The backtester never runs `confirm`: a replayed rate counts
-//! foreground pushes too — an overcount, said here rather than hidden.
+//! Whether the call runs in the background is a sibling field of the payload;
+//! `examine` sees only the command. So `examine` keys on the shape a
+//! backgrounded push takes in the text — its output sent to a file to read
+//! afterwards (`git push … > push.log 2>&1`), which every such push in the
+//! 2026-10-08 transcripts had — and `confirm` declines when the payload says
+//! the call runs in the foreground. An ordinary `git push origin main` stays
+//! silent in `check`, the backtester and the precision corpus. A background
+//! push with its output left to the task's own log is missed: a recall cost,
+//! said here rather than hidden.
 
 use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
@@ -40,6 +45,14 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     let cmd = crate::push_target::find(parsed)?;
     // A dry run sends nothing and runs no gate; `timeout` is the deadline.
     if cmd.is_dry_run() || cmd.has_short('n') || cmd.wrapped_by("timeout") {
+        return None;
+    }
+    // `2>&1` is an fd duplicate (empty target); `> push.log` is a file.
+    let to_a_file = cmd
+        .redirects
+        .iter()
+        .any(|(op, target)| op.contains('>') && !target.raw.is_empty());
+    if !to_a_file {
         return None;
     }
     Some(Finding {
@@ -72,26 +85,34 @@ mod tests {
     }
 
     #[test]
-    fn an_unwrapped_push_is_examined() {
-        assert!(fires("git push origin dev"));
+    fn an_unwrapped_push_to_a_log_is_examined() {
+        assert!(fires("git push origin dev > /tmp/p.log 2>&1"));
+        // Not `&> file`: the lexer reads that `&` as a background operator,
+        // so the redirect never reaches the push clause.
         assert!(fires(
             "cd repo && git push -u origin feat/x > /tmp/p.log 2>&1"
         ));
-        assert!(fires("nice git push origin dev"));
+        assert!(fires("nice git push origin dev >> push.log"));
+    }
+
+    #[test]
+    fn a_push_whose_output_is_not_kept_is_not() {
+        assert!(!fires("git push origin main"));
+        assert!(!fires("git push origin main 2>&1"));
     }
 
     #[test]
     fn a_timeout_or_a_dry_run_is_not() {
-        assert!(!fires("timeout 1800 git push origin dev"));
+        assert!(!fires("timeout 1800 git push origin dev > p.log 2>&1"));
         assert!(!fires("timeout -k 30 1800 git push origin dev"));
         assert!(!fires("timeout --signal=TERM 900 git push origin dev"));
-        assert!(!fires("git push --dry-run origin dev"));
-        assert!(!fires("git push -n origin dev"));
+        assert!(!fires("git push --dry-run origin dev > p.log"));
+        assert!(!fires("git push -n origin dev > p.log"));
         assert!(!fires("git status"));
     }
 
     #[test]
     fn timeout_as_an_argument_is_not_a_wrapper() {
-        assert!(fires("git push origin timeout"));
+        assert!(fires("git push origin timeout > p.log"));
     }
 }

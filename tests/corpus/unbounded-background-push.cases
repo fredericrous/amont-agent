@@ -23,7 +23,9 @@ match	cd ~/Developer/Perso/amont-agent-wt-nothing-new && git push -u origin fix/
 # --- the rule must stay silent ---
 nomatch	cd ~/Developer/Perso/happier && timeout 1800 git push origin dev > /tmp/happier-push.log 2>&1; echo "push rc=$?"
 nomatch	timeout -k 30 1800 git push -u origin feat/x
-nomatch	git push --dry-run origin dev
+nomatch	git push --dry-run origin dev > /tmp/p.log 2>&1
+nomatch	git push origin main
+nomatch	git push -u origin feat/x 2>&1
 nomatch	git ls-remote origin refs/heads/dev
 nomatch	gh pr checks 87 -R fredericrous/amont-agent
 nomatch	git -C ~/Developer/Perso/amont fetch origin -q
