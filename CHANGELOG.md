@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.29.1
+
+### Fixed
+
+- **`push-preview`: an unreadable push is held as unreadable.** Under
+  `deny` a push whose shape cannot be read is still held, but it no longer
+  says "no approved preview covers" or gives the preview steps. It names
+  the shape and its own remedy: push the ref by name, in its own command.
+  The most common case is `git tag v1 && git push origin v1`, judged
+  before the tag exists; that shape now says so. A push of an existing tag
+  needs no preview, as before. The missing-directory hold no longer gets
+  the preview steps either (`Confirmed::YesSaying` gains `remedy`).
+- **`preview register` on the default branch itself.** A commit that is
+  its own merge base (tagging `main`) no longer fails with
+  `` `git diff <c>..<c>` failed ``; an empty range is no screen.
+
 ## v2.29.0
 
 ### Added
