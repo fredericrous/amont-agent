@@ -423,6 +423,7 @@ pub fn confirm_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Confirmed {
     match judge_push(ctx, cmd, stance) {
         Judged::Decline(why) => Confirmed::No(why),
         Judged::Say { reason, excerpt } => Confirmed::YesSaying {
+            remedy: None,
             floor: None,
             ceiling: None,
             reason,

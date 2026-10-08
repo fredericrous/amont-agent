@@ -1164,3 +1164,48 @@ fn an_unapproved_mockup_commit_is_held_and_a_plain_ui_one_is_advised() {
     let off = w.pre_bash("s", "push3", "git push -u origin feat/x");
     assert!(!off.contains("\"deny\""), "{off}");
 }
+
+#[test]
+fn a_register_on_the_default_branch_itself_is_not_refused() {
+    // Seen 2026-10-08 (duro-design-system v5.5.0): main carried artboards,
+    // the commit to tag WAS main, and `git diff <c>..<c>` printing nothing
+    // was taken for a failure.
+    let w = World::new("mockup-at-main");
+    git(&w.work, &["checkout", "-q", "main"]);
+    w.commit("docs/mockups/pill/Main.dc.html", "<x-dc></x-dc>\n");
+    git(&w.work, &["push", "-q", "origin", "main"]);
+    let (code, _, err) = w.register_cli("http://localhost:1/", &w.guide());
+    assert_eq!(code, 0, "nothing new since main, so no screen: {err}");
+}
+
+#[test]
+fn an_unreadable_push_is_held_as_unreadable_not_as_unapproved() {
+    // Seen 2026-10-08: `git tag v5.5.0 && git push origin v5.5.0` judged
+    // before the tag existed; the hold said "no approved preview covers",
+    // and the session went looking for an approval it did not need.
+    let w = World::new("deny-unborn-tag");
+    w.set_global("amont.agent.push-preview.stance", "deny");
+    w.commit("app/a.tsx", "1\n");
+    let out = w.pre_bash("s", "t", "git tag v9.9.9 && git push origin v9.9.9");
+    assert!(out.contains("\"deny\""), "still held: {out}");
+    assert!(
+        !out.contains("no approved preview covers"),
+        "not called unapproved: {out}"
+    );
+    assert!(out.contains("does not resolve to a commit"), "{out}");
+    assert!(out.contains("its own command"), "says how: {out}");
+    assert!(
+        !out.contains("preview register"),
+        "no preview steps for a push that needs none: {out}"
+    );
+}
+
+#[test]
+fn under_deny_a_push_of_an_existing_tag_passes() {
+    let w = World::new("deny-tag");
+    w.set_global("amont.agent.push-preview.stance", "deny");
+    w.commit("app/a.tsx", "1\n");
+    git(&w.work, &["tag", "v9.9.9"]);
+    let out = w.pre_bash("s", "t", "git push origin v9.9.9");
+    assert!(!out.contains("amont-agent/push-preview"), "{out}");
+}

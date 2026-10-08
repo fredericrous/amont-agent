@@ -408,16 +408,26 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     crate::git::stdout_in(dir, args).filter(|s| !s.is_empty())
 }
 
+/// Why a push needs a preview it does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Needs {
+    /// An unapproved interface change; `mockup` when the commit carries a
+    /// picked mockup (or cannot be told apart from one), held at deny.
+    Unapproved { mockup: bool },
+    /// Under deny, a push whose shape cannot be read, held so that `--all`
+    /// is not the way around the gate. Not a missing approval: saying so
+    /// sent a session looking for one it did not need (2026-10-08).
+    Unreadable(&'static str),
+}
+
 /// The rule's question: would this push publish an interface change that no
-/// approved preview covers? `Ok` fires the rule; `Err` names why it did not.
-/// `Ok(held)` when the push needs a preview it does not have; `held` when
-/// the unapproved commit carries a picked mockup (or cannot be told apart
-/// from one), which the rule holds at deny.
+/// approved preview covers? `Ok` fires the rule and says why; `Err` names
+/// why it did not.
 pub fn needs_preview(
     cwd: &Path,
     cmd: &crate::shell::Simple,
     stance: Stance,
-) -> Result<bool, &'static str> {
+) -> Result<Needs, &'static str> {
     match push_target::resolve(cwd, cmd) {
         Push::DryRun => Err("a dry run publishes nothing"),
         Push::DeleteOnly => Err("a delete publishes nothing"),
@@ -425,7 +435,7 @@ pub fn needs_preview(
             if repo.as_deref().is_some_and(gated) && stance == Stance::Deny {
                 // Under deny a shape nobody can read is held: `--all` must
                 // not be the way around the gate.
-                Ok(false)
+                Ok(Needs::Unreadable(shape))
             } else {
                 Err(shape)
             }
@@ -438,7 +448,7 @@ pub fn needs_preview(
             for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
                 let Some(ui) = carries_ui(&repo, t) else {
                     return if stance == Stance::Deny {
-                        Ok(false)
+                        Ok(Needs::Unreadable("the published files cannot be listed"))
                     } else {
                         Err("the published files cannot be listed")
                     };
@@ -446,7 +456,8 @@ pub fn needs_preview(
                 if ui {
                     any_ui = true;
                     if !approved(&repo, &t.src) {
-                        return Ok(mockup_screens(&repo, &t.src).map_or(true, |s| !s.is_empty()));
+                        let mockup = mockup_screens(&repo, &t.src).map_or(true, |s| !s.is_empty());
+                        return Ok(Needs::Unapproved { mockup });
                     }
                 }
             }
@@ -505,8 +516,11 @@ pub fn mockup_screens(repo: &Path, commit: &str) -> Result<Vec<String>, String> 
             short(commit)
         )
     })?;
-    let changed = git(repo, &["diff", "--name-only", &format!("{from}..{commit}")])
-        .ok_or_else(|| format!("`git diff {}..{}` failed", short(&from), short(commit)))?;
+    // Not `git()`: an empty diff (the commit IS its merge base, as when the
+    // default branch itself is tagged) is no screen, not a failure.
+    let changed =
+        crate::git::stdout_in(repo, &["diff", "--name-only", &format!("{from}..{commit}")])
+            .ok_or_else(|| format!("`git diff {}..{}` failed", short(&from), short(commit)))?;
     let prefix = format!("{dir}/");
     let mut screens: Vec<String> = Vec::new();
     for f in changed.lines() {

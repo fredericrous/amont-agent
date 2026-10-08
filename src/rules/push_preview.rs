@@ -28,6 +28,7 @@
 //! The rule runs BEFORE the command, so it speaks of what the push would do.
 //! Whether a push actually published anything is `push-published`'s record.
 
+use crate::preview::Needs;
 use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
@@ -94,8 +95,23 @@ fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
         // A commit that carries a picked mockup is held, not advised: in PR
         // #302 the advice was read and the push went out anyway (decided
         // 2026-09-29, plan mockup-fidelity-checks).
-        Ok(true) => Confirmed::YesAt(Stance::Deny),
-        Ok(false) => Confirmed::Yes,
+        Ok(Needs::Unapproved { mockup: true }) => Confirmed::YesAt(Stance::Deny),
+        Ok(Needs::Unapproved { mockup: false }) => Confirmed::Yes,
+        // Held for not being read, and said so: "no approved preview
+        // covers" sent a session after an approval it did not need.
+        Ok(Needs::Unreadable(shape)) => Confirmed::YesSaying {
+            floor: None,
+            ceiling: None,
+            reason: format!("This push cannot be read, so under deny it is held: {shape}."),
+            excerpt: format!("unreadable: {shape}"),
+            // Not the preview steps: nothing here is known to need one.
+            remedy: Some(
+                "Push a branch or an existing tag by name, in its own command \
+                 (`git push <remote> <ref>`); this guard then reads what it publishes. \
+                 A tag needs no preview."
+                    .to_string(),
+            ),
+        },
         Err(why) => Confirmed::No(why),
     }
 }

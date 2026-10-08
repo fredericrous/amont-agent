@@ -168,12 +168,15 @@ pub enum Confirmed {
     /// `floor` is [`Confirmed::YesAt`]'s. `ceiling` caps the stance the
     /// other way: a rule that could not establish its fact may still speak,
     /// but never refuse on not knowing (`publish-without-skill`, whose
-    /// transcript may be unreadable).
+    /// transcript may be unreadable). `remedy`, when given, replaces the
+    /// finding's too: a held push that was only unreadable must not be told
+    /// to go and get a preview approved (`push-preview`, 2026-10-08).
     YesSaying {
         floor: Option<Stance>,
         ceiling: Option<Stance>,
         reason: String,
         excerpt: String,
+        remedy: Option<String>,
     },
     /// Not confirmed, with the reason. Failing to confirm is always silence.
     No(&'static str),

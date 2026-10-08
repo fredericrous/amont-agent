@@ -287,7 +287,10 @@ pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
         ) else {
             return Push::Unresolvable {
                 repo: Some(repo),
-                shape: "the refspec source does not resolve to a commit",
+                // Most often a ref the same command creates first (`git tag
+                // v1 && git push origin v1`): the hook judges the command
+                // before any of it runs.
+                shape: "the refspec source does not resolve to a commit (a ref this same command creates does not exist yet when the push is judged: create it in its own command, then push)",
             };
         };
         let Some(dst) = qualify(&repo, src, dst) else {
