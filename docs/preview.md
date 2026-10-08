@@ -1,8 +1,11 @@
 # Preview approval
 
-`push-preview` and `push-published` carry ADR-0023 (`work.preview-approval`,
-fleet decision corpus): a commit that changes a user interface is published
-only after the person approved **that commit**, seen on localhost.
+`push-preview` and `push-published` carry ADR-0028 (`work.preview-approval`,
+fleet decision corpus, replacing ADR-0023): a commit that changes a user
+interface is published only after the person approved **that commit**, seen
+on localhost — **unless the plan the person approved declares the evidence
+is enough** ([below](#planned-evidence), rule
+`work.preview-unless-planned-evidence`).
 
 The rule exists because interface regressions kept reaching pull requests and
 deployed sites after the agent had checked its own screen. The person's eyes
@@ -33,29 +36,49 @@ terminal, a local page, and the app already open in their browser.
      --guide ~/.claude/amont-agent/attestations/abc1234/guide.md
    ```
 
-   Run it as its own foreground command, optionally after `cd` into the
-   worktree:
+   Run it in the foreground as the **last command of its line**. Anything
+   may come before it, joined by `&&` or `;`:
 
    ```sh
-   cd ~/Developer/app-wt-settings && amont-agent preview register --url … --guide …
+   cd ~/Developer/app-wt-settings && npm run build && amont-agent preview register --url … --guide …
    ```
 
    It refuses a dirty tree, a non-commit `HEAD`, a guide inside the worktree
    and a guide missing a required section (exit 1; stderr lists exactly what
    is missing). Otherwise it renders the guide to **`index.html` beside it**
-   and prints one JSON object — `id`, `repo`, `commit`, `url`, `guide`,
-   `page` (absolute) and `page_url` (`file://`). `--open` also hands the page
+   and prints one JSON object, compact on one line:
+
+   | field | what it is |
+   |---|---|
+   | `id` | the registration; it starts with the commit's sha7 |
+   | `repo`, `commit` | the checkout's top level and its full `HEAD` |
+   | `url` | where the clean worktree is served |
+   | `guide`, `page`, `page_url` | the guide, its rendered `index.html` (absolute), and that page as a `file://` URL |
+   | `label`, `aliases` | the names a person knows the commit by: the checkout's directory, then the main worktree's directory and the origin repository's name, each `@sha7` |
+   | `question_prefix` | `[preview <id>] <label>`: what the marked question starts with, verbatim |
+   | `attestation` | `guide` again, for hooks older than 2.21.0 |
+
+   `--open` also hands the page
    to the platform opener (`open`, `xdg-open`, `cmd /c start`) without
    waiting; failing to open never fails the command.
 
    The `PostToolUse` hook binds that output to the session and to the
    person's current prompt, in the repository the command ran in — the
    leading `cd`s followed — which must still be the printed repository at
-   the printed `HEAD`; the journal line names the page. The only chaining
-   accepted is leading `cd <literal path>` clauses joined by `&&`. A
-   registration after any other program, after `;` or `||`, piped, in the
-   background or behind a substitution (`cd $(…)`) is not bound; the
-   journal says why.
+   the printed `HEAD`; the journal line names the page. The JSON is read
+   from the **last non-empty line** of stdout, so what earlier clauses
+   print does not matter. The register must be the last clause: one that
+   is followed by anything (`register && echo`), piped (`| tee`),
+   redirected, inside `$(…)`, after `||`, or in the background is not
+   bound, and the journal says why.
+
+   A line an earlier clause printed cannot pass for the register's own
+   (`printf '<json>'; amont-agent preview register --bad`): the
+   `PreToolUse` hook stamps when the call started, in
+   `previews/registers/<tool_use_id>`, and the bind requires that the id
+   starts with the commit's sha7 and that the page exists, names the full
+   commit and was written after that stamp. A call with no stamp is not
+   bound. Stamps nobody came back for are swept after a day.
 4. **Open the app and the page.** Before asking, the agent opens the app in
    the person's browser **at the state the first step reaches** (the panel
    already open, the form already filled) and the rendered page beside it.
@@ -63,10 +86,10 @@ terminal, a local page, and the app already open in their browser.
    Chrome — not this binary's: `register` only renders the page and, with
    `--open`, opens it.
 5. **Ask, in the same turn.** The brief first — the guide's sections, in the
-   terminal — then one `AskUserQuestion` whose text carries `[preview <id>]`
-   and lists every `repo@sha` it approves, with options exactly `Approve`,
-   `Request changes`, `Hold` — no "(Recommended)" suffix. The marked
-   question itself is unchanged.
+   terminal — then one `AskUserQuestion` whose text **starts with the
+   register's `question_prefix`** (`[preview <id>] <label>`), with options
+   exactly `Approve`, `Request changes`, `Hold` — no "(Recommended)"
+   suffix.
 6. **Push after `Approve`.** The approval covers that commit; a new commit,
    amend or rebase needs a new preview.
 
@@ -172,20 +195,21 @@ A branch in mockup mode that is pushed without a bound approval is **held**
 
 | the person… | result |
 |---|---|
-| picks `Approve` on the marked question | the listed commits are approved |
+| picks `Approve` on the marked question | every pending registration whose id the marker lists is approved |
 | picks `Request changes` or `Hold` | the previews are dropped |
 | does not answer (a timeout) | still pending |
 | types `approve`, `ship`, `lgtm` or `looks good` as the next prompt, after a marked question was asked | approved |
 | types anything else next — including `yes`, `go`, `ok`, `continue` | the previews lapse |
 
-The question must name the commit: `register` prints `label` (the
-checkout's directory `@sha7`) and `aliases` (the main worktree's directory
-and the origin repository's name, each `@sha7`); any of them will do. An
-`Approve` on a question that names none of them approves nothing, says so
-to the session, and leaves the registration pending for a corrected
-question. A `register` that did not bind — chained after another command,
-run in the background, or whose output does not match HEAD — says so right
-after it runs, with the command to run alone.
+The id in the marker is what approves: it begins with the commit's sha7,
+which the person sees, and the registration it names is already bound to
+the session, the prompt and the question. The label is for the person; a
+question without it still approves (it did not before 2.30.0, and the
+person was asked twice). A marker that names no pending id approves
+nothing. A `register` that did not bind — not the last command, run in the
+background, with no `PreToolUse` stamp, or whose output does not match
+HEAD or this call — says so right after it runs, with the command to run
+and the question to ask.
 
 Unmarked questions are ignored, so a release question answered "Approve"
 approves no preview, even in the same turn. Another session's answers never
@@ -207,7 +231,55 @@ it runs.
   the root or in `web/`, or `git config amont.agent.push-preview.ui true`
   (`false` opts a repository out);
 - a pushed branch carries an **interface change** (below);
+- the plan the branch landed does not declare the evidence
+  ([below](#planned-evidence));
 - that commit has no approval.
+
+### Planned evidence
+
+Some previews leave the person nothing to judge: they already decided the
+only visible change when they approved the plan (ADR-0028). The exemption
+is declared **in the plan's body**, so the person decides it when they
+approve the plan:
+
+```md
+## Preview
+
+evidence: the only visible change is the 28px small controls, decided in this plan.
+```
+
+Two hooks make it checkable:
+
+1. **The approval record.** A `PostToolUse` hook on `ExitPlanMode` reads
+   `tool_input.planFilePath` when it runs (the person may have edited the
+   plan) and, when the result has the approve shape (`tool_response` an
+   object carrying `plan`, no `is_error`), writes the plan's canonical body
+   sha ([plan review](plan-review.md): front matter and review sections
+   left out) to `~/.claude/amont-agent/plan-approved/<sha>`, journalled
+   `plan-approved`.
+2. **The check, at the push.** For a branch whose interface change carries
+   no picked mockup (mockup mode always asks; a screen list that cannot be
+   taken is held as before), the evidence stands when all hold:
+   - the default branch is known (`checkout.defaultRemote` or the single
+     remote, then its `HEAD`, `main` or `master`) and shares a merge base
+     with the pushed commit;
+   - the branch adds a plan under `docs/plans/` since that merge base (the
+     first one added), and it is not a pointer (`canonical:`);
+   - that plan, **read at the commit that added it**, has its canonical sha
+     in `plan-approved/`;
+   - its `## Preview` section (outside any code fence) has a first
+     non-empty line starting with `evidence:` and a reason.
+
+   A pass is journalled `evidence`, with the plan's path, the commit and the
+   sha. Any miss — no plan, a plan on `main` before the branch, a section
+   added in a later commit, an unapproved body — falls through to the
+   approval path, unchanged.
+
+The record has the trust of the `approvals` file: a workflow aid an agent
+could write to, not proof. That is why every pass is journalled. The
+exemption lapses when the screenshots show a visible change the plan did
+not decide; that part is the skill's (`worktree-task` F7) to enforce: the
+hook can only see that the person approved the declaration.
 
 ### What counts as an interface change
 
@@ -289,7 +361,8 @@ belongs to — never the session's working directory, which may be another
 worktree.
 
 The rule's own lines (`registered`, `replaced`, `approved`, `dropped`,
-`unanswered`, `expired`, `prefilled`, `unbound`) carry the answer latency on
+`unanswered`, `expired`, `prefilled`, `unbound`, `plan-approved`,
+`evidence`) carry the answer latency on
 approvals and drops: `option,184s,dur=0ms`. **The latency is the first
 number** (`184s`): the hook's own clock, from the `PreToolUse` of the marked
 question to its `PostToolUse`. `dur=` is the payload's raw `duration_ms`,
@@ -297,4 +370,4 @@ kept only for comparison — it is not the person's answer time (a
 minutes-long approval arrived as `0`). A `-` in place of the seconds means
 the question's `PreToolUse` record was written by an older release. A median
 under about ten seconds after a week says the approval is a rubber stamp;
-ADR-0023 then retires the gate and keeps the verification.
+the `evidence` lines say how often a plan made the question unnecessary.

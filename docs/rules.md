@@ -12,7 +12,7 @@
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
 | `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
-| `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers ([preview approval](preview.md)) |
+| `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers, unless the plan the person approved declares the evidence is enough ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
 | `plan-phases-open` | `deny` | a turn ending while the plan this branch carries still has an open phase that is not a `🧑 decision:` — the agent is sent on to it |
 | `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |

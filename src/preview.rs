@@ -1,17 +1,23 @@
-//! Preview approval (ADR-0023): a UI-changing commit is published only after
-//! the person approves that exact commit, seen on localhost.
+//! Preview approval (ADR-0028, which replaced ADR-0023): a UI-changing
+//! commit is published only after the person approves that exact commit,
+//! seen on localhost — unless the plan the person approved declares, in a
+//! `## Preview` section, that the evidence is enough ([`on_plan_answered`],
+//! `planned_evidence`).
 //!
 //! ## The flow this module keeps honest
 //!
 //! 1. The agent verifies the final commit itself, then runs
 //!    `amont-agent preview register --url … --guide …` as the last command
-//!    of its line, in the foreground. That command VALIDATES (clean tree, real commit, a complete
-//!    guide outside the worktree), renders the guide to `index.html` beside
-//!    it ([`crate::guide`]) and prints JSON; the PostToolUse hook binds that
-//!    output to the session and the person's prompt ([`bind`]).
-//! 2. In the same turn the agent asks a *marked* question —
-//!    `[preview <id>,…]` in its text (each id begins with its commit's sha7),
-//!    options exactly `Approve` / `Request changes` / `Hold`.
+//!    of its line, in the foreground. That command VALIDATES (clean tree,
+//!    real commit, a complete guide outside the worktree), renders the guide
+//!    to `index.html` beside it ([`crate::guide`]) and prints JSON on one
+//!    line; the PostToolUse hook binds that output to the session and the
+//!    person's prompt ([`bind`]), once it has shown the line is this call's
+//!    own ([`stamp_register`]).
+//! 2. In the same turn the agent asks a *marked* question, starting with the
+//!    register's `question_prefix` — `[preview <id>] <label>`, each id
+//!    beginning with its commit's sha7 — options exactly `Approve` /
+//!    `Request changes` / `Hold`.
 //! 3. The person answers. Only their selection, read from `tool_response`
 //!    ([`on_post_ask`]), or a typed `approve|ship|lgtm|looks good` in the very
 //!    next prompt ([`on_prompt`]), approves — and only the commits the

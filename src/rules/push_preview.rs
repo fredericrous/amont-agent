@@ -1,5 +1,5 @@
 //! `push-preview` — a push that would publish interface changes no approved
-//! preview covers (ADR-0023, `work.preview-before-publish`).
+//! preview covers (ADR-0028, `work.preview-unless-planned-evidence`).
 //!
 //! ```sh
 //! git push -u origin feat/settings-toggle   # app/routes/settings.tsx changed
@@ -21,7 +21,10 @@
 //! `git config amont.agent.push-preview.ui true`), a pushed branch carries a
 //! file under `app/`, `src/`, `web/` or a `.tsx/.jsx/.css/.html` whose
 //! nearest `package.json` looks like an interface and whose diff is not
-//! comments only (`crate::preview`), and that commit has no approval. A push this guard cannot read is journalled with
+//! comments only (`crate::preview`), the plan the branch landed does not
+//! declare the preview's evidence (an approved `## Preview` section whose
+//! first line is `evidence:`; never for a picked mockup), and that commit
+//! has no approval. A push this guard cannot read is journalled with
 //! its shape and passes — except under `deny`, where it is held so that
 //! `--all` is not the way around the gate.
 //!
@@ -36,7 +39,8 @@ pub const RULE: Rule = Rule {
     id: "push-preview",
     // Advises from the start, `confirm`-backed like `push-preflight`, and
     // under review: the soak decides between deny, advise, or retiring the
-    // gate while keeping the verification loop (ADR-0023).
+    // gate while keeping the verification loop (ADR-0023, carried forward
+    // by ADR-0028).
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

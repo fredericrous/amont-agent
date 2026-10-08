@@ -69,7 +69,9 @@ on stderr); 2 on a usage error.
    session's transcript whose block names this repository and tree, or a
    pass remembered under `~/.claude/amont-agent/implementation-review/by-tree/`.
    Completion is read from structured fields only, as the review panel
-   reads it; a notification echoed inside a tool result never counts.
+   reads it; a notification echoed inside a tool result never counts. A
+   reviewer **resumed** with `SendMessage` on a new block counts as a
+   review of that block ([below](#a-resumed-review)).
 5. **Reads the verdict.** A review that said `rework` and got no later
    delta on the same tree is not a pass.
 6. On the first transcript binding that passes, writes the pass file
@@ -91,6 +93,27 @@ Every note ends with the next step:
 ```
 amont-agent/implementation-review: no implementation review of amont-agent tree 5085edae1d66 is in this session. worktree-task F4b: `amont-agent tree-sha --block`, then launch the implementation-review agent …
 ```
+
+## A resumed review
+
+The delta (F4b.6) may resume the same reviewer with `SendMessage`, giving
+it the new block, instead of launching a fresh one. Each round is a review
+of its own, read from the shape a real session recorded
+(`tests/fixtures/sendmessage-resume.jsonl`, 2026-10-08):
+
+1. the launch's result carries `toolUseResult.agentId`;
+2. a `SendMessage` whose `input.to` is that agent id, and whose result
+   carries `toolUseResult.resumedAgentId` = the same id, starts a round:
+   its prompt is `input.message` (the block is read from it) and its id is
+   the SendMessage's own;
+3. the round completes only on a structured task notification whose
+   `<tool-use-id>` is that SendMessage's id and whose `<task-id>` is the
+   agent id. The launch's own result is never overwritten.
+
+A message to an agent that was not launched as `implementation-review`, a
+round whose notification names another task, or a notification typed or
+echoed rather than queued by Claude Code does not count. Only this rule
+reads resumes: the plan-review panel counts fresh launches alone.
 
 ## The person's overrule
 
