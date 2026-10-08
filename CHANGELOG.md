@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.30.1
+
+### Fixed
+
+- **`push-preview`: an unedited template placeholder is not evidence.** The
+  plan templates carry `evidence: <why …>` under `## Preview`. A plan
+  approved with that line left as it was declared evidence and passed the
+  push with no question. A reason that starts with `<` now declares nothing,
+  and the push asks as usual.
+
 ## v2.30.0
 
 Approve only what needs judging (ADR-0028, which replaces ADR-0023).
