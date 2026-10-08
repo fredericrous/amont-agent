@@ -772,6 +772,10 @@ pub struct Registered {
     /// Other labels that name the same commit: the main worktree's
     /// directory and the origin repository's name, each `@<sha7>`.
     pub aliases: Vec<String>,
+    /// What the marked question starts with, verbatim:
+    /// `[preview <id>] <label>`. Empty when read from a release that printed
+    /// none.
+    pub question_prefix: String,
 }
 
 impl Registered {
@@ -788,6 +792,7 @@ impl Registered {
             crate::json::string_field("page_url", &self.page_url),
             crate::json::string_field("label", &self.label),
             crate::json::string_array_field("aliases", &self.aliases),
+            crate::json::string_field("question_prefix", &self.question_prefix),
             crate::json::string_field("attestation", &self.guide),
         ])
     }
@@ -814,6 +819,7 @@ impl Registered {
                         .collect()
                 })
                 .unwrap_or_default(),
+            question_prefix: s("question_prefix").unwrap_or_default(),
         })
     }
 }
@@ -938,6 +944,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
         .map_err(|e| format!("the page {} could not be written: {e}", page.display()))?;
     let id = format!("{}{:x}", short(&commit), now() & 0xfff_ffff);
     Ok(Registered {
+        question_prefix: question_prefix(&id, &label),
         id,
         repo: repo.to_string_lossy().into_owned(),
         commit,
@@ -948,6 +955,12 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
         label,
         aliases,
     })
+}
+
+/// The text a marked question starts with: the marker, then the label the
+/// person knows the commit by.
+pub fn question_prefix(id: &str, label: &str) -> String {
+    format!("[preview {id}] {label}")
 }
 
 /// After a Bash call: bind a `preview register` that ran as its own
@@ -999,13 +1012,19 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) -> Optio
             &format!("{excerpt}: {why}"),
         );
         speaks.then(|| {
-            let label = printed
+            let ask = printed
                 .as_ref()
-                .filter(|p| !p.label.is_empty())
-                .map(|p| format!(" and the label `{}`", p.label))
-                .unwrap_or_default();
+                .map(|p| {
+                    if p.question_prefix.is_empty() {
+                        question_prefix(&p.id, &p.label)
+                    } else {
+                        p.question_prefix.clone()
+                    }
+                })
+                .map(|q| format!("a question starting `{}`", q.trim_end()))
+                .unwrap_or_else(|| "the `question_prefix` from its output".to_string());
             format!(
-                "`preview register` ran, but the preview is NOT bound to this session ({why}), so no answer to a marked question can approve it. Run it again as its own foreground command, with nothing chained before it but `cd`:\n  {again}\nthen ask the marked question with `[preview <id>]`{label} from its output."
+                "`preview register` ran, but the preview is NOT bound to this session ({why}), so no answer to a marked question can approve it. Run it again as its own foreground command, with nothing chained before it but `cd`:\n  {again}\nthen ask the marked question: {ask}."
             )
         })
     };
@@ -1663,7 +1682,11 @@ index 15750da..2770014 100644
             page_url: "file:///g/index.html".into(),
             label: "r-wt-x@c".into(),
             aliases: vec!["r@c".into(), "repo@c".into()],
+            question_prefix: "[preview i] r-wt-x@c".into(),
         };
+        assert!(r
+            .to_json()
+            .contains(r#""question_prefix":"[preview i] r-wt-x@c""#));
         assert_eq!(Registered::from_json(&r.to_json()), Some(r));
     }
 
@@ -1673,6 +1696,7 @@ index 15750da..2770014 100644
         let r = Registered::from_json(old).expect("the 2.22 shape");
         assert_eq!(r.label, "");
         assert!(r.aliases.is_empty());
+        assert_eq!(r.question_prefix, "");
     }
 
     #[test]

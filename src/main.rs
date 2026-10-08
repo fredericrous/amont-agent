@@ -1073,10 +1073,11 @@ foreground: the Claude Code hook binds its output to the session.
   --attestation <f>   DEPRECATED alias of --guide, for one release: read as
                       the guide, and refused unless it is one
 
-Writes index.html beside the guide and prints one JSON object on stdout:
-id, repo, commit, url, guide, page, page_url, label, aliases. Put `label`
-(or one of `aliases`) in the marked question with `[preview <id>]`. Exit
-0 when valid, 1 when refused (the reason on stderr), 2 on a usage error.
+Writes index.html beside the guide and prints one JSON object, on one
+line, on stdout: id, repo, commit, url, guide, page, page_url, label,
+aliases, question_prefix. Start the marked question with `question_prefix`
+(`[preview <id>] <label>`), verbatim: the id is what approves. Exit 0 when
+valid, 1 when refused (the reason on stderr), 2 on a usage error.
 
 example:
   amont-agent preview register --url http://localhost:5173/settings \\

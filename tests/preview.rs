@@ -572,6 +572,22 @@ fn a_marked_question_with_the_id_and_no_label_approves() {
 }
 
 #[test]
+fn the_register_json_carries_the_question_prefix() {
+    let w = World::new("question-prefix");
+    w.commit("app/a.tsx", "1\n");
+    let (code, out, err) = w.register_cli("http://localhost:1/", &w.guide());
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim().lines().count(), 1, "one line: {out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let id = v["id"].as_str().unwrap();
+    assert_eq!(
+        v["question_prefix"].as_str(),
+        Some(format!("[preview {id}] {}", w.label()).as_str()),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_marker_naming_no_pending_id_approves_nothing() {
     let w = World::new("id-unknown");
     w.commit("app/a.tsx", "1\n");
