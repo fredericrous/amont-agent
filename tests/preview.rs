@@ -1362,3 +1362,83 @@ fn under_deny_a_push_of_an_existing_tag_passes() {
     let out = w.pre_bash("s", "t", "git push origin v9.9.9");
     assert!(!out.contains("amont-agent/push-preview"), "{out}");
 }
+
+// --- the plan approval record (ADR-0028) -----------------------------------
+
+/// The PostToolUse payloads of an `ExitPlanMode`. The approve shape is the
+/// one recorded in real transcripts (`toolUseResult` = `{plan, isAgent,
+/// filePath}`, no `is_error`).
+const EXIT_APPROVE: &str = include_str!("fixtures/exitplanmode-approve.json");
+// The reject shape is inferred, not captured: a rejection is recorded in
+// transcripts as an `is_error` tool result whose content is an "Error: …"
+// string. Replace this fixture with a captured PostToolUse payload once
+// v2.30.0 is installed (plan 2026-10-08-approve-only-what-needs-judging).
+const EXIT_REJECT: &str = include_str!("fixtures/exitplanmode-reject.json");
+
+/// Send an ExitPlanMode PostToolUse fixture whose plan file is `plan`.
+fn plan_answered(w: &World, fixture: &str, plan: &Path) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(fixture).unwrap();
+    v["tool_input"]["planFilePath"] = serde_json::json!(plan);
+    if v["tool_response"].is_object() {
+        v["tool_response"]["filePath"] = serde_json::json!(plan);
+    }
+    v["cwd"] = serde_json::json!(w.work);
+    w.hook(v)
+}
+
+fn plan_sha(w: &World, plan: &Path) -> String {
+    let (code, out, err) = w.run(&["plan-sha", plan.to_str().unwrap()], None);
+    assert_eq!(code, 0, "{err}");
+    out.trim().to_string()
+}
+
+fn approved_plans(w: &World) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(w.root.join("claude/amont-agent/plan-approved"))
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+const PLAN: &str = "\
+# Small controls at 28px
+
+## Context
+
+The person decided the small controls grow to 28px.
+
+## Preview
+
+evidence: the person already decided the only visible change, 28px small controls.
+";
+
+#[test]
+fn an_approved_plan_is_recorded_by_its_body_sha_as_the_file_reads_now() {
+    let w = World::new("plan-approved");
+    let plan = w.root.join("plan.md");
+    // The file, not the payload's `plan`: the person may edit it first.
+    std::fs::write(&plan, PLAN).unwrap();
+    let said = plan_answered(&w, EXIT_APPROVE, &plan);
+    assert!(said.trim().is_empty(), "silent: {said}");
+    assert_eq!(approved_plans(&w), vec![plan_sha(&w, &plan)]);
+    assert!(w.journal().contains("plan-approved"), "{}", w.journal());
+}
+
+#[test]
+fn a_rejected_plan_records_nothing() {
+    let w = World::new("plan-rejected");
+    let plan = w.root.join("plan.md");
+    std::fs::write(&plan, PLAN).unwrap();
+    plan_answered(&w, EXIT_REJECT, &plan);
+    assert!(approved_plans(&w).is_empty());
+
+    // An object with no `plan` is not the approve shape either.
+    let mut odd: serde_json::Value = serde_json::from_str(EXIT_APPROVE).unwrap();
+    odd["tool_response"] = serde_json::json!({"filePath": "x"});
+    plan_answered(&w, &odd.to_string(), &plan);
+    assert!(approved_plans(&w).is_empty());
+}

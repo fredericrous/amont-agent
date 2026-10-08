@@ -90,6 +90,10 @@ fn decide(raw: &str) -> Decision {
             let stance = crate::stance::resolve(&rules::plan_review_panel::RULE);
             crate::plan_review::on_plan_exit(&plan, stance)
         }
+        Event::PostPlanExit(plan) => {
+            crate::preview::on_plan_answered(&plan);
+            Decision::Silent
+        }
         Event::PostAsk(ask) => {
             let mut said: Vec<String> = Vec::new();
             crate::preview::on_post_ask(&ask);

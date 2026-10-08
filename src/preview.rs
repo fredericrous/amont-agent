@@ -1439,6 +1439,55 @@ pub fn on_prompt(prompt: &crate::payload::Prompt) {
     save_registrations(&rest);
 }
 
+// --- planned evidence (ADR-0028) ------------------------------------------
+
+/// Where approved plan bodies are recorded: `<state>/plan-approved/<sha>`.
+fn plans_approved_dir() -> Option<PathBuf> {
+    Some(journal::dir()?.join("plan-approved"))
+}
+
+/// After an `ExitPlanMode`: when the person approved the plan, record its
+/// canonical body sha ([`crate::plan_review::body_sha`]), hashed from the
+/// file as it is now.
+///
+/// Like the `approvals` file, this is a workflow aid an agent could write
+/// to, not proof: every pass it grants is journalled `evidence`.
+pub fn on_plan_answered(ev: &crate::payload::PlanAnswered) {
+    if !ev.approved {
+        return;
+    }
+    let Some(file) = &ev.plan_file else { return };
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return;
+    };
+    let Ok(shas) = crate::plan_review::shas(&text) else {
+        return;
+    };
+    let Some(d) = plans_approved_dir() else {
+        return;
+    };
+    if ensure(&d).is_none() {
+        return;
+    }
+    let path = d.join(&shas.sha);
+    let _ = crate::atomic::write_atomic(
+        &path,
+        &format!(
+            "{}\t{}\t{}\n",
+            clean(&ev.session),
+            clean(&file.to_string_lossy()),
+            now()
+        ),
+    );
+    journal::private(&path, 0o600);
+    note(
+        "plan-approved",
+        &ev.session,
+        "-",
+        &format!("{} {}", &shas.sha[..12], file.display()),
+    );
+}
+
 // --- publication ----------------------------------------------------------
 
 /// Before a push runs: remember, per `tool_use_id`, where each branch

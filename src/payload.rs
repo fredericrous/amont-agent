@@ -141,6 +141,18 @@ pub struct PlanExit {
     pub plan_file: Option<PathBuf>,
 }
 
+/// An `ExitPlanMode` that has run: the person answered the plan.
+pub struct PlanAnswered {
+    pub session: String,
+    /// `tool_input.planFilePath`, read when the hook runs: the person may
+    /// edit the plan before approving it. `None` when the payload had none.
+    pub plan_file: Option<PathBuf>,
+    /// The shape of an approval: `tool_response` is an object carrying the
+    /// `plan` (seen as `{plan, isAgent, filePath}`), with no `is_error`. A
+    /// rejection was seen as an error string instead.
+    pub approved: bool,
+}
+
 /// The model finished a turn and is about to hand control back.
 pub struct Stop {
     pub session: String,
@@ -194,6 +206,9 @@ pub enum Event {
     /// An `ExitPlanMode` about to run: has the plan been through its review
     /// panel (`plan-review-panel`)?
     PrePlanExit(Box<PlanExit>),
+    /// An `ExitPlanMode` that has run: an approved plan's body is recorded
+    /// for the preview evidence gate.
+    PostPlanExit(Box<PlanAnswered>),
     NotOurs,
 }
 
@@ -297,6 +312,25 @@ pub fn parse(raw: &str) -> Event {
                         .and_then(|i| i.get("planFilePath"))
                         .and_then(|x| x.as_str()),
                 ),
+            }))
+        }
+        Some("PostToolUse")
+            if v.get("tool_name").and_then(|x| x.as_str()) == Some("ExitPlanMode") =>
+        {
+            let response = v.get("tool_response").and_then(|r| r.as_object());
+            let approved = v.get("is_error").and_then(|e| e.as_bool()) != Some(true)
+                && response.is_some_and(|r| {
+                    r.get("plan").is_some_and(|p| p.is_string())
+                        && r.get("is_error").and_then(|e| e.as_bool()) != Some(true)
+                });
+            Event::PostPlanExit(Box::new(PlanAnswered {
+                session: str_at("session_id"),
+                plan_file: path_at(
+                    v.get("tool_input")
+                        .and_then(|i| i.get("planFilePath"))
+                        .and_then(|x| x.as_str()),
+                ),
+                approved,
             }))
         }
         Some(stage @ ("PreToolUse" | "PostToolUse"))
