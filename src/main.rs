@@ -1028,8 +1028,10 @@ usage: amont-agent preview register --url <url> --guide <file.md> [--repo <dir>]
 
 Validate a localhost preview of the repository's HEAD, for the person to
 approve before a UI-changing push (ADR-0023), and render its guide to a
-page (work.preview-is-guided). Run it as its own command, in the
-foreground: the Claude Code hook binds its output to the session.
+page (work.preview-is-guided). Run it in the foreground as the last
+command of its line (`cd <wt> && npm run build && amont-agent preview
+register …` is fine; nothing piped, redirected or after it): the Claude
+Code hook binds its output to the session.
 
   --url <url>         where the clean worktree is served (http or https)
   --guide <file.md>   what the person needs to decide with. Must be OUTSIDE

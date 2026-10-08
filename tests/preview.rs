@@ -224,6 +224,9 @@ impl World {
             "amont-agent preview register --url http://localhost:5173/ --guide '{}'",
             record.display()
         );
+        // The PreToolUse stamp comes first, as it does in a session: the
+        // bind requires a page written after the call began.
+        self.pre_bash(session, "reg", &command);
         let (code, out, err) = self.register_cli("http://localhost:5173/", &record);
         assert_eq!(code, 0, "register refused: {err}");
         self.post_bash(session, prompt, "reg", &command, &out);
@@ -504,28 +507,29 @@ fn registration_refuses_a_dirty_tree_and_a_record_inside_the_worktree() {
 }
 
 #[test]
-fn a_chained_register_is_not_bound() {
-    let w = World::new("chained");
+fn a_register_that_is_not_last_is_not_bound_and_says_how() {
+    let w = World::new("not-last");
     w.commit("app/a.tsx", "1\n");
     let record = w.guide();
-    let (_, out, _) = w.register_cli("http://localhost:1/", &record);
-    let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let command = format!(
-        "npm test && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        "amont-agent preview register --url http://localhost:1/ --guide '{}' && echo done",
         record.display()
     );
-    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    let (id, said) = stamped(&w, &w.work, "reg", &command, "", "done\n");
     // Seen 2026-09-29 (PR #302): this failure was silent, so the session
     // asked, the person approved, and the approval bound nothing.
     assert!(said.contains("NOT bound"), "the session is told: {said}");
+    assert!(said.contains("LAST command"), "{said}");
     w.answer("s", "p1", &id, Some("Approve"));
     assert!(w.push_advised("s"));
-    assert!(w.journal().contains("not a standalone command"));
+    assert!(
+        w.journal().contains("not the last command"),
+        "{}",
+        w.journal()
+    );
 
-    // The command it prints binds when run as printed.
+    // The command it prints binds when run as printed, and the refusal
+    // quotes the question to ask.
     let v: serde_json::Value = serde_json::from_str(&said).unwrap();
     let context = v["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -536,10 +540,114 @@ fn a_chained_register_is_not_bound() {
         .map(|rest| format!("cd {rest}"))
         .expect("a command to run");
     assert!(again.contains("amont-agent preview register"), "{again}");
-    assert!(!again.contains("npm test"), "{again}");
-    let bound = w.post_bash("s", "p2", "reg2", &again, &out);
+    assert!(!again.contains("echo done"), "{again}");
+    let (_, bound) = stamped(&w, &w.work, "reg2", &again, "", "");
     assert!(!bound.contains("NOT bound"), "{bound}");
     assert!(w.journal().contains("registered"), "{}", w.journal());
+}
+
+#[test]
+fn a_refusal_quotes_the_question_prefix() {
+    let w = World::new("refusal-prefix");
+    w.commit("app/a.tsx", "1\n");
+    let command = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}' | tee /dev/null",
+        w.guide().display()
+    );
+    let (id, said) = stamped(&w, &w.work, "reg", &command, "", "");
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        said.contains(&format!("[preview {id}] {}", w.label())),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_register_chained_after_other_commands_is_bound() {
+    let w = World::new("chained");
+    w.commit("app/a.tsx", "1\n");
+    let record = w.guide();
+    let command = format!(
+        "curl -s http://localhost:1/ ; cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        w.work.display(),
+        record.display()
+    );
+    // curl printed first; the JSON is the last line.
+    let (id, said) = stamped(&w, &w.root, "reg", &command, "<html>ok</html>\n", "\n");
+    assert!(!said.contains("NOT bound"), "{said}");
+    assert!(w.journal().contains("registered"), "{}", w.journal());
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_plain_register_binds() {
+    let w = World::new("plain");
+    w.commit("app/a.tsx", "1\n");
+    let command = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        w.guide().display()
+    );
+    let (id, said) = stamped(&w, &w.work, "reg", &command, "", "");
+    assert!(!said.contains("NOT bound"), "{said}");
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(!w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn a_register_with_no_pretooluse_stamp_is_not_bound() {
+    let w = World::new("no-stamp");
+    w.commit("app/a.tsx", "1\n");
+    let record = w.guide();
+    let command = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        record.display()
+    );
+    let (_, out, _) = w.register_cli("http://localhost:1/", &record);
+    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        w.journal().contains("no record of the call"),
+        "{}",
+        w.journal()
+    );
+}
+
+#[test]
+fn a_json_line_printed_before_a_failed_register_is_not_bound() {
+    // `printf '<json naming the real HEAD>'; amont-agent preview register
+    // --bad`: the line is a real registration's, of the real HEAD, but its
+    // page was written before this call began.
+    let w = World::new("forged");
+    w.commit("app/a.tsx", "1\n");
+    let (_, out, _) = w.register_cli("http://localhost:1/", &w.guide());
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let command = format!(
+        "printf '%s\\n' '{}'; amont-agent preview register --bad",
+        out.trim()
+    );
+    w.pre_bash("s", "reg", &command);
+    let said = w.post_bash("s", "p1", "reg", &command, &out);
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        w.journal().contains("not written by this call"),
+        "{}",
+        w.journal()
+    );
+
+    // A line whose id does not start with the commit's sha7.
+    let mut v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    v["id"] = serde_json::json!("0000000aaaa");
+    let forged = v.to_string();
+    w.pre_bash("s", "reg2", &command);
+    let said = w.post_bash("s", "p1", "reg2", &command, &forged);
+    assert!(said.contains("NOT bound"), "{said}");
+    assert!(
+        w.journal().contains("does not start with the commit"),
+        "{}",
+        w.journal()
+    );
+    assert!(!w.journal().contains("registered"), "{}", w.journal());
 }
 
 #[test]
@@ -625,6 +733,12 @@ fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
     let sha = git(&wt, &["rev-parse", "HEAD"]);
 
     let record = w.guide();
+    let command = format!(
+        "cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        wt.display(),
+        record.display()
+    );
+    w.pre_bash_in(&wt, "s", "reg", &command);
     let (code, out, err) = w.run(
         &[
             "preview",
@@ -652,11 +766,6 @@ fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
         "{aliases:?}"
     );
     let id = v["id"].as_str().unwrap().to_string();
-    let command = format!(
-        "cd '{}' && amont-agent preview register --url http://localhost:1/ --guide '{}'",
-        wt.display(),
-        record.display()
-    );
     w.post_bash_in(&wt, "s", "p1", "reg", &command, &out);
 
     let q = format!("[preview {id}] Ship app@{}?", &sha[..7]);
@@ -667,17 +776,28 @@ fn a_worktree_commit_is_approved_under_the_main_checkouts_name() {
     assert!(!pushed.contains("amont-agent/push-preview"), "{pushed}");
 }
 
-/// Run `preview register` in the worktree and return (id, printed JSON,
-/// guide path).
-fn validated(w: &World) -> (String, String, PathBuf) {
-    let record = w.guide();
-    let (code, out, err) = w.register_cli("http://localhost:1/", &record);
+/// A register call as a session makes it, from a session sitting in `cwd`:
+/// the PreToolUse stamp, the CLI run in the worktree, then the PostToolUse
+/// bind of `command` with `before` + the printed JSON + `after` as stdout.
+/// Returns (id, what the bind said).
+fn stamped(
+    w: &World,
+    cwd: &Path,
+    tool_use_id: &str,
+    command: &str,
+    before: &str,
+    after: &str,
+) -> (String, String) {
+    w.pre_bash_in(cwd, "s", tool_use_id, command);
+    let (code, out, err) = w.register_cli("http://localhost:1/", &w.guide());
     assert_eq!(code, 0, "{err}");
     let id = serde_json::from_str::<serde_json::Value>(&out).unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
-    (id, out, record)
+    let stdout = format!("{before}{out}{after}");
+    let said = w.post_bash_in(cwd, "s", "p1", tool_use_id, command, &stdout);
+    (id, said)
 }
 
 #[test]
@@ -686,40 +806,66 @@ fn a_register_after_leading_cds_is_bound_in_the_repository_they_reach() {
     // from a session whose cwd was another directory was `unbound`.
     let w = World::new("cd-chained");
     w.commit("app/a.tsx", "1\n");
-    let (id, out, record) = validated(&w);
     let command = format!(
         "cd '{}' && cd app && amont-agent preview register --url http://localhost:1/ --guide '{}'",
         w.root.display(),
-        record.display()
+        w.guide().display()
     );
     // The session sits in the claude dir, not in the repository.
-    w.post_bash_in(&w.root.join("claude"), "s", "p1", "reg", &command, &out);
+    let (id, _) = stamped(&w, &w.root.join("claude"), "reg", &command, "", "");
     assert!(w.journal().contains("registered"), "{}", w.journal());
     w.answer("s", "p1", &id, Some("Approve"));
     assert!(!w.push_advised("s"), "{}", w.journal());
 }
 
 #[test]
-fn a_cd_chain_with_anything_else_stays_unbound() {
-    let w = World::new("cd-other");
+fn a_register_joined_by_semicolons_or_after_a_build_is_bound() {
+    let w = World::new("cd-other-bound");
     w.commit("app/a.tsx", "1\n");
-    let (id, out, record) = validated(&w);
+    let work = w.work.display();
     let tail = format!(
         "amont-agent preview register --url http://localhost:1/ --guide '{}'",
-        record.display()
+        w.guide().display()
     );
-    let work = w.work.display();
-    for command in [
+    for (i, command) in [
         format!("cd '{work}'; {tail}"),
         format!("cd '{work}' && npm test && {tail}"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (_, said) = stamped(&w, &w.root, &format!("reg{i}"), command, "", "");
+        assert!(!said.contains("NOT bound"), "{command}: {said}");
+    }
+}
+
+#[test]
+fn a_register_that_is_not_last_piped_or_substituted_stays_unbound() {
+    let w = World::new("cd-other");
+    w.commit("app/a.tsx", "1\n");
+    let tail = format!(
+        "amont-agent preview register --url http://localhost:1/ --guide '{}'",
+        w.guide().display()
+    );
+    let work = w.work.display();
+    let mut last = String::new();
+    for (i, command) in [
         format!("cd '{work}' || {tail}"),
         format!("cd $(git rev-parse --show-toplevel) && {tail}"),
+        format!("cd '{work}' && {tail} && echo done"),
         format!("cd '{work}' && {tail} | tee /dev/null"),
-    ] {
-        w.post_bash_in(&w.root, "s", "p1", "reg", &command, &out);
+        format!("cd '{work}' && echo $({tail})"),
+        format!("cd '{work}' && {tail} > /tmp/out.json"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (id, said) = stamped(&w, &w.root, &format!("reg{i}"), command, "", "");
+        assert!(said.contains("NOT bound"), "{command}: {said}");
+        last = id;
     }
     assert!(!w.journal().contains("registered"), "{}", w.journal());
-    w.answer("s", "p1", &id, Some("Approve"));
+    w.answer("s", "p1", &last, Some("Approve"));
     assert!(w.push_advised("s"));
 }
 

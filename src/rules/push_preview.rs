@@ -69,9 +69,10 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
             .to_string(),
         remedy: "Verify the final commit in a real browser, serve the clean worktree, then run \
                  `amont-agent preview register --url <url> --guide <guide.md outside the worktree>` \
-                 as its own command (see `amont-agent preview --help` for the guide's sections), open the app \
-                 at the first step's state and the rendered page, and, in the same turn, ask the marked question \
-                 (`[preview <id>]`, listing each repo@sha, options exactly Approve / Request changes / Hold). \
+                 in the foreground as the last command of its line (see `amont-agent preview --help` for the guide's \
+                 sections), open the app at the first step's state and the rendered page, and, in the same turn, ask \
+                 the marked question starting with its `question_prefix` (`[preview <id>] <label>`, options exactly \
+                 Approve / Request changes / Hold). \
                  Push after the person approves. A push shape this guard cannot read is held under deny: \
                  push the branch explicitly (`git push <remote> <branch>`)."
             .to_string(),

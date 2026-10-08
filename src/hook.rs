@@ -203,6 +203,9 @@ fn on_bash(bash: &Bash) -> Decision {
             crate::implementation_review::GUARD_REMEDY,
         ));
     }
+    // When a `preview register` call started, for `preview::bind` to tell
+    // its own output from a line an earlier clause printed.
+    crate::preview::stamp_register(bash, &parsed);
     // No early return on `Parsed::Opaque`: `rules::evaluate` owns that
     // policy, so the hook, `check` and the backtester cannot drift apart on
     // it. Legacy rules are skipped on an unreadable command exactly as they
