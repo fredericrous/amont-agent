@@ -1442,3 +1442,145 @@ fn a_rejected_plan_records_nothing() {
     plan_answered(&w, &odd.to_string(), &plan);
     assert!(approved_plans(&w).is_empty());
 }
+
+// --- planned evidence (ADR-0028, work.preview-unless-planned-evidence) -----
+
+/// The person approves `body` through ExitPlanMode, from a plan file
+/// outside the repository, as plan mode writes it.
+fn approve_plan(w: &World, body: &str) {
+    let file = w.root.join("approved-plan.md");
+    std::fs::write(&file, body).unwrap();
+    plan_answered(w, EXIT_APPROVE, &file);
+    assert_eq!(approved_plans(w).len(), 1, "{}", w.journal());
+}
+
+/// The plan as it lands on the branch: front matter added.
+fn landed(body: &str) -> String {
+    format!("---\nstatus: active\nbranch: feat/x\n---\n\n{body}")
+}
+
+#[test]
+fn an_approved_plan_declaring_evidence_lets_a_later_ui_push_through() {
+    let w = World::new("evidence");
+    approve_plan(&w, PLAN);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/routes/home.tsx", "export default 1\n");
+    w.commit("app/routes/home.tsx", "export default 2\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    let journal = w.journal();
+    let line = journal
+        .lines()
+        .find(|l| l.contains(" evidence "))
+        .expect("an evidence line");
+    let head = git(&w.work, &["rev-parse", "HEAD"]);
+    assert!(line.contains("docs/plans/2026-10-08-small.md"), "{line}");
+    assert!(line.contains(&format!("commit={}", &head[..7])), "{line}");
+    assert!(
+        line.contains(&format!("sha={}", &approved_plans(&w)[0][..12])),
+        "{line}"
+    );
+}
+
+#[test]
+fn evidence_the_person_did_not_approve_is_held_as_before() {
+    let w = World::new("evidence-unapproved");
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn a_preview_section_added_after_the_plan_landed_does_not_count() {
+    let w = World::new("evidence-later");
+    let without = PLAN.split("## Preview").next().unwrap().to_string();
+    // The person approved both bodies; the plan landed without the section.
+    approve_plan(&w, PLAN);
+    let first = w.root.join("first-plan.md");
+    std::fs::write(&first, &without).unwrap();
+    plan_answered(&w, EXIT_APPROVE, &first);
+    assert_eq!(approved_plans(&w).len(), 2);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(&without));
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+}
+
+#[test]
+fn no_plan_a_pointer_plan_or_a_plan_already_on_main_is_held_as_before() {
+    // No plan on the branch.
+    let w = World::new("evidence-no-plan");
+    approve_plan(&w, PLAN);
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+
+    // A pointer plan, with the approved body under it.
+    let w = World::new("evidence-pointer");
+    approve_plan(&w, PLAN);
+    w.commit(
+        "docs/plans/2026-10-08-small.md",
+        &format!("---\ncanonical: decisions:docs/plans/2026-10-08-small.md\n---\n\n{PLAN}"),
+    );
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+
+    // The plan landed on main before the branch started.
+    let w = World::new("evidence-on-main");
+    approve_plan(&w, PLAN);
+    git(&w.work, &["checkout", "-q", "main"]);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    git(&w.work, &["push", "-q", "origin", "main"]);
+    git(&w.work, &["checkout", "-q", "-b", "feat/y"]);
+    w.commit("app/a.tsx", "1\n");
+    let out = w.pre_bash("s", "push1", "git push -u origin feat/y");
+    assert!(out.contains("amont-agent/push-preview"), "{out}");
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn with_no_base_ref_the_evidence_is_not_looked_for() {
+    let w = World::new("evidence-no-base");
+    approve_plan(&w, PLAN);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    w.commit("app/a.tsx", "1\n");
+    // The only remote has no default branch to diff against.
+    let empty = w.root.join("empty.git");
+    Command::new("git")
+        .args(["init", "-q", "--bare", "--template="])
+        .arg(&empty)
+        .output()
+        .unwrap();
+    git(&w.work, &["remote", "remove", "origin"]);
+    git(
+        &w.work,
+        &["remote", "add", "fresh", &empty.display().to_string()],
+    );
+    let out = w.pre_bash("s", "push1", "git push -u fresh feat/x");
+    assert!(out.contains("amont-agent/push-preview"), "{out}");
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn evidence_never_stands_for_a_picked_mockups_preview() {
+    let w = World::new("evidence-mockup");
+    approve_plan(&w, PLAN);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(PLAN));
+    mockup_branch(&w);
+    let out = w.pre_bash("s", "push1", "git push -u origin feat/x");
+    assert!(out.contains("\"deny\""), "held: {out}");
+    assert!(!w.journal().contains(" evidence "), "{}", w.journal());
+}
+
+#[test]
+fn a_preview_heading_inside_a_code_fence_is_not_a_declaration() {
+    let w = World::new("evidence-fenced");
+    let fenced = PLAN.replace(
+        "## Preview\n\nevidence: the person already decided the only visible change, 28px small controls.\n",
+        "```md\n## Preview\n\nevidence: an example in a template\n```\n",
+    );
+    assert_ne!(fenced, PLAN);
+    approve_plan(&w, &fenced);
+    w.commit("docs/plans/2026-10-08-small.md", &landed(&fenced));
+    w.commit("app/a.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+}

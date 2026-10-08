@@ -280,7 +280,8 @@ fn candidates(root: &Path, base: &str) -> Option<Vec<String>> {
     Some(names)
 }
 
-fn is_plan_name(n: &str) -> bool {
+/// A plan's file name under `docs/plans/`, that prefix stripped.
+pub(crate) fn is_plan_name(n: &str) -> bool {
     n.ends_with(".md")
         && n != "README.md"
         && !n.ends_with(".reviews.md")

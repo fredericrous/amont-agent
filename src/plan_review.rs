@@ -222,13 +222,13 @@ fn is_machine_comment(line: &str) -> bool {
 
 /// Tracks fenced code so that a `## Review panel` inside an example is text.
 #[derive(Default)]
-struct Fence {
+pub(crate) struct Fence {
     open: Option<(char, usize)>,
 }
 
 impl Fence {
     /// The title of an ATX H2 outside any fence; updates the fence state.
-    fn h2<'a>(&mut self, line: &'a str) -> Option<&'a str> {
+    pub(crate) fn h2<'a>(&mut self, line: &'a str) -> Option<&'a str> {
         let indent = line.len() - line.trim_start_matches(' ').len();
         let t = line.trim_start_matches(' ');
         if indent <= 3 {

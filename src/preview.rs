@@ -446,6 +446,7 @@ pub fn needs_preview(
                 return Err("not a repository with a user interface");
             }
             let mut any_ui = false;
+            let mut evidenced = false;
             for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
                 let Some(ui) = carries_ui(&repo, t) else {
                     return if stance == Stance::Deny {
@@ -456,13 +457,23 @@ pub fn needs_preview(
                 };
                 if ui {
                     any_ui = true;
+                    let screens = mockup_screens(&repo, &t.src);
+                    // Evidence never stands for a picked mockup's preview,
+                    // nor when the screens cannot be listed.
+                    if matches!(&screens, Ok(s) if s.is_empty()) && planned_evidence(&repo, &t.src)
+                    {
+                        evidenced = true;
+                        continue;
+                    }
                     if !approved(&repo, &t.src) {
-                        let mockup = mockup_screens(&repo, &t.src).map_or(true, |s| !s.is_empty());
+                        let mockup = screens.map_or(true, |s| !s.is_empty());
                         return Ok(Needs::Unapproved { mockup });
                     }
                 }
             }
-            if any_ui {
+            if evidenced {
+                Err("the plan the person approved declares the preview's evidence")
+            } else if any_ui {
                 Err("every interface change is approved")
             } else {
                 Err("no interface change")
@@ -1488,6 +1499,110 @@ pub fn on_plan_answered(ev: &crate::payload::PlanAnswered) {
     );
 }
 
+/// Whether the person approved a plan whose canonical body has this sha.
+fn plan_approved(sha: &str) -> bool {
+    sha.len() == 64
+        && sha.bytes().all(|b| b.is_ascii_hexdigit())
+        && plans_approved_dir().is_some_and(|d| d.join(sha).is_file())
+}
+
+/// The reason a plan's `## Preview` section declares: the section's first
+/// non-empty line, when it starts with `evidence:` and gives one. Read from
+/// the canonical body, the part the person approved; a heading inside a
+/// code fence is text.
+pub fn preview_evidence(text: &str) -> Option<String> {
+    let body = crate::plan_review::canonical(text);
+    let mut fence = crate::plan_review::Fence::default();
+    let mut lines = body.lines();
+    lines
+        .by_ref()
+        .find(|l| fence.h2(l).is_some_and(|t| t == "Preview"))?;
+    let first = lines.find(|l| !l.trim().is_empty())?;
+    let reason = first.trim().strip_prefix("evidence:")?.trim();
+    (!reason.is_empty()).then(|| reason.to_string())
+}
+
+/// The first plan the branch adds: `(commit, path)` of the earliest
+/// `docs/plans/<name>` added in `from..commit`.
+fn first_plan(repo: &Path, from: &str, commit: &str) -> Option<(String, String)> {
+    let log = git(
+        repo,
+        &[
+            "log",
+            "--reverse",
+            "--diff-filter=A",
+            "--format=%H",
+            "--name-only",
+            &format!("{from}..{commit}"),
+            "--",
+            "docs/plans/",
+        ],
+    )?;
+    let mut at: Option<&str> = None;
+    for line in log.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(name) = line.strip_prefix("docs/plans/") {
+            if let Some(c) = at.filter(|_| crate::plan_phases::is_plan_name(name)) {
+                return Some((c.to_string(), line.to_string()));
+            }
+        } else if line.len() >= 40 && line.bytes().all(|b| b.is_ascii_hexdigit()) {
+            at = Some(line);
+        }
+    }
+    None
+}
+
+/// Whether the plan this branch landed, as the person approved it, says
+/// the evidence is enough (ADR-0028, `work.preview-unless-planned-evidence`).
+///
+/// All must hold: the default branch is known (`stale::remote_of` +
+/// `stale::default_base`) and shares history with `commit`; the branch adds
+/// a plan under `docs/plans/` since that merge base, and it is not a
+/// pointer (`canonical:`); that plan, read at the commit that added it, has
+/// a canonical body sha in `plan-approved/`; and its `## Preview` section
+/// starts with `evidence: <reason>`. A pass is journalled `evidence` with
+/// the plan, the commit and the sha. Any miss is silent: the approval path
+/// decides, as before.
+fn planned_evidence(repo: &Path, commit: &str) -> bool {
+    let Some(base) =
+        crate::stale::remote_of(repo).and_then(|r| crate::stale::default_base(repo, &r))
+    else {
+        return false;
+    };
+    let Some(from) = git(repo, &["merge-base", &base, commit]) else {
+        return false;
+    };
+    let Some((added, path)) = first_plan(repo, &from, commit) else {
+        return false;
+    };
+    let Some(text) = crate::git::stdout_in(repo, &["show", &format!("{added}:{path}")]) else {
+        return false;
+    };
+    let (front, _) = crate::plans::split_front_matter(&text);
+    if crate::plans::field(front, "canonical").is_some_and(|c| !c.is_empty()) {
+        return false;
+    }
+    let Ok(shas) = crate::plan_review::shas(&text) else {
+        return false;
+    };
+    if !plan_approved(&shas.sha) {
+        return false;
+    }
+    let Some(reason) = preview_evidence(&text) else {
+        return false;
+    };
+    note(
+        "evidence",
+        "-",
+        &repo.to_string_lossy(),
+        &format!(
+            "{path} commit={} sha={} evidence: {reason}",
+            short(commit),
+            &shas.sha[..12]
+        ),
+    );
+    true
+}
+
 // --- publication ----------------------------------------------------------
 
 /// Before a push runs: remember, per `tool_use_id`, where each branch
@@ -1616,6 +1731,31 @@ pub fn sweep() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preview_section_declares_evidence_on_its_first_line() {
+        let plan =
+            |section: &str| format!("# P\n\n## Context\n\nx\n\n{section}\n## Phases\n\n1. y\n");
+        assert_eq!(
+            preview_evidence(&plan("## Preview\n\nevidence: decided at 28px\n")).as_deref(),
+            Some("decided at 28px")
+        );
+        for held in [
+            // No reason.
+            "## Preview\n\nevidence:\n",
+            // Not the first non-empty line.
+            "## Preview\n\nThe screenshots.\nevidence: decided\n",
+            // Inside a code fence.
+            "```md\n## Preview\n\nevidence: an example\n```\n",
+            // Another heading.
+            "## Previews\n\nevidence: decided\n",
+            "",
+        ] {
+            assert_eq!(preview_evidence(&plan(held)), None, "{held}");
+        }
+        // Front matter is not the body the person approved.
+        assert_eq!(preview_evidence("---\nstatus: active\n---\n# P\n"), None);
+    }
 
     #[test]
     fn a_marker_lists_its_ids() {
