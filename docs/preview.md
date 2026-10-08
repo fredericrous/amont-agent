@@ -268,7 +268,8 @@ Two hooks make it checkable:
    - that plan, **read at the commit that added it**, has its canonical sha
      in `plan-approved/`;
    - its `## Preview` section (outside any code fence) has a first
-     non-empty line starting with `evidence:` and a reason.
+     non-empty line starting with `evidence:` and a reason. The template's
+     `<…>` placeholder, left unedited, is not a reason.
 
    A pass is journalled `evidence`, with the plan's path, the commit and the
    sha. Any miss — no plan, a plan on `main` before the branch, a section

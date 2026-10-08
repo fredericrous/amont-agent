@@ -1517,7 +1517,8 @@ fn plan_approved(sha: &str) -> bool {
 }
 
 /// The reason a plan's `## Preview` section declares: the section's first
-/// non-empty line, when it starts with `evidence:` and gives one. Read from
+/// non-empty line, when it starts with `evidence:` and gives one that is not
+/// the template's `<…>` placeholder, left unedited. Read from
 /// the canonical body, the part the person approved; a heading inside a
 /// code fence is text.
 pub fn preview_evidence(text: &str) -> Option<String> {
@@ -1529,7 +1530,7 @@ pub fn preview_evidence(text: &str) -> Option<String> {
         .find(|l| fence.h2(l).is_some_and(|t| t == "Preview"))?;
     let first = lines.find(|l| !l.trim().is_empty())?;
     let reason = first.trim().strip_prefix("evidence:")?.trim();
-    (!reason.is_empty()).then(|| reason.to_string())
+    (!reason.is_empty() && !reason.starts_with('<')).then(|| reason.to_string())
 }
 
 /// The first plan the branch adds: `(commit, path)` of the earliest
@@ -1753,6 +1754,8 @@ mod tests {
         for held in [
             // No reason.
             "## Preview\n\nevidence:\n",
+            // The template's placeholder, left as it was.
+            "## Preview\n\nevidence: <why the person will have nothing left to judge: the visible change\nis one this plan decides>\n",
             // Not the first non-empty line.
             "## Preview\n\nThe screenshots.\nevidence: decided\n",
             // Inside a code fence.
