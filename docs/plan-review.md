@@ -135,3 +135,42 @@ a new session, under a new file name, is therefore recognised.
 
 The default stance is `deny`. Set `amont.agent.plan-review-panel.stance` to
 `advise` to be told without being refused, or to `observe` to only journal.
+
+## Recording what the panel did
+
+`amont-agent plan-review record <plan.md> [--transcript <path>]` appends one
+JSON row per completed plan-review reviewer of the plan to
+`~/.claude/amont-agent/plan-review/outcomes.jsonl`, so the panel can later be
+judged on its own record. Without `--transcript` it reads the transcript under
+`~/.claude/projects` (modified in the last 7 days) that reviewed this plan's
+path: the one that reviewed its current body first, then the newest. A long
+session still being written to can have reviewed an older body days ago.
+
+stdin is a JSON array of findings (empty stdin is `[]`):
+`{"role", "severity": blocking|high|medium|low, "disposition":
+accepted|rejected|decision, "section"?, "area"?}`. They are attached to the
+rows this call writes for the highest round it writes, matched by role.
+
+A row has: `schema` (`amont-agent-review-outcome-v1`), `recorded_at` (unix
+seconds), `role`, `agent_id`, `model`, `tokens`, `seconds`, `round` (1-based,
+in the order distinct bodies first appear), `body_sha`, `first_round_sha`,
+`plan_path`, `plan` (`areas`, `repos`, `body_lines` of the body that round
+reviewed; null when that body was never saved), with `first_round_sha` the
+first body any call recorded for this plan path, across sessions, `verdict` (`rework`,
+`approve-with-changes`, `approve` or null), `remit` (the areas the role is
+asked for; `*` for backend) and `findings`.
+
+Rows are deduped by agent id under an exclusive lock, so a second run, or two
+at once, writes nothing twice. Each round written also saves the plan body
+once as `plan-review/bodies/<sha>.md`, if the plan file still has that body
+(otherwise a note on stderr); bodies older than 90 days are deleted. The
+directories are 0700 and the files 0600.
+
+Its status line (`wrote N rows (round R, plan <sha12>)`, `already recorded
+round R of <sha12>; nothing written`, or `no rows written …` when every
+reviewer lacked an agent id) goes to stderr; stdout stays empty.
+`--transcript=<path>` works too, and `--` ends the options.
+
+Exit codes: 0 when the ledger is up to date; 1 when no transcript names the
+plan, a reviewer has no agent id (the other rows are still written) or the
+ledger cannot be written; 2 on a usage error or malformed findings.

@@ -52,7 +52,7 @@ pub const BLOCK_OPEN: &str = "<<<PLAN ";
 const BLOCK_CLOSE: &str = ">>>";
 const REVIEW_SECTION: &str = "Review panel";
 const FULL_REVIEWS: &str = "Full reviews";
-const AGENT_PREFIX: &str = "plan-review-";
+pub(crate) const AGENT_PREFIX: &str = "plan-review-";
 /// Refusals of one plan before the call goes to the person instead.
 const REFUSALS_BEFORE_ASK: u32 = 2;
 /// Repository size, in files or in own commits, that adds a product owner
@@ -381,6 +381,23 @@ pub fn roles(classes: &BTreeSet<String>) -> BTreeSet<String> {
     r
 }
 
+/// The areas that make the panel ask for `role`: [`roles`] read backwards.
+/// `backend` is always asked, so it answers for every area (`*`). The
+/// outcome ledger records it so a later reader can tell a reviewer that
+/// had nothing to say about an area from one that was never asked.
+pub fn remit(role: &str) -> BTreeSet<String> {
+    let area: &[&str] = match role {
+        "unix" | "tui" => &["cli"],
+        "platform" => &["ops"],
+        "po" | "architect" => &["large"],
+        "react" | "ui-design" | "ux-research" | "game-ux" => &["ui"],
+        "backend" => &["*"],
+        r if r.starts_with("lang:") => &[r],
+        _ => &[],
+    };
+    area.iter().map(|s| s.to_string()).collect()
+}
+
 /// Where one `repos=` name lives. The config key's subsection keeps the
 /// name's case, so any valid name can be configured.
 pub fn locate(root: &Path, name: &str) -> PathBuf {
@@ -686,6 +703,24 @@ pub struct Completed {
     pub agent: String,
     pub prompt: String,
     pub result: String,
+    /// The agent's id, from the launch's result or its notification's
+    /// `<task-id>`. What the outcome ledger dedupes on.
+    pub agent_id: Option<String>,
+    /// `toolUseResult.resolvedModel` of the launch.
+    pub model: Option<String>,
+    /// Tokens the agent used: `totalTokens`, or `<subagent_tokens>`.
+    pub tokens: Option<u64>,
+    /// Wall time: `totalDurationMs`, or `<duration_ms>`.
+    pub duration_ms: Option<u64>,
+}
+
+/// What a launch's result and notification say about the agent itself.
+#[derive(Default, Clone)]
+struct Reported {
+    agent_id: Option<String>,
+    model: Option<String>,
+    tokens: Option<u64>,
+    duration_ms: Option<u64>,
 }
 
 /// The completed launches of agents whose type starts with `prefix`, in the
@@ -728,6 +763,8 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
     let mut launched: HashMap<String, (String, String)> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     let mut done: HashMap<String, String> = HashMap::new();
+    // launch id → what the agent reported about itself.
+    let mut facts: HashMap<String, Reported> = HashMap::new();
     // agentId → the agent type it was launched as.
     let mut agents: HashMap<String, String> = HashMap::new();
     // SendMessage id → (to, message), until its result says it resumed.
@@ -740,10 +777,10 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             continue;
         };
         let review = text.contains(prefix)
-            || (resumable
-                && (text.contains("SendMessage")
-                    || text.contains("agentId")
-                    || text.contains("AgentId")));
+            // A background launch's result names its agent by `agentId`
+            // alone, and the outcome ledger needs that id and model.
+            || text.contains("agentId")
+            || (resumable && (text.contains("SendMessage") || text.contains("AgentId")));
         let notice = text.contains("task-notification");
         if !review && !notice {
             continue;
@@ -799,6 +836,7 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                     let field = |k: &str| result.and_then(|r| r.get(k)).and_then(|s| s.as_str());
                     let completed = field("status") == Some("completed");
                     let agent_type = field("agentType");
+                    let number = |k: &str| result.and_then(|r| r.get(k)).and_then(|v| v.as_u64());
                     for c in content.into_iter().flatten() {
                         if c.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
                             continue;
@@ -807,6 +845,15 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                             continue;
                         };
                         if let Some((agent, _)) = launched.get(id) {
+                            let f = facts.entry(id.to_string()).or_default();
+                            if let Some(v) = field("agentId") {
+                                f.agent_id = Some(v.to_string());
+                            }
+                            if let Some(v) = field("resolvedModel") {
+                                f.model = Some(v.to_string());
+                            }
+                            f.tokens = number("totalTokens").or(f.tokens);
+                            f.duration_ms = number("totalDurationMs").or(f.duration_ms);
                             if completed && agent_type == Some(agent.as_str()) {
                                 done.insert(id.to_string(), text_of(c.get("content")));
                             }
@@ -864,6 +911,12 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             {
                 continue;
             }
+            let f = facts.entry(n.tool_use_id.clone()).or_default();
+            if !n.task_id.is_empty() {
+                f.agent_id.get_or_insert(n.task_id);
+            }
+            f.tokens = n.tokens.or(f.tokens);
+            f.duration_ms = n.duration_ms.or(f.duration_ms);
             done.insert(n.tool_use_id, n.result);
         }
     }
@@ -872,10 +925,15 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
         .filter_map(|id| {
             let result = done.remove(&id)?;
             let (agent, prompt) = launched.remove(&id)?;
+            let f = facts.remove(&id).unwrap_or_default();
             Some(Completed {
                 agent,
                 prompt,
                 result,
+                agent_id: rounds.remove(&id).or(f.agent_id),
+                model: f.model,
+                tokens: f.tokens,
+                duration_ms: f.duration_ms,
             })
         })
         .collect()
@@ -911,6 +969,10 @@ pub struct Notification {
     pub task_id: String,
     /// The `<result>` text (the whole chunk when it carries none).
     pub result: String,
+    /// `<subagent_tokens>` of the `<usage>` block, when it has one.
+    pub tokens: Option<u64>,
+    /// `<duration_ms>` of the `<usage>` block, when it has one.
+    pub duration_ms: Option<u64>,
 }
 
 /// The `completed` entries of a task notification.
@@ -930,6 +992,8 @@ pub fn notifications(text: &str) -> Vec<Notification> {
                 tool_use_id: tag(c, "tool-use-id")?,
                 task_id: tag(c, "task-id").unwrap_or_default(),
                 result: tag(c, "result").unwrap_or_else(|| c.trim().to_string()),
+                tokens: tag(c, "subagent_tokens").and_then(|v| v.parse().ok()),
+                duration_ms: tag(c, "duration_ms").and_then(|v| v.parse().ok()),
             })
         })
         .collect()
@@ -946,7 +1010,7 @@ fn completed_results(text: &str) -> Vec<(String, String)> {
 }
 
 /// The review blocks in one reviewer's prompt, as bindings of its role.
-fn parse_blocks(agent: &str, prompt: &str) -> Vec<Binding> {
+pub(crate) fn parse_blocks(agent: &str, prompt: &str) -> Vec<Binding> {
     let role = agent.trim_start_matches(AGENT_PREFIX);
     let mut out = Vec::new();
     let mut rest = prompt;
@@ -1134,7 +1198,7 @@ pub fn baseline(path: &str, sha: &str, legacy: &str, title: Option<&str>) -> Opt
         .or_else(|| load(&s.join("by-title").join(format!("{}.json", title?))))
 }
 
-fn private_dir(dir: &Path) -> Option<()> {
+pub(crate) fn private_dir(dir: &Path) -> Option<()> {
     std::fs::create_dir_all(dir).ok()?;
     journal::private(dir, 0o700);
     Some(())
@@ -1442,6 +1506,12 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
     }
 }
 
+/// [`classes_of`] for a reader that has no answer to give: `None` when the
+/// areas cannot be resolved (the outcome ledger records none, not a guess).
+pub fn areas_of(m: &Meta) -> Option<BTreeSet<String>> {
+    classes_of(m).ok()
+}
+
 fn list(s: &BTreeSet<String>) -> String {
     s.iter().cloned().collect::<Vec<_>>().join(", ")
 }
@@ -1610,6 +1680,18 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `remit` reads `roles` backwards, for every class the panel knows.
+    #[test]
+    fn remit_is_the_inverse_of_roles() {
+        for c in ["cli", "ops", "large", "ui", "lang:rust", "lang:go"] {
+            let class = BTreeSet::from([c.to_string()]);
+            for r in roles(&class).into_iter().filter(|r| r != "backend") {
+                assert!(remit(&r).contains(c), "{c} not in remit({r})");
+            }
+        }
+        assert_eq!(remit("backend"), BTreeSet::from(["*".to_string()]));
+    }
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
