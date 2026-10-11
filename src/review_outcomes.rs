@@ -63,8 +63,8 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
         return usage("plan-review takes one verb: record");
     }
     let mut plan: Option<&String> = None;
-    let mut transcript: Option<&String> = None;
-    let mut transcript_owned: Option<String> = None;
+    // The last `--transcript` wins, in either form.
+    let mut transcript: Option<String> = None;
     let mut operands_only = false;
     while let Some(a) = it.next() {
         if !operands_only && a == "--" {
@@ -73,9 +73,9 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
             let Some(v) = it.next() else {
                 return usage("--transcript needs a path");
             };
-            transcript = Some(v);
+            transcript = Some(v.clone());
         } else if let Some(v) = a.strip_prefix("--transcript=").filter(|_| !operands_only) {
-            transcript_owned = Some(v.to_string());
+            transcript = Some(v.to_string());
         } else if (!operands_only && a.starts_with('-') && a != "-") || plan.is_some() {
             return usage(&format!("unexpected argument `{a}`"));
         } else {
@@ -93,8 +93,7 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
         Ok(f) => f,
         Err(why) => return usage(&why),
     };
-    let transcript = transcript_owned.as_ref().or(transcript).map(PathBuf::from);
-    match record(Path::new(plan), transcript, &findings) {
+    match record(Path::new(plan), transcript.map(PathBuf::from), &findings) {
         // A status line, not data: stderr (cli.basics.stdout-is-data-stderr-is-talk).
         Ok((said, code)) => {
             eprint!("{said}");
@@ -303,13 +302,14 @@ fn lock(path: &Path) -> std::io::Result<Lock> {
 /// Options for a file only its owner reads: the ledger and the bodies hold
 /// what reviewers said about private plans.
 fn private_options() -> std::fs::OpenOptions {
-    #[allow(unused_mut)] // `mut` is used on unix only
-    let mut o = std::fs::OpenOptions::new();
+    let o = std::fs::OpenOptions::new();
     #[cfg(unix)]
-    {
+    let o = {
         use std::os::unix::fs::OpenOptionsExt;
+        let mut o = o;
         o.mode(0o600);
-    }
+        o
+    };
     o
 }
 

@@ -585,3 +585,22 @@ fn every_id_missing_says_no_rows_not_already_recorded() {
     );
     assert!(!err(&o).contains("already recorded"));
 }
+
+#[test]
+fn the_last_transcript_flag_wins() {
+    let mut w = World::new("last-wins");
+    w.foreground("backend", Some("a1"));
+    let t = w.transcript();
+    let o = w
+        .bin()
+        .args(["plan-review", "record"])
+        .arg("--transcript=/nonexistent/first.jsonl")
+        .arg("--transcript")
+        .arg(&t)
+        .arg(&w.plan)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(w.rows().len(), 1);
+}
