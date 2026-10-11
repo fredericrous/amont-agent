@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/lsp-record
 repos: [amont-agent]
 adrs: [ADR-0022]
@@ -144,7 +144,7 @@ journalled `lsp`: never dropped.
 
 1. ✅ Journal generations, then hook, payload, record, rule gate, deny text,
    tests, docs, v2.33.0 — one PR.
-2. Release (`tag-release`), `brew upgrade amont-agent`,
+2. ✅ Release (`tag-release`), `brew upgrade amont-agent`,
    `amont-agent install --write`; confirm a live LSP call is journalled and
    a following whole Read is silent.
 
@@ -183,7 +183,8 @@ journalled `lsp`: never dropped.
 | doctor | `doctor_reads_the_window_across_generations`: `.3`, `.1` and the live file seeded → `journal: 3 generations, oldest record 6d ago`, liveness `last ran` from `journal.log`. On a copy of the live (unrotated) journal: `1 generation, oldest record 17h ago`. ✅ |
 | timing | release build, 40 calls each: small answer p95 7.8 ms; 64 KiB repeated files 10.3 ms; 64 KiB naming 129 distinct files 13.3 ms; all 120 p95 12.5 ms (budget 15). After the CI fix, under load average 71: silent-hook baseline p95 7.6 ms, small 8.2, 64 KiB 14.5. ✅ |
 | make check | fmt, clippy -D warnings, tests: green. ✅ |
-| live | Phase 2, after the release. |
+| live (Phase 2) | v2.33.0 released (6 archives + SHA256SUMS), `brew upgrade` 2.32.0 → 2.33.0, `install --write`, doctor reports nothing missing. A `claude -p` session doing documentSymbol then a whole Read of `src/analysis/effects.rs` (11 KB): journal `lsp` then `code-read-not-lsp advise lsp-first`, record `asked main …/effects.rs`, no advisory in the transcript. ✅ |
+| live, deny (Phase 2) | stances are read from `--global` only, so a scratch `GIT_CONFIG_GLOBAL` (including the real one, plus `code-read-not-lsp.stance = deny`) was scoped to one `claude -p` child: a whole Read of `domain.rs` was `denied` with the text naming `documentSymbol`; after the LSP call the same Read passed, journalled `deny lsp-first`. The real global stance stayed unset. ✅ |
 
 ## Decision log
 
