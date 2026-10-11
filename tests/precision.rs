@@ -109,6 +109,10 @@ const BENIGN: &[(&str, &str)] = &[
         "pipefail",
     ),
     ("cargo test --no-run | tail", "ordinary"),
+    (
+        "set -o pipefail; git push origin main 2>&1 | tail -3",
+        "pipefail",
+    ),
 ];
 
 #[test]

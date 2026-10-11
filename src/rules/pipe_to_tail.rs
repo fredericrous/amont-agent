@@ -54,7 +54,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-08-20",
         trend: Trend::Flat(7),
     },
-    examine: Examine::Legacy(examine),
+    examine: Examine::Analysis(examine),
     confirm: None,
 };
 
@@ -145,7 +145,11 @@ fn tag_creates(cmd: &Simple) -> bool {
     cmd.operands().len() > 1
 }
 
-fn examine(parsed: &Parsed) -> Option<Finding> {
+fn examine(input: &Input) -> Option<Finding> {
+    let parsed = match input.legacy {
+        Parsed::Opaque(_) => return None,
+        parsed => parsed,
+    };
     // Indexed over ALL clauses, including any we could not read: `pipeline_sink`
     // walks by position, and a vector with holes in it would let this rule
     // invent a sink that was never there. An unreadable clause marks its whole
@@ -171,6 +175,11 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
             continue;
         };
         if !TRIMMING.contains(&sink_program) {
+            continue;
+        }
+        // Under `set -o pipefail` the pipeline reports the first failure, so
+        // nothing is swallowed. Only a definite yes exempts.
+        if pipefail_is_on(input, cmd) {
             continue;
         }
         let verb = describe(cmd);
