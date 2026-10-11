@@ -87,7 +87,50 @@ pub fn run() -> Vec<Finding> {
     out.push(stances());
     out.push(journal_span());
     out.push(lsp_rules());
+    out.extend(attestations_store());
     out
+}
+
+/// The evidence store: how much it holds, and whether the daily sweep is
+/// getting through. Silent when there is no store yet.
+fn attestations_store() -> Option<Finding> {
+    let env = crate::attestations::Env::live()?;
+    let t = now();
+    let s = crate::attestations::summary(&env, t)?;
+    let swept = match s.swept_ago {
+        Some(a) => format!("swept {} ago", ago(a)),
+        None => "never swept".to_string(),
+    };
+    let cited = match s.cited {
+        Some(k) => format!("{k} cited"),
+        None => "cited unknown (scan failed)".to_string(),
+    };
+    let line = format!(
+        "attestations: {} directories, {}, oldest {}; {cited}; {swept}",
+        s.dirs,
+        crate::attestations::mb_text(s.bytes),
+        ago(s.oldest),
+    );
+    if let Some(path) = crate::attestations::last_scan_failure() {
+        return Some(Finding::warn(
+            line,
+            format!(
+                "the last sweep could not read {path} and removed nothing; \
+                 run `amont-agent attestations` to see why"
+            ),
+        ));
+    }
+    if s.swept_ago
+        .is_some_and(|a| a > 2 * crate::attestations::DAY)
+    {
+        return Some(Finding::warn(
+            line,
+            "no SessionStart has swept for over 2 days; \
+             run `amont-agent attestations` to see what it would do"
+                .to_string(),
+        ));
+    }
+    Some(Finding::good(line))
 }
 
 /// Whether `code-read-not-lsp` and `symbol-grep-not-lsp` can speak here: they
@@ -545,7 +588,7 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn ago(secs: u64) -> String {
+pub(crate) fn ago(secs: u64) -> String {
     match secs {
         s if s < 90 => format!("{s}s"),
         s if s < 5400 => format!("{}m", s / 60),

@@ -68,6 +68,7 @@ fn decide(raw: &str) -> Decision {
             crate::session_state::sweep();
             crate::preview::sweep();
             crate::plan_phases::sweep();
+            crate::attestations::sweep();
             on_session_start(&session)
         }
         Event::NotOurs => Decision::Silent,

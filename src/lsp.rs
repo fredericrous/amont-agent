@@ -484,6 +484,8 @@ mod tests {
     use super::*;
     use crate::payload::LspCall;
 
+    // Used only by the Unix-only fixture test.
+    #[cfg(unix)]
     fn fixture(name: &str) -> LspCall {
         let raw = std::fs::read_to_string(format!(
             "{}/tests/fixtures/lsp-posttooluse-{name}.json",
