@@ -84,11 +84,26 @@ fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
     let Ok(meta) = std::fs::metadata(&path) else {
         return Confirmed::No("the file is not there to read");
     };
-    match d.extent {
-        Extent::Whole if meta.len() >= SMALL => Confirmed::Yes,
-        Extent::Whole => Confirmed::No("the file is small"),
-        Extent::Lines(_) | Extent::Bytes(_) => Confirmed::Yes,
+    if matches!(d.extent, Extent::Whole) && meta.len() < SMALL {
+        return Confirmed::No("the file is small");
     }
+    // Code LSP answers for is found with LSP, not with the grep this
+    // rule's remedy names for any other file.
+    if crate::lsp::is_code(&d.path) && crate::lsp::serves(&path).is_ok() {
+        return Confirmed::YesSaying {
+            floor: None,
+            ceiling: None,
+            reason: f.reason.clone(),
+            excerpt: d.path.clone(),
+            remedy: Some(
+                "Ask LSP first (`documentSymbol`, `goToDefinition`), then open the file with \
+                 the Read tool, with `offset`/`limit` around that line. `cat` is fine inside \
+                 a pipe or a heredoc."
+                    .to_string(),
+            ),
+        };
+    }
+    Confirmed::Yes
 }
 
 #[cfg(test)]

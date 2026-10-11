@@ -116,6 +116,7 @@ fn decide(raw: &str) -> Decision {
             crate::stance::resolve(&rules::plan_phases_open::RULE)
         }),
         Event::PreFile(op) => on_file(&op),
+        Event::PreGrep(op) => on_grep(&op),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
         Event::PostBash(bash) => on_post_bash(&bash),
@@ -300,6 +301,12 @@ fn on_bash(bash: &Bash) -> Decision {
                 continue;
             }
         };
+        if rule.id == rules::symbol_grep_not_lsp::RULE.id {
+            if let Err(why) = grep_gate(bash, &parsed, finding, stance) {
+                note(rule, "unconfirmed", why, bash, finding);
+                continue;
+            }
+        }
         if let Some(floor) = floor {
             if stance >= Stance::Advise {
                 stance = stance.max(floor).min(rule.max_stance);
@@ -519,13 +526,41 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
             Stance::Observe => {}
         }
     }
+    // Code that LSP would answer for: the remedy is LSP, and while this rule
+    // speaks, `read-unbounded-large` does not. An observing rule leaves it
+    // speaking, so turning this rule off never loses the size advice.
+    let mut code_spoken = false;
+    if !persisted && !reread.seen {
+        if let Some(bytes) = rules::code_read_not_lsp::applies(&op.path, &op.window) {
+            if crate::lsp::serves(&op.path).is_ok()
+                && crate::lsp::agent_has_tool(&op.agent, &op.cwd).is_ok()
+            {
+                let rule = &rules::code_read_not_lsp::RULE;
+                let stance = crate::stance::resolve(rule);
+                let first = stance == Stance::Observe
+                    || crate::lsp::first_time(&op.session, &format!("read {}", op.path.display()));
+                if first {
+                    note_file(rule, stance, op, &shown);
+                    let (reason, remedy) = rules::code_read_not_lsp::phrase(&shown, bytes);
+                    let text = decision::phrase(rule.id, &reason, &remedy);
+                    match stance {
+                        Stance::Deny => deny.push(text),
+                        Stance::Advise => advise.push(text),
+                        Stance::Observe => {}
+                    }
+                    code_spoken = stance != Stance::Observe;
+                }
+            }
+        }
+    }
     // Last, and quiet on a file the session has seen whatever `file-reread`'s
     // stance: its remedy already says to use `offset`/`limit`.
-    if !persisted && !reread.seen {
+    if !persisted && !reread.seen && !code_spoken {
         if let Some(bytes) = rules::read_unbounded_large::applies(&op.path, &op.window) {
             let rule = &rules::read_unbounded_large::RULE;
             let stance = crate::stance::resolve(rule);
-            let (reason, remedy) = rules::read_unbounded_large::phrase(&shown, bytes);
+            let code = crate::lsp::is_code(&shown) && crate::lsp::serves(&op.path).is_ok();
+            let (reason, remedy) = rules::read_unbounded_large::phrase(&shown, bytes, code);
             let text = decision::phrase(rule.id, &reason, &remedy);
             note_file(rule, stance, op, &shown);
             match stance {
@@ -587,6 +622,80 @@ fn on_post_file(op: &crate::payload::FileOp) -> Decision {
         crate::session_state::record(&op.session, "read", &op.path, &op.window);
     }
     Decision::Silent
+}
+
+/// What `symbol-grep-not-lsp` needs beyond its `confirm`: the facts are in
+/// the payload, not the command. The agent must have the LSP tool, and a
+/// session is told about one pattern once. An observing rule records nothing,
+/// so it never uses up the one telling.
+fn grep_gate(
+    bash: &Bash,
+    parsed: &Parsed,
+    finding: &Finding,
+    stance: Stance,
+) -> Result<(), &'static str> {
+    crate::lsp::agent_has_tool(&bash.agent, &bash.cwd)?;
+    if stance == Stance::Observe {
+        return Ok(());
+    }
+    let search = rules::symbol_grep_not_lsp::search_at(parsed, finding.span.start)
+        .ok_or("the command no longer matches")?;
+    if crate::lsp::first_time(&bash.session, &format!("grep {}", search.pattern)) {
+        Ok(())
+    } else {
+        Err("this session was told about this pattern")
+    }
+}
+
+/// A Grep tool call about to run: the tool's half of `symbol-grep-not-lsp`.
+/// The pure tests come first; the world is asked only about a symbol search
+/// over code.
+fn on_grep(op: &crate::payload::GrepOp) -> Decision {
+    use rules::symbol_grep_not_lsp as sg;
+    if op.output_mode.as_deref() == Some("count") || !sg::symbol(&op.pattern) {
+        return Decision::Silent;
+    }
+    let path = op.path.as_ref().map(|p| p.to_string_lossy().into_owned());
+    if !sg::grep_tool_targets_code(path.as_deref(), op.glob.as_deref(), op.kind.as_deref()) {
+        return Decision::Silent;
+    }
+    let target = op.path.clone().unwrap_or_else(|| op.cwd.clone());
+    if crate::lsp::serves(&target).is_err()
+        || crate::lsp::agent_has_tool(&op.agent, &op.cwd).is_err()
+    {
+        return Decision::Silent;
+    }
+    let rule = &sg::RULE;
+    let stance = crate::stance::resolve(rule);
+    if stance != Stance::Observe
+        && !crate::lsp::first_time(&op.session, &format!("grep {}", op.pattern))
+    {
+        return Decision::Silent;
+    }
+    journal::record(&journal::Entry {
+        rule: rule.id,
+        stance: stance.as_str(),
+        outcome: outcome_of(stance),
+        session: &op.session,
+        repo: &repo_name(&op.cwd),
+        mode: &op.permission_mode,
+        excerpt: &format!("Grep {}", op.pattern),
+    });
+    let (reason, remedy) = sg::phrase(&op.pattern);
+    let text = decision::phrase(rule.id, &reason, &remedy);
+    match stance {
+        Stance::Observe => Decision::Silent,
+        Stance::Advise => Decision::Advise(text),
+        Stance::Deny => Decision::Deny(text),
+    }
+}
+
+fn outcome_of(stance: Stance) -> &'static str {
+    match stance {
+        Stance::Observe => "watched",
+        Stance::Advise => "advised",
+        Stance::Deny => "denied",
+    }
 }
 
 /// The window a `cat`-shaped dump covers, in the Read tool's own spelling.

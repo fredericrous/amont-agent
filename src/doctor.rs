@@ -37,6 +37,8 @@ struct Install {
     path: PathBuf,
     command: String,
     event: String,
+    /// The block's `matcher`; `None` for an event that takes none.
+    matcher: Option<String>,
 }
 
 pub struct Finding {
@@ -83,7 +85,29 @@ pub fn run() -> Vec<Finding> {
     out.push(self_test());
     out.push(liveness(&installs));
     out.push(stances());
+    out.push(lsp_rules());
     out
+}
+
+/// Whether `code-read-not-lsp` and `symbol-grep-not-lsp` can speak here: they
+/// stay silent without fleet-lsp on PATH, outside a git working tree, or with
+/// the plugin off, and nothing else would say so.
+fn lsp_rules() -> Finding {
+    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match (crate::lsp::on_path("fleet-lsp"), crate::lsp::serves(&here)) {
+        (Some(bin), Ok(())) => Finding::good(format!(
+            "LSP rules: fleet-lsp at {}, plugin enabled",
+            bin.display()
+        )),
+        (_, Err(why)) => Finding::warn(
+            "LSP rules are silent here",
+            format!(
+                "{why}: `code-read-not-lsp` and `symbol-grep-not-lsp` speak only where fleet-lsp \
+                 would answer"
+            ),
+        ),
+        (None, Ok(())) => Finding::warn("LSP rules are silent here", "fleet-lsp is not on PATH"),
+    }
 }
 
 /// Every settings file that names us, and the command each one points at.
@@ -134,6 +158,10 @@ fn installed_in() -> Vec<Install> {
                                 .unwrap_or_default()
                                 .to_string(),
                             event: (*event).to_string(),
+                            matcher: block
+                                .get("matcher")
+                                .and_then(|m| m.as_str())
+                                .map(str::to_string),
                         });
                     }
                 }
@@ -171,28 +199,34 @@ fn configured(installs: &[Install]) -> Finding {
             ),
         );
     }
-    let events = installs.len();
-    let want = settings::TARGETS.len();
-    if events < want {
-        // TARGETS interleaves events, so each is kept once by look-up, not
-        // by `dedup`, which only folds neighbours.
-        let mut missing: Vec<&str> = Vec::new();
-        for (event, _) in settings::TARGETS {
-            if !missing.contains(event) && !installs.iter().any(|i| i.event == *event) {
-                missing.push(event);
-            }
-        }
-        let named = if missing.is_empty() {
-            String::new()
-        } else {
-            format!("missing event: {}. ", missing.join(", "))
-        };
+    // Each (event, matcher) pair, not each event: a release that adds a
+    // matcher to an event already installed (PreToolUse Grep, 2.32.0) would
+    // otherwise count as complete.
+    let missing: Vec<String> = settings::TARGETS
+        .iter()
+        .filter(|(event, matcher)| {
+            !installs
+                .iter()
+                .any(|i| i.event == *event && i.matcher.as_deref() == *matcher)
+        })
+        .map(|(event, matcher)| match matcher {
+            Some(m) => format!("{event} {m}"),
+            None => (*event).to_string(),
+        })
+        .collect();
+    if !missing.is_empty() {
+        let want = settings::TARGETS.len();
         return Finding::warn(
-            format!("installed for {events} of {want} events"),
             format!(
-                "{named}re-run `amont-agent install --write`: the SessionStart entry is what \
-                 proves the guard is alive, and the Read|Edit|Write and PostToolUse Read \
-                 entries are what let `file-reread` see a file opened twice"
+                "installed for {} of {want} hook entries",
+                want - missing.len()
+            ),
+            format!(
+                "missing: {}. Re-run `amont-agent install --write`: the SessionStart entry is \
+                 what proves the guard is alive, the Read|Edit|Write and PostToolUse Read \
+                 entries let `file-reread` see a file opened twice, and the Grep entry lets \
+                 `symbol-grep-not-lsp` see the Grep tool",
+                missing.join(", ")
             ),
         );
     }

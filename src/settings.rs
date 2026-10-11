@@ -258,6 +258,10 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // question "was this file already read this session" can only be answered
     // if the hook sees every one of them.
     ("PreToolUse", Some("Read|Edit|Write|MultiEdit")),
+    // `symbol-grep-not-lsp` on the Grep tool. Its own block, so the file
+    // tier's matcher above stays exactly what earlier installs wrote and
+    // nothing is installed twice.
+    ("PreToolUse", Some("Grep")),
     ("PostToolUse", Some("Bash")),
     // A Read is remembered only once it has run: a Read that was refused, or
     // that failed on a path that is not there, put nothing in context, and
