@@ -415,11 +415,15 @@ fn expand_home(p: &str) -> std::path::PathBuf {
 
 /// A Grep tool call that searches code: a code file, a glob or type naming
 /// code, or a directory (the cwd when `path` is empty) with neither.
-pub fn grep_tool_targets_code(path: Option<&str>, glob: Option<&str>, kind: Option<&str>) -> bool {
-    let selectors: Vec<&str> = glob.into_iter().chain(kind).collect();
-    if let Some(p) = path.filter(|p| file_shaped(p)) {
-        return crate::lsp::is_code(p);
+///
+/// `file` is the file name when `path` names a regular file, and `None` for
+/// a directory: the caller asks the filesystem, since a path's spelling does
+/// not say which (`C:\repo\.` is a directory).
+pub fn grep_tool_targets_code(file: Option<&str>, glob: Option<&str>, kind: Option<&str>) -> bool {
+    if let Some(name) = file {
+        return crate::lsp::is_code(name);
     }
+    let selectors: Vec<&str> = glob.into_iter().chain(kind).collect();
     selectors.is_empty() || selectors.iter().any(|s| crate::lsp::names_code(s))
 }
 
@@ -553,23 +557,14 @@ mod tests {
     }
 
     #[test]
-    fn the_grep_tool_targets_code_by_path_glob_or_type() {
-        assert!(grep_tool_targets_code(Some("/r/src/hook.rs"), None, None));
-        assert!(grep_tool_targets_code(Some("/r"), None, None));
-        assert!(grep_tool_targets_code(None, None, None));
-        assert!(grep_tool_targets_code(
-            Some("/r"),
-            Some("**/*.{ts,tsx}"),
-            None
-        ));
-        assert!(grep_tool_targets_code(Some("/r"), None, Some("rust")));
-        assert!(!grep_tool_targets_code(Some("/r/x.yaml"), None, None));
-        assert!(!grep_tool_targets_code(
-            Some("/r"),
-            Some("**/*macro*"),
-            None
-        ));
-        assert!(!grep_tool_targets_code(Some("/r"), None, Some("yaml")));
+    fn the_grep_tool_targets_code_by_file_glob_or_type() {
+        assert!(grep_tool_targets_code(Some("hook.rs"), None, None));
+        assert!(grep_tool_targets_code(None, None, None), "a directory");
+        assert!(grep_tool_targets_code(None, Some("**/*.{ts,tsx}"), None));
+        assert!(grep_tool_targets_code(None, None, Some("rust")));
+        assert!(!grep_tool_targets_code(Some("x.yaml"), None, None));
+        assert!(!grep_tool_targets_code(None, Some("**/*macro*"), None));
+        assert!(!grep_tool_targets_code(None, None, Some("yaml")));
     }
 
     #[test]

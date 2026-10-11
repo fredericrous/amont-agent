@@ -673,8 +673,13 @@ fn on_grep(op: &crate::payload::GrepOp) -> Decision {
     if op.output_mode.as_deref() == Some("count") || !sg::symbol(&op.pattern) {
         return Decision::Silent;
     }
-    let path = op.path.as_ref().map(|p| p.to_string_lossy().into_owned());
-    if !sg::grep_tool_targets_code(path.as_deref(), op.glob.as_deref(), op.kind.as_deref()) {
+    let file = op
+        .path
+        .as_ref()
+        .filter(|p| p.is_file())
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    if !sg::grep_tool_targets_code(file.as_deref(), op.glob.as_deref(), op.kind.as_deref()) {
         return Decision::Silent;
     }
     let target = op.path.clone().unwrap_or_else(|| op.cwd.clone());
