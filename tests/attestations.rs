@@ -121,9 +121,10 @@ fn open_dir(path: &Path) -> fs::File {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         fs::OpenOptions::new()
             .write(true)
-            .custom_flags(0x0200_0000)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path)
             .unwrap()
     }

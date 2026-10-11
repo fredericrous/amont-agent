@@ -597,6 +597,10 @@ fn take_over(lock: &Path, now: u64) -> Option<Lock> {
         // leave a lock nobody holds, blocking every run for an hour (CI
         // caught exactly that). The lock is advisory; the day's claim
         // (`claim_today`) is what keeps the daily run single.
+        // holds-until: removal stays idempotent (a rename to the trash with
+        // NotFound tolerated). Then a manual `--apply` overlapping the daily
+        // run, which an advisory lock allows, is harmless; a removal that is
+        // not would need a lock that cannot be dropped this way.
         let _ = fs::remove_file(&stale);
         return None;
     }
@@ -620,10 +624,10 @@ fn stamp_fresh(env: &Env, now: u64) -> bool {
 
 /// Claim today's run: `attestations.swept.<day>` made with `create_new`, so
 /// exactly one process per day gets it, whatever happened to the lock. The
-/// lock alone was not enough: a takeover that renames a live lock back can
-/// overwrite a lock a third process created in between, and two holders then
-/// both found the stamp stale (round 24 of 50 in the stale-lock test). Older
-/// claims are removed.
+/// lock is advisory: a takeover can drop a live holder's lock, and that
+/// holder's `Drop` can then remove a successor's lock, so two processes can
+/// hold "the" lock at once (the stale-lock test found two daily runs before
+/// this claim existed). Older claims are removed.
 fn claim_today(env: &Env, now: u64) -> bool {
     let day = now / DAY;
     let mine = format!("attestations.swept.{day}");
@@ -983,9 +987,10 @@ mod tests {
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
             fs::OpenOptions::new()
                 .write(true)
-                .custom_flags(0x0200_0000)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
                 .open(path)
                 .unwrap()
         }
