@@ -506,7 +506,7 @@ mod tests {
     }
 
     // Unix path literals and symlinks: on Windows `/home/...` is not
-    // absolute and `canonicalize` adds a `\\?\\` prefix.
+    // absolute and `canonicalize` adds a `\\?\` prefix.
     #[cfg(unix)]
     #[test]
     fn the_fixtures_are_parsed_as_real_payloads() {
@@ -590,9 +590,6 @@ mod tests {
         );
     }
 
-    // Unix path literals and symlinks: on Windows `/home/...` is not
-    // absolute and `canonicalize` adds a `\\?\\` prefix.
-    #[cfg(unix)]
     #[test]
     fn one_normal_form_for_every_spelling() {
         let dir = std::env::temp_dir().join(format!("amont-agent-lsp-nf-{}", std::process::id()));
@@ -606,8 +603,10 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(normal(&dir.join("link/src/x.rs")), direct);
         let mut c = call("findReferences", "src/x.rs", "./src/x.rs:\n  Line 1:1");
-        c.cwd = dir.join("link");
-        c.file_path = dir.join("link/src/x.rs");
+        // Through the symlink where there is one; Windows has none here.
+        let via = if cfg!(unix) { "link" } else { "real" };
+        c.cwd = dir.join(via);
+        c.file_path = dir.join(via).join("src/x.rs");
         assert_eq!(asked_files(&c), [direct]);
         let _ = std::fs::remove_dir_all(&dir);
     }

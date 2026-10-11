@@ -56,19 +56,11 @@ pub fn dir() -> Option<PathBuf> {
     Some(crate::settings::config_dir()?.join("amont-agent"))
 }
 
-/// Open an existing journal file for appending. Creating it is
-/// [`create_with_header`]'s job, at 0600 rather than 0644: a writer that
-/// raced a rotation then finds no file and goes back through the header
-/// path, instead of creating one without a header.
-///
-/// The mode is set AT CREATION, not afterwards: a file that exists
-/// world-readable for the instant between `open` and `set_permissions` is a
-/// file somebody's backup agent can have read. `OpenOptions::mode` applies
-/// only when the open creates the file, so an existing journal keeps
-/// whatever mode it has — the same rule `atomic::carry_mode` follows for
-/// `settings.json`, and for the same reason: our writes never change who can
-/// read a file that already existed. [`private`] is what widens nothing and
-/// narrows an old journal in place.
+/// Open an existing journal file for appending; never creates one. Creating
+/// it is [`create_with_header`]'s job, so a writer that raced a rotation finds
+/// no file and goes back through the header path instead of creating one
+/// without a header. [`private`] is what widens nothing and narrows an old
+/// journal in place.
 fn open_private(path: &std::path::Path) -> Option<fs::File> {
     let f = fs::OpenOptions::new().append(true).open(path).ok()?;
     // An older amont-agent created this file at 0644 under the default
@@ -326,13 +318,24 @@ fn append(path: &std::path::Path, max: u64, line: &str) -> Option<()> {
 ///
 /// `None` only when the header could not be written at all: the record is
 /// then dropped rather than left in a file without one.
+///
+/// The mode, 0600 rather than 0644, is set AT CREATION, not afterwards: a
+/// file that exists world-readable for the instant between `open` and
+/// `set_permissions` is a file somebody's backup agent can have read, and the
+/// link carries the staged file's mode. An existing journal keeps whatever
+/// mode it has — the same rule `atomic::carry_mode` follows for
+/// `settings.json`, and for the same reason: our writes never change who can
+/// read a file that already existed.
 fn create_with_header(path: &std::path::Path) -> Option<()> {
     if path.exists() {
         return Some(());
     }
     let staged = {
         let mut s = path.as_os_str().to_os_string();
-        s.push(format!(".new.{}", std::process::id()));
+        // Per call, not per process: two threads must not share it.
+        static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        s.push(format!(".new.{}.{n}", std::process::id()));
         PathBuf::from(s)
     };
     let mut opts = fs::OpenOptions::new();
@@ -348,7 +351,23 @@ fn create_with_header(path: &std::path::Path) -> Option<()> {
     // AlreadyExists is another writer's header: ours is not needed.
     let linked = wrote.and_then(|()| match fs::hard_link(&staged, path) {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        other => other,
+        // A file system without hard links: an append-mode `create_new`.
+        // A racing record may then come before the header, never under it.
+        Err(_) => {
+            let mut opts = fs::OpenOptions::new();
+            opts.append(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            match opts.open(path) {
+                Ok(mut f) => f.write_all(format!("{FORMAT}\n").as_bytes()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+        Ok(()) => Ok(()),
     });
     let _ = fs::remove_file(&staged);
     linked.ok()
