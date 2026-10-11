@@ -693,3 +693,49 @@ fn usage_errors_exit_two() {
         .unwrap();
     assert_eq!(o.status.code(), Some(2));
 }
+
+/// stdin on a terminal is a usage error, not a hang. `script` lends the
+/// binary a pty: BSD `script -q <log> <cmd…>` on macOS, util-linux
+/// `script -qc "<cmd>" <log>` elsewhere. Without `script` the test is a
+/// no-op, since no other pty is available to it.
+#[cfg(unix)]
+#[test]
+fn stdin_on_a_terminal_is_a_usage_error() {
+    let w = World::new("tty");
+    if Command::new("script").arg("--version").output().is_err()
+        && Command::new("script").output().is_err()
+    {
+        return;
+    }
+    let bin = env!("CARGO_BIN_EXE_amont-agent");
+    let log = w.root.join("script.log");
+    let mut c = Command::new("script");
+    if cfg!(target_os = "macos") {
+        c.arg("-q")
+            .arg(&log)
+            .arg(bin)
+            .arg("plan-apply")
+            .arg(&w.plan);
+    } else {
+        c.arg("-qc")
+            .arg(format!("'{bin}' plan-apply '{}'", w.plan.display()))
+            .arg(&log);
+    }
+    let o = c
+        .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))
+        .env("AMONT_AGENT_PLAN_ROOT", w.root.join("repos"))
+        .env_remove("AMONT_AGENT_OFF")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    // BSD script returns the child's status; util-linux does with -e, so the
+    // log is read instead of the status.
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        said.contains("come on stdin, not a terminal") && said.contains("usage:"),
+        "status {:?}, log: {said}",
+        o.status.code()
+    );
+    // The data lines never appear: the command refused before reading.
+    assert!(!said.lines().any(|l| l.starts_with("applied ")), "{said}");
+}

@@ -457,14 +457,11 @@ fn flatten(s: &str) -> String {
 
 /// The nearest heading above `offset`, outside fenced code.
 fn section_at(text: &str, offset: usize) -> String {
-    let mut open = false;
+    let mut fence = plan_review::Fence::default();
     let mut title = String::new();
     for line in text[..offset].lines() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            open = !open;
-        } else if !open && t.starts_with('#') {
-            title = t.trim_start_matches('#').trim().to_string();
+        if let Some(t) = fence.heading(line) {
+            title = t.to_string();
         }
     }
     title
@@ -573,12 +570,27 @@ fn store() -> Result<PathBuf, Fail> {
     Ok(store)
 }
 
+/// Every row of the ledger. A line that is not JSON is a torn append from
+/// an interrupted writer: it is skipped and counted on stderr, never fatal,
+/// as `review_outcomes::recorded` does.
 fn rows(ledger: &Path) -> std::io::Result<Vec<serde_json::Value>> {
     match std::fs::read(ledger) {
-        Ok(b) => Ok(String::from_utf8_lossy(&b)
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect()),
+        Ok(b) => {
+            let text = String::from_utf8_lossy(&b);
+            let mut torn = 0usize;
+            let rows = text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| serde_json::from_str(l).inspect_err(|_| torn += 1).ok())
+                .collect();
+            if torn > 0 {
+                eprintln!(
+                    "amont-agent: {torn} torn line(s) skipped in {}",
+                    ledger.display()
+                );
+            }
+            Ok(rows)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e),
     }
@@ -660,22 +672,22 @@ fn apply(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
     }
 
     let mut after = Some(before.clone());
-    if applied > 0 && !dry {
+    if applied > 0 {
         let new = splice(&text, &judged);
         after = plan_review::shas(&new).ok().map(|s| s.sha);
         if after.is_none() {
             eprintln!("amont-agent: sha unavailable (the Markdown parser panicked)");
         }
-        // Another writer between our read and our rename would be lost.
-        if read_plan(real)? != text {
-            return Err(Fail::Io(
-                "plan changed under plan-apply; nothing written".into(),
-            ));
+        if !dry {
+            // Another writer between our read and our rename would be lost.
+            if read_plan(real)? != text {
+                return Err(Fail::Io(
+                    "plan changed under plan-apply; nothing written".into(),
+                ));
+            }
+            crate::atomic::write_atomic(real, &new)
+                .map_err(|e| Fail::Io(format!("cannot write {}: {e}", real.display())))?;
         }
-        crate::atomic::write_atomic(real, &new)
-            .map_err(|e| Fail::Io(format!("cannot write {}: {e}", real.display())))?;
-    } else if applied > 0 {
-        after = sha_of(&splice(&text, &judged)).ok();
     }
     if !dry {
         let row = serde_json::json!({
@@ -830,8 +842,11 @@ fn fallback(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
     };
     let io = |e: std::io::Error| Fail::Io(format!("cannot read {}: {e}", ledger.display()));
     let seen = rows(&ledger).map_err(io)?;
+    // The dedupe key is (schema, agent_id): an agent id names one launch,
+    // whichever plan it applied.
     if seen.iter().any(|r| {
-        is_merge(r, &plan_path) && r.get("agent_id").and_then(|a| a.as_str()) == Some(&agent_id)
+        r.get("schema").and_then(|s| s.as_str()) == Some(MERGE_SCHEMA)
+            && r.get("agent_id").and_then(|a| a.as_str()) == Some(&agent_id)
     }) {
         eprintln!("already recorded the fallback of {agent_id}; nothing written");
         return Ok((String::new(), 0));

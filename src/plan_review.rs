@@ -256,8 +256,10 @@ pub(crate) struct Fence {
 }
 
 impl Fence {
-    /// The title of an ATX H2 outside any fence; updates the fence state.
-    pub(crate) fn h2<'a>(&mut self, line: &'a str) -> Option<&'a str> {
+    /// The line's text when it is prose outside any fence, indented at most
+    /// 3; updates the fence state. A fence line, a line inside code, and an
+    /// indented line are `None`.
+    pub(crate) fn prose<'a>(&mut self, line: &'a str) -> Option<&'a str> {
         let indent = line.len() - line.trim_start_matches(' ').len();
         let t = line.trim_start_matches(' ');
         if indent <= 3 {
@@ -278,8 +280,25 @@ impl Fence {
         if self.open.is_some() || indent > 3 {
             return None;
         }
-        let title = t.strip_prefix("## ")?;
+        Some(t)
+    }
+
+    /// The title of an ATX H2 outside any fence; updates the fence state.
+    pub(crate) fn h2<'a>(&mut self, line: &'a str) -> Option<&'a str> {
+        let title = self.prose(line)?.strip_prefix("## ")?;
         Some(title.trim().trim_end_matches('#').trim_end())
+    }
+
+    /// The title of an ATX heading of any level outside any fence; updates
+    /// the fence state.
+    pub(crate) fn heading<'a>(&mut self, line: &'a str) -> Option<&'a str> {
+        let t = self.prose(line)?;
+        let hashes = t.len() - t.trim_start_matches('#').len();
+        if hashes == 0 || hashes > 6 {
+            return None;
+        }
+        let rest = t[hashes..].strip_prefix(' ')?;
+        Some(rest.trim().trim_end_matches('#').trim_end())
     }
 }
 
