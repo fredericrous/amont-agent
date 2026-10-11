@@ -175,9 +175,9 @@ fn foreground_and_background_launches_both_yield_rows() {
     let o = w.record("");
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     assert!(
-        out(&o).starts_with("wrote 2 rows (round 1, plan "),
+        err(&o).contains("wrote 2 rows (round 1, plan "),
         "{}",
-        out(&o)
+        err(&o)
     );
     let rows = w.rows();
     let by = |r: &str| rows.iter().find(|x| x["role"] == r).unwrap().clone();
@@ -254,11 +254,11 @@ fn a_second_run_writes_nothing() {
     let o = w.record("[]");
     assert_eq!(o.status.code(), Some(0));
     assert!(
-        out(&o).starts_with("already recorded round 1 of "),
+        err(&o).contains("already recorded round 1 of "),
         "{}",
-        out(&o)
+        err(&o)
     );
-    assert!(out(&o).ends_with("; nothing written\n"));
+    assert!(err(&o).contains("; nothing written\n"));
     assert_eq!(w.rows().len(), 1);
 }
 
@@ -381,9 +381,9 @@ fn rounds_follow_the_order_bodies_first_appear() {
     let o = w.record(f);
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     assert!(
-        out(&o).starts_with("wrote 3 rows (round 2, plan "),
+        err(&o).contains("wrote 3 rows (round 2, plan "),
         "{}",
-        out(&o)
+        err(&o)
     );
     let rows = w.rows();
     let row = |id: &str| rows.iter().find(|r| r["agent_id"] == id).unwrap().clone();
@@ -551,4 +551,37 @@ fn an_unsaved_body_records_no_features() {
     w.set_body(&format!("{BODY}\nRevised.\n"));
     assert_eq!(w.record("[]").status.code(), Some(0));
     assert_eq!(w.rows()[0]["plan"], serde_json::Value::Null);
+}
+
+#[test]
+fn transcript_takes_the_equals_form_and_double_dash_ends_options() {
+    let mut w = World::new("posix");
+    w.foreground("backend", Some("a1"));
+    let t = w.transcript();
+    let o = w
+        .bin()
+        .args(["plan-review", "record"])
+        .arg(format!("--transcript={}", t.display()))
+        .arg("--")
+        .arg(&w.plan)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(out(&o), "", "the status line is talk, on stderr");
+    assert_eq!(w.rows().len(), 1);
+}
+
+#[test]
+fn every_id_missing_says_no_rows_not_already_recorded() {
+    let mut w = World::new("all-missing");
+    w.foreground("backend", None);
+    let o = w.record("[]");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        err(&o).contains("no rows written for round 1"),
+        "{}",
+        err(&o)
+    );
+    assert!(!err(&o).contains("already recorded"));
 }

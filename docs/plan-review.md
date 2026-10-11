@@ -166,6 +166,11 @@ once as `plan-review/bodies/<sha>.md`, if the plan file still has that body
 (otherwise a note on stderr); bodies older than 90 days are deleted. The
 directories are 0700 and the files 0600.
 
+Its status line (`wrote N rows (round R, plan <sha12>)`, `already recorded
+round R of <sha12>; nothing written`, or `no rows written …` when every
+reviewer lacked an agent id) goes to stderr; stdout stays empty.
+`--transcript=<path>` works too, and `--` ends the options.
+
 Exit codes: 0 when the ledger is up to date; 1 when no transcript names the
 plan, a reviewer has no agent id (the other rows are still written) or the
 ledger cannot be written; 2 on a usage error or malformed findings.

@@ -64,13 +64,19 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
     }
     let mut plan: Option<&String> = None;
     let mut transcript: Option<&String> = None;
+    let mut transcript_owned: Option<String> = None;
+    let mut operands_only = false;
     while let Some(a) = it.next() {
-        if a == "--transcript" {
+        if !operands_only && a == "--" {
+            operands_only = true;
+        } else if !operands_only && a == "--transcript" {
             let Some(v) = it.next() else {
                 return usage("--transcript needs a path");
             };
             transcript = Some(v);
-        } else if a.starts_with("--") || plan.is_some() {
+        } else if let Some(v) = a.strip_prefix("--transcript=").filter(|_| !operands_only) {
+            transcript_owned = Some(v.to_string());
+        } else if (!operands_only && a.starts_with('-') && a != "-") || plan.is_some() {
             return usage(&format!("unexpected argument `{a}`"));
         } else {
             plan = Some(a);
@@ -87,8 +93,13 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
         Ok(f) => f,
         Err(why) => return usage(&why),
     };
-    match record(Path::new(plan), transcript.map(PathBuf::from), &findings) {
-        Ok((said, code)) => (said, ExitCode::from(code)),
+    let transcript = transcript_owned.as_ref().or(transcript).map(PathBuf::from);
+    match record(Path::new(plan), transcript, &findings) {
+        // A status line, not data: stderr (cli.basics.stdout-is-data-stderr-is-talk).
+        Ok((said, code)) => {
+            eprint!("{said}");
+            (String::new(), ExitCode::from(code))
+        }
         Err(why) => {
             eprintln!("amont-agent: {why}");
             (String::new(), ExitCode::from(1))
@@ -173,9 +184,20 @@ fn discover(plan: &str, current: &str) -> Option<(PathBuf, Vec<Launch>)> {
     let projects = crate::settings::config_dir()?.join("projects");
     let now = std::time::SystemTime::now();
     let mut best: Option<((bool, std::time::SystemTime), PathBuf, Vec<Launch>)> = None;
-    for dir in std::fs::read_dir(projects).ok()?.flatten() {
-        let Ok(files) = std::fs::read_dir(dir.path()) else {
-            continue;
+    let dirs = match std::fs::read_dir(&projects) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("amont-agent: cannot read {}: {e}", projects.display());
+            return None;
+        }
+    };
+    for dir in dirs.flatten() {
+        let files = match std::fs::read_dir(dir.path()) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("amont-agent: skipped {}: {e}", dir.path().display());
+                continue;
+            }
         };
         for f in files.flatten() {
             let path = f.path();
@@ -195,7 +217,14 @@ fn discover(plan: &str, current: &str) -> Option<(PathBuf, Vec<Launch>)> {
             {
                 continue;
             }
-            if let Ok(found) = launches(&path, plan) {
+            let found = match launches(&path, plan) {
+                Ok(f) => Ok(f),
+                Err(e) => {
+                    eprintln!("amont-agent: skipped {}: {e}", path.display());
+                    Err(e)
+                }
+            };
+            if let Ok(found) = found {
                 let key = (found.iter().any(|l| l.sha == current), modified);
                 if !found.is_empty() && best.as_ref().is_none_or(|(k, _, _)| key > *k) {
                     best = Some((key, path, found));
@@ -271,23 +300,29 @@ fn lock(path: &Path) -> std::io::Result<Lock> {
     Ok(Lock { _held: f })
 }
 
-/// A file only its owner reads: the ledger holds what reviewers said about
-/// private plans.
-fn open_new(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
+/// Options for a file only its owner reads: the ledger and the bodies hold
+/// what reviewers said about private plans.
+fn private_options() -> std::fs::OpenOptions {
+    #[allow(unused_mut)] // `mut` is used on unix only
     let mut o = std::fs::OpenOptions::new();
-    if append {
-        o.append(true).create(true);
-    } else {
-        o.write(true).create_new(true);
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
-    let f = o.open(path)?;
+    o
+}
+
+/// The ledger, opened for appending; created when missing.
+fn open_ledger(path: &Path) -> std::io::Result<std::fs::File> {
+    let f = private_options().append(true).create(true).open(path)?;
     crate::journal::private(path, 0o600);
     Ok(f)
+}
+
+/// A saved body, created once: `AlreadyExists` when an earlier call wrote it.
+fn create_body(path: &Path) -> std::io::Result<std::fs::File> {
+    private_options().write(true).create_new(true).open(path)
 }
 
 /// What the ledger already holds: the agent ids on record, and the round-1
@@ -379,7 +414,16 @@ fn record(
     // never saved records null, not a guess from another body.
     let features = |sha: &str| {
         let saved = (plan_sha != sha)
-            .then(|| std::fs::read_to_string(bodies.join(format!("{sha}.md"))).ok())
+            .then(|| {
+                let file = bodies.join(format!("{sha}.md"));
+                std::fs::read_to_string(&file)
+                    .map_err(|e| {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            eprintln!("amont-agent: cannot read {}: {e}", file.display());
+                        }
+                    })
+                    .ok()
+            })
             .flatten();
         let body = match &saved {
             Some(s) => s.as_str(),
@@ -447,7 +491,7 @@ fn record(
     }
     if count > 0 {
         let mut f =
-            open_new(&ledger, true).map_err(io(&format!("cannot open {}", ledger.display())))?;
+            open_ledger(&ledger).map_err(io(&format!("cannot open {}", ledger.display())))?;
         f.write_all(buffer.as_bytes())
             .and_then(|()| f.flush())
             .map_err(io(&format!("cannot write {}", ledger.display())))?;
@@ -459,7 +503,7 @@ fn record(
             eprintln!("body of round {round} not saved: the plan changed since it was reviewed");
             continue;
         }
-        match open_new(&bodies.join(format!("{sha}.md")), false) {
+        match create_body(&bodies.join(format!("{sha}.md"))) {
             Ok(mut f) => {
                 f.write_all(text.as_bytes())
                     .map_err(io("cannot save the plan body"))?;
@@ -487,6 +531,8 @@ fn record(
     };
     let said = if count > 0 {
         format!("wrote {count} rows (round {round}, plan {})\n", &sha[..12])
+    } else if missing {
+        format!("no rows written for round {round} of {}\n", &sha[..12])
     } else {
         format!(
             "already recorded round {round} of {}; nothing written\n",
