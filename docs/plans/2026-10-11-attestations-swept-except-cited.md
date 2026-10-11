@@ -247,7 +247,7 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 | subcommand | `--apply` while `attestations.sweeping` is held (10 min old) | `a sweep is running`, nothing removed, exit 1 |
 | unit | a scan failure plus a `.trash-<secs>-x` 8 days old | no directory removed; the trash entry purged |
 | subcommand (cfg(unix)) | `--apply` with one directory chmod 000 | the others removed, `✗ <name>: <io error>` on stderr, exit 1 |
-| subcommand | a name containing `\x1b` | printed sanitised |
+| subcommand (cfg(unix)); render unit test on every platform | a name containing `\x1b` | printed sanitised |
 | subcommand | piped to a file | tab-separated, same column order, no colour |
 | subcommand | widest line on the real store, on a terminal | at most 80 columns |
 | timing | `SessionStart` with a stamp younger than a day: hyperfine against 2.33.0 | within 1 ms |
@@ -259,10 +259,10 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 
 | check | actual |
 |---|---|
-| unit / e2e / subcommand / doctor rows | `tests/attestations.rs` (15) and the unit tests in `src/attestations.rs`: all green in `make check`. ✅ |
+| unit / e2e / subcommand / doctor rows | `tests/attestations.rs` (15) and the unit tests in `src/attestations.rs`: all green in `make check` on macOS. ✅ |
 | stale lock, 20 sessions | 50 rounds per run. With the lock alone, round 24 of one run journaled two `attestations-kept`; with the day claim (Decision log), 8 runs = 400 rounds, one each. ✅ |
 | stale lock after the CI fix (no rename-back) | 3 runs × 50 rounds, a 2 h lock, 20 SessionStarts each: one `attestations-kept` per round, no `attestations.sweeping` or `.stale-*` left (`settle` waits for the lock to be gone; the test asserts no `.stale-*`). ✅ |
-| Windows | `cargo clippy --target x86_64-pc-windows-msvc --all-targets -D warnings` clean locally; the Windows unit and e2e tests themselves run only on CI (the PR's `tests (windows-latest)`). ✅ for lint |
+| Windows | `cargo clippy --target x86_64-pc-windows-msvc --all-targets -D warnings` clean, locally. The Windows test result is the PR's `tests (windows-latest)` job, not a row here. ✅ for lint |
 | real store, dry run (branch build) | 119 directories, 71.9 MB, every row `keep` (the oldest is 12 days), exit 0; `doctor`: `attestations: 119 directories, 71.9 MB, oldest 12d; 7 cited; never swept` — the 7 found by hand. ✅ |
 | real git config | snapshot, whole suite, diff: unchanged. ✅ (see Decision log) |
 | timing | dry run on the real store at load average ~100: 0.4 s warm, 1.8 s cold; over budget, so the sweep is detached (Decision log). SessionStart interleaved, 15 runs each, load ~140: 2.33.1 p50 ~243 ms, branch with a stale stamp (spawns) ~255 ms, branch with a fresh stamp equal to the baseline. ✅ |
@@ -286,6 +286,7 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 - approve (Delta, round 2), after approve-with-changes in round 1 (80k, 51 s; Deltas 84k, 11 s and 85k, 6 s).
 - Fixed: symlink test no longer tied to a date, purge failures reported (✗, exit 1), help first and `--daily` documented, pure git-exit mapping tested, root guard on the chmod test.
 - deliberate: `; no directory removed` (see Decision log).
+- After the Windows file-name failure, a fresh round 1 on the test-only fix: approve-with-changes (49k, 33 s), two plan rows amended (here).
 - After CI failed (orphan lock on Ubuntu; Windows directory times), a fresh round 1 on the fix: approve-with-changes (52k, 56 s), 4 comment/record findings fixed; Delta approve (55k, 15 s).
 
 <!-- panel: repos=amont-agent,dotfiles adds= reviewers=backend,lang:rust,tui,unix body-sha=148d0ee68826 -->
