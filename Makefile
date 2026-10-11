@@ -18,10 +18,12 @@ help:
 lint:
 	@cargo fmt --check
 	@cargo clippy --all-targets -- -D warnings
+	@cargo clippy --all-targets --features test-hooks -- -D warnings
 	@python3 scripts/test_bump_tap.py
 
 test:
 	@cargo test --locked
+	@cargo test --locked --features test-hooks --test quiet
 
 check: lint test
 	@echo "  ✓ fmt, clippy and tests — the same three CI runs"

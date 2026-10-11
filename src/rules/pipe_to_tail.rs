@@ -29,7 +29,8 @@
 
 use std::ops::Range;
 
-use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
+use crate::analysis::state::Tri;
+use crate::rules::{Evidence, Examine, Finding, Input, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -53,7 +54,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-08-20",
         trend: Trend::Flat(7),
     },
-    examine: Examine::Legacy(examine),
+    examine: Examine::Analysis(examine),
     confirm: None,
 };
 
@@ -144,7 +145,11 @@ fn tag_creates(cmd: &Simple) -> bool {
     cmd.operands().len() > 1
 }
 
-fn examine(parsed: &Parsed) -> Option<Finding> {
+fn examine(input: &Input) -> Option<Finding> {
+    let parsed = match input.legacy {
+        Parsed::Opaque(_) => return None,
+        parsed => parsed,
+    };
     // Indexed over ALL clauses, including any we could not read: `pipeline_sink`
     // walks by position, and a vector with holes in it would let this rule
     // invent a sink that was never there. An unreadable clause marks its whole
@@ -172,6 +177,11 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
         if !TRIMMING.contains(&sink_program) {
             continue;
         }
+        // Under `set -o pipefail` the pipeline reports the first failure, so
+        // nothing is swallowed. Only a definite yes exempts.
+        if pipefail_is_on(input, cmd) {
+            continue;
+        }
         let verb = describe(cmd);
         return Some(Finding {
             reason: format!(
@@ -193,8 +203,16 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     None
 }
 
+/// Whether the shell definitely has `pipefail` on where `cmd`'s pipeline runs.
+/// `Maybe` (a conditional `set -o pipefail`) is not a yes. The clause's own
+/// `at` can include leading blanks, so its first word locates it.
+pub(crate) fn pipefail_is_on(input: &Input, cmd: &Simple) -> bool {
+    let at = cmd.words.first().map_or(cmd.at, |w| w.at);
+    input.analysis().pipefail_at(at) == Tri::Yes
+}
+
 /// The last stage of the pipeline that `from` participates in.
-fn pipeline_sink(clauses: &[Simple], from: usize) -> Option<&Simple> {
+pub(crate) fn pipeline_sink(clauses: &[Simple], from: usize) -> Option<&Simple> {
     let mut i = from;
     while clauses.get(i)?.next.is_some_and(|c| c.is_pipe()) {
         i += 1;

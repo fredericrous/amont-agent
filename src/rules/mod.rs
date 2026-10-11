@@ -63,6 +63,7 @@ pub mod stat_bsd_format;
 pub mod stdin_hang;
 pub mod symbol_grep_not_lsp;
 pub mod tag_after_commit;
+pub mod test_output_trimmed;
 pub mod tool_shell;
 pub mod unbounded_background_push;
 pub mod unsplit_expansion;
@@ -466,6 +467,7 @@ pub const RULES: &[Rule] = &[
     symbol_grep_not_lsp::RULE,
     lint_suppression_added::RULE,
     request_fanout::RULE,
+    test_output_trimmed::RULE,
 ];
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {

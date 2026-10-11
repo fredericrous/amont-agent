@@ -487,6 +487,10 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(&stub, body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS can hold the first exec of a freshly written script for
+        // seconds, past the hook's wait for amont; run it once here so the
+        // hook's call is not the first.
+        let _ = std::process::Command::new(&stub).output();
     };
 
     // Drifted: amont exits 1 and says so on stderr.
@@ -1895,4 +1899,253 @@ fn a_denied_code_read_passes_once_lsp_was_asked() {
     let after = w.read_with("ld-1", &big, "", DENY);
     assert_eq!(after.decision(), None, "{}", after.stdout);
     assert_eq!(after.stdout, "");
+}
+
+// --- file-reread: a record per agent, exact windows, certain or uncertain ---
+
+const REREAD_DENY: &str = "[amont \"agent.file-reread\"]\n\tstance = deny\n";
+
+/// A scratch file, and every payload shape the per-agent read record sees.
+struct Rr {
+    dir: PathBuf,
+    file: PathBuf,
+    session: String,
+}
+
+impl Rr {
+    fn new(name: &str, lines: usize) -> Rr {
+        let dir = home().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let file = dir.join("f.txt");
+        let text: String = (1..=lines).map(|i| format!("line {i:04}\n")).collect();
+        std::fs::write(&file, text).expect("a file worth reading");
+        Rr {
+            dir,
+            file,
+            session: format!("{name}-sess"),
+        }
+    }
+
+    /// `agent` is a JSON fragment such as `,"agent_id":"sub-1"`, or empty.
+    fn payload(&self, event: &str, tool: &str, agent: &str, input: &str, response: &str) -> String {
+        let cwd = serde_json::Value::String(self.dir.display().to_string());
+        format!(
+            r#"{{"hook_event_name":"{event}","tool_name":"{tool}","cwd":{cwd},
+                 "session_id":"{}","permission_mode":"default","tool_use_id":"t1"{agent}
+                 ,"tool_input":{input}{response}}}"#,
+            self.session
+        )
+    }
+
+    fn read_input(&self, extra: &str) -> String {
+        let path = serde_json::Value::String(self.file.display().to_string());
+        format!(r#"{{"file_path":{path}{extra}}}"#)
+    }
+
+    fn pre_read(&self, agent: &str, extra: &str) -> Reply {
+        send_with_global(
+            &self.payload("PreToolUse", "Read", agent, &self.read_input(extra), ""),
+            REREAD_DENY,
+        )
+    }
+
+    fn post_read(&self, agent: &str, extra: &str, response: &str) {
+        let r = send_with_global(
+            &self.payload(
+                "PostToolUse",
+                "Read",
+                agent,
+                &self.read_input(extra),
+                response,
+            ),
+            REREAD_DENY,
+        );
+        assert_eq!(r.stdout, "");
+    }
+
+    fn command(command: &str) -> String {
+        format!(
+            r#"{{"command":{}}}"#,
+            serde_json::Value::String(command.to_string())
+        )
+    }
+
+    fn pre_bash(&self, agent: &str, command: &str) -> Reply {
+        send_with_global(
+            &self.payload("PreToolUse", "Bash", agent, &Rr::command(command), ""),
+            REREAD_DENY,
+        )
+    }
+
+    /// `stdout` is the JSON text of the result's `stdout`.
+    fn post_bash(&self, agent: &str, command: &str, stdout: &str) {
+        let response = format!(r#","tool_response":{{"stdout":{stdout},"stderr":""}}"#);
+        send_with_global(
+            &self.payload(
+                "PostToolUse",
+                "Bash",
+                agent,
+                &Rr::command(command),
+                &response,
+            ),
+            REREAD_DENY,
+        );
+    }
+
+    fn bash(&self, agent: &str, command: &str) -> Reply {
+        let r = self.pre_bash(agent, command);
+        self.post_bash(agent, command, r#""ok""#);
+        r
+    }
+
+    fn sessions(&self) -> PathBuf {
+        home().join("amont-agent").join("sessions")
+    }
+}
+
+const SUB: &str = r#","agent_id":"sub-1","agent_type":"Explore""#;
+
+fn said_reread(r: &Reply) -> bool {
+    r.reason().contains("file-reread")
+}
+
+/// A subagent shares its parent's `session_id`: it must not be refused a file
+/// only the parent read.
+#[test]
+fn a_subagent_is_not_told_file_reread_after_only_the_parent_read() {
+    let f = Rr::new("rr-sub", 50);
+    f.post_read("", "", "");
+    let sub = f.pre_read(SUB, "");
+    assert!(!said_reread(&sub), "{}", sub.stdout);
+    assert_eq!(sub.stdout, "");
+    // The parent itself is refused, under the deny stance.
+    let main = f.pre_read("", "");
+    assert!(said_reread(&main), "{}", main.stdout);
+    assert_eq!(main.decision().as_deref(), Some("deny"), "{}", main.stdout);
+}
+
+#[test]
+fn a_subagent_cat_is_keyed_to_the_agent() {
+    let f = Rr::new("rr-subcat", 50);
+    f.bash(SUB, "cat f.txt");
+    let main = f.pre_bash("", "cat f.txt");
+    assert!(!said_reread(&main), "main never read it: {}", main.stdout);
+    let again = f.pre_bash(SUB, "cat f.txt");
+    assert!(said_reread(&again), "{}", again.stdout);
+    assert_eq!(again.decision().as_deref(), Some("deny"));
+}
+
+#[test]
+fn an_agent_id_that_is_not_a_key_neither_records_nor_denies() {
+    let f = Rr::new("rr-badid", 50);
+    f.post_read("", "", "");
+    for bad in [
+        r#","agent_id":123"#,
+        r#","agent_id":"""#,
+        r#","agent_id":"../x""#,
+    ] {
+        let r = f.pre_read(bad, "");
+        assert!(!said_reread(&r), "{bad}: {}", r.stdout);
+        assert_eq!(r.decision(), None, "{bad}");
+        f.post_read(bad, "", "");
+        let r = f.pre_read(bad, "");
+        assert!(!said_reread(&r), "{bad} after its own read: {}", r.stdout);
+        let r = f.pre_bash(bad, "cat f.txt");
+        assert!(!said_reread(&r), "{bad} cat: {}", r.stdout);
+        f.post_bash(bad, "cat f.txt", r#""ok""#);
+    }
+    // Nothing escaped `sessions/`.
+    let root = home().join("amont-agent");
+    assert!(!root.join("x.log").exists());
+    assert!(!root.join("x").exists());
+    assert!(!home().join("x.log").exists());
+    for e in std::fs::read_dir(f.sessions()).unwrap().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        assert!(!name.contains("123") && !name.contains(".."), "{name}");
+    }
+}
+
+#[test]
+fn windows_are_exact_and_have_a_direction() {
+    let f = Rr::new("rr-windows", 300);
+    let told = |cmd: &str| f.bash("", cmd);
+    assert!(!said_reread(&told("head -20 f.txt")));
+    assert!(!said_reread(&told("tail -20 f.txt")));
+    assert!(!said_reread(&told("sed -n '101,120p' f.txt")));
+    let again = told("head -20 f.txt");
+    assert!(said_reread(&again), "{}", again.stdout);
+    assert_eq!(again.decision().as_deref(), Some("deny"));
+    // A smaller head is inside the larger one; a larger one is not.
+    assert!(said_reread(&told("head -5 f.txt")));
+    assert!(!said_reread(&told("head -30 f.txt")));
+}
+
+#[test]
+fn a_record_that_is_not_certain_never_speaks() {
+    // `true || cat f`: the cat may not have run.
+    let f = Rr::new("rr-cond", 50);
+    f.bash("", "true || cat f.txt");
+    let r = f.pre_bash("", "cat f.txt");
+    assert!(!said_reread(&r), "{}", r.stdout);
+
+    // A persisted result.
+    let f = Rr::new("rr-persisted", 50);
+    f.pre_bash("", "cat f.txt");
+    f.post_bash(
+        "",
+        "cat f.txt",
+        r#""<persisted-output>Output too large. Full output saved to: /x/tool-results/a.txt""#,
+    );
+    let r = f.pre_bash("", "cat f.txt");
+    assert!(!said_reread(&r), "{}", r.stdout);
+
+    // A result of exactly the cap length, counted in characters.
+    let f = Rr::new("rr-cap", 50);
+    f.pre_bash("", "cat f.txt");
+    let capped = serde_json::Value::String("\u{e9}".repeat(30_000)).to_string();
+    f.post_bash("", "cat f.txt", &capped);
+    let r = f.pre_bash("", "cat f.txt");
+    assert!(!said_reread(&r), "{}", r.stdout);
+    // One character under it is whole.
+    let under = serde_json::Value::String("\u{e9}".repeat(29_999)).to_string();
+    f.post_bash("", "cat f.txt", &under);
+    let r = f.pre_bash("", "cat f.txt");
+    assert!(said_reread(&r), "{}", r.stdout);
+
+    // An unwindowed Read of 3,000 lines delivers 2,000; the rest is a
+    // different window.
+    let f = Rr::new("rr-long", 3000);
+    f.post_read("", "", "");
+    let r = f.pre_read("", r#","offset":2000"#);
+    assert!(!said_reread(&r), "{}", r.stdout);
+    let r = f.pre_read("", "");
+    assert!(said_reread(&r), "the same window again: {}", r.stdout);
+}
+
+#[test]
+fn compaction_clears_the_main_record_and_keeps_the_subagents() {
+    let f = Rr::new("rr-compact", 50);
+    f.post_read("", "", "");
+    f.post_read(SUB, "", "");
+    let cwd = serde_json::Value::String(f.dir.display().to_string());
+    let start = format!(
+        r#"{{"hook_event_name":"SessionStart","source":"compact","cwd":{cwd},"session_id":"{}"}}"#,
+        f.session
+    );
+    send_with_global(&start, REREAD_DENY);
+    let main = f.pre_read("", "");
+    assert!(!said_reread(&main), "{}", main.stdout);
+    let sub = f.pre_read(SUB, "");
+    assert!(said_reread(&sub), "{}", sub.stdout);
+}
+
+#[test]
+fn the_same_agent_rereading_a_certain_window_is_refused_under_deny() {
+    let f = Rr::new("rr-same", 50);
+    f.post_read("", r#","offset":11,"limit":20"#, "");
+    let r = f.pre_read("", r#","offset":11,"limit":20"#);
+    assert_eq!(r.decision().as_deref(), Some("deny"), "{}", r.stdout);
+    let other = f.pre_read("", r#","offset":41,"limit":5"#);
+    assert!(!said_reread(&other), "{}", other.stdout);
 }

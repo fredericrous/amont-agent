@@ -561,6 +561,7 @@ mod tests {
         let analysis = crate::analysis::Analysis {
             effects: Default::default(),
             incomplete: None,
+            pipelines: Vec::new(),
         };
         let text = reason("curl", &[(&d, &t)], &analysis);
         assert!(text.contains("up to 400 requests to ghcr.io"), "{text}");

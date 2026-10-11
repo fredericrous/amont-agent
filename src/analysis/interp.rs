@@ -178,6 +178,9 @@ pub struct Incomplete {
 #[derive(Debug, Clone)]
 pub struct Outcomes {
     pub effects: Effects,
+    /// Per multi-command pipeline (by source span), the `pipefail` state in
+    /// effect when it runs, joined over every time the analysis ran it.
+    pub pipelines: Vec<(Span, Tri)>,
     /// Set when a resource limit ended the analysis. `effects` then holds
     /// what was found before it, and nothing after it is known.
     pub incomplete: Option<Incomplete>,
@@ -203,13 +206,18 @@ pub fn run(cmd: &Cmd, src: &str, dialect: Dialect) -> Outcomes {
         locals: Vec::new(),
         summaries: Vec::new(),
         loops: 0,
+        pipes: Vec::new(),
     };
-    match it.exec(cmd, State::initial(dialect), Ctx::TOP) {
+    let result = it.exec(cmd, State::initial(dialect), Ctx::TOP);
+    let pipelines = std::mem::take(&mut it.pipes);
+    match result {
         Ok(res) => Outcomes {
             effects: res.effects,
+            pipelines,
             incomplete: None,
         },
         Err(e) => Outcomes {
+            pipelines,
             effects: Effects {
                 contributions: Vec::new(),
                 unknown: vec![(cmd.span(), e.describe())],
@@ -237,6 +245,8 @@ impl Ctx {
 
 struct Interp<'s> {
     src: &'s str,
+    /// `pipefail` at each multi-command pipeline, by span (see `Outcomes`).
+    pipes: Vec<(Span, Tri)>,
     budget: Budget,
     /// Functions being analysed, innermost last — recursion detection.
     calls: Vec<String>,
@@ -291,7 +301,11 @@ impl Interp<'_> {
             Cmd::Simple(s) => self.simple(s, state, ctx),
             Cmd::Seq { items, .. } => self.seq(items, state, ctx),
             Cmd::AndOr { first, rest, .. } => self.and_or(first, rest, state, ctx),
-            Cmd::Pipeline { negated, cmds, .. } => self.pipeline(*negated, cmds, state, ctx),
+            Cmd::Pipeline {
+                negated,
+                cmds,
+                span,
+            } => self.pipeline(*negated, cmds, span, state, ctx),
             Cmd::If {
                 arms, otherwise, ..
             } => self.if_(arms, otherwise.as_deref(), state, ctx),
@@ -658,7 +672,21 @@ impl Interp<'_> {
         Ok(self.errexit(res, ctx))
     }
 
-    fn pipeline(&mut self, negated: bool, cmds: &[Cmd], state: State, ctx: Ctx) -> R<Res> {
+    fn pipeline(
+        &mut self,
+        negated: bool,
+        cmds: &[Cmd],
+        span: &Span,
+        state: State,
+        ctx: Ctx,
+    ) -> R<Res> {
+        if cmds.len() > 1 {
+            let at = state.opts.pipefail;
+            match self.pipes.iter_mut().find(|(s, _)| s == span) {
+                Some((_, t)) => *t = t.join(at),
+                None => self.pipes.push((span.clone(), at)),
+            }
+        }
         let inner = if negated { Ctx::CONDITION } else { ctx };
         let mut effects = Effects::default();
         let mut statuses = Vec::new();
@@ -1501,6 +1529,9 @@ impl Interp<'_> {
                 )
             }
             // Run in THIS shell and can change anything.
+            "setopt" | "unsetopt" if state.dialect != Dialect::Bash => {
+                return Ok(self.setopt(&name == "setopt", rest, s, state))
+            }
             "eval" | "source" | "." | "trap" | "alias" | "unalias" | "enable" | "emulate"
             | "setopt" | "unsetopt" | "zmodload" | "autoload" | "compdef" => {
                 return Ok(self.unsupported(state, &s.span, "a builtin that can change the shell"))
@@ -1569,6 +1600,27 @@ impl Interp<'_> {
         Res::normal(state, Status::Zero)
     }
 
+    /// zsh `setopt`/`unsetopt`. Only `pipefail` is modelled. Any other option
+    /// havocs the state first; the `pipefail` spellings are then applied in
+    /// argument order, so `setopt extendedglob pipefail` ends with it on.
+    fn setopt(&mut self, on: bool, rest: &[models::Arg], s: &SimpleCmd, state: State) -> Res {
+        let words: Vec<Option<String>> = rest.iter().map(single_exact).collect();
+        let names: Vec<Option<PipefailName>> = words
+            .iter()
+            .map(|w| w.as_deref().and_then(pipefail_option))
+            .collect();
+        if names.iter().all(Option::is_some) {
+            let mut state = state;
+            apply_pipefail(&mut state, on, &names);
+            return Res::normal(state, Status::Zero);
+        }
+        let mut res = self.unsupported(state, &s.span, "a builtin that can change the shell");
+        for o in &mut res.outs {
+            apply_pipefail(&mut o.state, on, &names);
+        }
+        res
+    }
+
     fn set_builtin(&mut self, rest: &[models::Arg], state: State) -> Res {
         let mut state = state;
         let words: Vec<Option<String>> = rest.iter().map(single_exact).collect();
@@ -1603,8 +1655,12 @@ impl Interp<'_> {
                         i += 1;
                         match words.get(i).cloned().flatten().as_deref() {
                             Some("errexit") => state.opts.errexit = t,
-                            Some("pipefail") => state.opts.pipefail = t,
-                            _ => {}
+                            Some(n) => match pipefail_option(n) {
+                                Some(PipefailName::On) => state.opts.pipefail = t,
+                                Some(PipefailName::Off) => state.opts.pipefail = t.not(),
+                                None => {}
+                            },
+                            None => {}
                         }
                     }
                     _ => {}
@@ -2226,6 +2282,34 @@ fn join_opt(a: Option<State>, b: Option<State>) -> Option<State> {
         (Some(x), Some(y)) => Some(x.join(&y)),
         (x, None) => x,
         (None, y) => y,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PipefailName {
+    On,
+    Off,
+}
+
+/// zsh option names ignore case and underscores; `no` prefixes negate. Also
+/// accepted by `set -o`.
+fn pipefail_option(name: &str) -> Option<PipefailName> {
+    let n: String = name
+        .chars()
+        .filter(|c| *c != '_')
+        .flat_map(char::to_lowercase)
+        .collect();
+    match n.as_str() {
+        "pipefail" => Some(PipefailName::On),
+        "nopipefail" => Some(PipefailName::Off),
+        _ => None,
+    }
+}
+
+fn apply_pipefail(state: &mut State, on: bool, names: &[Option<PipefailName>]) {
+    for n in names.iter().flatten() {
+        let yes = matches!(n, PipefailName::On) == on;
+        state.opts.pipefail = if yes { Tri::Yes } else { Tri::No };
     }
 }
 

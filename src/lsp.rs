@@ -378,12 +378,20 @@ pub fn asked_files(call: &crate::payload::LspCall) -> Vec<PathBuf> {
     files
 }
 
-/// `main`, or the payload's `agent_id`. An id that is not one token cannot
-/// be a key.
-fn agent_key(agent_id: Option<&str>) -> Option<String> {
+/// `main`, or the payload's `agent_id`. The one parser for every per-agent
+/// record: absent is `main`, a valid id is itself, and a present id that is
+/// blank, has whitespace, or could leave `sessions/` (`/`, `..`) is `None` —
+/// no record is kept under it and nothing is said from it.
+pub(crate) fn agent_key(agent_id: Option<&str>) -> Option<String> {
     match agent_id {
         None => Some("main".to_string()),
-        Some(id) if !id.is_empty() && !id.contains(char::is_whitespace) => Some(id.to_string()),
+        Some(id)
+            if !id.is_empty()
+                && !id.contains(char::is_whitespace)
+                && crate::session_state::usable_id(id) =>
+        {
+            Some(id.to_string())
+        }
         Some(_) => None,
     }
 }

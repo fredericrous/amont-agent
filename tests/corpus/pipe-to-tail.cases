@@ -26,6 +26,10 @@ match	cd /Users/fredericrous/Developer/Perso/sre-agent-wt-adr && git fetch origi
 match	cd /tmp/hl-main && git status --short && git add kubernetes/homelab/apps/delivery-agent kubernetes/homelab/apps/delivery-agent.yaml kubernetes/homelab/apps/kustomization.yaml && git commit -m "✨  feat(delivery-agent): deploy observe phase\n\nShip the CI-reliability delivery-agent (sre-agent PR #117,\ndocs/design/delivery-agent.md) in rollout phase 1: same OCI image\nas sre-agent (0.8.54) with the delivery_agent entrypoint,\nDELIVERY_MODE=observe — classify + count, never act. Intake is\nGitHub workflow_run webhooks at delivery.daddyshome.fr/v1/intake\n(skip-mtls + Authelia bypass; HMAC-authenticated in-app, secret\ngenerated once in-cluster). Playbooks vendored from the sre-agent\nrepo. GitHub enrichment token is optional-by-design and not yet\nprovisioned: evidence is marked degraded until\nsecret/delivery-agent/github-token lands in Vault.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>" 2>&1 | tail -3 && git push origin HEAD:main 2>&1 | tail -1
 match	kubectl kustomize /tmp/hl-main/kubernetes/homelab/apps/delivery-agent > /dev/null && echo render-ok && cd /tmp/hl-main && git add kubernetes/homelab/apps/delivery-agent && git commit -m "🔧  chore(delivery-agent): wire GitHub enrichment token\n\nVault policy + k8s-auth role + SecretStore + ExternalSecret for\nsecret/delivery-agent/github-token (provisioned out-of-band,\npatch-agent pattern). The deployment already references\nDELIVERY_GITHUB_TOKEN optional:true — this ES is the switch that\nturns log-excerpt enrichment on; Reloader rolls the pod when the\nSecret lands. Classic repo-scope PAT for now; swap to a\nfine-grained actions:read PAT or GitHub App later.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>" 2>&1 | tail -2 && git push origin HEAD:main 2>&1 | tail -1
 
+match	set -o pipefail; set +o pipefail; git push origin main 2>&1 | tail -3
+match	true || set -o pipefail; git push origin main 2>&1 | tail -3
+match	setopt nopipefail; git push origin main 2>&1 | tail -3
+
 # --- the rule must stay silent ---
 nomatch	pkill -f "git push origin v0.33.66"
 nomatch	echo "=== first tag ===" && git log --oneline | head
@@ -41,3 +45,5 @@ nomatch	echo msg | git commit -F -
 nomatch	cat manifest.yaml | kubectl apply -f -
 nomatch	git push --force-with-lease origin feat/x
 nomatch	git log --oneline | head -20
+nomatch	set -o pipefail; git push origin main 2>&1 | tail -3
+nomatch	setopt pipefail; git push origin main 2>&1 | tail -3

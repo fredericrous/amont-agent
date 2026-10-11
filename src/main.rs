@@ -28,6 +28,8 @@ mod compliance;
 mod corpus;
 mod decision;
 mod doctor;
+#[cfg(unix)]
+mod excerpt;
 mod git;
 mod gitconfig;
 mod graduate;
@@ -47,6 +49,8 @@ mod plans;
 mod preview;
 mod publish_cmd;
 mod push_target;
+#[cfg(unix)]
+mod quiet;
 mod review_outcomes;
 mod rules;
 mod session_state;
@@ -101,6 +105,13 @@ usage: amont-agent <command>
   tree-sha [--block] [-C <dir>] [--] [<rev>]
                         the canonical tree id an implementation review
                         binds to: HEAD's tree without docs/plans/
+  quiet [--max-bytes N[k]] -- <cmd…>
+                        run a command with its output in a log file: one line
+                        on a pass, the failure on a fail, the real exit code.
+                        N is 1 to 48k bytes of excerpt (default 16k); exits
+                        1 wrapper failure, 2 usage, 126 cannot execute,
+                        127 not found, the command's own code, or
+                        128+signal
 
 install/uninstall flags:
   --write               actually edit the file
@@ -150,9 +161,10 @@ enum Sub {
     PlanReview,
     TreeSha,
     Attestations,
+    Quiet,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 20] = [
+const SUBCOMMANDS: [(&str, Sub); 21] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -173,6 +185,7 @@ const SUBCOMMANDS: [(&str, Sub); 20] = [
     ("plan-review", Sub::PlanReview),
     ("tree-sha", Sub::TreeSha),
     ("attestations", Sub::Attestations),
+    ("quiet", Sub::Quiet),
 ];
 
 enum Invocation {
@@ -326,6 +339,13 @@ fn main() -> ExitCode {
             }
             Sub::TreeSha => run_tree_sha(&args),
             Sub::Attestations => attestations::run_cli(&args),
+            #[cfg(unix)]
+            Sub::Quiet => quiet::run(&args),
+            #[cfg(not(unix))]
+            Sub::Quiet => {
+                eprintln!("amont-agent: quiet is not supported on this platform");
+                ExitCode::from(2)
+            }
         },
     }
 }
