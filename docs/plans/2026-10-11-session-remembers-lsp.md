@@ -195,7 +195,9 @@ journalled `lsp`: never dropped.
 - A `workspaceSymbol` payload without `filePath` is still recorded and counted (headings only).
 - A live file that cannot be rotated leaves a `rotate-failed` record in it; a header that cannot be written drops the record instead of leaving a file without one.
 - The header is staged in a per-process file and hard-linked into place (atomic, fails if the name exists), and the append opens without creating, retrying through the header path when a rotation moved the file. `create_new` then `write_all` let another process append to the empty file, and the header overwrote that record at offset 0.
-- The two `lsp` tests built on Unix path literals are `#[cfg(unix)]`: on Windows `/home/...` is not absolute.
+- `the_fixtures_are_parsed_as_real_payloads` is `#[cfg(unix)]` (its fixtures carry Unix paths); `one_normal_form_for_every_spelling` runs everywhere, its symlink steps Unix-only.
+- A file system without hard links falls back to an append-mode `create_new` header (a racing record may precede it, never sit under it); the staged name is per call.
+- On Windows each heading is canonicalized (the canonical cwd is a `\\?\` path where a lexical join never matches); the 15 ms budget is measured on macOS.
 - Implementation via relais: generations (run-65d8b340b227c-15496, accepted, sonnet); LSP record (run-65d8b504185f3-1666f, needs_decision on Cargo.toml/Cargo.lock: only the version bump, accepted by hand, then the two fixes above).
 
 ## Implementation review

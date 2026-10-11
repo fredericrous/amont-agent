@@ -363,8 +363,11 @@ pub fn asked_files(call: &crate::payload::LspCall) -> Vec<PathBuf> {
         // holds-until: the PostToolUse LSP budget (15 ms p95 on a 64 KiB
         // answer) has room for one `canonicalize` per distinct heading, or a
         // `lsp-first` miss is reported for a file reached through a symlink.
-        let abs = if named.is_absolute() {
-            normal(named)
+        // On Windows the canonical cwd is a `\\?\` path, where neither `.`
+        // nor `/` is special: a lexical join would never match, so each
+        // heading is canonicalized there.
+        let abs = if named.is_absolute() || cfg!(windows) {
+            normal(&call.cwd.join(named))
         } else {
             lexical(&base.join(named))
         };
