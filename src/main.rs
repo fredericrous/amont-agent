@@ -21,6 +21,7 @@
 mod analysis;
 mod assertions;
 mod atomic;
+mod attestations;
 mod backtest;
 mod civil;
 mod compliance;
@@ -94,6 +95,9 @@ usage: amont-agent <command>
                         plan-review-panel hook will judge it
   plan-review record <plan.md> [--transcript <path>]
                         keep what each reviewer of a plan did, as outcome rows
+  attestations [--apply]
+                        what ~/.claude/amont-agent/attestations keeps and
+                        why; --apply moves the rest to a 7-day trash
   tree-sha [--block] [-C <dir>] [--] [<rev>]
                         the canonical tree id an implementation review
                         binds to: HEAD's tree without docs/plans/
@@ -145,9 +149,10 @@ enum Sub {
     PlanPanel,
     PlanReview,
     TreeSha,
+    Attestations,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 19] = [
+const SUBCOMMANDS: [(&str, Sub); 20] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -167,6 +172,7 @@ const SUBCOMMANDS: [(&str, Sub); 19] = [
     ("plan-panel", Sub::PlanPanel),
     ("plan-review", Sub::PlanReview),
     ("tree-sha", Sub::TreeSha),
+    ("attestations", Sub::Attestations),
 ];
 
 enum Invocation {
@@ -319,6 +325,7 @@ fn main() -> ExitCode {
                 code
             }
             Sub::TreeSha => run_tree_sha(&args),
+            Sub::Attestations => attestations::run_cli(&args),
         },
     }
 }

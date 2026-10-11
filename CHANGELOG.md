@@ -1,9 +1,24 @@
 # Changelog
 
-## Unreleased
+## v2.34.0
 
 ### Added
 
+- **`attestations/` is swept, except what a plan cites.** A direct child of
+  `~/.claude/amont-agent/attestations/` is kept while its newest entry is
+  under 30 days old, while a Markdown file under `docs/` of a repository
+  under the plan root (or a configured `amont.agent.plan-review.<name>.path`)
+  or under `~/.claude/plans` cites it as `attestations/<name>` (a cited
+  7-or-more-character sha also keeps the 40-hex directory it starts), or
+  while it holds a `.keep`. The rest is renamed to
+  `.trash-<unix-secs>-<name>` and deleted 7 days later. `SessionStart` starts
+  it at most once a day, in a detached child (the session pays one stat, and
+  one spawn a day), under an `attestations.sweeping` lock; any read
+  error during the scan removes no directory. `amont-agent attestations`
+  lists what is kept and why (dry), `--apply` removes. Journal:
+  `attestation-swept`, `attestations-kept`, `attestations-scan-failed`.
+  `doctor` prints the store's size and warns when the last run failed or
+  the stamp is over 2 days old.
 - **`amont-agent plan-review record <plan.md>` keeps the panel's outcomes.**
   One row per completed plan-review reviewer (role, agent id, model, tokens,
   seconds, round, body sha, plan features, verdict, remit and the findings

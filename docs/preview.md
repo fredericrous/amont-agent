@@ -28,6 +28,12 @@ terminal, a local page, and the app already open in their browser.
    screenshots beside it), because a file inside it, or the page rendered
    beside it, would dirty the commit it describes. The format is
    [below](#the-guide).
+
+   Evidence under `attestations/` lasts 30 days unless a plan cites it
+   (`attestations/<name>` in a Markdown file under a repository's `docs/`)
+   or it holds a `.keep`; a removed directory sits in
+   `.trash-<secs>-<name>` for 7 days (`mv` it back to undo).
+   `amont-agent attestations` shows what would go.
 3. **Serve and register.** From the clean worktree, at the commit to be
    pushed:
 

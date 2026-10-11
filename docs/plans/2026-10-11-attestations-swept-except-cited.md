@@ -255,4 +255,25 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 | live | after release, `amont-agent attestations` on the real store | 7 cited directories `keep (cited by …)`, nothing `remove` today |
 | live | 2026-10-27 dry run | every `remove` line absent from `grep -r attestations/<name>` over every repo, and from a grep of the 7-character prefix of each 40-hex name |
 
+## Verification record (Phase 1, before the push)
+
+| check | actual |
+|---|---|
+| unit / e2e / subcommand / doctor rows | `tests/attestations.rs` (15) and the unit tests in `src/attestations.rs`: all green in `make check`. ✅ |
+| stale lock, 20 sessions | 50 rounds per run. With the lock alone, round 24 of one run journaled two `attestations-kept`; with the day claim (Decision log), 8 runs = 400 rounds, one each. ✅ |
+| real store, dry run (branch build) | 119 directories, 71.9 MB, every row `keep` (the oldest is 12 days), exit 0; `doctor`: `attestations: 119 directories, 71.9 MB, oldest 12d; 7 cited; never swept` — the 7 found by hand. ✅ |
+| real git config | snapshot, whole suite, diff: unchanged. ✅ (see Decision log) |
+| timing | dry run on the real store at load average ~100: 0.4 s warm, 1.8 s cold; over budget, so the sweep is detached (Decision log). SessionStart interleaved, 15 runs each, load ~140: 2.33.1 p50 ~243 ms, branch with a stale stamp (spawns) ~255 ms, branch with a fresh stamp equal to the baseline. ✅ |
+| live | Phase 2, after the release. |
+
+## Decision log
+
+- Detached sweep (asked 2026-10-11, the person chose it over the plan's subcommand-only fallback): the daily sweep measured 0.4–1.8 s, so `SessionStart` does one stat and, when the stamp is a day old, spawns `amont-agent attestations --daily` in its own process group and returns; the child takes the lock, re-checks the stamp, sweeps and journals as before.
+- A cited directory under 30 days shows `recent`, the first reason that holds; `doctor`'s `cited` count is how the 7 citations were checked live.
+- During implementation, an intermediate test wrote `amont.agent.plan-review.dots.path = ~/dots` into the real `~/.config/git/config` (git's `--global` followed the real `XDG_CONFIG_HOME`). It was removed by hand; the final tests set `HOME` and `XDG_CONFIG_HOME` to scratch, and a snapshot/diff around the whole suite shows the real config unchanged.
+- `a_session_opening_on_a_stale_guidance_block_is_told` (existing, `tests/hook.rs`, 5 s budget for the `amont` stub) fails under load: the whole `hook` test binary failed 1/8 on this branch and 1/8 on `origin/main`, interleaved at load average ~150. Not this change; `make check` was re-run when it hit.
+- Once a day is decided by `attestations.swept.<day>`, created with `create_new` after the lock: the 50-round stale-lock test caught two holders (a takeover that renames a live lock back can overwrite a lock a third process created in between). The claim is the decider; the lock still keeps a manual `--apply` and a daily run apart, best effort.
+- Rebased on #94 (`plan-review record`): CHANGELOG v2.34.0 carries both entries; the usage text and the subcommand table have both commands.
+- Implementation via relais (run-65d8c5c05fb82-3aa1, budget_exhausted after its worker finished: baseline 5.4 min plus worker 17 min over the 20-minute wall clock); the candidate was applied and verified here, then the detached sweep, 50 lock rounds, the test wait and the version bump were added by hand.
+
 <!-- panel: repos=amont-agent,dotfiles adds= reviewers=backend,lang:rust,tui,unix body-sha=148d0ee68826 -->
