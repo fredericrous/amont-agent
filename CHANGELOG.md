@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The journal keeps about a week: rotated generations replace halving.**
+  `journal.log` used to be read and rewritten in place at 256 KiB, keeping
+  the newer half (about 17 hours of records) and losing any record another
+  session appended meanwhile. Now, before a write, a `journal.log` over
+  256 KiB is rotated by renames only (`journal.log.1` ... `.10`, the oldest
+  dropped) and the record goes to a fresh file whose header is created with
+  `create_new`. `status` reads all generations, and `doctor` prints the
+  generation count and the age of the oldest record.
+
 ## v2.32.0
 
 ### Added

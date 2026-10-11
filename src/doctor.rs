@@ -85,6 +85,7 @@ pub fn run() -> Vec<Finding> {
     out.push(self_test());
     out.push(liveness(&installs));
     out.push(stances());
+    out.push(journal_span());
     out.push(lsp_rules());
     out
 }
@@ -472,6 +473,24 @@ fn liveness(installs: &[Install]) -> Finding {
         );
     }
     Finding::good(format!("last ran {} ago", ago(now().saturating_sub(alive))))
+}
+
+/// How much history the journal holds: generation count and the age of its
+/// oldest record, so a window shorter than a week is visible. Liveness above
+/// still reads `journal.log`'s own mtime.
+fn journal_span() -> Finding {
+    let gens = journal::paths().len();
+    match journal::oldest_record() {
+        Some(ts) => Finding::good(format!(
+            "journal: {gens} generation{}, oldest record {} ago",
+            if gens == 1 { "" } else { "s" },
+            ago(now().saturating_sub(ts))
+        )),
+        None => Finding::good(format!(
+            "journal: {gens} generation{}, no records yet",
+            if gens == 1 { "" } else { "s" }
+        )),
+    }
 }
 
 /// What is actually armed, so "installed" is never mistaken for "blocking".

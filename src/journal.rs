@@ -46,8 +46,11 @@ pub const FORMAT: &str = "amont-agent-v1";
 const MAX_RECORD: usize = 512;
 const MAX_EXCERPT: usize = 200;
 
-/// Compact past this. Roughly the same budget `bypass` uses.
+/// Rotate past this. Roughly the same budget `bypass` uses.
 const MAX_BYTES: u64 = 256 * 1024;
+
+/// How many rotated generations are kept (`journal.log.1` … `.10`).
+const GENERATIONS: u32 = 10;
 
 pub fn dir() -> Option<PathBuf> {
     Some(crate::settings::config_dir()?.join("amont-agent"))
@@ -102,6 +105,39 @@ pub fn path() -> Option<PathBuf> {
     Some(dir()?.join("journal.log"))
 }
 
+/// `journal.log.N` next to `base`.
+fn generation(base: &std::path::Path, n: u32) -> PathBuf {
+    let mut s = base.as_os_str().to_os_string();
+    s.push(format!(".{n}"));
+    PathBuf::from(s)
+}
+
+/// The generations that exist for `base`, oldest first: `.10` … `.1`, then
+/// the live file.
+fn paths_of(base: &std::path::Path) -> Vec<PathBuf> {
+    (1..=GENERATIONS)
+        .rev()
+        .map(|n| generation(base, n))
+        .chain(std::iter::once(base.to_path_buf()))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+/// Every journal file that exists, oldest first.
+pub fn paths() -> Vec<PathBuf> {
+    path().map(|p| paths_of(&p)).unwrap_or_default()
+}
+
+/// Timestamp of the oldest record in the journal, if any.
+pub fn oldest_record() -> Option<u64> {
+    paths().iter().find_map(|p| {
+        fs::read_to_string(p).ok()?.lines().find_map(|l| {
+            let mut f = l.strip_prefix("F ")?.split_whitespace();
+            f.next()?.parse::<u64>().ok()
+        })
+    })
+}
+
 /// What one rule has seen, read back out of the journal.
 ///
 /// This is the other half of the loop the crate is built around. A rule ships
@@ -142,27 +178,40 @@ impl Seen {
 
 /// Every rule's [`Seen`] for records no older than `since` seconds.
 pub fn tally(since: u64) -> std::collections::BTreeMap<String, Seen> {
-    match path() {
-        Some(p) => tally_at(&p, since, now()),
-        None => Default::default(),
+    let mut out = Default::default();
+    let now = now();
+    for p in paths() {
+        tally_into(&mut out, &p, since, now);
     }
+    out
 }
 
 /// [`tally`] against a named file and a fixed clock, so it can be tested
 /// without touching the machine's journal.
 ///
-/// Reads the way [`compact`] does: only `F ` lines, and a line that does not
+/// Reads one generation: only `F ` lines, and a line that does not
 /// carry its fixed fields is a torn write and is dropped, never counted
 /// wrong. The eight fixed fields are exactly what [`line_for`] emits; the
 /// excerpt after them is free text and is not parsed.
+#[cfg(test)]
 pub fn tally_at(
     path: &std::path::Path,
     since: u64,
     now: u64,
 ) -> std::collections::BTreeMap<String, Seen> {
     let mut out: std::collections::BTreeMap<String, Seen> = Default::default();
+    tally_into(&mut out, path, since, now);
+    out
+}
+
+fn tally_into(
+    out: &mut std::collections::BTreeMap<String, Seen>,
+    path: &std::path::Path,
+    since: u64,
+    now: u64,
+) {
     let Ok(text) = fs::read_to_string(path) else {
-        return out;
+        return;
     };
     let floor = now.saturating_sub(since);
     for line in text.lines() {
@@ -199,7 +248,6 @@ pub fn tally_at(
             _ => {}
         }
     }
-    out
 }
 
 /// One thing that happened.
@@ -244,20 +292,65 @@ fn try_record(entry: &Entry) -> Option<()> {
     let dir = path.parent()?;
     fs::create_dir_all(dir).ok()?;
     private(dir, 0o700);
+    append(&path, MAX_BYTES, &line_for(entry))
+}
 
-    let fresh = !path.exists();
-    let mut f = open_private(&path)?;
-    if fresh {
-        f.write_all(format!("{FORMAT}\n").as_bytes()).ok()?;
+/// Rotate if needed, then append one record. Split from [`try_record`] so a
+/// test can use a scratch path and a small threshold.
+fn append(path: &std::path::Path, max: u64, line: &str) -> Option<()> {
+    // Rotation happens BEFORE the write, so `journal.log` always exists
+    // afterwards and doctor's liveness mtime stays correct.
+    if fs::metadata(path).map(|m| m.len() > max).unwrap_or(false) {
+        rotate(path, max);
     }
-
-    let line = line_for(entry);
+    // The header goes in through `create_new`: of several writers that find
+    // no file, exactly one creates it and writes the header.
+    create_with_header(path);
+    let mut f = open_private(path)?;
     f.write_all(line.as_bytes()).ok()?;
-
-    if f.metadata().ok()?.len() > MAX_BYTES {
-        compact(&path);
-    }
     Some(())
+}
+
+fn create_with_header(path: &std::path::Path) {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    // AlreadyExists (or any other failure) is not an error here.
+    if let Ok(mut f) = opts.open(path) {
+        let _ = f.write_all(format!("{FORMAT}\n").as_bytes());
+    }
+}
+
+/// Shift the generations by renames only; nothing is read or rewritten. A
+/// short-lived lock file makes one writer do it: the others append to the
+/// file as it is. A stale lock (a crashed writer) is ignored after a minute.
+fn rotate(path: &std::path::Path, max: u64) {
+    let lock = generation(path, 0);
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    if opts.open(&lock).is_err() {
+        let stale = fs::metadata(&lock)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > 60);
+        if !stale || fs::remove_file(&lock).is_err() || opts.open(&lock).is_err() {
+            return;
+        }
+    }
+    // Re-check under the lock: another writer may have rotated already.
+    if fs::metadata(path).map(|m| m.len() > max).unwrap_or(false) {
+        let _ = fs::remove_file(generation(path, GENERATIONS));
+        for n in (1..GENERATIONS).rev() {
+            let _ = fs::rename(generation(path, n), generation(path, n + 1));
+        }
+        let _ = fs::rename(path, generation(path, 1));
+    }
+    let _ = fs::remove_file(&lock);
 }
 
 /// Build the whole record as one line. Separated from the write so it can be
@@ -477,22 +570,6 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-/// Keep the newest records and drop the oldest, preserving the header.
-fn compact(path: &std::path::Path) {
-    let Ok(text) = fs::read_to_string(path) else {
-        return;
-    };
-    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("F ")).collect();
-    let keep = lines.len().saturating_sub(lines.len() / 2);
-    let mut out = String::from(FORMAT);
-    out.push('\n');
-    for l in &lines[lines.len() - keep..] {
-        out.push_str(l);
-        out.push('\n');
-    }
-    let _ = fs::write(path, out);
 }
 
 #[cfg(test)]
@@ -795,6 +872,128 @@ mod tests {
         let mode = fs::metadata(&strict).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o400, "narrowing must never widen");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("amont-agent-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn rec(ts: u64, tag: &str) -> String {
+        format!("F {ts} r deny denied sess repo default {tag}\n")
+    }
+
+    #[test]
+    fn rotation_keeps_ten_generations_and_every_file_has_a_header() {
+        let dir = scratch("rotate");
+        let path = dir.join("journal.log");
+        let big = "x".repeat(300);
+        // ~350 bytes a record, threshold 1000: about 3 records a generation.
+        for i in 0..60 {
+            append(&path, 1000, &rec(1, &format!("late{i} {big}"))).expect("append");
+        }
+        let all = paths_of(&path);
+        assert_eq!(all.len(), 11, "journal.log + .1..=.10: {all:?}");
+        assert!(!generation(&path, 11).exists(), "the oldest was dropped");
+        for p in &all {
+            let text = fs::read_to_string(p).unwrap();
+            assert_eq!(text.lines().next(), Some(FORMAT), "{p:?}");
+        }
+        // Oldest first: the last path is the live file.
+        assert_eq!(all.last(), Some(&path));
+        assert!(all[0].ends_with("journal.log.10"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_tally_reads_every_generation_with_the_floor() {
+        let dir = scratch("gens");
+        let path = dir.join("journal.log");
+        let now = 2_000_000u64;
+        let w = |p: &std::path::Path, ts: u64, rule: &str| {
+            fs::write(
+                p,
+                format!("{FORMAT}\nF {ts} {rule} deny denied s r default x\n"),
+            )
+            .unwrap();
+        };
+        w(&generation(&path, 3), now - 100, "in-three");
+        w(&generation(&path, 9), now - 500_000, "old-nine");
+        w(&path, now - 5, "live");
+        let mut seen = std::collections::BTreeMap::new();
+        for p in paths_of(&path) {
+            tally_into(&mut seen, &p, 100_000, now);
+        }
+        assert_eq!(seen["in-three"].denied, 1);
+        assert_eq!(seen["live"].denied, 1);
+        assert!(!seen.contains_key("old-nine"), "outside the window");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Entry point for the child processes of the test below; a no-op unless
+    /// the parent set the environment.
+    #[test]
+    fn child_writer() {
+        let (Some(p), Some(id)) = (
+            std::env::var_os("AMONT_JOURNAL_TEST_PATH"),
+            std::env::var("AMONT_JOURNAL_TEST_ID").ok(),
+        ) else {
+            return;
+        };
+        for i in 0..60 {
+            append(
+                std::path::Path::new(&p),
+                20_000,
+                &rec(1, &format!("w{id}-{i} {}", "y".repeat(100))),
+            );
+        }
+    }
+
+    #[test]
+    fn eight_processes_lose_no_record_and_tear_no_line() {
+        let dir = scratch("procs");
+        let path = dir.join("journal.log");
+        let exe = std::env::current_exe().unwrap();
+        let kids: Vec<_> = (0..8)
+            .map(|id| {
+                std::process::Command::new(&exe)
+                    .args([
+                        "--exact",
+                        "journal::tests::child_writer",
+                        "--test-threads=1",
+                    ])
+                    .env("AMONT_JOURNAL_TEST_PATH", &path)
+                    .env("AMONT_JOURNAL_TEST_ID", id.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .expect("spawn")
+            })
+            .collect();
+        for mut k in kids {
+            assert!(k.wait().unwrap().success());
+        }
+        let mut found = std::collections::BTreeSet::new();
+        for p in paths_of(&path) {
+            for line in fs::read_to_string(&p).unwrap().lines() {
+                if line.starts_with("F ") {
+                    let f: Vec<&str> = line.split_whitespace().collect();
+                    assert!(f.len() >= 9, "torn line {line:?} in {p:?}");
+                    found.insert(f[8].to_string());
+                }
+            }
+        }
+        assert!(
+            paths_of(&path).len() > 2,
+            "the threshold was crossed several times"
+        );
+        for id in 0..8 {
+            for i in 0..60 {
+                assert!(found.contains(&format!("w{id}-{i}")), "lost w{id}-{i}");
+            }
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }
