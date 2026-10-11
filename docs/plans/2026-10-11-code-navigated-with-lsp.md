@@ -213,32 +213,47 @@ separate per-session file, not the read log of `session_state`: its
 
 ## Phases
 
-1. Rules, `src/lsp.rs`, Grep payload + matcher, remedies, tests, docs — one PR.
-2. Release (`tag-release`), `brew upgrade amont-agent`, `amont-agent install`
+1. [x] Rules, `src/lsp.rs`, Grep payload + matcher, remedies, tests, docs — one PR.
+2. [ ] Release (`tag-release`), `brew upgrade amont-agent`, `amont-agent install`
    to add the Grep block; observe in a fresh session.
+
+## Decision log
+
+- 2026-10-11: the subagent fallback is "`agent_id` present, `agent_type` absent → silent". Captured payloads show `transcript_path` is the parent's in a subagent, so the planned `/subagents/` test could not work.
+- 2026-10-11: a bare word must look like a symbol (an uppercase letter or `_`) unless a declaration keyword precedes it; `-i` and `$` paths are silent. The first 50-hit sample was 68% real symbol lookups, under the 85% bar; the second, 88%.
+- 2026-10-11: `Evidence` for `symbol-grep-not-lsp` is 54.4 per 1,000 Bash calls, the backtester's unit; the plan's 43.8 was per 1,000 tool calls of any kind.
+- 2026-10-11: shipped as v2.32.0 in this PR (Cargo bump and CHANGELOG section), as 2.31.0 did, not as `## Unreleased`.
+- 2026-10-11: `whole-file-dump`'s LSP remedy does not check the agent: its `confirm` has no payload, and the agents measured without LSP (review panel) have no Bash. deliberate.
 
 ## Verification
 
-| check | input | expected |
-|---|---|---|
-| edit gate | Read lines 1–40 of a `.rs` file, then Edit a line outside that window | record whether Claude Code accepts the Edit; it fixes the "to edit" wording |
-| unit | `lsp` module: extension table, `tools:` as comma line and as YAML list, plugin installPath lookup, no-.git dir, malformed `installed_plugins.json`, truncated settings | serves / silent as listed |
-| unit | settings merge: user, project, local `enabledPlugins` | the most specific wins |
-| unit | advisory text of each rule | reason + remedy at most 60 words |
-| fixture | 2–3 real subagent PreToolUse payloads | `agent_type` field name and values confirmed |
-| corpus | `cargo test` corpus cases for both rules, incl. `rg`, `git grep` and long-form-flag cases, stop-list, silencers | every match fires, every nomatch silent |
-| backtest | `amont-agent backtest symbol-grep-not-lsp` on W41 transcripts | rate near 43.8/1k; 50 hits hand-labelled, ≥ 85% real symbol lookups; false-positive rate reported |
-| timing | p95 of the Read hot path with `code-read-not-lsp` | under 5 ms per fire |
-| hook e2e | `tests/hook.rs`: whole Read of a 5 KB `.rs` in a git repo, fleet-lsp stub on PATH, plugin enabled | `additionalContext` with `code-read-not-lsp`, and not `read-unbounded-large` |
-| hook e2e | same Read of a persisted tool-result path | silent |
-| hook e2e | same Read with `code-read-not-lsp` set to `observe`, 20 KB `.rs` | `read-unbounded-large` fires |
-| hook e2e | same Read with `agent_type` naming a definition whose `tools:` lacks LSP | silent |
-| hook e2e | Grep tool payload `{"pattern":"fn agent_type","path":"<repo>"}` | advise `symbol-grep-not-lsp` |
-| hook e2e | 3 KB `.rs`, a `.md`, a windowed Read, no fleet-lsp on PATH | silent each |
-| install | `amont-agent install` on a settings copy with the old blocks | one new `Grep` block, old blocks unchanged, idempotent on rerun |
-| doctor | settings copy without the Grep block | doctor prints `missing: PreToolUse Grep` |
-| doctor | fleet-lsp stub on PATH, plugin on, then off | "LSP rules" line shows the path and the state, or the failing gate |
-| live | after release+install, N ≥ 5 fresh `claude -p` runs asking to find `fn agent_type` in relais | the advisory appears; report how often the next call is LSP |
+| check | input | expected | actual |
+|---|---|---|---|
+| edit gate | Read lines 1–40 of a `.rs` file, then Edit a line outside that window | record whether Claude Code accepts the Edit; it fixes the "to edit" wording | `claude -p` (haiku): Read `offset 1, limit 10` of a 120-line `lib.rs`, then Edit line 101 → **accepted**, line 101 changed. Remedy says "to edit, Read the window you change". |
+| unit | `lsp` module: extension table, `tools:` as comma line and as YAML list, plugin installPath lookup, no-.git dir, malformed `installed_plugins.json`, truncated settings | serves / silent as listed | 8 tests in `src/lsp.rs` pass, incl. `a_plugin_is_found_where_it_was_installed` (malformed JSON) and `the_most_specific_settings_file_decides` (truncated, empty). No-.git covered by the e2e row below. |
+| unit | settings merge: user, project, local `enabledPlugins` | the most specific wins | `the_most_specific_settings_file_decides`: project `false` over user `true`, local `true` over user `false`, none → off. Pass. |
+| unit | advisory text of each rule | reason + remedy at most 60 words | `the_advice_stays_under_sixty_words` in both rules. Pass. |
+| fixture | 2–3 real subagent PreToolUse payloads | `agent_type` field name and values confirmed | 3 payloads captured live: main has neither field; Explore has `agent_id` + `agent_type: "Explore"`; a `--agents` custom agent has `agent_type: "narrow"`. `transcript_path` is the parent's, so the `/subagents/` fallback became `agent_id` without `agent_type` → silent. |
+| corpus | `cargo test` corpus cases for both rules, incl. `rg`, `git grep` and long-form-flag cases, stop-list, silencers | every match fires, every nomatch silent | `corpus check` passes: `symbol-grep-not-lsp` 12 match / 14 nomatch, `code-read-not-lsp` 5 nomatch. |
+| backtest | `amont-agent backtest symbol-grep-not-lsp` on W41 transcripts | rate near 43.8/1k; 50 hits hand-labelled, ≥ 85% real symbol lookups; false-positive rate reported | Backtester unit is per 1,000 **Bash** calls: weeks from 09-07 25.4, 46.8, 55.9, 59.2, 54.4. First sample: 34/50 real (68%) → shape test tightened. Second sample (fresh seed): **44/50 (88%)**; the 6 misses are env-var or column names searched as text. |
+| timing | p95 of the Read hot path with `code-read-not-lsp` | under 5 ms per fire | Release build, 30–40 runs each: all LSP gates together < 1 ms (8.0 ms baseline, 8.4–8.6 ms when a late gate fails). A firing Read is ~23–25 ms; the extra ~14 ms is stance (a `git config` process) and journal, shared with every firing rule. |
+| hook e2e | `tests/hook.rs`: whole Read of a 5 KB `.rs` in a git repo, fleet-lsp stub on PATH, plugin enabled | `additionalContext` with `code-read-not-lsp`, and not `read-unbounded-large` | Run with a 20 KB file, so the suppression of `read-unbounded-large` shows: advised, no `read-unbounded-large`, not a deny; silent the 2nd time in the session, advised in another session. Pass. |
+| hook e2e | same Read of a persisted tool-result path | silent | `tool-results/x.rs` → no `code-read-not-lsp`. Pass. |
+| hook e2e | same Read with `code-read-not-lsp` set to `observe`, 20 KB `.rs` | `read-unbounded-large` fires | Fires, remedy names `documentSymbol`, not `grep -n`. Pass. |
+| hook e2e | same Read with `agent_type` naming a definition whose `tools:` lacks LSP | silent | `narrow` (`tools: Read, Grep`) silent; `agent_id` without type silent; Explore advised. Pass. |
+| hook e2e | Grep tool payload `{"pattern":"fn agent_type","path":"<repo>"}` | advise `symbol-grep-not-lsp` | Advised once per pattern per session; `output_mode: count`, an alternation pattern and a `*.md` glob silent. Pass. |
+| hook e2e | 3 KB `.rs`, a `.md`, a windowed Read, no fleet-lsp on PATH | silent each | Each silent; also plugin off and no `.git`. Pass. |
+| install | `amont-agent install` on a settings copy with the old blocks | one new `Grep` block, old blocks unchanged, idempotent on rerun | `tests/settings_merge.rs`: PreToolUse blocks Bash, Read\|Edit\|Write\|MultiEdit, Grep, AskUserQuestion, ExitPlanMode; existing tests for idempotence and uninstall pass. |
+| doctor | settings copy without the Grep block | doctor prints `missing: PreToolUse Grep` | `a_settings_file_without_the_grep_block_is_reported_by_name`: printed; after `install --write`, no `missing:`. Pass. |
+| doctor | fleet-lsp stub on PATH, plugin on, then off | "LSP rules" line shows the path and the state, or the failing gate | `doctor_says_whether_the_lsp_rules_can_speak_here`: on → `LSP rules: fleet-lsp at …, plugin enabled`; off → `silent here … the fleet-lsp plugin is not enabled`. Pass. |
+| live | after release+install, N ≥ 5 fresh `claude -p` runs asking to find `fn agent_type` in relais | the advisory appears; report how often the next call is LSP | **Phase 2.** Before the push, a pilot of the release binary on the real `~/.claude` config: main, Explore, relais worker (plugin 0.12.0), plan-review-backend and implementation-review advised; plan-review-ui-design (no LSP) silent; `grep -rn worker_agent_type crates` in relais advised. |
+
+## Implementation review
+
+- **approve-with-changes** (round 1, 89k tokens, 122 s; Delta, 101k, 20 s): round-1 findings 1, 3–6 fixed in e51495b; 2 and 7 recorded in this plan.
+- Fixed: pure settings/plugin helpers with tests, `Told` instead of swallowed errors, `Finder` enum, quoted long flags, no-PATH and doctor tests.
+- deliberate: `unrecorded` journal rows carry stance `-`, as the hook's `partial` rows already do (`hook.rs` `on_bash`), and `status` reads them.
+- Next: Phase 2, release v2.32.0, `amont-agent install --write`, the live N ≥ 5 row.
 
 ### Outcome, one week after release
 
