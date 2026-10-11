@@ -192,6 +192,14 @@ impl Tri {
             Tri::Maybe
         }
     }
+
+    pub fn not(self) -> Tri {
+        match self {
+            Tri::Yes => Tri::No,
+            Tri::No => Tri::Yes,
+            Tri::Maybe => Tri::Maybe,
+        }
+    }
 }
 
 /// The shell options that change what a command does.

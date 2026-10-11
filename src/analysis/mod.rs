@@ -31,9 +31,26 @@ pub use interp::{Incomplete, ASSUMPTIONS};
 #[derive(Debug, Clone)]
 pub struct Analysis {
     pub effects: Effects,
+    /// The `pipefail` state in effect at each multi-command pipeline, by the
+    /// pipeline's span in the source.
+    pub pipelines: Vec<(ir::Span, state::Tri)>,
     /// Set when the analysis stopped short — a resource limit, or text the
     /// frontend could not parse. Nothing after `span` is known.
     pub incomplete: Option<Incomplete>,
+}
+
+impl Analysis {
+    /// The `pipefail` state in effect for the innermost pipeline whose span
+    /// contains byte offset `at`. `Tri::Maybe` when no pipeline there was
+    /// analysed (unreachable, or the analysis stopped short): only `Tri::Yes`
+    /// is ever grounds to stay silent.
+    pub fn pipefail_at(&self, at: usize) -> state::Tri {
+        self.pipelines
+            .iter()
+            .filter(|(span, _)| span.start <= at && at < span.end)
+            .min_by_key(|(span, _)| span.end - span.start)
+            .map_or(state::Tri::Maybe, |(_, t)| *t)
+    }
 }
 
 /// Analyse `src` as run by `dialect`.
@@ -43,6 +60,7 @@ pub fn analyze(src: &str, dialect: Dialect) -> Analysis {
             let out = interp::run(&cmd, src, dialect);
             Analysis {
                 effects: out.effects,
+                pipelines: out.pipelines,
                 incomplete: out.incomplete,
             }
         }
@@ -56,6 +74,7 @@ pub fn analyze(src: &str, dialect: Dialect) -> Analysis {
                     contributions: Vec::new(),
                     unknown: vec![(span.clone(), why)],
                 },
+                pipelines: Vec::new(),
                 incomplete: Some(Incomplete { span, why }),
             }
         }

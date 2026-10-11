@@ -256,6 +256,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         "request-fanout",
         include_str!("../tests/corpus/request-fanout.cases"),
     ),
+    (
+        "test-output-trimmed",
+        include_str!("../tests/corpus/test-output-trimmed.cases"),
+    ),
 ];
 
 /// The compiled-in corpus for a rule, if the table has one.

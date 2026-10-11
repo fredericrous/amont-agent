@@ -100,6 +100,15 @@ const BENIGN: &[(&str, &str)] = &[
     ("git status --short", "ordinary"),
     ("git push origin main", "ordinary"),
     ("git commit -m 'feat: a thing'", "ordinary"),
+    // --- a trimmed runner whose status is kept, or that runs nothing -------
+    ("set -o pipefail; cargo test | tail", "pipefail"),
+    ("set -euo pipefail; cargo test | tail", "pipefail"),
+    ("setopt pipefail; cargo test | tail", "pipefail"),
+    (
+        "setopt extendedglob pipefail; cargo test | tail",
+        "pipefail",
+    ),
+    ("cargo test --no-run | tail", "ordinary"),
 ];
 
 #[test]

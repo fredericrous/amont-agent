@@ -29,7 +29,8 @@
 
 use std::ops::Range;
 
-use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
+use crate::analysis::state::Tri;
+use crate::rules::{Evidence, Examine, Finding, Input, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -193,8 +194,16 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     None
 }
 
+/// Whether the shell definitely has `pipefail` on where `cmd`'s pipeline runs.
+/// `Maybe` (a conditional `set -o pipefail`) is not a yes. The clause's own
+/// `at` can include leading blanks, so its first word locates it.
+pub(crate) fn pipefail_is_on(input: &Input, cmd: &Simple) -> bool {
+    let at = cmd.words.first().map_or(cmd.at, |w| w.at);
+    input.analysis().pipefail_at(at) == Tri::Yes
+}
+
 /// The last stage of the pipeline that `from` participates in.
-fn pipeline_sink(clauses: &[Simple], from: usize) -> Option<&Simple> {
+pub(crate) fn pipeline_sink(clauses: &[Simple], from: usize) -> Option<&Simple> {
     let mut i = from;
     while clauses.get(i)?.next.is_some_and(|c| c.is_pipe()) {
         i += 1;
