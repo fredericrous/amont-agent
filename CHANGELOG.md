@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.35.0
+
+### Added
+
+- **`amont-agent quiet [--max-bytes N] -- <cmd…>` runs a test or lint
+  command cheaply and keeps its exit status.** The full output goes to a
+  log under `~/.claude/amont-agent/logs/` (tailable as `.log.tmp` while it
+  runs); a pass prints one line, `ok <N>s log=<path>`; a failure prints
+  each failure block in full (cargo's `failures:` section, a pytest
+  traceback, a vitest or eslint failure), the runner's summary and the log
+  path. The exit code is the child's. Memory stays under 64 KB whatever the
+  output size, and a log that cannot be written still leaves the excerpt
+  and the real status. See `docs/quiet.md`.
+- **`test-output-trimmed` (advise).** A test, lint or typecheck runner piped
+  into `tail`/`head`/`grep` without `pipefail` exits with the trimmer's
+  status: of 8,776 such runs in 30 days, 2,179 printed a failure and
+  reported success. The advice names `amont run <check>` and `amont-agent
+  quiet`. `pipefail` exempts only when the shell analysis proves it on: a
+  later `set +o pipefail`, a conditional `set` or a child shell's option
+  does not count, and zsh `setopt`/`unsetopt pipefail` is understood.
+
+### Fixed
+
+- **`pipe-to-tail` honours `set -o pipefail`.** Its documentation said so;
+  the code never checked. A backtest since 2026-09-11 matches the same 141
+  commands with and without the check.
+- **`file-reread` can be raised to `deny` safely.** The read record was
+  keyed by session only, so a subagent would have been told it had already
+  read a file only its parent read; `head -20`, `tail -20` and
+  `sed -n '101,120p'` all recorded as the same window; `true || cat f`
+  counted as a read; and a compaction kept the record although the context
+  lost the content. Records are now per agent (an invalid `agent_id` keeps
+  none), carry the exact window and its direction, and are `certain` only
+  when the read is proven delivered whole; only a certain record can deny,
+  and an uncertain one never speaks. `SessionStart` with `source: compact`
+  clears the main record.
+
 ## v2.34.0
 
 ### Added
