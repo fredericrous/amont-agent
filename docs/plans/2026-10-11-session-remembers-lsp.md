@@ -142,7 +142,7 @@ journalled `lsp`: never dropped.
 
 ## Phases
 
-1. Journal generations, then hook, payload, record, rule gate, deny text,
+1. ✅ Journal generations, then hook, payload, record, rule gate, deny text,
    tests, docs, v2.33.0 — one PR.
 2. Release (`tag-release`), `brew upgrade amont-agent`,
    `amont-agent install --write`; confirm a live LSP call is journalled and
@@ -195,5 +195,11 @@ journalled `lsp`: never dropped.
 - A `workspaceSymbol` payload without `filePath` is still recorded and counted (headings only).
 - A live file that cannot be rotated leaves a `rotate-failed` record in it; a header that cannot be written drops the record instead of leaving a file without one.
 - Implementation via relais: generations (run-65d8b340b227c-15496, accepted, sonnet); LSP record (run-65d8b504185f3-1666f, needs_decision on Cargo.toml/Cargo.lock: only the version bump, accepted by hand, then the two fixes above).
+
+## Implementation review
+
+- approve (round 2, Delta), after approve-with-changes in round 1 (75k, 70 s; Delta 85k, 24 s).
+- Fixed: doctor generations test, `rotate-failed` record, `holds-until` comment, rules doc per agent and deny-every-time, `child_writer` ignored.
+- deliberate: a stuck rotation adds one `rotate-failed` line per write, so the journal grows twice as fast until it is fixed; being loud is the point.
 
 <!-- panel: repos=amont-agent adds= reviewers=backend body-sha=f93bcc397a39 -->
