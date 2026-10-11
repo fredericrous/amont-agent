@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`amont-agent plan-review record <plan.md>` keeps the panel's outcomes.**
+  One row per completed plan-review reviewer (role, agent id, model, tokens,
+  seconds, round, body sha, plan features, verdict, remit and the findings
+  the caller passes on stdin) is appended to
+  `~/.claude/amont-agent/plan-review/outcomes.jsonl`, deduped by agent id
+  under a lock, and each reviewed plan body is saved once under
+  `plan-review/bodies/`. See `docs/plan-review.md`.
+
 ## v2.33.1
 
 ### Fixed

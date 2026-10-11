@@ -46,6 +46,7 @@ mod plans;
 mod preview;
 mod publish_cmd;
 mod push_target;
+mod review_outcomes;
 mod rules;
 mod session_state;
 mod settings;
@@ -91,6 +92,8 @@ usage: amont-agent <command>
                         the sha256 of a plan's canonical body, as reviewed
   plan-panel <plan.md>  the review agents a plan still needs, as the
                         plan-review-panel hook will judge it
+  plan-review record <plan.md> [--transcript <path>]
+                        keep what each reviewer of a plan did, as outcome rows
   tree-sha [--block] [-C <dir>] [--] [<rev>]
                         the canonical tree id an implementation review
                         binds to: HEAD's tree without docs/plans/
@@ -140,10 +143,11 @@ enum Sub {
     Preview,
     PlanSha,
     PlanPanel,
+    PlanReview,
     TreeSha,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 18] = [
+const SUBCOMMANDS: [(&str, Sub); 19] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -161,6 +165,7 @@ const SUBCOMMANDS: [(&str, Sub); 18] = [
     ("preview", Sub::Preview),
     ("plan-sha", Sub::PlanSha),
     ("plan-panel", Sub::PlanPanel),
+    ("plan-review", Sub::PlanReview),
     ("tree-sha", Sub::TreeSha),
 ];
 
@@ -308,6 +313,11 @@ fn main() -> ExitCode {
             Sub::Preview => run_preview(&args),
             Sub::PlanSha => run_plan_sha(&args),
             Sub::PlanPanel => run_plan_panel(&args),
+            Sub::PlanReview => {
+                let (said, code) = review_outcomes::run(&args);
+                print!("{said}");
+                code
+            }
             Sub::TreeSha => run_tree_sha(&args),
         },
     }
