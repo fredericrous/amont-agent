@@ -259,6 +259,9 @@ fn lock(path: &Path) -> std::io::Result<Lock> {
     Ok(Lock { _held: f })
 }
 
+// holds-until: two `record` calls run at once on Windows. No lock is taken
+// there: `File::lock` needs Rust 1.89, above the 1.85 floor, and plan
+// reviews run on unix machines. Ends when the floor reaches 1.89.
 #[cfg(not(unix))]
 fn lock(path: &Path) -> std::io::Result<Lock> {
     let f = std::fs::OpenOptions::new()

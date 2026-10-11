@@ -262,6 +262,9 @@ fn a_second_run_writes_nothing() {
     assert_eq!(w.rows().len(), 1);
 }
 
+// The lock is an flock; Windows has none yet (see `lock` in
+// src/review_outcomes.rs).
+#[cfg(unix)]
 #[test]
 fn concurrent_records_write_one_row_per_reviewer() {
     let mut w = World::new("race");
