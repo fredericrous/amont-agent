@@ -289,9 +289,307 @@ pub fn told(session: &str, key: &str) -> Told {
     }
 }
 
+/// The one normal form a path is stored and looked up in: `.` and `..`
+/// removed lexically, then `canonicalize` when the file exists (macOS `/tmp`
+/// is `/private/tmp`). A file that does not exist keeps its lexical form.
+pub fn normal(path: &Path) -> PathBuf {
+    let lexical = lexical(path);
+    std::fs::canonicalize(&lexical).unwrap_or(lexical)
+}
+
+/// `.` and `..` removed without touching the file system.
+fn lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut lexical = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !lexical.pop() {
+                    lexical.push("..");
+                }
+            }
+            other => lexical.push(other.as_os_str()),
+        }
+    }
+    lexical
+}
+
+/// A heading line of an LSP answer: `<path>:` alone, or `<path>:<line>[:<col>]`
+/// at the start of a line. Indented lines are the entries under a heading.
+fn heading_path(line: &str) -> Option<&str> {
+    if line.is_empty() || line.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let mut rest = line.strip_suffix(':').unwrap_or(line);
+    for _ in 0..2 {
+        match rest.rsplit_once(':') {
+            Some((head, tail)) if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) => {
+                rest = head
+            }
+            _ => break,
+        }
+    }
+    (rest.len() < line.len() && is_code(rest)).then_some(rest)
+}
+
+/// The files an LSP call was about, in normal form and without repeats: its
+/// `filePath` (except for `workspaceSymbol`, where it only picks the
+/// repository), and every heading of the answer that names a code file under
+/// the cwd's repository. Touches the file system only to normalise paths.
+pub fn asked_files(call: &crate::payload::LspCall) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    if call.operation != "workspaceSymbol" {
+        files.push(normal(&call.file_path));
+    }
+    let repo = normal(&git_root(&call.cwd).unwrap_or_else(|| call.cwd.clone()));
+    let base = normal(&call.cwd);
+    // A heading repeats across a long answer; `normal` costs a syscall, so
+    // each spelling is resolved once.
+    let mut spelled = std::collections::HashSet::new();
+    for line in call.response.as_deref().unwrap_or_default().lines() {
+        let Some(named) = heading_path(line) else {
+            continue;
+        };
+        if !spelled.insert(named) {
+            continue;
+        }
+        let named = named.strip_prefix("file://").unwrap_or(named);
+        let named = Path::new(named);
+        // A relative heading joins the cwd's normal form lexically: one
+        // `canonicalize` per answer instead of one per file. Only a symlink
+        // inside the repository then spells a file differently, and a missed
+        // match only means a later Read is advised.
+        let abs = if named.is_absolute() {
+            normal(named)
+        } else {
+            lexical(&base.join(named))
+        };
+        if abs.starts_with(&repo) && !files.contains(&abs) {
+            files.push(abs);
+        }
+    }
+    files
+}
+
+/// `main`, or the payload's `agent_id`. An id that is not one token cannot
+/// be a key.
+fn agent_key(agent_id: Option<&str>) -> Option<String> {
+    match agent_id {
+        None => Some("main".to_string()),
+        Some(id) if !id.is_empty() && !id.contains(char::is_whitespace) => Some(id.to_string()),
+        Some(_) => None,
+    }
+}
+
+fn record_file(session: &str) -> Option<PathBuf> {
+    if !crate::session_state::usable_id(session) {
+        return None;
+    }
+    Some(
+        crate::journal::dir()?
+            .join("sessions")
+            .join(format!("{session}.lsp")),
+    )
+}
+
+/// Append `asked <agent> <path>` for each file to the session's record (the
+/// file `told` uses). A path with a newline is skipped and, like a record
+/// that cannot be written, makes the result `Err`: the reason is for the
+/// journal, and the lookup then errs toward advising.
+pub fn record_asked(
+    session: &str,
+    agent_id: Option<&str>,
+    files: &[PathBuf],
+) -> Result<(), &'static str> {
+    use std::io::Write;
+    let Some(agent) = agent_key(agent_id) else {
+        return Err("no usable agent id");
+    };
+    let mut skipped = false;
+    let lines: Vec<String> = files
+        .iter()
+        .filter_map(|f| {
+            let text = f.to_string_lossy();
+            if text.contains('\n') {
+                skipped = true;
+                return None;
+            }
+            Some(format!("asked {agent} {text}"))
+        })
+        .collect();
+    if lines.is_empty() {
+        return if skipped {
+            Err("a path with a newline")
+        } else {
+            Ok(())
+        };
+    }
+    let Some(file) = record_file(session) else {
+        return Err("no usable session id or journal directory");
+    };
+    if let Some(dir) = file.parent() {
+        if std::fs::create_dir_all(dir).is_err() {
+            return Err("the sessions directory could not be created");
+        }
+    }
+    let have = std::fs::read_to_string(&file).unwrap_or_default();
+    let mut out = String::new();
+    for line in &lines {
+        if !have.lines().any(|l| l == line) && !out.lines().any(|l| l == line) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !out.is_empty() {
+        let written = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .and_then(|mut f| f.write_all(out.as_bytes()));
+        if written.is_err() {
+            return Err("the session record could not be written");
+        }
+    }
+    if skipped {
+        return Err("a path with a newline");
+    }
+    Ok(())
+}
+
+/// Whether this agent, in this session, asked LSP about `path` (looked up in
+/// the same normal form it was recorded in).
+pub fn asked(session: &str, agent_id: Option<&str>, path: &Path) -> bool {
+    let Some(agent) = agent_key(agent_id) else {
+        return false;
+    };
+    let Some(file) = record_file(session) else {
+        return false;
+    };
+    let Ok(seen) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    let want = format!("asked {agent} {}", normal(path).to_string_lossy());
+    seen.lines().any(|l| l == want)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payload::LspCall;
+
+    fn fixture(name: &str) -> LspCall {
+        let raw = std::fs::read_to_string(format!(
+            "{}/tests/fixtures/lsp-posttooluse-{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("fixture");
+        match crate::payload::parse(&raw) {
+            crate::payload::Event::PostLsp(c) => *c,
+            _ => panic!("not an LSP call"),
+        }
+    }
+
+    fn call(op: &str, file: &str, response: &str) -> LspCall {
+        LspCall {
+            operation: op.into(),
+            file_path: PathBuf::from("/nonexistent/repo").join(file),
+            response: Some(response.into()),
+            cwd: PathBuf::from("/nonexistent/repo"),
+            session: "s".into(),
+            permission_mode: "default".into(),
+            agent_id: None,
+        }
+    }
+
+    #[test]
+    fn the_fixtures_are_parsed_as_real_payloads() {
+        let ds = fixture("documentsymbol");
+        assert_eq!(ds.operation, "documentSymbol");
+        assert!(ds
+            .response
+            .as_deref()
+            .unwrap()
+            .starts_with("Document symbols:"));
+        let files = asked_files(&ds);
+        assert_eq!(
+            files,
+            [PathBuf::from("/home/user/Developer/amont-agent/src/lsp.rs")]
+        );
+        let fr = fixture("findreferences");
+        let names: Vec<String> = asked_files(&fr)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let root = "/home/user/Developer/amont-agent";
+        assert_eq!(
+            names,
+            [
+                format!("{root}/src/journal.rs"),
+                format!("{root}/src/main.rs"),
+                format!("{root}/src/doctor.rs")
+            ]
+        );
+        let err = fixture("error");
+        assert!(err
+            .response
+            .as_deref()
+            .unwrap()
+            .starts_with("Error performing"));
+        assert_eq!(asked_files(&err).len(), 1, "filePath alone");
+    }
+
+    #[test]
+    fn workspace_symbol_ignores_its_file_path_and_reads_headings() {
+        let c = call(
+            "workspaceSymbol",
+            "src/x.rs",
+            "Found 2 symbols:\n\nrelais/crates/a/src/mod.rs:\n  Foo (Struct) - Line 3\n./src/y.rs:12:4\n../outside/z.rs:\n/etc/passwd.rs:\nNOTES.md:",
+        );
+        let got = asked_files(&c);
+        assert_eq!(
+            got,
+            [
+                PathBuf::from("/nonexistent/repo/relais/crates/a/src/mod.rs"),
+                PathBuf::from("/nonexistent/repo/src/y.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn hover_counts_its_file_path() {
+        let c = call("hover", "src/x.rs", "```rust\nfn x()\n```");
+        assert_eq!(
+            asked_files(&c),
+            [PathBuf::from("/nonexistent/repo/src/x.rs")]
+        );
+    }
+
+    #[test]
+    fn one_normal_form_for_every_spelling() {
+        let dir = std::env::temp_dir().join(format!("amont-agent-lsp-nf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real/src")).expect("dirs");
+        std::fs::write(dir.join("real/src/x.rs"), "x").expect("file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).expect("symlink");
+        let direct = normal(&dir.join("real/src/x.rs"));
+        assert_eq!(normal(&dir.join("real/./src/../src/x.rs")), direct);
+        #[cfg(unix)]
+        assert_eq!(normal(&dir.join("link/src/x.rs")), direct);
+        let mut c = call("findReferences", "src/x.rs", "./src/x.rs:\n  Line 1:1");
+        c.cwd = dir.join("link");
+        c.file_path = dir.join("link/src/x.rs");
+        assert_eq!(asked_files(&c), [direct]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_path_with_a_newline_is_unrecorded() {
+        let bad = PathBuf::from("/a/b\nc.rs");
+        assert!(record_asked("s-1", None, &[bad]).is_err());
+        assert!(record_asked("s-1", Some("a 1"), &[PathBuf::from("/a.rs")]).is_err());
+    }
 
     #[test]
     fn code_is_known_by_its_extension() {

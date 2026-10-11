@@ -74,6 +74,18 @@ pub fn phrase(shown: &str, bytes: u64) -> (String, String) {
     )
 }
 
+/// The refusal: the same mechanism, and the way through spelled out.
+pub fn phrase_refusal(shown: &str, bytes: u64) -> (String, String) {
+    let (reason, _) = phrase(shown, bytes);
+    (
+        reason,
+        "Ask LSP about this file (documentSymbol), then Read it once LSP has answered: \
+         the Read passes once LSP was asked, or if LSP errors. Then Read with offset/limit \
+         around the line you need."
+            .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +120,14 @@ mod tests {
             "exempt like read-unbounded-large"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_refusal_names_the_way_through() {
+        let (_, remedy) = phrase_refusal("a.rs", 9000);
+        assert!(remedy.contains("documentSymbol"), "{remedy}");
+        assert!(remedy.contains("once LSP was asked"), "{remedy}");
+        assert!(remedy.contains("if LSP errors"), "{remedy}");
     }
 
     #[test]

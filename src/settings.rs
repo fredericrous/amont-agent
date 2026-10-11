@@ -269,6 +269,10 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // `Bash|Read`, so an install joins the Bash block a user already has
     // instead of adding a second one that fires beside it.
     ("PostToolUse", Some("Read")),
+    // The LSP tool's calls are recorded per session and agent, so a Read of a
+    // file LSP was asked about is not advised (or refused) as a blind Read.
+    // Its own block, as Grep got in 2.32.0.
+    ("PostToolUse", Some("LSP")),
     ("SessionStart", None),
     // Preview approval (ADR-0023). A typed approval arrives as a prompt; an
     // answered marked question arrives after `AskUserQuestion`, and whether
