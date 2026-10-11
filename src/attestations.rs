@@ -210,14 +210,20 @@ fn git_roots() -> Result<Vec<PathBuf>, Failure> {
         err,
     };
     let out = crate::git::output(&args).ok_or_else(|| bad("git did not run".into()))?;
-    match out.code {
-        0 => Ok(out
-            .stdout
+    roots_from(out.code, &out.stdout, &out.stderr).map_err(bad)
+}
+
+/// What `git config --get-regexp` said, as roots: exit 0 lists them, exit 1
+/// with nothing printed is no key matching (no configured roots), and
+/// anything else is a failure.
+fn roots_from(code: i32, stdout: &str, stderr: &str) -> Result<Vec<PathBuf>, String> {
+    match code {
+        0 => Ok(stdout
             .lines()
             .filter_map(|l| l.split_once(' ').map(|(_, v)| PathBuf::from(v.trim())))
             .collect()),
-        1 if out.stdout.is_empty() => Ok(Vec::new()),
-        c => Err(bad(format!("exit {c}: {}", out.stderr))),
+        1 if stdout.trim().is_empty() => Ok(Vec::new()),
+        c => Err(format!("exit {c}: {}", stderr.trim())),
     }
 }
 
@@ -412,13 +418,28 @@ pub struct Report {
 }
 
 /// Delete `.trash-<secs>-*` whose time is `TRASH_FOR` old. A name without a
-/// readable time is left alone.
-fn purge(store: &Path, now: u64) -> usize {
-    let Ok(rd) = fs::read_dir(store) else {
-        return 0;
+/// readable time is left alone. Returns how many went, and (entry, io error)
+/// for each that could not: this is the step that really deletes, so its
+/// failures are reported, never dropped.
+fn purge(store: &Path, now: u64) -> (usize, Vec<(String, String)>) {
+    let mut errors = Vec::new();
+    let rd = match fs::read_dir(store) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return (0, errors),
+        Err(e) => {
+            errors.push((store.display().to_string(), e.to_string()));
+            return (0, errors);
+        }
     };
     let mut n = 0;
-    for e in rd.flatten() {
+    for e in rd {
+        let e = match e {
+            Ok(e) => e,
+            Err(err) => {
+                errors.push((store.display().to_string(), err.to_string()));
+                continue;
+            }
+        };
         let name = e.file_name().to_string_lossy().into_owned();
         let Some(rest) = name.strip_prefix(".trash-") else {
             continue;
@@ -438,11 +459,13 @@ fn purge(store: &Path, now: u64) -> usize {
             Ok(_) => fs::remove_file(&path),
             Err(e) => Err(e),
         };
-        if gone.is_ok() {
-            n += 1;
+        match gone {
+            Ok(()) => n += 1,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => errors.push((name, err.to_string())),
         }
     }
-    n
+    (n, errors)
 }
 
 /// Scan, decide and (with `apply`) act. Without `apply` nothing is changed.
@@ -468,7 +491,9 @@ pub fn run(env: &Env, now: u64, apply: bool) -> Report {
     if !apply {
         return report;
     }
-    report.purged = purge(&env.store, now);
+    let (purged, failed) = purge(&env.store, now);
+    report.purged = purged;
+    report.errors.extend(failed);
     if report.failure.is_some() {
         return report;
     }
@@ -677,6 +702,8 @@ usage: amont-agent attestations [--apply]
   lists each directory under ~/.claude/amont-agent/attestations, why it is
   kept or would be removed; --apply moves the removable ones to
   .trash-<secs>-<name>, deleted after 7 days
+
+  --daily   internal: the once-a-day run SessionStart starts in the background
 ";
 
 fn mb(bytes: u64) -> String {
@@ -730,6 +757,10 @@ fn render(rows: &[Row], tty: bool) -> String {
 }
 
 pub fn run_cli(args: &[OsString]) -> ExitCode {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        let _ = io::stdout().write_all(USAGE.as_bytes());
+        return ExitCode::SUCCESS;
+    }
     let mut apply = false;
     for a in args {
         match a.to_string_lossy().as_ref() {
@@ -1125,11 +1156,43 @@ mod tests {
         fs::write(outside.join("keep.txt"), "x").unwrap();
         std::os::unix::fs::symlink(&outside, d.join("l")).unwrap();
         set(&d, NOW - 40 * DAY);
-        // The link's own mtime is real time, which is before NOW.
-        let later = NOW + 5 * DAY;
+        // The link's own mtime is real time and cannot be set without
+        // following it, so the clock runs 40 days past whichever is later,
+        // NOW or today: the test must not start failing on a calendar date.
+        let later = NOW.max(now()) + 40 * DAY;
         let r = run(&s.env(), later, true);
         assert_eq!(removed(&r), ["old"]);
         assert!(outside.join("keep.txt").is_file());
+    }
+
+    #[test]
+    fn git_exit_codes_map_to_roots_or_a_failure() {
+        assert_eq!(
+            roots_from(0, "amont.agent.plan-review.dots.path /h/dots\n", ""),
+            Ok(vec![PathBuf::from("/h/dots")])
+        );
+        assert_eq!(roots_from(1, "", ""), Ok(vec![]), "no key matched");
+        assert!(roots_from(1, "x y\n", "").is_err(), "exit 1 with output");
+        assert!(roots_from(128, "", "fatal: bad config").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_trash_entry_that_cannot_be_deleted_is_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = Scratch::new();
+        fs::create_dir_all(s.store()).unwrap();
+        let t = s.store().join(format!(".trash-{}-x", NOW - 8 * DAY));
+        fs::create_dir_all(t.join("inner")).unwrap();
+        fs::write(t.join("inner/f"), "x").unwrap();
+        fs::set_permissions(t.join("inner"), fs::Permissions::from_mode(0o500)).unwrap();
+        let r = run(&s.env(), NOW, true);
+        fs::set_permissions(t.join("inner"), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            r.errors.iter().any(|(n, _)| n.starts_with(".trash-")),
+            "{:?}",
+            r.errors
+        );
     }
 
     #[test]
