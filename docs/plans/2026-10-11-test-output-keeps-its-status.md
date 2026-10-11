@@ -112,14 +112,15 @@ window and certainty rules of phase 6 hold.
 
 ### Live (agent-observed)
 
-- [ ] **8. Stance.** After 2.34 is installed with phase 6 in it: `git config --global amont.agent.file-reread.stance deny`.
+- [ ] **8. Stance.** After 2.35 is installed with phase 6 in it: `git config --global amont.agent.file-reread.stance deny`.
 - [ ] **9. Observe.** Over the following 2 days: journal `file-reread denied` rows — each one a true repeat (same agent, no compaction between, file unchanged, certain record); any false denial → back to advise (one command) and fix. Count `test-output-trimmed advised` and how many next calls used `amont run`/`amont-agent quiet`. After 7 days, the `test-output-trimmed` promotion check: from transcripts (amont's ok line has no journal row), the share of advised calls whose next runner call in the same session used `amont run`, `amont-agent quiet` or pipefail. If it is under 50%, propose `deny` to the person with the numbers. Also measure: `amont run clippy 2>&1 | wc -c` on a passing tree before and after (3.4 KB → under 200 B), and with `amont.progress false`. File-reread denials split by main/subagent and post-compaction; target zero denials of an agent that never read the file.
 
 ## Implementation review
 
 - amont-agent PR (phases 4–7): round 1 approve-with-changes, delta **approve** (implementation-review, opus; 57k + 58k tokens, 25 s + 11 s).
 - Fixed: the wrapper's own failures exit 1, not 126; comments say why stdout writes and pruning ignore errors; observed rows name their exact scripts.
-- Next: the amont PR (phases 1–3), then the live phases 8–9 after 2.34.0 is released and installed.
+- Second delta, after the rebase onto #95/#96 (which had released 2.34.0, so this release is 2.35.0) and a primed-stub fix for the Gatekeeper-flaky `a_session_opening_on_a_stale_guidance_block_is_told`: **approve** (62k tokens, 12 s).
+- Next: the amont PR (phases 1–3), then the live phases 8–9 after 2.35.0 is released and installed.
 
 ## Non-goals
 
@@ -163,7 +164,7 @@ window and certainty rules of phase 6 hold.
 
 <!-- panel: repos=amont-agent,amont reviewers=backend,language:rust,tui,unix body-sha=2bf1761ef261 -->
 
-### Observed — amont-agent PR (branch `feat/test-output-quiet`, 2.34.0)
+### Observed — amont-agent PR (branch `feat/test-output-quiet`, 2.35.0)
 
 | Input | Expected | Observed |
 |---|---|---|
@@ -182,4 +183,4 @@ window and certainty rules of phase 6 hold.
 | `cargo test --test hook` (61 tests, incl. the seven file-reread/compaction tests) | pass | 61 passed |
 | `make check` on the final tree | pass | pass (fmt, clippy with and without `test-hooks`, all tests) |
 | amont rows, phases 1–3 | — | open: the amont PR |
-| live, phases 8–9 | — | open: after 2.34.0 is released and installed |
+| live, phases 8–9 | — | open: after 2.35.0 is released and installed |
