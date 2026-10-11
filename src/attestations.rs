@@ -592,8 +592,12 @@ fn take_over(lock: &Path, now: u64) -> Option<Lock> {
     // Only one rename of the same source can succeed.
     fs::rename(lock, &stale).ok()?;
     if age_of(&stale, now).is_some_and(|a| a < LOCK_STALE) {
-        // A live lock, created after our age check: put it back and back off.
-        let _ = fs::rename(&stale, lock);
+        // A live lock, created after our age check. It is not put back: its
+        // holder may have finished meanwhile, and a rename back would then
+        // leave a lock nobody holds, blocking every run for an hour (CI
+        // caught exactly that). The lock is advisory; the day's claim
+        // (`claim_today`) is what keeps the daily run single.
+        let _ = fs::remove_file(&stale);
         return None;
     }
     let got = create_lock(lock).ok();
@@ -973,10 +977,26 @@ mod tests {
         }
     }
 
+    /// A directory opened so that its times can be set: Windows needs
+    /// `FILE_FLAG_BACKUP_SEMANTICS` and write access to open one at all.
+    fn open_dir(path: &Path) -> fs::File {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(0x0200_0000)
+                .open(path)
+                .unwrap()
+        }
+        #[cfg(not(windows))]
+        fs::File::open(path).unwrap()
+    }
+
     fn set(path: &Path, secs: u64) {
         let t = UNIX_EPOCH + Duration::from_secs(secs);
         if path.is_dir() {
-            fs::File::open(path).unwrap().set_modified(t).unwrap();
+            open_dir(path).set_modified(t).unwrap();
         } else {
             fs::OpenOptions::new()
                 .write(true)
@@ -1281,7 +1301,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_rename_of_a_live_lock_is_put_back() {
+    fn a_stale_rename_of_a_live_lock_backs_off_and_leaves_no_file() {
         let s = Scratch::new();
         let lock = s.0.join("state/attestations.sweeping");
         fs::write(&lock, "").unwrap();
@@ -1289,7 +1309,7 @@ mod tests {
         // What a loser of an earlier race does: it saw an old lock, and by
         // the time it renames, the file there is a live one.
         assert!(take_over(&lock, NOW).is_none());
-        assert!(lock.exists(), "the live lock is back");
+        assert!(!lock.exists(), "not put back: its holder may be gone");
         let stale = format!("{}.stale-{}", lock.display(), std::process::id());
         assert!(!Path::new(&stale).exists());
     }

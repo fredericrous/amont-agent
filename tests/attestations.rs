@@ -115,10 +115,26 @@ impl Drop for World {
     }
 }
 
+/// A directory opened so that its times can be set: Windows needs
+/// `FILE_FLAG_BACKUP_SEMANTICS` and write access to open one at all.
+fn open_dir(path: &Path) -> fs::File {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(0x0200_0000)
+            .open(path)
+            .unwrap()
+    }
+    #[cfg(not(windows))]
+    fs::File::open(path).unwrap()
+}
+
 fn age(path: &Path, secs: u64) {
     let t = SystemTime::now() - Duration::from_secs(secs);
     if path.is_dir() {
-        fs::File::open(path).unwrap().set_modified(t).unwrap();
+        open_dir(path).set_modified(t).unwrap();
     } else {
         fs::OpenOptions::new()
             .write(true)
