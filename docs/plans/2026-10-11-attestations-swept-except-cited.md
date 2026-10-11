@@ -285,5 +285,6 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 - approve (Delta, round 2), after approve-with-changes in round 1 (80k, 51 s; Deltas 84k, 11 s and 85k, 6 s).
 - Fixed: symlink test no longer tied to a date, purge failures reported (✗, exit 1), help first and `--daily` documented, pure git-exit mapping tested, root guard on the chmod test.
 - deliberate: `; no directory removed` (see Decision log).
+- After CI failed (orphan lock on Ubuntu; Windows directory times), a fresh round 1 on the fix: approve-with-changes (52k, 56 s), 4 comment/record findings fixed; Delta approve (55k, 15 s).
 
 <!-- panel: repos=amont-agent,dotfiles adds= reviewers=backend,lang:rust,tui,unix body-sha=148d0ee68826 -->
