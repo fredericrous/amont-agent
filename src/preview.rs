@@ -125,6 +125,9 @@ fn has_dev_script(path: &Path) -> bool {
         .is_some_and(|d| d.as_str().is_some_and(|s| !s.trim().is_empty()))
 }
 
+/// The extensions of files a person sees rendered.
+const UI_EXTENSIONS: [&str; 4] = [".tsx", ".jsx", ".css", ".html"];
+
 /// A path whose change a person could see. Test files and test-tooling
 /// configs are never UI.
 pub fn is_ui_path(path: &str) -> bool {
@@ -132,27 +135,32 @@ pub fn is_ui_path(path: &str) -> bool {
         return false;
     }
     let top = ["app/", "src/", "web/"];
-    let ext = [".tsx", ".jsx", ".css", ".html"];
     top.iter()
         .any(|t| path.starts_with(t) || path.contains(&format!("/{t}")))
-        || ext.iter().any(|e| path.ends_with(e))
+        || UI_EXTENSIONS.iter().any(|e| path.ends_with(e))
 }
 
+/// A test, or a test tool's config. `*.test.*`, `*.spec.*` and anything
+/// under `__tests__/` always are. Under a `test/`, `tests/` or `e2e/`
+/// directory, and named `vitest.*`, `jest.*`, `playwright.*` or `cypress.*`,
+/// only a file that is not rendered is: `app/routes/test/index.tsx` is a
+/// route a person can open. A component named `*.spec.tsx` is misread as a
+/// test; no repository here names one so.
 fn is_test_path(path: &str) -> bool {
     let mut segments: Vec<&str> = path.split('/').collect();
     let base = segments.pop().unwrap_or("");
-    if segments
-        .iter()
-        .any(|s| matches!(*s, "__tests__" | "e2e" | "tests" | "test"))
-    {
+    if segments.contains(&"__tests__") || base.contains(".test.") || base.contains(".spec.") {
         return true;
     }
-    if base.contains(".test.") || base.contains(".spec.") {
-        return true;
+    if UI_EXTENSIONS.iter().any(|e| base.ends_with(e)) {
+        return false;
     }
-    ["vitest", "jest", "playwright", "cypress"]
+    segments
         .iter()
-        .any(|t| base.strip_prefix(t).is_some_and(|r| r.starts_with('.')))
+        .any(|s| matches!(*s, "e2e" | "tests" | "test"))
+        || ["vitest", "jest", "playwright", "cypress"]
+            .iter()
+            .any(|t| base.strip_prefix(t).is_some_and(|r| r.starts_with('.')))
 }
 
 /// What a branch push would publish: the files, and the base they were
@@ -1847,6 +1855,15 @@ mod tests {
             "styles/site.css",
             "public/index.html",
             "apps/web/vite.config.ts",
+            // Rendered files under a test-named directory are routes.
+            "app/routes/test/index.tsx",
+            "app/tests/page.tsx",
+            "src/e2e/Editor.tsx",
+            "src/vitest.tsx",
+            // Near misses of the test names.
+            "src/testimonials/a.tsx",
+            "src/latest.ts",
+            "src/features/e2e-banner.tsx",
         ] {
             assert!(is_ui_path(ui), "{ui}");
         }

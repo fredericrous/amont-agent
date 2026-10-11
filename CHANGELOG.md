@@ -8,9 +8,11 @@
   `push-preview` counted every file under `app/`, `src/` or `web/`, so a
   commit touching `apps/web/vitest.core.config.ts` was held for a localhost
   approval of a screen that could not have changed. Test files (`*.test.*`,
-  `*.spec.*`, anything under `__tests__/`, `e2e/`, `tests/`, `test/`) and
-  `vitest.*`, `jest.*`, `playwright.*`, `cypress.*` configs no longer count
-  as an interface change.
+  `*.spec.*`, anything under `__tests__/`) and unrendered files under
+  `e2e/`, `tests/`, `test/` or named `vitest.*`, `jest.*`, `playwright.*`,
+  `cypress.*` no longer count as an interface change. A `.tsx`, `.jsx`,
+  `.css` or `.html` file under such a directory still counts: it may be a
+  route.
 
 ## v2.33.0
 
