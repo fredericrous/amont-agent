@@ -17,6 +17,7 @@ exits with `tail`'s status, so a failing run reads as a pass.
 
 | code | meaning |
 |---|---|
+| 1 | the wrapper itself failed (no pipe, or waiting for the command failed) |
 | 2 | usage: missing `--`, no command, `--max-bytes` outside 1 to 48k |
 | 126 | the command cannot be executed |
 | 127 | the command was not found |

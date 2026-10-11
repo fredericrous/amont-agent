@@ -109,8 +109,9 @@ usage: amont-agent <command>
                         run a command with its output in a log file: one line
                         on a pass, the failure on a fail, the real exit code.
                         N is 1 to 48k bytes of excerpt (default 16k); exits
-                        2 usage, 126 cannot execute, 127 not found, the
-                        command's own code, or 128+signal
+                        1 wrapper failure, 2 usage, 126 cannot execute,
+                        127 not found, the command's own code, or
+                        128+signal
 
 install/uninstall flags:
   --write               actually edit the file

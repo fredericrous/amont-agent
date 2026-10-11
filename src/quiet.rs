@@ -241,7 +241,9 @@ fn open_log(program: &str) -> LogFile {
 }
 
 /// Keep the newest [`KEEP`] finished logs. `*.tmp` files are in-flight runs
-/// (or one a killed wrapper left) and are never touched.
+/// (or one a killed wrapper left) and are never touched. Best-effort: a log
+/// that cannot be listed or removed is left for the next run, and the result
+/// this run prints does not depend on it.
 fn prune(dir: &Path) {
     let Ok(read) = fs::read_dir(dir) else { return };
     let mut logs: Vec<PathBuf> = read
@@ -407,7 +409,7 @@ fn execute(parsed: Parsed) -> ExitCode {
         Err(e) => {
             eprintln!("amont-agent quiet: cannot create a pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
-            return ExitCode::from(126);
+            return ExitCode::from(1);
         }
     };
     let write_clone = match write_end.try_clone() {
@@ -415,7 +417,7 @@ fn execute(parsed: Parsed) -> ExitCode {
         Err(e) => {
             eprintln!("amont-agent quiet: cannot duplicate the pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
-            return ExitCode::from(126);
+            return ExitCode::from(1);
         }
     };
 
@@ -505,7 +507,7 @@ fn execute(parsed: Parsed) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("amont-agent quiet: waiting for the command failed: {e}");
-            return ExitCode::from(126);
+            return ExitCode::from(1);
         }
     };
     let code = exit_code(status);
@@ -546,7 +548,10 @@ fn execute(parsed: Parsed) -> ExitCode {
 
     let secs = format!("{:.1}s", elapsed.as_secs_f64());
     let mut out = std::io::stdout().lock();
-    // Every write below ignores its error: a closed stdout must not change
+    // Every write below ignores its error. The case meant is EPIPE (a reader
+    // such as `| head` gone, SIGPIPE ignored above); any other stdout error is
+    // dropped with it, because the exit code must stay the child's whatever
+    // happened to our own output. A closed stdout must not change
     // the exit code we return.
     let storage_line = |s: &Stored| match s {
         Stored::Saved(_) => None,
