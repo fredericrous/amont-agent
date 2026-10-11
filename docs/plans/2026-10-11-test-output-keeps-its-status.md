@@ -156,3 +156,24 @@ window and certainty rules of phase 6 hold.
 | live, after phase 8 | denials only on true repeats |
 
 <!-- panel: repos=amont-agent,amont reviewers=backend,language:rust,tui,unix body-sha=2bf1761ef261 -->
+
+### Observed — amont-agent PR (branch `feat/test-output-quiet`, 2.34.0)
+
+| Input | Expected | Observed |
+|---|---|---|
+| `amont-agent quiet -- <script printing a panic, exit 101>` | exit 101, panic block, summary, `full log:` | exit 101; panic block once (a duplicate summary was found here and fixed, `a_block_near_the_end_is_not_printed_twice`); `test result: FAILED`; `full log:` path |
+| `amont-agent quiet -- <script replaying tests/fixtures/excerpt/cargo-test-fail.txt>` | full panics, no `Compiling` | both panics in full, `failures:` section, `test result: FAILED. 2 passed; 2 failed`, no `Compiling` line |
+| `amont-agent quiet -- <passing script>` (second exec) | one ok line | `ok 0.0s log=…/pass.sh.log`, nothing else |
+| `amont-agent quiet -- nosuchcmd` | exit 127 | `amont-agent quiet: nosuchcmd: command not found`, exit 127 |
+| `amont-agent quiet -- sleep 30` sent SIGINT after 1 s | 130, interrupted line, no orphan, no `.tmp` | exit 130, `interrupted, full log: …sleep.log`, `pgrep` empty, 0 `.tmp` |
+| `amont-agent quiet -- <failing cargo replay> \| head -1` | no EPIPE noise, status 101 | `pipestatus[1]=101`, 0 bytes on stderr |
+| `amont-agent quiet --max-bytes 49k -- true`; `--max-bytes 0` | exit 2, usage | exit 2 with the usage message, both |
+| `amont-agent quiet -- cargo test --test quiet` (the suite under itself) | the suite's own result | found `sigint_is_forwarded_and_leaves_no_tmp` failing on every fresh build: macOS held the binary's first exec past the test's fixed 700 ms. Test now waits for the `.tmp` log; passes fresh with and without `test-hooks` (2.6 s, 5.1 s) |
+| `amont-agent check` on the six must-fire pipelines | `test-output-trimmed` fires | fires on all six |
+| `amont-agent check` on `set -o pipefail; …`, `set -euo pipefail; …`, `setopt pipefail; …`, `setopt PIPE_FAIL; …`, `setopt extendedglob pipefail; …`, `cargo test`, `cargo test --no-run \| tail` | silent | silent on all seven |
+| `amont-agent corpus check` | passes | `test-output-trimmed 25 reviewed (12 negative), precision 100%`; all rules pass |
+| `amont-agent backtest --rule pipe-to-tail --since 2026-09-11`, installed 2.33.1 vs branch | same matches | 141 vs 141, week for week |
+| `cargo test --test hook` (61 tests, incl. the seven file-reread/compaction tests) | pass | 61 passed |
+| `make check` on the final tree | pass | pass (fmt, clippy with and without `test-hooks`, all tests) |
+| amont rows, phases 1–3 | — | open: the amont PR |
+| live, phases 8–9 | — | open: after 2.34.0 is released and installed |
