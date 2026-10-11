@@ -1372,3 +1372,315 @@ fn lint_suppression_an_advised_edit_is_a_write_for_file_reread() {
         "a read after the edit is a different read"
     );
 }
+
+/// `PATH` for the LSP tests: the stub directory, then the first directory
+/// holding `git` (the stance is read with `git config`) and no real
+/// `fleet-lsp`, so removing the stub really leaves none.
+fn lsp_path(bin: &std::path::Path) -> std::ffi::OsString {
+    let has = |d: &std::path::Path, name: &str| {
+        d.join(name).is_file() || d.join(format!("{name}.exe")).is_file()
+    };
+    let system = std::env::var_os("PATH").unwrap_or_default();
+    let git = std::env::split_paths(&system).find(|d| has(d, "git") && !has(d, "fleet-lsp"));
+    std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(git))
+        .expect("a PATH of two directories")
+}
+
+/// The world the LSP rules ask about, built per test: a git working tree
+/// (`.git` is enough for the walk up), a `fleet-lsp` stub on `PATH`, and the
+/// plugin enabled in the scratch config.
+struct LspWorld {
+    repo: PathBuf,
+    bin: PathBuf,
+    config: PathBuf,
+}
+
+impl LspWorld {
+    fn new(name: &str, plugin_on: bool) -> LspWorld {
+        let root = home().join(format!("lsp-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("repo");
+        std::fs::create_dir_all(repo.join("src")).expect("src");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let stub = bin.join("fleet-lsp");
+        std::fs::write(&stub, "#!/bin/sh\n").expect("stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let config = root.join("config");
+        std::fs::create_dir_all(&config).expect("config");
+        std::fs::write(
+            config.join("settings.json"),
+            format!(r#"{{"enabledPlugins":{{"fleet-lsp@fleet-lsp":{plugin_on}}}}}"#),
+        )
+        .expect("settings");
+        LspWorld { repo, bin, config }
+    }
+
+    fn file(&self, rel: &str, bytes: usize) -> PathBuf {
+        let p = self.repo.join(rel);
+        std::fs::create_dir_all(p.parent().expect("parent")).expect("dirs");
+        std::fs::write(&p, "x".repeat(bytes)).expect("file");
+        p
+    }
+
+    /// Send a payload with this world's config, `PATH` = the stub plus the
+    /// system dirs, and `global` as the git config (for a stance).
+    fn send(&self, payload: &str, global: &str) -> Reply {
+        let cfg = self.config.join("global.gitconfig");
+        std::fs::write(&cfg, global).expect("global config");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("hook")
+            .env("CLAUDE_CONFIG_DIR", &self.config)
+            .env("PATH", lsp_path(&self.bin))
+            .env("GIT_CONFIG_GLOBAL", &cfg)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("AMONT_AGENT_OFF")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary runs");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(payload.as_bytes())
+            .expect("write the payload");
+        let out = child.wait_with_output().expect("the hook exits");
+        assert!(out.stderr.is_empty(), "nothing on stderr: {:?}", out.stderr);
+        Reply {
+            code: out.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        }
+    }
+
+    fn read(&self, session: &str, path: &std::path::Path, extra: &str) -> Reply {
+        self.read_with(session, path, extra, "")
+    }
+
+    fn read_with(&self, session: &str, path: &std::path::Path, extra: &str, global: &str) -> Reply {
+        let cwd = serde_json::Value::String(self.repo.display().to_string());
+        let path = serde_json::Value::String(path.display().to_string());
+        self.send(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
+                     "session_id":"{session}","permission_mode":"default"{extra},
+                     "tool_input":{{"file_path":{path}}}}}"#
+            ),
+            global,
+        )
+    }
+
+    fn grep_tool(&self, session: &str, input: &str) -> Reply {
+        let cwd = serde_json::Value::String(self.repo.display().to_string());
+        self.send(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Grep","cwd":{cwd},
+                     "session_id":"{session}","permission_mode":"default",
+                     "tool_input":{input}}}"#
+            ),
+            "",
+        )
+    }
+
+    fn bash(&self, session: &str, command: &str) -> Reply {
+        let cwd = serde_json::Value::String(self.repo.display().to_string());
+        let command = serde_json::Value::String(command.to_string());
+        self.send(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+                     "session_id":"{session}","tool_use_id":"t1","permission_mode":"default",
+                     "tool_input":{{"command":{command}}}}}"#
+            ),
+            "",
+        )
+    }
+}
+
+/// A whole Read of code LSP serves is advised toward LSP, once a session, and
+/// `read-unbounded-large` stays quiet while it speaks.
+#[test]
+fn a_whole_read_of_served_code_is_advised_toward_lsp_once() {
+    let w = LspWorld::new("read", true);
+    let big = w.file("src/lib.rs", 20_000);
+    let first = w.read("lr-1", &big, "");
+    assert_eq!(first.code, 0);
+    let said = first.reason();
+    assert!(said.contains("code-read-not-lsp"), "{}", first.stdout);
+    assert!(said.contains("documentSymbol"), "{said}");
+    assert!(
+        !said.contains("read-unbounded-large"),
+        "one advisory: {said}"
+    );
+    assert_eq!(first.decision(), None, "advise, not deny");
+    let again = w.read("lr-1", &big, "");
+    assert!(
+        !again.stdout.contains("code-read-not-lsp"),
+        "once: {}",
+        again.stdout
+    );
+    assert!(
+        w.read("lr-2", &big, "")
+            .reason()
+            .contains("code-read-not-lsp"),
+        "another session is told too"
+    );
+}
+
+/// Turned off, the rule gives the Read back to `read-unbounded-large`, whose
+/// remedy then names LSP rather than grep.
+#[test]
+fn an_observed_code_read_leaves_the_size_advice_speaking() {
+    let w = LspWorld::new("observe", true);
+    let big = w.file("src/lib.rs", 20_000);
+    let r = w.read_with(
+        "lo-1",
+        &big,
+        "",
+        "[amont \"agent.code-read-not-lsp\"]\n\tstance = observe\n",
+    );
+    let said = r.reason();
+    assert!(said.contains("read-unbounded-large"), "{}", r.stdout);
+    assert!(!said.contains("code-read-not-lsp"), "{said}");
+    assert!(
+        said.contains("documentSymbol") && !said.contains("grep -n"),
+        "{said}"
+    );
+}
+
+/// Silent: small code, text, a window, a persisted result, the plugin off, no
+/// repository, an agent without the LSP tool.
+#[test]
+fn a_code_read_is_silent_where_lsp_cannot_help() {
+    let w = LspWorld::new("silent", true);
+    let small = w.file("src/small.rs", 3_000);
+    assert_eq!(w.read("ls-1", &small, "").stdout, "", "under 4 KB");
+    let md = w.file("notes.md", 9_000);
+    assert!(!w.read("ls-1", &md, "").stdout.contains("code-read-not-lsp"));
+    let mid = w.file("src/mid.rs", 9_000);
+    let windowed = w.send(
+        &serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "cwd": w.repo.display().to_string(),
+            "session_id": "ls-1",
+            "tool_input": {"file_path": mid.display().to_string(), "offset": 1, "limit": 40},
+        })
+        .to_string(),
+        "",
+    );
+    assert_eq!(windowed.stdout, "", "a window");
+    let persisted = w.file("tool-results/x.rs", 9_000);
+    assert!(!w
+        .read("ls-1", &persisted, "")
+        .stdout
+        .contains("code-read-not-lsp"));
+    std::fs::create_dir_all(w.repo.join(".claude/agents")).expect("agents");
+    std::fs::write(
+        w.repo.join(".claude/agents/narrow.md"),
+        "---\nname: narrow\ntools: Read, Grep\n---\nbody\n",
+    )
+    .expect("agent");
+    let narrow = w.read("ls-2", &mid, r#","agent_id":"a1","agent_type":"narrow""#);
+    assert_eq!(narrow.stdout, "", "an agent without LSP");
+    let unnamed = w.read("ls-3", &mid, r#","agent_id":"a1""#);
+    assert_eq!(unnamed.stdout, "", "a subagent of unknown type");
+    let explore = w.read("ls-4", &mid, r#","agent_id":"a1","agent_type":"Explore""#);
+    assert!(
+        explore.reason().contains("code-read-not-lsp"),
+        "{}",
+        explore.stdout
+    );
+
+    let off = LspWorld::new("silent-off", false);
+    let mid = off.file("src/mid.rs", 9_000);
+    assert_eq!(off.read("ls-5", &mid, "").stdout, "", "plugin off");
+    let nobin = LspWorld::new("silent-nobin", true);
+    let mid = nobin.file("src/mid.rs", 9_000);
+    std::fs::remove_file(nobin.bin.join("fleet-lsp")).expect("rm stub");
+    assert_eq!(
+        nobin.read("ls-7", &mid, "").stdout,
+        "",
+        "no fleet-lsp on PATH"
+    );
+    let outside = LspWorld::new("silent-nogit", true);
+    let mid = outside.file("src/mid.rs", 9_000);
+    std::fs::remove_dir_all(outside.repo.join(".git")).expect("rm .git");
+    assert_eq!(
+        outside.read("ls-6", &mid, "").stdout,
+        "",
+        "outside a repository"
+    );
+}
+
+/// The Grep tool: a symbol over code is advised once; a count or a text
+/// pattern is not.
+#[test]
+fn a_grep_tool_symbol_search_over_code_is_advised_once() {
+    let w = LspWorld::new("grep-tool", true);
+    let first = w.grep_tool(
+        "gt-1",
+        r#"{"pattern":"fn agent_type","path":".","output_mode":"content","-n":true}"#,
+    );
+    assert!(
+        first.reason().contains("symbol-grep-not-lsp"),
+        "{}",
+        first.stdout
+    );
+    assert!(
+        first.reason().contains("workspaceSymbol"),
+        "{}",
+        first.stdout
+    );
+    let again = w.grep_tool("gt-1", r#"{"pattern":"fn agent_type","path":"."}"#);
+    assert_eq!(again.stdout, "", "once per pattern");
+    assert_eq!(
+        w.grep_tool("gt-2", r#"{"pattern":"agent_type","output_mode":"count"}"#)
+            .stdout,
+        ""
+    );
+    assert_eq!(
+        w.grep_tool(
+            "gt-2",
+            r#"{"pattern":"ingestion_time|valid_from","path":"."}"#
+        )
+        .stdout,
+        ""
+    );
+    assert_eq!(
+        w.grep_tool("gt-2", r#"{"pattern":"agent_type","glob":"**/*.md"}"#)
+            .stdout,
+        ""
+    );
+}
+
+/// The shell: a recursive symbol grep in the repository is advised once; a
+/// pipe filter is not.
+#[test]
+fn a_shell_symbol_grep_over_code_is_advised_once() {
+    let w = LspWorld::new("grep-bash", true);
+    w.file("src/lib.rs", 100);
+    let first = w.bash("gb-1", "grep -rn agent_types src");
+    assert!(
+        first.reason().contains("symbol-grep-not-lsp"),
+        "{}",
+        first.stdout
+    );
+    let again = w.bash("gb-1", "grep -rn agent_types src");
+    assert!(
+        !again.stdout.contains("symbol-grep-not-lsp"),
+        "{}",
+        again.stdout
+    );
+    let filter = w.bash("gb-1", "cargo test 2>&1 | grep agent_types");
+    assert!(
+        !filter.stdout.contains("symbol-grep-not-lsp"),
+        "{}",
+        filter.stdout
+    );
+}

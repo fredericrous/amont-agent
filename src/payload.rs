@@ -62,6 +62,10 @@ pub struct Bash {
     /// `publish-without-skill`'s `confirm`, since a subagent's Skill calls
     /// are written there and nowhere else.
     pub agent_transcript: Option<PathBuf>,
+    /// Who makes the call: the main conversation or a subagent, from
+    /// `agent_id` and `agent_type`. Read by the LSP rules, which speak only to
+    /// an agent that has the LSP tool.
+    pub agent: crate::lsp::Agent,
 }
 
 /// A prompt the person typed and submitted.
@@ -107,6 +111,24 @@ pub struct FileOp {
     /// file. `None` for a Read, after a call, or when the input held no
     /// usable text.
     pub change: Option<Change>,
+    /// As [`Bash::agent`].
+    pub agent: crate::lsp::Agent,
+}
+
+/// A Grep tool call about to run: what it searches for, and where.
+pub struct GrepOp {
+    pub pattern: String,
+    /// `path`, absolute against the session cwd; `None` searches the cwd.
+    pub path: Option<PathBuf>,
+    pub glob: Option<String>,
+    /// `type`: a language name (`rust`, `py`).
+    pub kind: Option<String>,
+    /// `output_mode`: `count` is text work, like `grep -c`.
+    pub output_mode: Option<String>,
+    pub cwd: PathBuf,
+    pub session: String,
+    pub permission_mode: String,
+    pub agent: crate::lsp::Agent,
 }
 
 /// The text a write tool was handed, before anything is applied.
@@ -196,6 +218,9 @@ pub enum Event {
     /// to be in context. Only then is it remembered: a Read that was refused,
     /// or that failed on a path that is not there, is not a read.
     PostFile(Box<FileOp>),
+    /// A Grep tool call about to run: `symbol-grep-not-lsp` judges it. A
+    /// Grep that has run is not ours: there is no `PostToolUse` block for it.
+    PreGrep(Box<GrepOp>),
     /// A prompt the person submitted: the one moment a typed approval of a
     /// shown preview can arrive, and the moment every older one lapses.
     Prompt(Box<Prompt>),
@@ -273,6 +298,12 @@ pub fn parse(raw: &str) -> Event {
             .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
     };
     let transcript = || path_at(v.get("transcript_path").and_then(|x| x.as_str()));
+    let agent = || {
+        crate::lsp::Agent::from_payload(
+            v.get("agent_id").and_then(|x| x.as_str()),
+            v.get("agent_type").and_then(|x| x.as_str()),
+        )
+    };
 
     match v.get("hook_event_name").and_then(|x| x.as_str()) {
         Some("Stop") => {
@@ -387,6 +418,30 @@ pub fn parse(raw: &str) -> Event {
                 Event::PostAsk(ask)
             }
         }
+        Some("PreToolUse") if v.get("tool_name").and_then(|x| x.as_str()) == Some("Grep") => {
+            let input = v.get("tool_input");
+            let text = |key: &str| {
+                input
+                    .and_then(|i| i.get(key))
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+            };
+            let Some(pattern) = text("pattern") else {
+                return Event::NotOurs;
+            };
+            Event::PreGrep(Box::new(GrepOp {
+                pattern,
+                path: path_at(text("path").as_deref()),
+                glob: text("glob"),
+                kind: text("type"),
+                output_mode: text("output_mode"),
+                cwd: cwd.clone(),
+                session: str_at("session_id"),
+                permission_mode: str_at("permission_mode"),
+                agent: agent(),
+            }))
+        }
         Some(stage @ ("PreToolUse" | "PostToolUse"))
             if matches!(
                 v.get("tool_name").and_then(|x| x.as_str()),
@@ -433,6 +488,7 @@ pub fn parse(raw: &str) -> Event {
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
                 change,
+                agent: agent(),
             });
             if stage == "PreToolUse" {
                 Event::PreFile(op)
@@ -496,6 +552,7 @@ pub fn parse(raw: &str) -> Event {
                 stdout,
                 transcript,
                 agent_transcript,
+                agent: agent(),
             });
             if stage == "PreToolUse" {
                 Event::PreBash(bash)

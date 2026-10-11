@@ -155,7 +155,30 @@ fn a_settings_file_without_stop_is_reported_as_missing_it() {
     doc["hooks"].as_object_mut().unwrap().remove("Stop");
     std::fs::write(h.settings(), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
     let (_, out) = h.run(&["doctor"]);
-    assert!(out.contains("missing event: Stop"), "{out}");
+    assert!(out.contains("missing: Stop"), "{out}");
+}
+
+/// A matcher added to an event already installed is missing too, by name:
+/// counting events alone called an install without the Grep block complete.
+#[test]
+fn a_settings_file_without_the_grep_block_is_reported_by_name() {
+    let h = Home::new("no-grep");
+    h.with_a_session();
+    let (code, out) = h.run(&["install", "--write"]);
+    assert_eq!(code, 0, "{out}");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(h.settings()).unwrap()).unwrap();
+    let pre = doc["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .expect("PreToolUse");
+    pre.retain(|b| b["matcher"] != "Grep");
+    std::fs::write(h.settings(), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    let (_, out) = h.run(&["doctor"]);
+    assert!(out.contains("missing: PreToolUse Grep"), "{out}");
+    let (_, again) = h.run(&["install", "--write"]);
+    assert!(!again.is_empty(), "install runs");
+    let (_, fixed) = h.run(&["doctor"]);
+    assert!(!fixed.contains("missing:"), "{fixed}");
 }
 
 /// The bug this test was written for: with no SessionStart entry there is no
@@ -355,4 +378,48 @@ fn doctor_does_not_journal_its_own_probe() {
         "doctor wrote {} bytes to the journal it is only supposed to read",
         after.len().saturating_sub(before.len())
     );
+}
+
+/// Whether the LSP rules can speak is said by name: they are silent without
+/// fleet-lsp, outside a git tree or with the plugin off, and nothing else
+/// would show it.
+#[test]
+fn doctor_says_whether_the_lsp_rules_can_speak_here() {
+    let h = Home::new("lsp-line");
+    let repo = h.0.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).expect("repo");
+    let bin = h.0.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    let stub = bin.join("fleet-lsp");
+    std::fs::write(&stub, "#!/bin/sh\n").expect("stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let doctor = |plugin_on: bool| {
+        std::fs::write(
+            h.0.join("settings.json"),
+            format!(r#"{{"enabledPlugins":{{"fleet-lsp@fleet-lsp":{plugin_on}}}}}"#),
+        )
+        .expect("settings");
+        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("doctor")
+            .current_dir(&repo)
+            .env("CLAUDE_CONFIG_DIR", &h.0)
+            .env(
+                "PATH",
+                std::env::join_paths([bin.clone()]).expect("a PATH of one directory"),
+            )
+            .env_remove("AMONT_AGENT_OFF")
+            .output()
+            .expect("the binary runs");
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
+    };
+    let on = doctor(true);
+    assert!(on.contains("LSP rules: fleet-lsp at"), "{on}");
+    assert!(on.contains("plugin enabled"), "{on}");
+    let off = doctor(false);
+    assert!(off.contains("LSP rules are silent here"), "{off}");
+    assert!(off.contains("the fleet-lsp plugin is not enabled"), "{off}");
 }

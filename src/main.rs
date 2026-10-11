@@ -36,6 +36,7 @@ mod hook;
 mod implementation_review;
 mod journal;
 mod json;
+mod lsp;
 mod mine;
 mod payload;
 mod plan_phases;

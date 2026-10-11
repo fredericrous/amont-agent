@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.32.0
+
+### Added
+
+- **`code-read-not-lsp` and `symbol-grep-not-lsp`: code is navigated with
+  LSP.** fleet-lsp 0.5.2 tells every session and subagent to use the LSP
+  tool, and the transcripts show the note ignored: whole-file Reads of code
+  rose from 6.9 to 21.2 per 1,000 tool calls over five weeks, symbol greps
+  ran at 47 to 59 per 1,000 Bash calls, and LSP was called 52 times in all.
+  The first rule advises a whole Read of a code file over 4 KB toward
+  `documentSymbol`/`goToDefinition` and a windowed Read (an Edit is accepted
+  after a Read of another window); the second advises a `grep`/`rg`/`git
+  grep` or Grep-tool search for an identifier over code toward
+  `workspaceSymbol`/`findReferences`. Each speaks once per file or pattern
+  per session, and only where LSP can answer: fleet-lsp on `PATH`, the
+  plugin enabled (user, project and local settings merged), a git working
+  tree, and an agent whose tools include `LSP` (read from the payload's
+  `agent_type` and the agent's definition). A hand-labelled sample of 50
+  hits: 44 were real symbol lookups. Both ship `advise`; `git config
+  amont.agent.<rule>.stance observe` turns one off.
+- **The Grep tool is hooked** (`PreToolUse` `Grep`, its own block): run
+  `amont-agent install --write` after upgrading.
+
+### Changed
+
+- `whole-file-dump` and `read-unbounded-large` name LSP, not grep, as the
+  way to find the part of a code file LSP serves.
+- `amont-agent doctor` names a missing hook entry by event and matcher
+  (`missing: PreToolUse Grep`), where it counted events, and says whether
+  the LSP rules can speak in the current directory.
+
 ## v2.31.0
 
 ### Added

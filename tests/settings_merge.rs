@@ -83,10 +83,10 @@ fn an_unrelated_hook_survives_install_and_uninstall() {
     assert_eq!(code, 0, "install failed: {err}");
     let after = hooks_of(&h.read());
     let pre = after.get("PreToolUse").unwrap().as_array().unwrap();
-    // Theirs, then our Bash block, our Read|Edit|Write block, our
-    // AskUserQuestion block (preview approval) and our ExitPlanMode block
-    // (review panel).
-    assert_eq!(pre.len(), 5, "ours were added beside theirs");
+    // Theirs, then our Bash block, our Read|Edit|Write block, our Grep
+    // block (symbol-grep-not-lsp), our AskUserQuestion block (preview
+    // approval) and our ExitPlanMode block (review panel).
+    assert_eq!(pre.len(), 6, "ours were added beside theirs");
     assert_eq!(pre[0]["matcher"], "Write");
     assert_eq!(
         after.get("Notification"),
@@ -120,13 +120,15 @@ fn we_join_an_existing_bash_block_rather_than_adding_a_second() {
     // ExitPlanMode blocks are ours alone.
     assert_eq!(
         pre.len(),
-        4,
-        "one Bash block, one Read|Edit|Write block, one AskUserQuestion block, one ExitPlanMode block"
+        5,
+        "one Bash block, one Read|Edit|Write block, one Grep block, one AskUserQuestion block, \
+         one ExitPlanMode block"
     );
     assert_eq!(pre[0]["matcher"], "Bash");
     assert_eq!(pre[0]["hooks"].as_array().unwrap().len(), 2, "two handlers");
     assert_eq!(pre[1]["matcher"], "Read|Edit|Write|MultiEdit");
-    assert_eq!(pre[2]["matcher"], "AskUserQuestion");
+    assert_eq!(pre[2]["matcher"], "Grep");
+    assert_eq!(pre[3]["matcher"], "AskUserQuestion");
 }
 
 #[test]

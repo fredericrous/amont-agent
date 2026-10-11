@@ -30,6 +30,7 @@ use crate::shell::Parsed;
 pub mod amend_pushed;
 pub mod bare_stash_pop;
 pub mod branch_force_delete;
+pub mod code_read_not_lsp;
 pub mod dump;
 pub mod equals_separator;
 pub mod file_reread;
@@ -60,6 +61,7 @@ pub mod sed_in_place;
 pub mod stale_base;
 pub mod stat_bsd_format;
 pub mod stdin_hang;
+pub mod symbol_grep_not_lsp;
 pub mod tag_after_commit;
 pub mod tool_shell;
 pub mod unbounded_background_push;
@@ -460,6 +462,8 @@ pub const RULES: &[Rule] = &[
     persisted_output_dump::RULE,
     file_reread::RULE,
     read_unbounded_large::RULE,
+    code_read_not_lsp::RULE,
+    symbol_grep_not_lsp::RULE,
     lint_suppression_added::RULE,
     request_fanout::RULE,
 ];

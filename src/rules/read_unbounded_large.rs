@@ -51,7 +51,7 @@ pub fn applies(path: &Path, window: &str) -> Option<u64> {
     (meta.is_file() && meta.len() > LARGE).then_some(meta.len())
 }
 
-fn exempt(path: &Path) -> bool {
+pub fn exempt(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let is = |names: &[&str]| names.iter().any(|n| ext.eq_ignore_ascii_case(n));
     // Media the Read tool renders, not text: their size in bytes does not say
@@ -77,10 +77,28 @@ fn exempt(path: &Path) -> bool {
     crate::rules::persisted_output_dump::is_persisted(&path.to_string_lossy())
 }
 
+/// How the remedy says to find the part of the file that is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Finder {
+    /// A code file LSP answers for. Shown only when `code-read-not-lsp` is
+    /// observing, since that rule otherwise takes the Read.
+    Lsp,
+    Grep,
+}
+
 /// What the hook says: the mechanism, then the way through.
-pub fn phrase(shown: &str, bytes: u64) -> (String, String) {
+pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
     let kb = bytes.div_ceil(1024);
     let quoted = format!("'{}'", shown.replace('\'', "'\\''"));
+    let find = match finder {
+        Finder::Lsp => {
+            "Find the part you need first with LSP (`documentSymbol`, `goToDefinition`)".to_string()
+        }
+        Finder::Grep => format!(
+            "Find the part you need first with the Grep tool (or `grep -n '<anchor>' \
+             {quoted} | head`)"
+        ),
+    };
     (
         format!(
             "`{shown}` is {kb} KB on disk and is being Read with no window: up to 2,000 \
@@ -89,10 +107,9 @@ pub fn phrase(shown: &str, bytes: u64) -> (String, String) {
              measured."
         ),
         format!(
-            "Find the part you need first with the Grep tool (or `grep -n '<anchor>' \
-             {quoted} | head`), then Read that window with `offset`/`limit`. To read more \
-             on purpose, pass `offset: 1` with a `limit` covering the lines you need: the \
-             whole file only when that is the job."
+            "{find}, then Read that window with `offset`/`limit`. To read more on purpose, \
+             pass `offset: 1` with a `limit` covering the lines you need: the whole file \
+             only when that is the job."
         ),
     )
 }
@@ -144,7 +161,7 @@ mod tests {
         file(&f, 16_385);
         let bytes = applies(&f, "full").expect("one byte over");
         assert_eq!(bytes, 16_385);
-        assert!(phrase("a.rs", bytes).0.contains("17 KB"));
+        assert!(phrase("a.rs", bytes, Finder::Grep).0.contains("17 KB"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -190,7 +207,12 @@ mod tests {
 
     #[test]
     fn the_remedy_quotes_the_path() {
-        let (_, remedy) = phrase("/a b/it's.rs", 20_480);
+        let (_, remedy) = phrase("/a b/it's.rs", 20_480, Finder::Grep);
         assert!(remedy.contains(r#"'/a b/it'\''s.rs'"#), "{remedy}");
+        let (_, lsp) = phrase("/a b/it's.rs", 20_480, Finder::Lsp);
+        assert!(
+            lsp.contains("documentSymbol") && !lsp.contains("grep"),
+            "{lsp}"
+        );
     }
 }

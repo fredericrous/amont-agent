@@ -1,0 +1,7 @@
+# Full reviews: Code is navigated with LSP
+
+- **lang:rust** (round 1, approve-with-changes, 31k, 16 s): Edit gate after a windowed Read; explicit `!persisted && !reread.seen`; list `match Event` sites, PostToolUse Grep ignored; cheap-first I/O and timing; agent not found → silent, YAML `tools:` list; 50-hit sample. All accepted.
+- **backend** (round 1, approve-with-changes, 31k, 26 s): verify `agent_type` with fixtures; success targets on the 0.5.1 baseline; per-branch rates; merge project/local settings; fail silent under 5 ms; rollback; N≥5 live. All accepted.
+- **tui** (round 1, approve-with-changes, 40k, 46 s): observe must not silence read-unbounded-large; doctor names (event, matcher); doctor shows LSP gates; 60-word cap, once per session; silent cases in docs. All accepted.
+- **unix** (round 1, approve-with-changes, 32k, 44 s): rg/git grep pattern tables; TODO stop-list; `-f`/multi-`-e`/`-v`/`-c` silencers; settings precedence; fail silent; repo from directory operand or `-C`. All accepted.
+- **backend** (round 2, approve-with-changes, 37k, 12 s): round-1 findings 1–7 resolved. Carried into implementation: (1) 5 ms covers `lsp::serves` only — measure cold p95, relax to what it shows; (2) once-per-session marker by create-exclusive file, a write failure means fire again; (3) run the Edit-gate check before writing the remedy, default to "a whole Read is fine to edit"; (4) built-in agents confirmed by fixtures, silent if a fixture shows no LSP.

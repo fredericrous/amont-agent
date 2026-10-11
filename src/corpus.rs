@@ -169,6 +169,14 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/read-unbounded-large.cases"),
     ),
     (
+        "code-read-not-lsp",
+        include_str!("../tests/corpus/code-read-not-lsp.cases"),
+    ),
+    (
+        "symbol-grep-not-lsp",
+        include_str!("../tests/corpus/symbol-grep-not-lsp.cases"),
+    ),
+    (
         "lint-suppression-added",
         include_str!("../tests/corpus/lint-suppression-added.cases"),
     ),
