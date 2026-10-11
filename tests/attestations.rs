@@ -274,7 +274,11 @@ fn the_subcommand_lists_and_removes_nothing_by_default() {
     assert_eq!(lines.last().unwrap()[..2], ["remove", "old"]);
     assert!(lines
         .iter()
-        .any(|l| l[1] == "cited" && l[4].starts_with("cited by repo/docs/plans/p.md")));
+        // The path is shown with the platform's separator.
+        .any(|l| l[1] == "cited"
+            && l[4]
+                .replace('\\', "/")
+                .starts_with("cited by repo/docs/plans/p.md")));
     assert!(lines
         .iter()
         .any(|l| l[1] == "deep" && l[4].starts_with("recent")));
