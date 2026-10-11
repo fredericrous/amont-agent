@@ -82,6 +82,9 @@ fn quiet_cmd(home: &Path, args: &[&str]) -> Command {
         .args(args)
         .env("CLAUDE_CONFIG_DIR", home)
         .env("QUIET_ACTIVE_DIR", active(home))
+        // A fixed session: an entry is written only inside one, and the
+        // agent's own must never reach a test (or CI, which has none).
+        .env("CLAUDE_CODE_SESSION_ID", "test-session")
         .env_remove("CI");
     c
 }
@@ -564,12 +567,10 @@ fn a_killed_writers_temp_file_is_swept_once_old() {
 fn a_signal_still_ends_the_entry() {
     let home = scratch("active-int");
     let mut child = quiet_cmd(&home, &["--", "sleep", "3"])
-        .env_remove("CLAUDE_CODE_SESSION_ID")
         .stdout(Stdio::null())
         .spawn()
         .expect("spawn");
     let path = wait_for_entry(&active(&home));
-    assert!(read_entry(&path)["session"].is_null());
     let _ = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
         .status();
@@ -608,4 +609,31 @@ fn an_unwritable_active_dir_changes_nothing() {
     let out = c.output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert!(text(&out.stdout).starts_with("ok "));
+}
+
+#[test]
+fn no_session_writes_no_entry() {
+    let home = scratch("active-nosession");
+    let out = quiet_cmd(&home, &["--", "true"])
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let n = std::fs::read_dir(active(&home)).map_or(0, |d| d.count());
+    assert_eq!(n, 0, "an entry outside a session is never drawn");
+}
+
+#[test]
+fn a_command_that_cannot_start_records_its_exit() {
+    let home = scratch("active-127");
+    let out = quiet(&home, &["--", "no-such-command-xyz"]);
+    assert_eq!(out.status.code(), Some(127));
+    let entries: Vec<_> = std::fs::read_dir(active(&home))
+        .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+        .unwrap_or_default();
+    // No log file was made for a command that never ran, so no entry either;
+    // if one was written, it must carry the real exit, not null.
+    for p in entries {
+        assert_eq!(read_entry(&p)["exit"], 127);
+    }
 }

@@ -65,7 +65,6 @@ mod sys {
         pub fn poll(fds: *mut PollFd, n: Nfds, timeout: c_int) -> c_int;
         pub fn kill(pid: c_int, sig: c_int) -> c_int;
         pub fn signal(sig: c_int, handler: usize) -> usize;
-        pub fn getpid() -> c_int;
     }
 
     pub const F_SETFD: c_int = 2;
@@ -327,10 +326,13 @@ fn sweep_active(dir: &Path, now: u64) {
         };
         let stale = match v.get("ended").and_then(|e| e.as_u64()) {
             Some(ended) => now.saturating_sub(ended) > ENDED_KEEP_MS,
-            None => v
-                .get("pid")
-                .and_then(|p| p.as_i64())
-                .is_some_and(|p| !pid_alive(p)),
+            // Only this tool's own runs: another tool sweeps its own.
+            None => {
+                v.get("tool").and_then(|t| t.as_str()) == Some("amont-agent")
+                    && v.get("pid")
+                        .and_then(|p| p.as_i64())
+                        .is_some_and(|p| !pid_alive(p))
+            }
         };
         if stale {
             let _ = fs::remove_file(&path);
@@ -365,6 +367,14 @@ impl ActiveEntry {
             final_log: None,
         };
         let Some(dir) = active_dir() else { return none };
+        // Only a run inside a Claude Code session is ever drawn: without one
+        // an entry would be litter (and a test suite's fixtures).
+        let Some(session) = std::env::var("CLAUDE_CODE_SESSION_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+        else {
+            return none;
+        };
         if log.as_os_str().is_empty() {
             return none;
         }
@@ -379,11 +389,11 @@ impl ActiveEntry {
         sweep_active(&dir, now);
         let cwd = std::env::current_dir().unwrap_or_default();
         let repo = crate::push_target::toplevel(&cwd).unwrap_or_else(|| cwd.clone());
-        let pid = unsafe { sys::getpid() };
+        let pid = std::process::id();
         let base = serde_json::json!({
             "v": 1,
             "tool": "amont-agent",
-            "session": std::env::var("CLAUDE_CODE_SESSION_ID").ok(),
+            "session": session,
             "check": program,
             "repo": repo.to_string_lossy(),
             "log": log.to_string_lossy(),
@@ -581,6 +591,7 @@ fn execute(parsed: Parsed) -> ExitCode {
         Err(e) => {
             eprintln!("amont-agent quiet: cannot create a pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
+            active.exit = Some(1);
             return ExitCode::from(1);
         }
     };
@@ -589,6 +600,7 @@ fn execute(parsed: Parsed) -> ExitCode {
         Err(e) => {
             eprintln!("amont-agent quiet: cannot duplicate the pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
+            active.exit = Some(1);
             return ExitCode::from(1);
         }
     };
@@ -611,9 +623,11 @@ fn execute(parsed: Parsed) -> ExitCode {
             let name = parsed.cmd[0].to_string_lossy();
             if e.kind() == std::io::ErrorKind::NotFound {
                 eprintln!("amont-agent quiet: {name}: command not found");
+                active.exit = Some(127);
                 return ExitCode::from(127);
             }
             eprintln!("amont-agent quiet: {name}: {e}");
+            active.exit = Some(126);
             return ExitCode::from(126);
         }
     };
@@ -679,6 +693,7 @@ fn execute(parsed: Parsed) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("amont-agent quiet: waiting for the command failed: {e}");
+            active.exit = Some(1);
             return ExitCode::from(1);
         }
     };
