@@ -1,0 +1,25 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000013",
+  "transcript_path": "/home/user/.claude/projects/-home-user-Developer-amont-agent/00000000-0000-4000-8000-000000000013.jsonl",
+  "cwd": "/home/user/Developer/amont-agent",
+  "prompt_id": "00000000-0000-4000-9000-000000000013",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "LSP",
+  "tool_input": {
+    "operation": "documentSymbol",
+    "filePath": "src/lsp.rs",
+    "line": 1,
+    "character": 1
+  },
+  "tool_response": {
+    "operation": "documentSymbol",
+    "result": "Error performing documentSymbol: LSP request 'textDocument/documentSymbol' failed for server 'plugin:fleet-lsp:rust': rust-analyzer: workspace did not load: Failed to load workspaces.; fix: run `cargo metadata` in the project root and fix what it reports",
+    "filePath": "src/lsp.rs"
+  },
+  "tool_use_id": "toolu_000000000000000000000013",
+  "duration_ms": 7036
+}
