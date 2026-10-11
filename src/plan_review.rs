@@ -112,6 +112,35 @@ pub fn canonical(text: &str) -> String {
     body
 }
 
+/// Whether the byte at `offset` of `text` lies in a region [`canonical`]
+/// strips: front matter, `## Review panel`, `## Full reviews` and after, or
+/// the machine comment. An edit there does not change the plan's sha.
+pub(crate) fn outside_body(text: &str, offset: usize) -> bool {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let comment = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .filter(|&i| is_machine_comment(lines[i]));
+    let front = front_matter_end(&lines);
+    let mut fence = Fence::default();
+    let (mut dropping, mut reviews) = (false, false);
+    let mut start = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let end = start + line.len() + 1;
+        if i >= front {
+            if let Some(title) = fence.h2(line) {
+                reviews |= title.starts_with(FULL_REVIEWS);
+                dropping = title == REVIEW_SECTION;
+            }
+        }
+        if offset < end {
+            return i < front || Some(i) == comment || reviews || dropping;
+        }
+        start = end;
+    }
+    false
+}
+
 /// The index of the first line after YAML front matter, or 0 when there is
 /// none: a `---` first line with no closing `---` is text, not front matter.
 fn front_matter_end(lines: &[&str]) -> usize {

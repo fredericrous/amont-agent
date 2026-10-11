@@ -174,3 +174,52 @@ reviewer lacked an agent id) goes to stderr; stdout stays empty.
 Exit codes: 0 when the ledger is up to date; 1 when no transcript names the
 plan, a reviewer has no agent id (the other rows are still written) or the
 ledger cannot be written; 2 on a usage error or malformed findings.
+
+## Applying the reviewers' patches
+
+A reviewer that proposes an edit ends its result with a `Patches:` section: a
+fenced JSON array of `{"finding": n, "old_string": "...", "new_string": "..."}`,
+one object per edit, `old_string` copied from the plan and unique in it.
+`amont-agent plan-apply <plan.md>` applies them with no model. The accepted
+findings come on stdin, `[{"role": "tui", "finding": 1}, ...]`; a finding may
+carry `"patch": {"old_string", "new_string"}` to supply an edit the main
+session wrote itself. Stdin on a terminal is a usage error.
+
+The patches are read from the session transcript (`--transcript <path>`, or
+else the one under `~/.claude/projects` that reviewed the plan), from the
+latest completion of each role, launch or `SendMessage` resume, that reviewed
+the plan body as it was before the apply. Each `old_string` must occur exactly
+once and must not overlap another patch; an empty one is a usage error. A patch
+that does not match is listed as `unmatched <role>#<n>: <reason>` (`absent`,
+`absent (whitespace)`, `N occurrences`, `overlaps <role>#<n>`, `no patches
+block`, `patches block is not JSON`), never guessed. The matched ones are
+written once, atomically, to the file a symlink points to; if the plan changed
+between the read and the write, nothing is written. A patch inside the front
+matter, `## Review panel` or `## Full reviews` is applied and labelled
+`outside the body`.
+
+stdout is data: one line per patch, `applied tui#1 <section>` or `unmatched
+tui#3: absent`, then `applied A, unmatched U, sha <sha12>`. When some patch is
+unmatched, a `next:` line follows and the last thing on stdout is the block
+the fallback subagent's prompt must start with:
+`<<<APPLY path=<plan> sha=<sha12 of the body before the apply>>>>`.
+Patch lines stay within 80 columns; the `next:` line and the block carry the
+plan's path unclipped, since one is copied and the other is machine-read.
+Diagnostics go to stderr. Every real run appends one
+`amont-agent-review-merge-v1` row to `outcomes.jsonl` (`recorded_at`,
+`plan_path`, `body_sha_before`, `body_sha_after`, `round`, `accepted`,
+`applied`, `unmatched`, `mode: "command"`); merge rows are not review rows and
+never count as a recorded reviewer.
+
+| flag | effect |
+|---|---|
+| `--dry-run` | report what would change; write nothing, no row |
+| `--check [--before <sha>]` | write nothing; a patch is verified when its `new_string` occurs once and its `old_string` is gone (a `new_string` that contains its `old_string` skips the absence test). Patches resolve by the body before the apply: `--before` (12 to 64 hex), else the latest `command` row of this plan, else the current body |
+| `--record-fallback` | after a subagent applied the unmatched edits: find its launch by the `<<<APPLY` block its prompt starts with, check the findings on stdin, and write one `mode: "subagent"` row (`agent_id`, `model`, `tokens`, `seconds`, `verified`); a rerun writes nothing |
+
+| exit | meaning |
+|---|---|
+| 0 | every patch applied (or verified) |
+| 3 | some patch unmatched or not verified; the matched ones are written |
+| 1 | file I/O, the plan changed under the apply (nothing written), or no transcript holds the reviewer's result |
+| 2 | usage error, including an empty `old_string` |

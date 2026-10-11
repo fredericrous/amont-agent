@@ -147,19 +147,34 @@ fn parse_findings(text: &str) -> Result<Vec<serde_json::Value>, String> {
 }
 
 /// One completed reviewer of the plan, with the body it reviewed.
-struct Launch {
-    role: String,
-    sha: String,
-    done: Completed,
+pub(crate) struct Launch {
+    pub(crate) role: String,
+    pub(crate) sha: String,
+    pub(crate) done: Completed,
 }
 
 /// The completed launches of `transcript` that reviewed `plan`, in launch
 /// order, one per agent: a launch whose prompt carries several blocks for
 /// the plan is one reviewer.
 fn launches(transcript: &Path, plan: &str) -> std::io::Result<Vec<Launch>> {
+    collect(transcript, plan, plan_review::completed_agents)
+}
+
+/// [`launches`], with the rounds a reviewer was resumed for by `SendMessage`
+/// counted as launches of their own: `plan-apply` reads a round-2 reviewer's
+/// patches from its resume.
+pub(crate) fn launches_resumable(transcript: &Path, plan: &str) -> std::io::Result<Vec<Launch>> {
+    collect(transcript, plan, |r, p| {
+        plan_review::completed_agents_resumable(r, p)
+    })
+}
+
+type Reader = fn(BufReader<std::fs::File>, &str) -> Vec<Completed>;
+
+fn collect(transcript: &Path, plan: &str, completed: Reader) -> std::io::Result<Vec<Launch>> {
     let reader = BufReader::new(std::fs::File::open(transcript)?);
     let mut out = Vec::new();
-    for done in plan_review::completed_agents(reader, AGENT_PREFIX) {
+    for done in completed(reader, AGENT_PREFIX) {
         let found = plan_review::parse_blocks(&done.agent, &done.prompt)
             .into_iter()
             .find(|b| b.path == plan);
@@ -179,7 +194,11 @@ fn launches(transcript: &Path, plan: &str) -> std::io::Result<Vec<Launch>> {
 /// then the most recently written. The body comes first because a
 /// long-lived session still being appended to can have reviewed an older
 /// body days ago; its mtime says nothing about when the review ran.
-fn discover(plan: &str, current: &str) -> Option<(PathBuf, Vec<Launch>)> {
+pub(crate) fn discover(
+    plan: &str,
+    current: &str,
+    load: fn(&Path, &str) -> std::io::Result<Vec<Launch>>,
+) -> Option<(PathBuf, Vec<Launch>)> {
     let projects = crate::settings::config_dir()?.join("projects");
     let now = std::time::SystemTime::now();
     let mut best: Option<((bool, std::time::SystemTime), PathBuf, Vec<Launch>)> = None;
@@ -216,7 +235,7 @@ fn discover(plan: &str, current: &str) -> Option<(PathBuf, Vec<Launch>)> {
             {
                 continue;
             }
-            let found = match launches(&path, plan) {
+            let found = match load(&path, plan) {
                 Ok(f) => Ok(f),
                 Err(e) => {
                     eprintln!("amont-agent: skipped {}: {e}", path.display());
@@ -263,12 +282,12 @@ fn json_list<'a>(items: impl IntoIterator<Item = &'a String>) -> serde_json::Val
 /// An exclusive lock on the ledger's lock file, held until dropped. Two
 /// `record` calls on one transcript would otherwise both read "not yet
 /// recorded" and append the same reviewers twice.
-struct Lock {
+pub(crate) struct Lock {
     _held: std::fs::File,
 }
 
 #[cfg(unix)]
-fn lock(path: &Path) -> std::io::Result<Lock> {
+pub(crate) fn lock(path: &Path) -> std::io::Result<Lock> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
     extern "C" {
@@ -291,7 +310,7 @@ fn lock(path: &Path) -> std::io::Result<Lock> {
 // there: `File::lock` needs Rust 1.89, above the 1.85 floor, and plan
 // reviews run on unix machines. Ends when the floor reaches 1.89.
 #[cfg(not(unix))]
-fn lock(path: &Path) -> std::io::Result<Lock> {
+pub(crate) fn lock(path: &Path) -> std::io::Result<Lock> {
     let f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -301,7 +320,7 @@ fn lock(path: &Path) -> std::io::Result<Lock> {
 
 /// Options for a file only its owner reads: the ledger and the bodies hold
 /// what reviewers said about private plans.
-fn private_options() -> std::fs::OpenOptions {
+pub(crate) fn private_options() -> std::fs::OpenOptions {
     let o = std::fs::OpenOptions::new();
     #[cfg(unix)]
     let o = {
@@ -314,7 +333,7 @@ fn private_options() -> std::fs::OpenOptions {
 }
 
 /// The ledger, opened for appending; created when missing.
-fn open_ledger(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_ledger(path: &Path) -> std::io::Result<std::fs::File> {
     let f = private_options().append(true).create(true).open(path)?;
     crate::journal::private(path, 0o600);
     Ok(f)
@@ -325,7 +344,7 @@ fn create_body(path: &Path) -> std::io::Result<std::fs::File> {
     private_options().write(true).create_new(true).open(path)
 }
 
-/// What the ledger already holds: the agent ids on record, and the round-1
+/// What the ledger already holds: the review agent ids on record, and the round-1
 /// body an earlier call recorded for `plan`, if any. A torn line (a crash
 /// mid-append) is skipped, not fatal.
 fn recorded(path: &Path, plan: &str) -> std::io::Result<(BTreeSet<String>, Option<String>)> {
@@ -338,8 +357,11 @@ fn recorded(path: &Path, plan: &str) -> std::io::Result<(BTreeSet<String>, Optio
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
+    // Only review rows: a merge row (`plan-apply`) has an `agent_id` too, and
+    // must not make a reviewer look recorded.
     let ids = rows
         .iter()
+        .filter(|v| v.get("schema").and_then(|s| s.as_str()) == Some(SCHEMA))
         .filter_map(|v| v.get("agent_id")?.as_str().map(str::to_string))
         .collect();
     let first = rows
@@ -365,7 +387,7 @@ fn record(
                 .map_err(|e| format!("cannot read transcript {}: {e}", t.display()))?;
             (t, l)
         }
-        None => discover(&real, &plan_sha).ok_or_else(|| {
+        None => discover(&real, &plan_sha, launches).ok_or_else(|| {
             format!(
                 "no transcript from the last 7 days has a completed plan-review of {real}; name one with --transcript"
             )

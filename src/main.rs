@@ -42,6 +42,7 @@ mod json;
 mod lsp;
 mod mine;
 mod payload;
+mod plan_apply;
 mod plan_phases;
 mod plan_review;
 mod plan_words;
@@ -99,6 +100,9 @@ usage: amont-agent <command>
                         plan-review-panel hook will judge it
   plan-review record <plan.md> [--transcript <path>]
                         keep what each reviewer of a plan did, as outcome rows
+  plan-apply [--dry-run|--check|--record-fallback] <plan.md>
+                        apply the reviewers' Patches to a plan with no model
+                        (accepted findings on stdin; exit 3 = some unmatched)
   attestations [--apply]
                         what ~/.claude/amont-agent/attestations keeps and
                         why; --apply moves the rest to a 7-day trash
@@ -159,12 +163,13 @@ enum Sub {
     PlanSha,
     PlanPanel,
     PlanReview,
+    PlanApply,
     TreeSha,
     Attestations,
     Quiet,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 21] = [
+const SUBCOMMANDS: [(&str, Sub); 22] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -183,6 +188,7 @@ const SUBCOMMANDS: [(&str, Sub); 21] = [
     ("plan-sha", Sub::PlanSha),
     ("plan-panel", Sub::PlanPanel),
     ("plan-review", Sub::PlanReview),
+    ("plan-apply", Sub::PlanApply),
     ("tree-sha", Sub::TreeSha),
     ("attestations", Sub::Attestations),
     ("quiet", Sub::Quiet),
@@ -334,6 +340,11 @@ fn main() -> ExitCode {
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);
+                print!("{said}");
+                code
+            }
+            Sub::PlanApply => {
+                let (said, code) = plan_apply::run(&args);
                 print!("{said}");
                 code
             }
