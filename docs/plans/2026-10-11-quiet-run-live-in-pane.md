@@ -23,3 +23,4 @@ This repository carries phase 2: while a quiet run is live it writes one active-
 relais run `run-65d9602ab447e-18448` wrote the entry; review findings fixed in the session: the ended entry names the final `.log` (matching amont, so the watcher's last drain reads the real file), `write` returns `io::Result`, a run with no log file writes no entry (documented), and killed writers' temp files are swept after an hour.
 
 Implementation review: round 1 approve-with-changes (6 findings); all fixed in `5647afd` (no entry without a session, real exit on early returns, own-tool sweep, `std::process::id`) and in this record (SIGINT row, contract sentence in relais's plan). This slice is done.
+Delta and bind: the one new finding (a vacuous 127 test) fixed in `c5909e9`; final tree **approve**.
