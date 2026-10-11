@@ -1186,6 +1186,11 @@ mod tests {
         fs::create_dir_all(t.join("inner")).unwrap();
         fs::write(t.join("inner/f"), "x").unwrap();
         fs::set_permissions(t.join("inner"), fs::Permissions::from_mode(0o500)).unwrap();
+        // Root writes through 0o500, so there is nothing to test there.
+        if fs::write(t.join("inner/probe"), "x").is_ok() {
+            fs::set_permissions(t.join("inner"), fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
         let r = run(&s.env(), NOW, true);
         fs::set_permissions(t.join("inner"), fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
