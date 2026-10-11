@@ -196,7 +196,7 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 
 ## Phases
 
-1. `src/attestations.rs` (keep rules, citation matcher, scan, sweep, trash),
+1. ✅ `src/attestations.rs` (keep rules, citation matcher, scan, sweep, trash),
    the subcommand, the SessionStart call with its daily stamp, journal
    lines, the doctor line and its warn, docs (`docs/preview.md`,
    `CHANGELOG.md`), tests, v2.34.0 — one PR. Tests pass `now` in and age
@@ -276,5 +276,11 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 - deliberate: the scan-failure message reads `; no directory removed`, not the body's `; nothing removed`: the trash purge still runs after a failed scan (final plan-review round, carried).
 - Rebased on #94 (`plan-review record`): CHANGELOG v2.34.0 carries both entries; the usage text and the subcommand table have both commands.
 - Implementation via relais (run-65d8c5c05fb82-3aa1, budget_exhausted after its worker finished: baseline 5.4 min plus worker 17 min over the 20-minute wall clock); the candidate was applied and verified here, then the detached sweep, 50 lock rounds, the test wait and the version bump were added by hand.
+
+## Implementation review
+
+- approve (Delta, round 2), after approve-with-changes in round 1 (80k, 51 s; Deltas 84k, 11 s and 85k, 6 s).
+- Fixed: symlink test no longer tied to a date, purge failures reported (✗, exit 1), help first and `--daily` documented, pure git-exit mapping tested, root guard on the chmod test.
+- deliberate: `; no directory removed` (see Decision log).
 
 <!-- panel: repos=amont-agent,dotfiles adds= reviewers=backend,lang:rust,tui,unix body-sha=148d0ee68826 -->
