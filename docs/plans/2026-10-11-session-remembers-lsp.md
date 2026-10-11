@@ -194,7 +194,7 @@ journalled `lsp`: never dropped.
 - At `deny`, every whole Read is refused until LSP is asked (not once per file), and the once-per-file advice key is per agent: the refusal's way through has to stay true on the second try.
 - A `workspaceSymbol` payload without `filePath` is still recorded and counted (headings only).
 - A live file that cannot be rotated leaves a `rotate-failed` record in it; a header that cannot be written drops the record instead of leaving a file without one.
-- The header is staged in a per-process file and hard-linked into place (atomic, fails if the name exists), and the append opens without creating, retrying through the header path when a rotation moved the file. `create_new` then `write_all` let another process append to the empty file, and the header overwrote that record at offset 0.
+- The header is staged in a per-call file and hard-linked into place (atomic, fails if the name exists), and the append opens without creating, retrying through the header path when a rotation moved the file. `create_new` then `write_all` let another process append to the empty file, and the header overwrote that record at offset 0.
 - `the_fixtures_are_parsed_as_real_payloads` is `#[cfg(unix)]` (its fixtures carry Unix paths); `one_normal_form_for_every_spelling` runs everywhere, its symlink steps Unix-only.
 - A file system without hard links falls back to an append-mode `create_new` header (a racing record may precede it, never sit under it); the staged name is per call.
 - On Windows each heading is canonicalized (the canonical cwd is a `\\?\` path where a lexical join never matches); the 15 ms budget is measured on macOS.
@@ -205,5 +205,6 @@ journalled `lsp`: never dropped.
 - approve (round 2, Delta), after approve-with-changes in round 1 (75k, 70 s; Delta 85k, 24 s).
 - Fixed: doctor generations test, `rotate-failed` record, `holds-until` comment, rules doc per agent and deny-every-time, `child_writer` ignored.
 - deliberate: a stuck rotation adds one `rotate-failed` line per write, so the journal grows twice as fast until it is fixed; being loud is the point.
+- After CI failed (lost record; Windows paths), a fresh round 1 on the fix: approve-with-changes (53k, 62 s), 3 findings fixed; Delta approve (57k, 20 s); Windows heading Delta approve-with-changes (60k, 17 s), one plan word fixed.
 
 <!-- panel: repos=amont-agent adds= reviewers=backend body-sha=f93bcc397a39 -->
