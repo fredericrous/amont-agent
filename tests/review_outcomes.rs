@@ -506,3 +506,46 @@ fn a_row_describes_the_body_its_reviewer_read() {
         |id: &str| rows.iter().find(|r| r["agent_id"] == id).unwrap()["plan"]["body_lines"].clone();
     assert_eq!(lines("a1"), lines("a2"));
 }
+
+#[test]
+fn bodies_older_than_90_days_are_pruned() {
+    let mut w = World::new("prune");
+    w.foreground("backend", Some("a1"));
+    let bodies = w.store().join("bodies");
+    std::fs::create_dir_all(&bodies).unwrap();
+    let old = bodies.join("old.md");
+    std::fs::write(&old, "old").unwrap();
+    let f = std::fs::File::options().write(true).open(&old).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(91 * 86_400))
+        .unwrap();
+    drop(f);
+    assert_eq!(w.record("[]").status.code(), Some(0));
+    assert!(!old.exists(), "a 91-day-old body is pruned");
+    let kept: Vec<_> = std::fs::read_dir(&bodies).unwrap().collect();
+    assert_eq!(kept.len(), 1, "the body this call saved stays");
+}
+
+#[test]
+fn round_one_is_the_first_body_on_record_across_sessions() {
+    let mut w = World::new("first-round");
+    w.foreground("backend", Some("a1"));
+    assert_eq!(w.record("[]").status.code(), Some(0));
+    let first = w.rows()[0]["body_sha"].clone();
+    // A new session reviews the revised body; its transcript has no round 1.
+    w.lines.clear();
+    w.set_body(&format!("{BODY}\nRevised.\n"));
+    w.foreground("backend", Some("a2"));
+    assert_eq!(w.record("[]").status.code(), Some(0));
+    let rows = w.rows();
+    let a2 = rows.iter().find(|r| r["agent_id"] == "a2").unwrap();
+    assert_eq!(a2["first_round_sha"], first);
+}
+
+#[test]
+fn an_unsaved_body_records_no_features() {
+    let mut w = World::new("unsaved");
+    w.foreground("backend", Some("a1"));
+    w.set_body(&format!("{BODY}\nRevised.\n"));
+    assert_eq!(w.record("[]").status.code(), Some(0));
+    assert_eq!(w.rows()[0]["plan"], serde_json::Value::Null);
+}

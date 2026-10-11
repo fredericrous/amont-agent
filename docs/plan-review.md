@@ -154,8 +154,9 @@ rows this call writes for the highest round it writes, matched by role.
 A row has: `schema` (`amont-agent-review-outcome-v1`), `recorded_at` (unix
 seconds), `role`, `agent_id`, `model`, `tokens`, `seconds`, `round` (1-based,
 in the order distinct bodies first appear), `body_sha`, `first_round_sha`,
-`plan_path`, `plan` (`areas`, `repos`, `body_lines`, of the body that round
-reviewed when it was saved), `verdict` (`rework`,
+`plan_path`, `plan` (`areas`, `repos`, `body_lines` of the body that round
+reviewed; null when that body was never saved), with `first_round_sha` the
+first body any call recorded for this plan path, across sessions, `verdict` (`rework`,
 `approve-with-changes`, `approve` or null), `remit` (the areas the role is
 asked for; `*` for backend) and `findings`.
 

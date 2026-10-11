@@ -235,7 +235,9 @@ fn json_list<'a>(items: impl IntoIterator<Item = &'a String>) -> serde_json::Val
 /// An exclusive lock on the ledger's lock file, held until dropped. Two
 /// `record` calls on one transcript would otherwise both read "not yet
 /// recorded" and append the same reviewers twice.
-struct Lock(#[allow(dead_code)] std::fs::File);
+struct Lock {
+    _held: std::fs::File,
+}
 
 #[cfg(unix)]
 fn lock(path: &Path) -> std::io::Result<Lock> {
@@ -254,7 +256,7 @@ fn lock(path: &Path) -> std::io::Result<Lock> {
     if unsafe { flock(f.as_raw_fd(), LOCK_EX) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(Lock(f))
+    Ok(Lock { _held: f })
 }
 
 #[cfg(not(unix))]
@@ -263,7 +265,7 @@ fn lock(path: &Path) -> std::io::Result<Lock> {
         .create(true)
         .append(true)
         .open(path)?;
-    Ok(Lock(f))
+    Ok(Lock { _held: f })
 }
 
 /// A file only its owner reads: the ledger holds what reviewers said about
@@ -285,19 +287,28 @@ fn open_new(path: &Path, append: bool) -> std::io::Result<std::fs::File> {
     Ok(f)
 }
 
-/// The agent ids already in the ledger. A torn line (a crash mid-append) is
-/// skipped, not fatal.
-fn recorded(path: &Path) -> std::io::Result<BTreeSet<String>> {
+/// What the ledger already holds: the agent ids on record, and the round-1
+/// body an earlier call recorded for `plan`, if any. A torn line (a crash
+/// mid-append) is skipped, not fatal.
+fn recorded(path: &Path, plan: &str) -> std::io::Result<(BTreeSet<String>, Option<String>)> {
     let text = match std::fs::read(path) {
         Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
         Err(e) => return Err(e),
     };
-    Ok(text
+    let rows: Vec<serde_json::Value> = text
         .lines()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let ids = rows
+        .iter()
         .filter_map(|v| v.get("agent_id")?.as_str().map(str::to_string))
-        .collect())
+        .collect();
+    let first = rows
+        .iter()
+        .filter(|v| v.get("plan_path").and_then(|p| p.as_str()) == Some(plan))
+        .find_map(|v| v.get("first_round_sha")?.as_str().map(str::to_string));
+    Ok((ids, first))
 }
 
 fn record(
@@ -351,16 +362,27 @@ fn record(
         .ok_or_else(|| format!("cannot create {}", bodies.display()))?;
     let ledger = store.join("outcomes.jsonl");
     let _lock = lock(&store.join("outcomes.jsonl.lock")).map_err(io("cannot lock the ledger"))?;
-    let mut seen = recorded(&ledger).map_err(io(&format!("cannot read {}", ledger.display())))?;
+    let (mut seen, first_on_record) =
+        recorded(&ledger, &real).map_err(io(&format!("cannot read {}", ledger.display())))?;
+    // Round 1 is the first body the LEDGER saw for this plan, so a review
+    // that spans sessions keeps one round-1 body to diff against.
+    // holds-until: `round` is still counted within this transcript; a plan
+    // reviewed across sessions gets a second round 1 until rounds are
+    // numbered from the ledger too.
+    let first_round_sha = first_on_record.unwrap_or_else(|| shas[0].to_string());
 
     // A row describes the body its reviewer read: the current file when it
-    // is that body, else the copy an earlier call saved, else (the body was
-    // never saved) the current file, the closest thing left.
+    // is that body, else the copy an earlier call saved. A body that was
+    // never saved records null, not a guess from another body.
     let features = |sha: &str| {
         let saved = (plan_sha != sha)
             .then(|| std::fs::read_to_string(bodies.join(format!("{sha}.md"))).ok())
             .flatten();
-        let body = saved.as_deref().unwrap_or(&text);
+        let body = match &saved {
+            Some(s) => s.as_str(),
+            None if plan_sha == sha => text.as_str(),
+            None => return serde_json::Value::Null,
+        };
         let meta = plan_review::meta(body);
         serde_json::json!({
             "areas": meta.as_ref().ok().and_then(plan_review::areas_of).map(|a| json_list(&a)).unwrap_or_else(|| serde_json::json!([])),
@@ -408,7 +430,7 @@ fn record(
             "seconds": l.done.duration_ms.map(|ms| ms as f64 / 1000.0),
             "round": round,
             "body_sha": l.sha,
-            "first_round_sha": shas[0],
+            "first_round_sha": first_round_sha,
             "plan_path": real,
             "plan": features(&l.sha),
             "verdict": verdict(&l.done.result),
@@ -472,9 +494,15 @@ fn record(
 }
 
 /// Saved bodies are for looking back at a recent review, not an archive.
+/// A failure is said on stderr and never fails the call: the rows are
+/// already written, and a body left over is harmless.
 fn prune(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("amont-agent: bodies in {} not pruned: {e}", dir.display());
+            return;
+        }
     };
     let now = std::time::SystemTime::now();
     for e in entries.flatten() {
@@ -485,7 +513,9 @@ fn prune(dir: &Path) {
             .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|d| d.as_secs() > BODY_TTL);
         if old {
-            let _ = std::fs::remove_file(e.path());
+            if let Err(why) = std::fs::remove_file(e.path()) {
+                eprintln!("amont-agent: body {} not pruned: {why}", e.path().display());
+            }
         }
     }
 }
