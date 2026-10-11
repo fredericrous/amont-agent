@@ -203,7 +203,7 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
    files with `File::set_modified`; e2e tests set a scratch
    `CLAUDE_CONFIG_DIR`/`HOME` and `AMONT_AGENT_PLAN_ROOT` and never touch the
    real `~/.claude`.
-2. Release (`tag-release`), `brew upgrade amont-agent`; run
+2. ✅ Release (`tag-release`), `brew upgrade amont-agent`; run
    `amont-agent attestations` (dry) on the real store and check the 7 cited
    directories show as kept; one `SessionStart` writes the stamp and the
    `attestations-kept` journal line. The worktree-task skill sentence
@@ -266,7 +266,7 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 | real store, dry run (branch build) | 119 directories, 71.9 MB, every row `keep` (the oldest is 12 days), exit 0; `doctor`: `attestations: 119 directories, 71.9 MB, oldest 12d; 7 cited; never swept` — the 7 found by hand. ✅ |
 | real git config | snapshot, whole suite, diff: unchanged. ✅ (see Decision log) |
 | timing | dry run on the real store at load average ~100: 0.4 s warm, 1.8 s cold; over budget, so the sweep is detached (Decision log). SessionStart interleaved, 15 runs each, load ~140: 2.33.1 p50 ~243 ms, branch with a stale stamp (spawns) ~255 ms, branch with a fresh stamp equal to the baseline. ✅ |
-| live | Phase 2, after the release. |
+| live (Phase 2) | v2.34.0 released (6 archives + SHA256SUMS); `brew upgrade` 2.33.1 → 2.34.0. `amont-agent attestations` on the real store: 119 directories, 71.9 MB, all `keep`, exit 0. The 7 cited show `recent` (all under 30 days); `doctor` counts `7 cited`. One real `SessionStart`: the hook returned at once; the detached run wrote `attestations.swept` and `attestations.swept.20737` and journaled `attestations-kept 119 71854060`; `doctor`: `swept 2s ago`. dotfiles F3 sentence: fredericrous/dotfiles#30. ✅ |
 
 ## Decision log
 
