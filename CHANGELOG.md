@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`amont-agent quiet` says it is running, for relais's pane.** While it
+  runs it writes one active-run entry (`$QUIET_ACTIVE_DIR`, else
+  `${XDG_STATE_HOME:-~/.local/state}/quiet/active`, 0600) naming the
+  command, its session (`CLAUDE_CODE_SESSION_ID`) and its log; when it ends
+  the entry gains `exit`, `ended` and the renamed log's path and is left
+  for relais's watcher, which shows the run live in its pane (relais
+  `docs/quiet-runs.md`). Writing it never changes output or exit code.
+
 ## v2.36.0
 
 ### Added

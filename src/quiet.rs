@@ -30,7 +30,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -257,6 +257,187 @@ fn prune(dir: &Path) {
     }
 }
 
+/// How long a finished run's entry stays for a watcher to see it.
+const ENDED_KEEP_MS: u64 = 60_000;
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn active_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("QUIET_ACTIVE_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
+    let state = match std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => {
+            PathBuf::from(std::env::var_os("HOME").filter(|d| !d.is_empty())?).join(".local/state")
+        }
+    };
+    Some(state.join("quiet").join("active"))
+}
+
+fn pid_alive(pid: i64) -> bool {
+    let Ok(pid) = c_int::try_from(pid) else {
+        return true;
+    };
+    if pid <= 0 {
+        return true;
+    }
+    // Signal 0 only checks. EPERM means the process exists; only ESRCH (3)
+    // means it is gone.
+    let gone = unsafe { sys::kill(pid, 0) } != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(3);
+    !gone
+}
+
+/// Remove entries of runs that died without finishing, and finished entries
+/// older than [`ENDED_KEEP_MS`]. Best-effort; unreadable files stay.
+fn sweep_active(dir: &Path, now: u64) {
+    let Ok(read) = fs::read_dir(dir) else { return };
+    for path in read.filter_map(|e| e.ok().map(|e| e.path())) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+        let Some(name) = name else { continue };
+        if name.starts_with('.') {
+            // A temp file of an atomic write whose writer was killed before
+            // the rename: nobody else removes it. An hour is far past any
+            // write in flight.
+            let old = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > 3600);
+            if old && name.ends_with(".json") {
+                let _ = fs::remove_file(&path);
+            }
+            continue;
+        }
+        if !name.ends_with(".json") {
+            continue;
+        }
+        let Some(v) = fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        else {
+            continue;
+        };
+        let stale = match v.get("ended").and_then(|e| e.as_u64()) {
+            Some(ended) => now.saturating_sub(ended) > ENDED_KEEP_MS,
+            // Only this tool's own runs: another tool sweeps its own.
+            None => {
+                v.get("tool").and_then(|t| t.as_str()) == Some("amont-agent")
+                    && v.get("pid")
+                        .and_then(|p| p.as_i64())
+                        .is_some_and(|p| !pid_alive(p))
+            }
+        };
+        if stale {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+/// The active-run entry of this run. It is written when the run starts and,
+/// when this value is dropped (normal end, early return or panic), rewritten
+/// with `exit` and `ended`. Every failure here is dropped: the entry is a
+/// courtesy to a watcher and never changes the output or the exit code.
+struct ActiveEntry {
+    path: Option<PathBuf>,
+    base: serde_json::Value,
+    exit: Option<i32>,
+    /// Where the log went when the run ended (`.log.tmp` renamed to `.log`):
+    /// the ended entry names it, so the watcher's last drain reads the real
+    /// file. Unset when the rename did not happen.
+    final_log: Option<PathBuf>,
+}
+
+impl ActiveEntry {
+    /// Write this run's entry. A run with no log file (`log` empty: it could
+    /// not be created) writes none: there is nothing for a watcher to tail,
+    /// and the run's own output still says `log not written`.
+    fn start(program: &str, log: &Path) -> ActiveEntry {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let none = ActiveEntry {
+            path: None,
+            base: serde_json::Value::Null,
+            exit: None,
+            final_log: None,
+        };
+        let Some(dir) = active_dir() else { return none };
+        // Only a run inside a Claude Code session is ever drawn: without one
+        // an entry would be litter (and a test suite's fixtures).
+        let Some(session) = std::env::var("CLAUDE_CODE_SESSION_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+        else {
+            return none;
+        };
+        if log.as_os_str().is_empty() {
+            return none;
+        }
+        let Ok(log) = std::path::absolute(log) else {
+            return none;
+        };
+        if fs::create_dir_all(&dir).is_err() {
+            return none;
+        }
+        crate::journal::private(&dir, 0o700);
+        let now = now_ms();
+        sweep_active(&dir, now);
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let repo = crate::push_target::toplevel(&cwd).unwrap_or_else(|| cwd.clone());
+        let pid = std::process::id();
+        let base = serde_json::json!({
+            "v": 1,
+            "tool": "amont-agent",
+            "session": session,
+            "check": program,
+            "repo": repo.to_string_lossy(),
+            "log": log.to_string_lossy(),
+            "pid": pid,
+            "started": now,
+        });
+        let path = dir.join(format!("{pid}-{}.json", N.fetch_add(1, Ordering::SeqCst)));
+        let mut entry = ActiveEntry {
+            path: Some(path),
+            base,
+            exit: None,
+            final_log: None,
+        };
+        if entry.write(&entry.base).is_err() {
+            entry.path = None;
+        }
+        entry
+    }
+
+    fn write(&self, value: &serde_json::Value) -> std::io::Result<()> {
+        let Some(path) = &self.path else {
+            return Err(std::io::Error::other("no active entry"));
+        };
+        crate::atomic::write_atomic(path, &value.to_string())
+    }
+}
+
+impl Drop for ActiveEntry {
+    fn drop(&mut self) {
+        if self.path.is_none() {
+            return;
+        }
+        let mut v = self.base.clone();
+        if let Some(o) = v.as_object_mut() {
+            o.insert("exit".into(), serde_json::json!(self.exit));
+            o.insert("ended".into(), serde_json::json!(now_ms()));
+            if let Some(log) = &self.final_log {
+                o.insert("log".into(), serde_json::json!(log.to_string_lossy()));
+            }
+        }
+        let _ = self.write(&v);
+    }
+}
+
 fn make_pipe() -> std::io::Result<(File, OwnedFd)> {
     let mut fds = [0 as c_int; 2];
     if unsafe { sys::pipe(fds.as_mut_ptr()) } != 0 {
@@ -403,12 +584,14 @@ fn execute(parsed: Parsed) -> ExitCode {
     }
 
     let mut log = open_log(&program);
+    let mut active = ActiveEntry::start(&program, &log.tmp);
 
     let (read_end, write_end) = match make_pipe() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("amont-agent quiet: cannot create a pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
+            active.exit = Some(1);
             return ExitCode::from(1);
         }
     };
@@ -417,6 +600,7 @@ fn execute(parsed: Parsed) -> ExitCode {
         Err(e) => {
             eprintln!("amont-agent quiet: cannot duplicate the pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
+            active.exit = Some(1);
             return ExitCode::from(1);
         }
     };
@@ -439,9 +623,11 @@ fn execute(parsed: Parsed) -> ExitCode {
             let name = parsed.cmd[0].to_string_lossy();
             if e.kind() == std::io::ErrorKind::NotFound {
                 eprintln!("amont-agent quiet: {name}: command not found");
+                active.exit = Some(127);
                 return ExitCode::from(127);
             }
             eprintln!("amont-agent quiet: {name}: {e}");
+            active.exit = Some(126);
             return ExitCode::from(126);
         }
     };
@@ -507,10 +693,12 @@ fn execute(parsed: Parsed) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("amont-agent quiet: waiting for the command failed: {e}");
+            active.exit = Some(1);
             return ExitCode::from(1);
         }
     };
     let code = exit_code(status);
+    active.exit = Some(i32::from(code));
     let interrupted = RECEIVED.load(Ordering::SeqCst) != 0;
 
     // Where the log ended up.
@@ -532,6 +720,7 @@ fn execute(parsed: Parsed) -> ExitCode {
                 if let Some(dir) = log.done.parent() {
                     prune(dir);
                 }
+                active.final_log = Some(log.done.clone());
                 Stored::Saved(log.done.clone())
             }
             Err(e) => {

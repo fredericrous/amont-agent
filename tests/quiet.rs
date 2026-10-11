@@ -32,11 +32,59 @@ fn logs(home: &Path) -> PathBuf {
     home.join("amont-agent").join("logs")
 }
 
+fn active(home: &Path) -> PathBuf {
+    home.join("active")
+}
+
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    files(dir, ".json")
+}
+
+fn read_entry(path: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn plant(dir: &Path, name: &str, pid: u64, ended: Option<u64>) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut v = serde_json::json!({"v":1,"tool":"amont-agent","session":null,"check":"x",
+        "repo":"/","log":"/x.log.tmp","pid":pid,"started":1});
+    if let Some(e) = ended {
+        v["exit"] = serde_json::json!(0);
+        v["ended"] = serde_json::json!(e);
+    }
+    let p = dir.join(name);
+    std::fs::write(&p, v.to_string()).unwrap();
+    p
+}
+
+fn wait_for_entry(dir: &Path) -> PathBuf {
+    for _ in 0..1200 {
+        if let Some(p) = entries(dir).into_iter().next() {
+            if std::fs::read_to_string(&p).is_ok_and(|t| t.contains("started")) {
+                return p;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("no active entry in {}", dir.display());
+}
+
 fn quiet_cmd(home: &Path, args: &[&str]) -> Command {
     let mut c = Command::new(BIN);
     c.arg("quiet")
         .args(args)
         .env("CLAUDE_CONFIG_DIR", home)
+        .env("QUIET_ACTIVE_DIR", active(home))
+        // A fixed session: an entry is written only inside one, and the
+        // agent's own must never reach a test (or CI, which has none).
+        .env("CLAUDE_CODE_SESSION_ID", "test-session")
         .env_remove("CI");
     c
 }
@@ -449,4 +497,142 @@ mod injected {
         assert!(stderr.starts_with("running sleep, log "), "{stderr}");
         assert!(stderr.trim_end().ends_with(".log.tmp"), "{stderr}");
     }
+}
+
+#[test]
+fn an_active_entry_lives_through_the_run_and_stays_after_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = scratch("active");
+    let mut child = quiet_cmd(&home, &["--", "sleep", "3"])
+        .env("CLAUDE_CODE_SESSION_ID", "sess-1")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let dir = active(&home);
+    let path = wait_for_entry(&dir);
+    let v = read_entry(&path);
+    assert_eq!(v["v"], 1);
+    assert_eq!(v["tool"], "amont-agent");
+    assert_eq!(v["session"], "sess-1");
+    assert_eq!(v["check"], "sleep");
+    assert!(v["repo"]
+        .as_str()
+        .is_some_and(|r| Path::new(r).is_absolute()));
+    let log = v["log"].as_str().unwrap();
+    assert!(
+        Path::new(log).is_absolute() && log.ends_with(".log.tmp"),
+        "{log}"
+    );
+    assert!(Path::new(log).exists());
+    assert_eq!(v["pid"], child.id());
+    assert!(v["started"].as_u64().unwrap() > 0);
+    assert!(v.get("ended").is_none() && v.get("exit").is_none());
+    assert_eq!(v.as_object().unwrap().len(), 8);
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let dmode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(dmode, 0o700);
+    assert!(child.wait().unwrap().success());
+    let v = read_entry(&path);
+    assert_eq!(v["exit"], 0);
+    assert!(v["ended"].as_u64().unwrap() > 0);
+    // The ended entry names the renamed log, so a watcher's last drain reads it.
+    let done = v["log"].as_str().unwrap();
+    assert!(done.ends_with(".log") && Path::new(done).exists(), "{done}");
+}
+
+#[test]
+fn a_killed_writers_temp_file_is_swept_once_old() {
+    let home = scratch("tmp-sweep");
+    let dir = active(&home);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stale = dir.join(".amont-agent-tmp-1-1-0.json");
+    std::fs::write(&stale, "{").unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let fresh = dir.join(".amont-agent-tmp-2-2-0.json");
+    std::fs::write(&fresh, "{").unwrap();
+    let out = quiet_cmd(&home, &["--", "true"]).output().unwrap();
+    assert!(out.status.success());
+    assert!(!stale.exists(), "an hour-old temp file is litter");
+    assert!(fresh.exists(), "a fresh one may be a write in flight");
+}
+
+#[test]
+fn a_signal_still_ends_the_entry() {
+    let home = scratch("active-int");
+    let mut child = quiet_cmd(&home, &["--", "sleep", "3"])
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let path = wait_for_entry(&active(&home));
+    let _ = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status();
+    child.wait().unwrap();
+    let v = read_entry(&path);
+    assert!(v["exit"].is_null() || v["exit"] == 130, "{v}");
+    assert!(v["ended"].as_u64().is_some());
+}
+
+#[test]
+fn the_next_run_sweeps_dead_and_old_entries() {
+    let home = scratch("active-sweep");
+    let dir = active(&home);
+    let dead = plant(&dir, "999999999-0.json", 999_999_999, None);
+    let old = plant(&dir, "1-1.json", 1, Some(now_ms() - 120_000));
+    let fresh = plant(&dir, "1-2.json", 1, Some(now_ms() - 1_000));
+    let out = quiet(&home, &["--", "true"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!dead.exists());
+    assert!(!old.exists());
+    assert!(fresh.exists());
+}
+
+#[test]
+fn an_unwritable_active_dir_changes_nothing() {
+    let home = scratch("active-bad");
+    let blocker = home.join("file");
+    std::fs::write(&blocker, "x").unwrap();
+    let mut c = quiet_cmd(&home, &["--", "sh", "-c", "exit 4"]);
+    c.env("QUIET_ACTIVE_DIR", blocker.join("sub"));
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    assert!(text(&out.stdout).starts_with("exit 4 "));
+    let mut c = quiet_cmd(&home, &["--", "true"]);
+    c.env("QUIET_ACTIVE_DIR", blocker.join("sub"));
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(text(&out.stdout).starts_with("ok "));
+}
+
+#[test]
+fn no_session_writes_no_entry() {
+    let home = scratch("active-nosession");
+    let out = quiet_cmd(&home, &["--", "true"])
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let n = std::fs::read_dir(active(&home)).map_or(0, |d| d.count());
+    assert_eq!(n, 0, "an entry outside a session is never drawn");
+}
+
+#[test]
+fn a_command_that_cannot_start_records_its_exit() {
+    let home = scratch("active-127");
+    let out = quiet(&home, &["--", "no-such-command-xyz"]);
+    assert_eq!(out.status.code(), Some(127));
+    // The log and the entry exist before the spawn is tried, so a command
+    // that never ran still leaves one entry, ending with its real exit.
+    let entries = entries(&active(&home));
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let v = read_entry(&entries[0]);
+    assert_eq!(v["exit"], 127);
+    assert!(v["ended"].as_u64().is_some());
 }
