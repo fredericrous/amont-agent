@@ -287,6 +287,7 @@ deleted 7 days later. At the measured rate the store then holds about 150 MB
 - approve (Delta, round 2), after approve-with-changes in round 1 (80k, 51 s; Deltas 84k, 11 s and 85k, 6 s).
 - Fixed: symlink test no longer tied to a date, purge failures reported (✗, exit 1), help first and `--daily` documented, pure git-exit mapping tested, root guard on the chmod test.
 - deliberate: `; no directory removed` (see Decision log).
+- After the Windows path-separator failure, a fresh round 1 on the test-only fix: approve (28k, 14 s).
 - After the Windows file-name failure, a fresh round 1 on the test-only fix: approve-with-changes (49k, 33 s), two plan rows amended (here).
 - After CI failed (orphan lock on Ubuntu; Windows directory times), a fresh round 1 on the fix: approve-with-changes (52k, 56 s), 4 comment/record findings fixed; Delta approve (55k, 15 s).
 
