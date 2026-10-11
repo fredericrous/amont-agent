@@ -66,6 +66,9 @@ fn decide(raw: &str) -> Decision {
             // fetch below can never cost the heartbeat.
             heartbeat();
             crate::session_state::sweep();
+            if session.source == "compact" {
+                crate::session_state::compact(&session.session);
+            }
             crate::preview::sweep();
             crate::plan_phases::sweep();
             crate::attestations::sweep();
@@ -262,18 +265,17 @@ fn on_bash(bash: &Bash) -> Decision {
                 agent_transcript: bash.agent_transcript.as_deref(),
             };
             let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
-            let window = dump_window(&d.extent);
-            if let Some(text) = reread_verdict(
+            let verdict = reread_verdict(
                 &bash.session,
+                bash.agent_id.as_deref(),
                 &path,
-                &window,
+                &d.window,
                 &bash.permission_mode,
                 &bash.cwd,
                 &d.path,
-            )
-            .text
-            {
-                match crate::stance::resolve(&rules::file_reread::RULE) {
+            );
+            if let Some(text) = verdict.text {
+                match verdict.stance {
                     Stance::Deny => deny.push(text),
                     Stance::Advise => advise.push(text),
                     Stance::Observe => {}
@@ -412,9 +414,22 @@ fn on_post_bash(bash: &Bash) -> Decision {
     // line would have `file-reread` advise, later, about a file the session
     // may never have read.
     if parsed.fully_read() {
-        for d in rules::dump::dumps(&parsed) {
-            let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
-            crate::session_state::record(&bash.session, "read", &path, &dump_window(&d.extent));
+        if let Some(agent) = crate::lsp::agent_key(bash.agent_id.as_deref()) {
+            let delivered = bash_delivered_whole(bash);
+            for d in rules::dump::dumps(&parsed) {
+                let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
+                let certain = delivered
+                    && d.window != crate::session_state::INEXACT
+                    && rules::dump::runs_unconditionally(&bash.command, d.at);
+                crate::session_state::record(
+                    &bash.session,
+                    &agent,
+                    "read",
+                    &path,
+                    &d.window,
+                    certain,
+                );
+            }
         }
     }
 
@@ -490,7 +505,9 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
                 crate::implementation_review::GUARD_REMEDY,
             ));
         }
-        crate::session_state::record(&op.session, "write", &op.path, "full");
+        if let Some(agent) = crate::lsp::agent_key(op.agent_id.as_deref()) {
+            crate::session_state::record(&op.session, &agent, "write", &op.path, "full", true);
+        }
         return lint_suppression(op);
     }
     let mut advise: Vec<String> = Vec::new();
@@ -515,14 +532,15 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
     }
     let reread = reread_verdict(
         &op.session,
+        op.agent_id.as_deref(),
         &op.path,
-        &op.window,
+        &crate::session_state::read_window(&op.path, &op.window),
         &op.permission_mode,
         &op.cwd,
         &shown,
     );
     if let Some(text) = reread.text {
-        match crate::stance::resolve(&rules::file_reread::RULE) {
+        match reread.stance {
             Stance::Deny => deny.push(text),
             Stance::Advise => advise.push(text),
             Stance::Observe => {}
@@ -692,7 +710,17 @@ fn on_post_lsp(call: &crate::payload::LspCall) -> Decision {
 /// already in context.
 fn on_post_file(op: &crate::payload::FileOp) -> Decision {
     if !op.writes {
-        crate::session_state::record(&op.session, "read", &op.path, &op.window);
+        if let Some(agent) = crate::lsp::agent_key(op.agent_id.as_deref()) {
+            let window = crate::session_state::read_window(&op.path, &op.window);
+            crate::session_state::record(
+                &op.session,
+                &agent,
+                "read",
+                &op.path,
+                &window,
+                !op.persisted_result,
+            );
+        }
     }
     Decision::Silent
 }
@@ -815,13 +843,23 @@ fn outcome_of(stance: Stance) -> &'static str {
     }
 }
 
-/// The window a `cat`-shaped dump covers, in the Read tool's own spelling.
-fn dump_window(extent: &rules::dump::Extent) -> String {
-    match extent {
-        rules::dump::Extent::Whole => "full".to_string(),
-        rules::dump::Extent::Lines(n) => format!("0:{n}"),
-        rules::dump::Extent::Bytes(n) => format!("bytes:{n}"),
+/// Whether a Bash result reached the model whole: not an error, shorter than
+/// the harness cap (`BASH_MAX_OUTPUT_LENGTH`, else 30,000, counted in
+/// characters), and without a persisted-output marker. A payload with no
+/// `tool_response` at all is not a harness result and is taken as whole; one
+/// whose `tool_response` carries no `stdout` is an unrecognised shape.
+fn bash_delivered_whole(bash: &Bash) -> bool {
+    if bash.errored {
+        return false;
     }
+    let Some(out) = &bash.stdout else {
+        return !bash.has_response;
+    };
+    let cap = std::env::var("BASH_MAX_OUTPUT_LENGTH")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(30_000);
+    out.chars().count() < cap && !crate::payload::has_persisted_marker(out)
 }
 
 /// The answer to the `file-reread` question.
@@ -832,6 +870,9 @@ struct Reread {
     seen: bool,
     /// What to say, when the rule may speak.
     text: Option<String>,
+    /// The stance the verdict was reached under (capped to advise for a read
+    /// that is not an exact window).
+    stance: Stance,
 }
 
 /// The `file-reread` question, asked and journalled the same way for a Read
@@ -839,6 +880,7 @@ struct Reread {
 /// and the rule may speak; the journal records the watched case too.
 fn reread_verdict(
     session: &str,
+    agent_id: Option<&str>,
     path: &std::path::Path,
     window: &str,
     mode: &str,
@@ -848,17 +890,29 @@ fn reread_verdict(
     let unseen = Reread {
         seen: false,
         text: None,
+        stance: Stance::Observe,
     };
-    let Some(seen) = crate::session_state::last_read(session, path) else {
+    // An agent id that cannot be a key: no record, no deny, no advice.
+    let Some(agent) = crate::lsp::agent_key(agent_id) else {
+        return unseen;
+    };
+    let Some(prior) = crate::session_state::prior(session, &agent, path, window) else {
         return unseen;
     };
     // A different window of a file read before is a different read; only a
-    // repeat of a whole read, or of the same window, is a re-read.
-    if seen.window != "full" && seen.window != window {
-        return unseen;
-    }
+    // certain record covering this exact window is a re-read, and a read that
+    // is not an exact window can only be advised about.
+    let (seen, exact) = match prior {
+        crate::session_state::Prior::Covered(s) => (s, true),
+        crate::session_state::Prior::Partial(s) => (s, false),
+    };
     let rule = &rules::file_reread::RULE;
     let stance = crate::stance::resolve(rule);
+    let stance = if exact {
+        stance
+    } else {
+        stance.min(Stance::Advise)
+    };
     let (reason, remedy) = rules::file_reread::phrase(shown, &seen);
     let outcome = match stance {
         Stance::Observe => "watched",
@@ -878,8 +932,10 @@ fn reread_verdict(
         seen: true,
         text: match stance {
             Stance::Observe => None,
-            _ => Some(decision::phrase(rule.id, &reason, &remedy)),
+            Stance::Advise => Some(decision::phrase(rule.id, &reason, &remedy)),
+            Stance::Deny => Some(decision::phrase(rule.id, &reason, &remedy)),
         },
+        stance,
     }
 }
 

@@ -56,6 +56,15 @@ pub struct Bash {
     /// `tool_response.stdout`, after the call. Only `preview register` output
     /// is ever read from it.
     pub stdout: Option<String>,
+    /// The payload carried a `tool_response` at all.
+    pub has_response: bool,
+    /// The result reports an error or an interruption (`is_error`,
+    /// `tool_response.is_error`, `tool_response.interrupted`).
+    pub errored: bool,
+    /// The payload's `agent_id` as sent: `None` when absent, `Some` of the
+    /// text otherwise (empty for a value that is not a string). Turned into a
+    /// record key by [`crate::lsp::agent_key`].
+    pub agent_id: Option<String>,
     /// `transcript_path`: where this session's completed agents are
     /// recorded. Read by `implementation-review`'s `confirm` for a push;
     /// `None` when the payload carried none.
@@ -120,6 +129,9 @@ pub struct FileOp {
     /// key LSP records are kept under, since two `Explore` agents are two
     /// agents.
     pub agent_id: Option<String>,
+    /// A Read whose result was persisted to a file by the harness, so the
+    /// model holds a pointer and not the lines.
+    pub persisted_result: bool,
 }
 
 /// An LSP tool call that has run: what was asked and what came back.
@@ -171,6 +183,8 @@ pub struct EditPart {
 pub struct Session {
     pub cwd: PathBuf,
     pub session: String,
+    /// `source`: `startup`, `resume`, `clear` or `compact`; empty when absent.
+    pub source: String,
 }
 
 /// An `ExitPlanMode` about to run: the plan is about to be shown to the
@@ -294,6 +308,13 @@ fn change_of(tool: &str, input: Option<&serde_json::Value>) -> Option<Change> {
     }
 }
 
+/// Whether a tool result says the harness saved it to a file.
+pub fn has_persisted_marker(text: &str) -> bool {
+    text.contains("persisted-output")
+        || text.contains("Output too large")
+        || text.contains("Full output saved to")
+}
+
 pub fn parse(raw: &str) -> Event {
     if raw.len() > MAX_PAYLOAD {
         return Event::NotOurs;
@@ -330,11 +351,13 @@ pub fn parse(raw: &str) -> Event {
         )
     };
 
-    let agent_id = || {
-        v.get("agent_id")
-            .and_then(|x| x.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_string)
+    // Three states, kept apart until `lsp::agent_key` turns one into a key:
+    // absent (or null) is the main conversation, a string is an id (valid or
+    // not), and anything else is present-but-invalid, spelled as an empty id.
+    let agent_id = || match v.get("agent_id") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(_) => Some(String::new()),
     };
 
     match v.get("hook_event_name").and_then(|x| x.as_str()) {
@@ -358,6 +381,7 @@ pub fn parse(raw: &str) -> Event {
         Some("SessionStart") => Event::SessionStart(Session {
             cwd,
             session: str_at("session_id"),
+            source: str_at("source"),
         }),
         Some("UserPromptSubmit") => Event::Prompt(Box::new(Prompt {
             text: str_at("prompt"),
@@ -525,6 +549,7 @@ pub fn parse(raw: &str) -> Event {
             else {
                 return Event::NotOurs;
             };
+            let path_text = path.to_string();
             let path = PathBuf::from(path);
             let path = if path.is_absolute() {
                 path
@@ -555,6 +580,11 @@ pub fn parse(raw: &str) -> Event {
                 change,
                 agent: agent(),
                 agent_id: agent_id(),
+                persisted_result: stage == "PostToolUse"
+                    && tool == "Read"
+                    && (crate::rules::persisted_output_dump::is_persisted(&path_text)
+                        || v.get("tool_response")
+                            .is_some_and(|r| has_persisted_marker(&r.to_string()))),
             });
             if stage == "PreToolUse" {
                 Event::PreFile(op)
@@ -616,6 +646,13 @@ pub fn parse(raw: &str) -> Event {
                 tool_use_id: str_at("tool_use_id"),
                 prompt_id: str_at("prompt_id"),
                 stdout,
+                has_response: v.get("tool_response").is_some(),
+                errored: v.get("is_error").and_then(|e| e.as_bool()) == Some(true)
+                    || v.get("tool_response").is_some_and(|r| {
+                        r.get("is_error").and_then(|e| e.as_bool()) == Some(true)
+                            || r.get("interrupted").and_then(|e| e.as_bool()) == Some(true)
+                    }),
+                agent_id: agent_id(),
                 transcript,
                 agent_transcript,
                 agent: agent(),

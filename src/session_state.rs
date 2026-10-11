@@ -30,23 +30,40 @@ pub struct Seen {
     /// How many file operations ago this path was last read.
     pub calls_ago: usize,
     pub bytes: u64,
-    /// `full`, or `offset:limit` as the Read tool was given.
+    /// `full`, `offset:limit` (0-based first line, count), `tail:N`.
     pub window: String,
 }
+
+/// What the record says about a read that is about to happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prior {
+    /// A certain record of the same agent covers this exact window, on a file
+    /// that has not changed since: a true repeat, which may be refused.
+    Covered(Seen),
+    /// A certain record exists, but the new read is not an exact window, so
+    /// nothing can be said to repeat it: advice only.
+    Partial(Seen),
+}
+
+/// The window of a read that cannot be stated exactly.
+pub const INEXACT: &str = "?";
+
+/// The most lines the Read tool delivers when it is given no limit.
+pub const READ_CAP: u64 = 2000;
 
 /// A session id that is safe to use as a file name.
 pub(crate) fn usable_id(session: &str) -> bool {
     !(session.is_empty() || session.contains('/') || session.contains(".."))
 }
 
-fn file_for(session: &str) -> Option<PathBuf> {
-    if !usable_id(session) {
+fn file_for(session: &str, agent: &str) -> Option<PathBuf> {
+    if !usable_id(session) || !usable_id(agent) || agent.contains(['\\', '\n']) {
         return None;
     }
     Some(
         crate::journal::dir()?
             .join("sessions")
-            .join(format!("{session}.log")),
+            .join(format!("{session}.{agent}.log")),
     )
 }
 
@@ -64,17 +81,119 @@ fn fingerprint(path: &Path) -> Option<(u64, u128)> {
     Some((meta.len(), mtime))
 }
 
-/// The last read of `path` in this session with no write to it since — by
-/// this session's Edit or Write, or by anything else: the file on disk must
-/// still be the size and age it was when it was read.
-pub fn last_read(session: &str, path: &Path) -> Option<Seen> {
-    let text = std::fs::read_to_string(file_for(session)?).ok()?;
+/// A window as `(start, count)` or `tail:N`, parsed from its record spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Win {
+    Full,
+    Head { start: u64, count: u64 },
+    Tail(u64),
+    Inexact,
+}
+
+fn parse_window(w: &str) -> Win {
+    if w == "full" {
+        return Win::Full;
+    }
+    if let Some(n) = w.strip_prefix("tail:") {
+        return n.parse().map_or(Win::Inexact, Win::Tail);
+    }
+    match w.split_once(':') {
+        Some((a, b)) => match (a.parse(), b.parse()) {
+            (Ok(start), Ok(count)) => Win::Head { start, count },
+            _ => Win::Inexact,
+        },
+        None => Win::Inexact,
+    }
+}
+
+/// Whether a record of `have` puts everything `want` would deliver in context.
+fn covers(have: Win, want: Win) -> bool {
+    match (have, want) {
+        (Win::Inexact, _) | (_, Win::Inexact) => false,
+        (Win::Full, _) => true,
+        (Win::Tail(a), Win::Tail(b)) => b <= a,
+        (
+            Win::Head { start: s, count: c },
+            Win::Head {
+                start: s2,
+                count: c2,
+            },
+        ) => s2 >= s && s2.saturating_add(c2) <= s.saturating_add(c),
+        _ => false,
+    }
+}
+
+/// The record spelling of a Read, from the payload's raw window (`full` or
+/// `offset:limit`, `-` for no limit; `offset` as the Read tool counts it, from
+/// line 1). Normalised to a 0-based first line and a count. An unwindowed Read
+/// is `full` only when the file fits in what the tool delivers.
+pub fn read_window(path: &Path, raw: &str) -> String {
+    if raw == "full" {
+        return if line_count(path).is_some_and(|n| n <= READ_CAP) {
+            "full".to_string()
+        } else {
+            format!("0:{READ_CAP}")
+        };
+    }
+    let Some((o, l)) = raw.split_once(':') else {
+        return INEXACT.to_string();
+    };
+    let Ok(o) = o.parse::<u64>() else {
+        return INEXACT.to_string();
+    };
+    let start = o.saturating_sub(1);
+    let count = if l == "-" {
+        READ_CAP
+    } else {
+        match l.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => return INEXACT.to_string(),
+        }
+    };
+    format!("{start}:{count}")
+}
+
+/// Lines in a file, `None` when it cannot be counted cheaply.
+fn line_count(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).ok()?;
+    // Over this a file is certainly past the cap in any text a person reads.
+    if meta.len() > 64 * 1024 * 1024 {
+        return None;
+    }
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut lines = 0u64;
+    let mut last = b'\n';
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        lines += buf[..n].iter().filter(|b| **b == b'\n').count() as u64;
+        last = buf[n - 1];
+    }
+    if last != b'\n' {
+        lines += 1;
+    }
+    Some(lines)
+}
+
+/// What the record of this agent says about reading `window` of `path`: a
+/// certain record, of this agent, on a file unchanged since, with no write in
+/// between. An uncertain record is skipped, so it never speaks.
+pub fn prior(session: &str, agent: &str, path: &Path, window: &str) -> Option<Prior> {
+    let text = std::fs::read_to_string(file_for(session, agent)?).ok()?;
     let want = path.to_string_lossy();
+    let new = parse_window(window);
+    let now = fingerprint(path)?;
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
+    let mut other: Option<Seen> = None;
     for (i, line) in lines.iter().enumerate().rev() {
-        let mut parts = line.splitn(6, ' ');
-        let (Some(_seq), Some(kind), Some(bytes), Some(mtime), Some(window), Some(p)) = (
+        let mut parts = line.splitn(7, ' ');
+        let (Some(_seq), Some(kind), Some(bytes), Some(mtime), Some(cert), Some(win), Some(p)) = (
+            parts.next(),
             parts.next(),
             parts.next(),
             parts.next(),
@@ -87,33 +206,39 @@ pub fn last_read(session: &str, path: &Path) -> Option<Seen> {
         if p != want {
             continue;
         }
-        return match kind {
-            "read" => {
-                let bytes: u64 = bytes.parse().ok()?;
-                let mtime: u128 = mtime.parse().ok()?;
-                // Changed, or gone: what is in context is stale, and reading
-                // again is the right thing to do.
-                if fingerprint(path)? != (bytes, mtime) {
-                    return None;
-                }
-                Some(Seen {
-                    calls_ago: total - i,
-                    bytes,
-                    window: window.to_string(),
-                })
-            }
-            // A write since the last read: what is in context is stale, and
-            // reading again is the right thing to do.
-            _ => None,
+        if kind != "read" {
+            // A write since: what is in context is stale. Older reads are
+            // older than that write.
+            break;
+        }
+        let (Ok(bytes), Ok(mtime)) = (bytes.parse::<u64>(), mtime.parse::<u128>()) else {
+            continue;
         };
+        // Changed, or gone: reading again is the right thing to do.
+        if now != (bytes, mtime) || cert != "certain" {
+            continue;
+        }
+        let seen = Seen {
+            calls_ago: total - i,
+            bytes,
+            window: win.to_string(),
+        };
+        if new != Win::Inexact && covers(parse_window(win), new) {
+            return Some(Prior::Covered(seen));
+        }
+        other.get_or_insert(seen);
+    }
+    if new == Win::Inexact {
+        return other.map(Prior::Partial);
     }
     None
 }
 
 /// Remember a file operation. A `read` is stamped with the file as it is
 /// NOW, so call this once the read has actually happened, not before.
-pub fn record(session: &str, kind: &str, path: &Path, window: &str) {
-    let Some(file) = file_for(session) else {
+/// `certain` is whether the whole window is known to be in context.
+pub fn record(session: &str, agent: &str, kind: &str, path: &Path, window: &str, certain: bool) {
+    let Some(file) = file_for(session, agent) else {
         return;
     };
     let Some(dir) = file.parent() else { return };
@@ -135,8 +260,9 @@ pub fn record(session: &str, kind: &str, path: &Path, window: &str) {
         }
     }
     let (bytes, mtime) = fingerprint(path).unwrap_or((0, 0));
+    let cert = if certain { "certain" } else { "uncertain" };
     let line = format!(
-        "{seq} {kind} {bytes} {mtime} {window} {}\n",
+        "{seq} {kind} {bytes} {mtime} {cert} {window} {}\n",
         path.to_string_lossy().replace('\n', " ")
     );
     use std::io::Write;
@@ -146,6 +272,24 @@ pub fn record(session: &str, kind: &str, path: &Path, window: &str) {
         .open(&file)
     {
         let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// The context was compacted: the main conversation no longer holds what it
+/// read. Its record is replaced by an empty one, written beside it and renamed
+/// over it. Subagents keep theirs.
+pub fn compact(session: &str) {
+    let Some(file) = file_for(session, "main") else {
+        return;
+    };
+    let Some(dir) = file.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    crate::journal::private(dir, 0o700);
+    let tmp = dir.join(format!("{session}.main.log.tmp{}", std::process::id()));
+    if std::fs::write(&tmp, b"").is_err() || std::fs::rename(&tmp, &file).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -190,6 +334,10 @@ mod tests {
         out
     }
 
+    fn seen_calls(s: &str, a: &Path, w: &str) -> Option<Prior> {
+        prior(s, "main", a, w)
+    }
+
     #[test]
     fn a_read_is_remembered_until_something_writes_the_file() {
         with_home("remembered", |dir| {
@@ -197,18 +345,77 @@ mod tests {
             let b = dir.join("b.rs");
             std::fs::write(&a, "x".repeat(1200)).unwrap();
             std::fs::write(&b, "x".repeat(10)).unwrap();
-            assert_eq!(last_read("s1", &a), None);
-            record("s1", "read", &a, "full");
-            record("s1", "read", &b, "full");
-            let seen = last_read("s1", &a).unwrap();
+            assert_eq!(seen_calls("s1", &a, "full"), None);
+            record("s1", "main", "read", &a, "full", true);
+            record("s1", "main", "read", &b, "full", true);
+            let Some(Prior::Covered(seen)) = seen_calls("s1", &a, "full") else {
+                panic!("a repeat");
+            };
             assert_eq!(seen.calls_ago, 2);
             assert_eq!(seen.bytes, 1200);
-            record("s1", "write", &a, "full");
-            assert_eq!(last_read("s1", &a), None);
-            record("s1", "read", &a, "10:40");
-            assert_eq!(last_read("s1", &a).unwrap().window, "10:40");
-            // Another session knows nothing.
-            assert_eq!(last_read("s2", &a), None);
+            record("s1", "main", "write", &a, "full", true);
+            assert_eq!(seen_calls("s1", &a, "full"), None);
+            record("s1", "main", "read", &a, "10:40", true);
+            assert!(matches!(
+                seen_calls("s1", &a, "10:40"),
+                Some(Prior::Covered(_))
+            ));
+            // Another session, or another agent, knows nothing.
+            assert_eq!(seen_calls("s2", &a, "10:40"), None);
+            assert_eq!(prior("s1", "sub-1", &a, "10:40"), None);
+        });
+    }
+
+    #[test]
+    fn windows_cover_by_direction() {
+        with_home("windows", |dir| {
+            let a = dir.join("a.rs");
+            std::fs::write(&a, "x".repeat(1200)).unwrap();
+            record("s1", "main", "read", &a, "0:20", true);
+            record("s1", "main", "read", &a, "tail:20", true);
+            record("s1", "main", "read", &a, "100:20", true);
+            assert!(matches!(
+                seen_calls("s1", &a, "0:20"),
+                Some(Prior::Covered(_))
+            ));
+            assert!(matches!(
+                seen_calls("s1", &a, "0:10"),
+                Some(Prior::Covered(_))
+            ));
+            assert!(matches!(
+                seen_calls("s1", &a, "tail:5"),
+                Some(Prior::Covered(_))
+            ));
+            assert_eq!(seen_calls("s1", &a, "0:21"), None);
+            assert_eq!(seen_calls("s1", &a, "full"), None);
+            assert!(matches!(
+                seen_calls("s1", &a, INEXACT),
+                Some(Prior::Partial(_))
+            ));
+        });
+    }
+
+    #[test]
+    fn an_uncertain_record_never_speaks() {
+        with_home("uncertain", |dir| {
+            let a = dir.join("a.rs");
+            std::fs::write(&a, "x".repeat(1200)).unwrap();
+            record("s1", "main", "read", &a, "full", false);
+            assert_eq!(seen_calls("s1", &a, "full"), None);
+            assert_eq!(seen_calls("s1", &a, INEXACT), None);
+        });
+    }
+
+    #[test]
+    fn compaction_empties_the_main_record_only() {
+        with_home("compact", |dir| {
+            let a = dir.join("a.rs");
+            std::fs::write(&a, "x".repeat(1200)).unwrap();
+            record("s1", "main", "read", &a, "full", true);
+            record("s1", "sub", "read", &a, "full", true);
+            compact("s1");
+            assert_eq!(prior("s1", "main", &a, "full"), None);
+            assert!(prior("s1", "sub", &a, "full").is_some());
         });
     }
 
@@ -221,35 +428,38 @@ mod tests {
         with_home("changed", |dir| {
             let a = dir.join("a.rs");
             std::fs::write(&a, "x".repeat(1200)).unwrap();
-            record("s1", "read", &a, "full");
-            assert!(last_read("s1", &a).is_some());
+            record("s1", "main", "read", &a, "full", true);
+            assert!(seen_calls("s1", &a, "full").is_some());
             std::fs::write(&a, "y".repeat(1201)).unwrap();
-            assert_eq!(last_read("s1", &a), None);
-            record("s1", "read", &a, "full");
-            assert!(last_read("s1", &a).is_some(), "read again, unchanged since");
+            assert_eq!(seen_calls("s1", &a, "full"), None);
+            record("s1", "main", "read", &a, "full", true);
+            assert!(seen_calls("s1", &a, "full").is_some(), "read again");
             std::fs::remove_file(&a).unwrap();
-            assert_eq!(last_read("s1", &a), None);
-        });
-    }
-
-    /// A line written before the fingerprint had a column fewer. It must read
-    /// as "not seen", never as a read of some other path.
-    #[test]
-    fn a_line_from_before_the_fingerprint_is_not_seen() {
-        with_home("old-line", |dir| {
-            let a = dir.join("a.rs");
-            std::fs::write(&a, "x".repeat(1200)).unwrap();
-            let file = file_for("s1").unwrap();
-            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(&file, format!("0 read 1200 full {}\n", a.display())).unwrap();
-            assert_eq!(last_read("s1", &a), None);
+            assert_eq!(seen_calls("s1", &a, "full"), None);
         });
     }
 
     #[test]
-    fn a_hostile_session_id_is_not_a_path() {
-        assert!(file_for("../etc").is_none());
-        assert!(file_for("a/b").is_none());
-        assert!(file_for("").is_none());
+    fn a_hostile_id_is_not_a_path() {
+        assert!(file_for("../etc", "main").is_none());
+        assert!(file_for("a/b", "main").is_none());
+        assert!(file_for("", "main").is_none());
+        assert!(file_for("s", "../x").is_none());
+        assert!(file_for("s", "").is_none());
+    }
+
+    #[test]
+    fn read_windows_are_normalised() {
+        with_home("rw", |dir| {
+            let small = dir.join("s.txt");
+            std::fs::write(&small, "a\nb\n").unwrap();
+            let big = dir.join("b.txt");
+            std::fs::write(&big, "a\n".repeat(3000)).unwrap();
+            assert_eq!(read_window(&small, "full"), "full");
+            assert_eq!(read_window(&big, "full"), "0:2000");
+            assert_eq!(read_window(&big, "2000:-"), "1999:2000");
+            assert_eq!(read_window(&big, "0:50"), "0:50");
+            assert_eq!(read_window(&big, "101:20"), "100:20");
+        });
     }
 }
