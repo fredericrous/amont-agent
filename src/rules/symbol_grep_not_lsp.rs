@@ -413,18 +413,29 @@ fn expand_home(p: &str) -> std::path::PathBuf {
     }
 }
 
-/// A Grep tool call that searches code: a code file, a glob or type naming
-/// code, or a directory (the cwd when `path` is empty) with neither.
-///
-/// `file` is the file name when `path` names a regular file, and `None` for
-/// a directory: the caller asks the filesystem, since a path's spelling does
-/// not say which (`C:\repo\.` is a directory).
-pub fn grep_tool_targets_code(file: Option<&str>, glob: Option<&str>, kind: Option<&str>) -> bool {
-    if let Some(name) = file {
-        return crate::lsp::is_code(name);
+/// What a Grep tool call's `path` names, as the filesystem says: a path's
+/// spelling does not tell a file from a directory (`C:\repo\.`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrepScope {
+    /// A regular file, by its file name.
+    File(String),
+    /// A directory, or the cwd when `path` is empty.
+    Dir,
+    /// Nothing is there: a mistyped path searches nothing.
+    Missing,
+}
+
+/// A Grep tool call that searches code: a code file, or a directory with a
+/// glob or type naming code, or with neither.
+pub fn grep_tool_targets_code(scope: &GrepScope, glob: Option<&str>, kind: Option<&str>) -> bool {
+    match scope {
+        GrepScope::File(name) => crate::lsp::is_code(name),
+        GrepScope::Missing => false,
+        GrepScope::Dir => {
+            let selectors: Vec<&str> = glob.into_iter().chain(kind).collect();
+            selectors.is_empty() || selectors.iter().any(|s| crate::lsp::names_code(s))
+        }
     }
-    let selectors: Vec<&str> = glob.into_iter().chain(kind).collect();
-    selectors.is_empty() || selectors.iter().any(|s| crate::lsp::names_code(s))
 }
 
 /// What the hook says: the mechanism, then the way through.
@@ -558,13 +569,27 @@ mod tests {
 
     #[test]
     fn the_grep_tool_targets_code_by_file_glob_or_type() {
-        assert!(grep_tool_targets_code(Some("hook.rs"), None, None));
-        assert!(grep_tool_targets_code(None, None, None), "a directory");
-        assert!(grep_tool_targets_code(None, Some("**/*.{ts,tsx}"), None));
-        assert!(grep_tool_targets_code(None, None, Some("rust")));
-        assert!(!grep_tool_targets_code(Some("x.yaml"), None, None));
-        assert!(!grep_tool_targets_code(None, Some("**/*macro*"), None));
-        assert!(!grep_tool_targets_code(None, None, Some("yaml")));
+        let file = |n: &str| GrepScope::File(n.to_string());
+        assert!(grep_tool_targets_code(&file("hook.rs"), None, None));
+        assert!(!grep_tool_targets_code(&file("x.yaml"), None, None));
+        assert!(grep_tool_targets_code(&GrepScope::Dir, None, None));
+        assert!(grep_tool_targets_code(
+            &GrepScope::Dir,
+            Some("**/*.{ts,tsx}"),
+            None
+        ));
+        assert!(grep_tool_targets_code(&GrepScope::Dir, None, Some("rust")));
+        assert!(!grep_tool_targets_code(
+            &GrepScope::Dir,
+            Some("**/*macro*"),
+            None
+        ));
+        assert!(!grep_tool_targets_code(&GrepScope::Dir, None, Some("yaml")));
+        assert!(!grep_tool_targets_code(
+            &GrepScope::Missing,
+            None,
+            Some("rust")
+        ));
     }
 
     #[test]
