@@ -373,6 +373,9 @@ fn a_failed_removal_is_named_and_the_rest_proceed() {
     assert!(!w.names().contains(&"aaa".to_string()));
 }
 
+// Windows refuses a control character in a file name; the unit test
+// `rendering_is_tab_separated_when_piped_and_sanitised` covers it there.
+#[cfg(unix)]
 #[test]
 fn a_name_with_an_escape_is_printed_sanitised() {
     let w = World::new("escape");

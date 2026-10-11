@@ -1343,10 +1343,27 @@ mod tests {
 
     #[test]
     fn rendering_is_tab_separated_when_piped_and_sanitised() {
-        let s = Scratch::new();
-        s.dir("bad\u{1b}[8mname", 40);
-        s.dir("fresh", 1);
-        let r = run(&s.env(), NOW, false);
+        // Rows, not directories: Windows refuses a control character in a
+        // file name, and rendering never touches the file system.
+        let row = |name: &str, remove: bool, reason: &str| Row {
+            name: name.to_string(),
+            age: if remove { 40 * DAY } else { DAY },
+            bytes: 5,
+            remove,
+            reason: reason.to_string(),
+            cited: false,
+        };
+        let rows = [
+            row("bad\u{1b}[8mname", true, "older than 30d"),
+            row("fresh", false, "recent 1d"),
+        ];
+        let r = Report {
+            rows: rows.into(),
+            failure: None,
+            removed: Vec::new(),
+            errors: Vec::new(),
+            purged: 0,
+        };
         let text = render(&r.rows, false);
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].starts_with("keep\tfresh\t"), "{text}");
