@@ -125,13 +125,34 @@ fn has_dev_script(path: &Path) -> bool {
         .is_some_and(|d| d.as_str().is_some_and(|s| !s.trim().is_empty()))
 }
 
-/// A path whose change a person could see.
+/// A path whose change a person could see. Test files and test-tooling
+/// configs are never UI.
 pub fn is_ui_path(path: &str) -> bool {
+    if is_test_path(path) {
+        return false;
+    }
     let top = ["app/", "src/", "web/"];
     let ext = [".tsx", ".jsx", ".css", ".html"];
     top.iter()
         .any(|t| path.starts_with(t) || path.contains(&format!("/{t}")))
         || ext.iter().any(|e| path.ends_with(e))
+}
+
+fn is_test_path(path: &str) -> bool {
+    let mut segments: Vec<&str> = path.split('/').collect();
+    let base = segments.pop().unwrap_or("");
+    if segments
+        .iter()
+        .any(|s| matches!(*s, "__tests__" | "e2e" | "tests" | "test"))
+    {
+        return true;
+    }
+    if base.contains(".test.") || base.contains(".spec.") {
+        return true;
+    }
+    ["vitest", "jest", "playwright", "cypress"]
+        .iter()
+        .any(|t| base.strip_prefix(t).is_some_and(|r| r.starts_with('.')))
 }
 
 /// What a branch push would publish: the files, and the base they were
@@ -1825,6 +1846,7 @@ mod tests {
             "packages/ui/src/a.ts",
             "styles/site.css",
             "public/index.html",
+            "apps/web/vite.config.ts",
         ] {
             assert!(is_ui_path(ui), "{ui}");
         }
@@ -1834,6 +1856,11 @@ mod tests {
             "README.md",
             "Cargo.toml",
             "package.json",
+            "apps/web/vitest.core.config.ts",
+            "app/routes/home.test.tsx",
+            "src/a.spec.ts",
+            "web/e2e/login.ts",
+            "src/__tests__/x.tsx",
         ] {
             assert!(!is_ui_path(not), "{not}");
         }

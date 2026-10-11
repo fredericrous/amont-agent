@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.33.1
+
+### Fixed
+
+- **A push that changes only tests or test-tool configs needs no preview.**
+  `push-preview` counted every file under `app/`, `src/` or `web/`, so a
+  commit touching `apps/web/vitest.core.config.ts` was held for a localhost
+  approval of a screen that could not have changed. Test files (`*.test.*`,
+  `*.spec.*`, anything under `__tests__/`, `e2e/`, `tests/`, `test/`) and
+  `vitest.*`, `jest.*`, `playwright.*`, `cypress.*` configs no longer count
+  as an interface change.
+
 ## v2.33.0
 
 ### Added
