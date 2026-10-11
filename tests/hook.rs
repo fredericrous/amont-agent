@@ -487,6 +487,10 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(&stub, body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS can hold the first exec of a freshly written script for
+        // seconds, past the hook's wait for amont; run it once here so the
+        // hook's call is not the first.
+        let _ = std::process::Command::new(&stub).output();
     };
 
     // Drifted: amont exits 1 and says so on stderr.
