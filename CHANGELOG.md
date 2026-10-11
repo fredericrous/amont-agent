@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.36.0
 
 ### Added
 
