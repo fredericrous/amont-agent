@@ -407,7 +407,10 @@ fn doctor_says_whether_the_lsp_rules_can_speak_here() {
             .arg("doctor")
             .current_dir(&repo)
             .env("CLAUDE_CONFIG_DIR", &h.0)
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env(
+                "PATH",
+                std::env::join_paths([bin.clone()]).expect("a PATH of one directory"),
+            )
             .env_remove("AMONT_AGENT_OFF")
             .output()
             .expect("the binary runs");

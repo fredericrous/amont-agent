@@ -1373,6 +1373,19 @@ fn lint_suppression_an_advised_edit_is_a_write_for_file_reread() {
     );
 }
 
+/// `PATH` for the LSP tests: the stub directory, then the first directory
+/// holding `git` (the stance is read with `git config`) and no real
+/// `fleet-lsp`, so removing the stub really leaves none.
+fn lsp_path(bin: &std::path::Path) -> std::ffi::OsString {
+    let has = |d: &std::path::Path, name: &str| {
+        d.join(name).is_file() || d.join(format!("{name}.exe")).is_file()
+    };
+    let system = std::env::var_os("PATH").unwrap_or_default();
+    let git = std::env::split_paths(&system).find(|d| has(d, "git") && !has(d, "fleet-lsp"));
+    std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(git))
+        .expect("a PATH of two directories")
+}
+
 /// The world the LSP rules ask about, built per test: a git working tree
 /// (`.git` is enough for the walk up), a `fleet-lsp` stub on `PATH`, and the
 /// plugin enabled in the scratch config.
@@ -1423,7 +1436,7 @@ impl LspWorld {
         let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", &self.config)
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+            .env("PATH", lsp_path(&self.bin))
             .env("GIT_CONFIG_GLOBAL", &cfg)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("AMONT_AGENT_OFF")
@@ -1551,12 +1564,14 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
     assert!(!w.read("ls-1", &md, "").stdout.contains("code-read-not-lsp"));
     let mid = w.file("src/mid.rs", 9_000);
     let windowed = w.send(
-        &format!(
-            r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":"{}",
-                 "session_id":"ls-1","tool_input":{{"file_path":"{}","offset":1,"limit":40}}}}"#,
-            w.repo.display(),
-            mid.display()
-        ),
+        &serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "cwd": w.repo.display().to_string(),
+            "session_id": "ls-1",
+            "tool_input": {"file_path": mid.display().to_string(), "offset": 1, "limit": 40},
+        })
+        .to_string(),
         "",
     );
     assert_eq!(windowed.stdout, "", "a window");

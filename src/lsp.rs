@@ -236,9 +236,12 @@ pub fn git_root(target: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// `program` in a `PATH` directory, with the platform's executable suffix
+/// (`fleet-lsp.exe` on Windows) or without.
 pub fn on_path(program: &str) -> Option<PathBuf> {
+    let suffixed = format!("{program}{}", std::env::consts::EXE_SUFFIX);
     std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join(program))
+        .flat_map(|d| [d.join(program), d.join(&suffixed)])
         .find(|p| p.is_file())
 }
 
