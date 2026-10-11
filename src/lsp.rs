@@ -505,6 +505,9 @@ mod tests {
         }
     }
 
+    // Unix path literals and symlinks: on Windows `/home/...` is not
+    // absolute and `canonicalize` adds a `\\?\\` prefix.
+    #[cfg(unix)]
     #[test]
     fn the_fixtures_are_parsed_as_real_payloads() {
         let ds = fixture("documentsymbol");
@@ -587,6 +590,9 @@ mod tests {
         );
     }
 
+    // Unix path literals and symlinks: on Windows `/home/...` is not
+    // absolute and `canonicalize` adds a `\\?\\` prefix.
+    #[cfg(unix)]
     #[test]
     fn one_normal_form_for_every_spelling() {
         let dir = std::env::temp_dir().join(format!("amont-agent-lsp-nf-{}", std::process::id()));
