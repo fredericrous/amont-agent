@@ -1,0 +1,27 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000011",
+  "transcript_path": "/home/user/.claude/projects/-home-user-Developer-amont-agent/00000000-0000-4000-8000-000000000011.jsonl",
+  "cwd": "/home/user/Developer/amont-agent",
+  "prompt_id": "00000000-0000-4000-9000-000000000011",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "LSP",
+  "tool_input": {
+    "operation": "documentSymbol",
+    "filePath": "src/lsp.rs",
+    "line": 1,
+    "character": 1
+  },
+  "tool_response": {
+    "operation": "documentSymbol",
+    "result": "Document symbols:\nEXTENSIONS (Constant) &[&str] - Line 15\nLANGUAGES (Constant) &[&str] - Line 20\nBUILTIN_WITH_LSP (Constant) &[&str] - Line 32\nBUILTIN_WITHOUT_LSP (Constant) &[&str] - Line 36\nis_code (Function) fn(path: &str) -> bool - Line 39\nnames_code (Function) fn(selector: &str) -> bool - Line 46\nAgent (Enum) - Line 59\n  Main (EnumMember) - Line 62\n  Named (EnumMember) - Line 64\n  Unnamed (EnumMember) - Line 67\nimpl Agent (Object) - Line 71\n  from_payload (Function) fn(agent_id: Option<&str>, agent_type: Option<&str>) -> Agent - Line 72\n    present (Function) fn(s: Option<&str>) -> Option<&str> - Line 73\nserves (Function) fn(target: &Path) -> Result<(), &'static str> - Line 84\nagent_has_tool (Function) fn(agent: &Agent, cwd: &Path) -> Result<(), &'static str> - Line 100\ndefinition (Function) fn(name: &str, cwd: &Path) -> Option<String> - Line 125\ntools_of (Function) fn(definition: &str) -> Option<Vec<String>> - Line 142\nplugin_enabled (Function) fn(repo: &Path) -> bool - Line 173\nmost_specific (Function) fn(said: &[Option<bool>]) -> bool - Line 189\nfleet_lsp_enabled_in (Function) fn(text: &str) -> Option<bool> - Line 195\nplugin_install_path (Function) fn(plugin: &str) -> Option<PathBuf> - Line 206\ninstall_path_in (Function) fn(installed: &str, plugin: &str) -> Option<PathBuf> - Line 213\ngit_root (Function) fn(target: &Path) -> Option<PathBuf> - Line 225\non_path (Function) fn(program: &str) -> Option<PathBuf> - Line 239\nTold (Enum) - Line 248\n  First (EnumMember) - Line 251\n  Before (EnumMember) - Line 253\n  Unrecorded (EnumMember) - Line 255\ntold (Function) fn(session: &str, key: &str) -> Told - Line 260\ntests (Module) - Line 292\n  code_is_known_by_its_extension (Function) fn() - Line 296\n  selectors_name_code (Function) fn() - Line 314\n  the_payload_names_the_agent (Function) fn() - Line 324\n  tools_are_read_inline_and_as_a_list (Function) fn() - Line 335\n  the_most_specific_settings_file_decides (Function) fn() - Line 347\n  a_plugin_is_found_where_it_was_installed (Function) fn() - Line 377\n  builtin_agents_are_known_without_a_file (Function) fn() - Line 399",
+    "filePath": "src/lsp.rs",
+    "resultCount": 37,
+    "fileCount": 1
+  },
+  "tool_use_id": "toolu_000000000000000000000011",
+  "duration_ms": 7036
+}

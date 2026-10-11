@@ -181,6 +181,29 @@ fn a_settings_file_without_the_grep_block_is_reported_by_name() {
     assert!(!fixed.contains("missing:"), "{fixed}");
 }
 
+/// The PostToolUse LSP block is named when missing, and install restores it.
+#[test]
+fn a_settings_file_without_the_lsp_block_is_reported_by_name() {
+    let h = Home::new("no-lsp");
+    h.with_a_session();
+    let (code, out) = h.run(&["install", "--write"]);
+    assert_eq!(code, 0, "{out}");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(h.settings()).unwrap()).unwrap();
+    let post = doc["hooks"]["PostToolUse"]
+        .as_array_mut()
+        .expect("PostToolUse");
+    assert!(post.iter().any(|b| b["matcher"] == "LSP"), "installed");
+    post.retain(|b| b["matcher"] != "LSP");
+    std::fs::write(h.settings(), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    let (_, out) = h.run(&["doctor"]);
+    assert!(out.contains("missing: PostToolUse LSP"), "{out}");
+    let (_, again) = h.run(&["install", "--write"]);
+    assert!(!again.is_empty(), "install runs");
+    let (_, fixed) = h.run(&["doctor"]);
+    assert!(!fixed.contains("missing:"), "{fixed}");
+}
+
 /// The bug this test was written for: with no SessionStart entry there is no
 /// heartbeat, and the first version reported "the guard has never run" — on a
 /// machine where it had refused a command minutes earlier. Absence of a
@@ -320,6 +343,38 @@ fn a_recent_firing_outweighs_an_old_heartbeat() {
     );
     assert!(out.contains("last ran"), "{out}");
     assert_eq!(code, 0, "a live guard must not exit non-zero:\n{out}");
+}
+
+/// After a rotation the window line counts every generation and dates the
+/// oldest record, and liveness still reads the live `journal.log`.
+#[test]
+fn doctor_reads_the_window_across_generations() {
+    let h = Home::new("generations");
+    h.with_a_session();
+    install_both(&h);
+    let dir = h.0.join("amont-agent");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(dir.join("heartbeat"), "x\n").expect("heartbeat");
+    backdate(&dir.join("heartbeat"), "202001010000");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let rec = |ago: u64| format!("amont-agent-v1\nF {} r deny denied - - - x\n", now - ago);
+    std::fs::write(dir.join("journal.log.3"), rec(6 * 86_400)).expect(".3");
+    std::fs::write(dir.join("journal.log.1"), rec(86_400)).expect(".1");
+    std::fs::write(dir.join("journal.log"), rec(10)).expect("live");
+
+    let (code, out) = h.run(&["doctor"]);
+    assert!(
+        out.contains("journal: 3 generations, oldest record 6d"),
+        "{out}"
+    );
+    assert!(
+        out.contains("last ran"),
+        "liveness from journal.log:\n{out}"
+    );
+    assert_eq!(code, 0, "{out}");
 }
 
 /// And the journal only ever CONFIRMS. With no firings recorded, an old

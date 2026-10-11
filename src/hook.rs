@@ -117,6 +117,7 @@ fn decide(raw: &str) -> Decision {
         }),
         Event::PreFile(op) => on_file(&op),
         Event::PreGrep(op) => on_grep(&op),
+        Event::PostLsp(call) => on_post_lsp(&call),
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
         Event::PostBash(bash) => on_post_bash(&bash),
@@ -537,17 +538,45 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
             {
                 let rule = &rules::code_read_not_lsp::RULE;
                 let stance = crate::stance::resolve(rule);
-                let first = stance == Stance::Observe
-                    || first_telling(
-                        rule,
-                        &op.session,
-                        &format!("read {}", op.path.display()),
-                        &op.cwd,
-                        &op.permission_mode,
-                    );
+                let lsp_first = crate::lsp::asked(&op.session, op.agent_id.as_deref(), &op.path);
+                if lsp_first {
+                    // LSP came first: the case the advice was meant to
+                    // produce. This rule is silent; `read-unbounded-large`
+                    // still speaks, because after LSP named a line the
+                    // remedy for a large whole Read is the window around it.
+                    journal::record(&journal::Entry {
+                        rule: rule.id,
+                        stance: stance.as_str(),
+                        outcome: "lsp-first",
+                        session: &op.session,
+                        repo: &repo_name(&op.cwd),
+                        mode: &op.permission_mode,
+                        excerpt: &shown,
+                    });
+                }
+                // A refusal is not told once: every Read is refused until LSP
+                // has been asked, which is the way through the text names.
+                let first = !lsp_first
+                    && (stance == Stance::Observe
+                        || stance == Stance::Deny
+                        || first_telling(
+                            rule,
+                            &op.session,
+                            // Per agent: a subagent is told on its own.
+                            &match &op.agent_id {
+                                None => format!("read {}", op.path.display()),
+                                Some(id) => format!("read {} @{id}", op.path.display()),
+                            },
+                            &op.cwd,
+                            &op.permission_mode,
+                        ));
                 if first {
                     note_file(rule, stance, op, &shown);
-                    let (reason, remedy) = rules::code_read_not_lsp::phrase(&shown, bytes);
+                    let (reason, remedy) = if stance == Stance::Deny {
+                        rules::code_read_not_lsp::phrase_refusal(&shown, bytes)
+                    } else {
+                        rules::code_read_not_lsp::phrase(&shown, bytes)
+                    };
                     let text = decision::phrase(rule.id, &reason, &remedy);
                     match stance {
                         Stance::Deny => deny.push(text),
@@ -621,6 +650,38 @@ fn lint_suppression(op: &crate::payload::FileOp) -> Decision {
         Stance::Advise => Decision::Advise(text),
         Stance::Observe => Decision::Silent,
     }
+}
+
+/// An LSP call that has run: the files it was about go on the session's
+/// record under the calling agent, and the call is journalled (`lsp`,
+/// `lsp-error` for an `Error performing` answer, `lsp-unparsed` when the
+/// response had no text `result`). An error counts as asked: a refusal must
+/// never block a Read because the server is broken. Never speaks.
+fn on_post_lsp(call: &crate::payload::LspCall) -> Decision {
+    let outcome = match call.response.as_deref() {
+        None => "lsp-unparsed",
+        Some(r) if r.starts_with("Error performing") => "lsp-error",
+        Some(_) => "lsp",
+    };
+    let repo = repo_name(&call.cwd);
+    let excerpt = format!("{} {}", call.operation, call.file_path.display());
+    let entry = |outcome, excerpt: &str| {
+        journal::record(&journal::Entry {
+            rule: "-",
+            stance: "-",
+            outcome,
+            session: &call.session,
+            repo: &repo,
+            mode: &call.permission_mode,
+            excerpt,
+        })
+    };
+    entry(outcome, &excerpt);
+    let files = crate::lsp::asked_files(call);
+    if let Err(why) = crate::lsp::record_asked(&call.session, call.agent_id.as_deref(), &files) {
+        entry("unrecorded", why);
+    }
+    Decision::Silent
 }
 
 /// A Read that has run and succeeded: the file is in context now, so this is

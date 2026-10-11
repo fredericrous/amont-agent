@@ -1,0 +1,27 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000012",
+  "transcript_path": "/home/user/.claude/projects/-home-user-Developer-amont-agent/00000000-0000-4000-8000-000000000012.jsonl",
+  "cwd": "/home/user/Developer/amont-agent",
+  "prompt_id": "00000000-0000-4000-9000-000000000012",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "LSP",
+  "tool_input": {
+    "operation": "findReferences",
+    "filePath": "src/journal.rs",
+    "line": 101,
+    "character": 8
+  },
+  "tool_response": {
+    "operation": "findReferences",
+    "result": "Found 5 references across 3 files:\n\nsrc/main.rs:\n  Line 1532:31\n\nsrc/journal.rs:\n  Line 145:11\n  Line 243:16\n  Line 101:8\n\nsrc/doctor.rs:\n  Line 374:32",
+    "filePath": "src/journal.rs",
+    "resultCount": 5,
+    "fileCount": 3
+  },
+  "tool_use_id": "toolu_000000000000000000000012",
+  "duration_ms": 1070
+}

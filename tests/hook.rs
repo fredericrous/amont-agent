@@ -1476,6 +1476,36 @@ impl LspWorld {
         )
     }
 
+    /// A `PostToolUse` LSP payload; `result` is the answer text and `agent`
+    /// an `agent_id` (or none for the main conversation).
+    fn lsp(&self, session: &str, agent: Option<&str>, op: &str, file: &str, result: &str) -> Reply {
+        let mut v = serde_json::json!({
+            "hook_event_name": "PostToolUse", "tool_name": "LSP",
+            "cwd": self.repo.display().to_string(),
+            "session_id": session, "permission_mode": "default",
+            "tool_input": {"operation": op, "filePath": file, "line": 1, "character": 1},
+            "tool_response": {"operation": op, "result": result, "filePath": file},
+        });
+        if let Some(a) = agent {
+            v["agent_id"] = a.into();
+        }
+        self.send(&v.to_string(), "")
+    }
+
+    fn read_as(&self, session: &str, agent: &str, path: &std::path::Path, global: &str) -> Reply {
+        let extra = format!(r#","agent_id":"{agent}","agent_type":"Explore""#);
+        self.read_with(session, path, &extra, global)
+    }
+
+    fn journal_rows(&self, session: &str) -> Vec<String> {
+        std::fs::read_to_string(self.config.join("amont-agent").join("journal.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(session))
+            .map(str::to_string)
+            .collect()
+    }
+
     fn grep_tool(&self, session: &str, input: &str) -> Reply {
         let cwd = serde_json::Value::String(self.repo.display().to_string());
         self.send(
@@ -1683,4 +1713,186 @@ fn a_shell_symbol_grep_over_code_is_advised_once() {
         "{}",
         filter.stdout
     );
+}
+
+const DENY: &str = "[amont \"agent.code-read-not-lsp\"]\n\tstance = deny\n";
+
+/// A whole Read after a documentSymbol on the same file is silent, and the
+/// journal holds the call, then the rule's `lsp-first`.
+#[test]
+fn a_read_after_a_document_symbol_call_is_silent_and_journalled_lsp_first() {
+    let w = LspWorld::new("first", true);
+    let big = w.file("src/lib.rs", 10_000);
+    let call = w.lsp(
+        "lf-1",
+        None,
+        "documentSymbol",
+        "src/lib.rs",
+        "Document symbols:\nx - Line 1",
+    );
+    assert_eq!(
+        (call.code, call.stdout.as_str()),
+        (0, ""),
+        "PostToolUse never speaks"
+    );
+    let read = w.read("lf-1", &big, "");
+    assert_eq!(read.stdout, "", "silent");
+    let rows = w.journal_rows("lf-1");
+    let lsp = rows
+        .iter()
+        .position(|r| r.contains("\tlsp\t") || r.contains(" lsp "))
+        .unwrap_or_else(|| panic!("{rows:?}"));
+    let first = rows
+        .iter()
+        .position(|r| r.contains("code-read-not-lsp") && r.contains("lsp-first"))
+        .unwrap_or_else(|| panic!("{rows:?}"));
+    assert!(lsp < first, "{rows:?}");
+    assert!(rows[lsp].contains("documentSymbol"), "{rows:?}");
+}
+
+/// LSP first quiets the LSP advice only: a whole Read past 16 KiB still gets
+/// the size advice, whose remedy is the window LSP pointed to.
+#[test]
+fn an_lsp_call_leaves_the_size_advice_speaking() {
+    let w = LspWorld::new("first-large", true);
+    let big = w.file("src/lib.rs", 20_000);
+    w.lsp(
+        "fl-1",
+        None,
+        "documentSymbol",
+        "src/lib.rs",
+        "Document symbols:\nx - Line 1",
+    );
+    let said = w.read("fl-1", &big, "").stdout;
+    assert!(said.contains("read-unbounded-large"), "{said}");
+    assert!(!said.contains("code-read-not-lsp"), "{said}");
+}
+
+/// A findReferences answer names other files; an error counts as asked.
+#[test]
+fn files_named_by_an_answer_and_failed_calls_count_as_asked() {
+    let w = LspWorld::new("named", true);
+    let other = w.file("src/other.rs", 10_000);
+    let lib = w.file("src/lib.rs", 10_000);
+    w.lsp("ln-1", None, "findReferences", "src/lib.rs", "Found 2 references across 2 files:\n\nsrc/other.rs:\n  Line 3:1\n\nsrc/lib.rs:\n  Line 9:2");
+    assert_eq!(w.read("ln-1", &other, "").stdout, "");
+    let err = w.file("src/err.rs", 10_000);
+    w.lsp(
+        "ln-2",
+        None,
+        "documentSymbol",
+        "src/err.rs",
+        "Error performing documentSymbol: server down",
+    );
+    assert_eq!(w.read("ln-2", &err, "").stdout, "");
+    assert!(w
+        .journal_rows("ln-2")
+        .iter()
+        .any(|r| r.contains("lsp-error")));
+    // The same Read in a session that never asked is advised.
+    assert!(w
+        .read("ln-3", &lib, "")
+        .reason()
+        .contains("code-read-not-lsp"));
+}
+
+/// An answer without a text `result` is recorded by `filePath` alone.
+#[test]
+fn an_unparsed_answer_is_journalled_and_still_counts_the_file() {
+    let w = LspWorld::new("unparsed", true);
+    let big = w.file("src/lib.rs", 10_000);
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse", "tool_name": "LSP",
+        "cwd": w.repo.display().to_string(), "session_id": "lu-1",
+        "permission_mode": "default",
+        "tool_input": {"operation": "hover", "filePath": "src/lib.rs"},
+        "tool_response": ["not", "an", "object"],
+    });
+    assert_eq!(w.send(&payload.to_string(), "").stdout, "");
+    assert!(w
+        .journal_rows("lu-1")
+        .iter()
+        .any(|r| r.contains("lsp-unparsed")));
+    assert_eq!(w.read("lu-1", &big, "").stdout, "");
+}
+
+/// The record is per session and per agent.
+#[test]
+fn an_lsp_call_silences_only_its_own_session_and_agent() {
+    let w = LspWorld::new("scope", true);
+    let big = w.file("src/lib.rs", 10_000);
+    w.lsp(
+        "lc-1",
+        Some("a1"),
+        "documentSymbol",
+        "src/lib.rs",
+        "Document symbols:",
+    );
+    assert!(
+        w.read("lc-1", &big, "")
+            .reason()
+            .contains("code-read-not-lsp"),
+        "main is advised"
+    );
+    assert!(
+        w.read_as("lc-1", "a2", &big, "")
+            .reason()
+            .contains("code-read-not-lsp"),
+        "a2 is advised"
+    );
+    assert_eq!(
+        w.read_as("lc-1", "a1", &big, "").stdout,
+        "",
+        "a1's own call"
+    );
+    // Positive control for main, and another session.
+    w.lsp(
+        "lc-2",
+        None,
+        "documentSymbol",
+        "src/lib.rs",
+        "Document symbols:",
+    );
+    assert_eq!(w.read("lc-2", &big, "").stdout, "");
+    assert!(
+        w.read("lc-3", &big, "")
+            .reason()
+            .contains("code-read-not-lsp"),
+        "another session"
+    );
+}
+
+/// At `deny` a blind Read is refused with the way through; after an LSP call
+/// the same Read passes.
+#[test]
+fn a_denied_code_read_passes_once_lsp_was_asked() {
+    let w = LspWorld::new("deny", true);
+    let big = w.file("src/lib.rs", 10_000);
+    let refused = w.read_with("ld-1", &big, "", DENY);
+    assert_eq!(
+        refused.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        refused.stdout
+    );
+    let said = refused.reason();
+    assert!(said.contains("documentSymbol"), "{said}");
+    assert!(
+        said.contains("once LSP was asked") && said.contains("if LSP errors"),
+        "{said}"
+    );
+    assert!(
+        w.read_with("ld-1", &big, "", DENY).decision().as_deref() == Some("deny"),
+        "refused again"
+    );
+    w.lsp(
+        "ld-1",
+        None,
+        "documentSymbol",
+        "src/lib.rs",
+        "Document symbols:",
+    );
+    let after = w.read_with("ld-1", &big, "", DENY);
+    assert_eq!(after.decision(), None, "{}", after.stdout);
+    assert_eq!(after.stdout, "");
 }

@@ -85,6 +85,7 @@ pub fn run() -> Vec<Finding> {
     out.push(self_test());
     out.push(liveness(&installs));
     out.push(stances());
+    out.push(journal_span());
     out.push(lsp_rules());
     out
 }
@@ -224,8 +225,9 @@ fn configured(installs: &[Install]) -> Finding {
             format!(
                 "missing: {}. Re-run `amont-agent install --write`: the SessionStart entry is \
                  what proves the guard is alive, the Read|Edit|Write and PostToolUse Read \
-                 entries let `file-reread` see a file opened twice, and the Grep entry lets \
-                 `symbol-grep-not-lsp` see the Grep tool",
+                 entries let `file-reread` see a file opened twice, the Grep entry lets \
+                 `symbol-grep-not-lsp` see the Grep tool, and the PostToolUse LSP entry lets \
+                 `code-read-not-lsp` see what LSP was asked",
                 missing.join(", ")
             ),
         );
@@ -472,6 +474,24 @@ fn liveness(installs: &[Install]) -> Finding {
         );
     }
     Finding::good(format!("last ran {} ago", ago(now().saturating_sub(alive))))
+}
+
+/// How much history the journal holds: generation count and the age of its
+/// oldest record, so a window shorter than a week is visible. Liveness above
+/// still reads `journal.log`'s own mtime.
+fn journal_span() -> Finding {
+    let gens = journal::paths().len();
+    match journal::oldest_record() {
+        Some(ts) => Finding::good(format!(
+            "journal: {gens} generation{}, oldest record {} ago",
+            if gens == 1 { "" } else { "s" },
+            ago(now().saturating_sub(ts))
+        )),
+        None => Finding::good(format!(
+            "journal: {gens} generation{}, no records yet",
+            if gens == 1 { "" } else { "s" }
+        )),
+    }
 }
 
 /// What is actually armed, so "installed" is never mistaken for "blocking".

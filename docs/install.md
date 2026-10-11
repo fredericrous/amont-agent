@@ -67,7 +67,9 @@ amont-agent install --write --local     # .claude/settings.local.json
 Four kinds of entry are written: the guard on `PreToolUse`, for Bash and for
 the file tools; the assertions on `PostToolUse` for Bash, which check what a
 command that reported success actually did; a `PostToolUse` entry for Read,
-which remembers a file only once it has actually been read; and a
+which remembers a file only once it has actually been read; a
+`PostToolUse` entry for the LSP tool, which records the files each agent asked
+LSP about (`code-read-not-lsp` stays silent on a later Read of them); and a
 `SessionStart` entry that leaves a heartbeat and states where the checkout
 stands against the remote. Without the heartbeat, `doctor` cannot tell "nothing
 fired this week" from "the guard has been dead since Tuesday".

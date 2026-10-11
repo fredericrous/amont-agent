@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.33.0
+
+### Added
+
+- **A session remembers what it asked LSP.** A new `PostToolUse` hook on the
+  `LSP` tool (`doctor` names `PostToolUse LSP` when it is missing) records,
+  per session and per agent (`main` or the payload's `agent_id`), the file
+  of each call and the code files its answer names as headings, under
+  `sessions/<session>.lsp` as `asked <agent> <path>` lines, in one path
+  normal form. Each call is journalled `lsp`, `lsp-error` (an `Error
+  performing` answer, which counts as asked) or `lsp-unparsed` (no text
+  `result`: `filePath` alone is recorded); the hook prints nothing.
+  `code-read-not-lsp` reads the record: a whole Read of a file the same
+  agent asked LSP about gets no LSP advice and is journalled `lsp-first`
+  (`read-unbounded-large` still speaks past 16 KB). At `deny`
+  (never the default) the refusal names `documentSymbol` and says the Read
+  passes once LSP was asked or if LSP errors. Run `amont-agent install
+  --write` to add the entry.
+
+### Changed
+
+- **The journal keeps about a week: rotated generations replace halving.**
+  `journal.log` used to be read and rewritten in place at 256 KiB, keeping
+  the newer half (about 17 hours of records) and losing any record another
+  session appended meanwhile. Now, before a write, a `journal.log` over
+  256 KiB is rotated by renames only (`journal.log.1` ... `.10`, the oldest
+  dropped) and the record goes to a fresh file whose header is created with
+  `create_new`. `status` reads all generations, and `doctor` prints the
+  generation count and the age of the oldest record.
+
 ## v2.32.0
 
 ### Added

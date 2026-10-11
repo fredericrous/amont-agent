@@ -25,6 +25,9 @@ use std::path::PathBuf;
 /// megabyte is a generated blob, and a blob is not a shell command.
 const MAX_PAYLOAD: usize = 1024 * 1024;
 
+/// How much of an LSP answer is parsed for the files it names.
+const MAX_RESPONSE: usize = 64 * 1024;
+
 pub struct Bash {
     pub command: String,
     pub cwd: PathBuf,
@@ -113,6 +116,26 @@ pub struct FileOp {
     pub change: Option<Change>,
     /// As [`Bash::agent`].
     pub agent: crate::lsp::Agent,
+    /// The payload's real `agent_id` (`None` for the main conversation): the
+    /// key LSP records are kept under, since two `Explore` agents are two
+    /// agents.
+    pub agent_id: Option<String>,
+}
+
+/// An LSP tool call that has run: what was asked and what came back.
+pub struct LspCall {
+    /// `tool_input.operation`.
+    pub operation: String,
+    /// `tool_input.filePath`, absolute against the session cwd.
+    pub file_path: PathBuf,
+    /// `tool_response.result`, the first 64 KiB. `None` when the response has
+    /// no string `result`: the call is then recorded by `file_path` alone.
+    pub response: Option<String>,
+    pub cwd: PathBuf,
+    pub session: String,
+    pub permission_mode: String,
+    /// The payload's `agent_id`; `None` for the main conversation.
+    pub agent_id: Option<String>,
 }
 
 /// A Grep tool call about to run: what it searches for, and where.
@@ -221,6 +244,8 @@ pub enum Event {
     /// A Grep tool call about to run: `symbol-grep-not-lsp` judges it. A
     /// Grep that has run is not ours: there is no `PostToolUse` block for it.
     PreGrep(Box<GrepOp>),
+    /// An LSP tool call that has run: recorded, never spoken to.
+    PostLsp(Box<LspCall>),
     /// A prompt the person submitted: the one moment a typed approval of a
     /// shown preview can arrive, and the moment every older one lapses.
     Prompt(Box<Prompt>),
@@ -303,6 +328,13 @@ pub fn parse(raw: &str) -> Event {
             v.get("agent_id").and_then(|x| x.as_str()),
             v.get("agent_type").and_then(|x| x.as_str()),
         )
+    };
+
+    let agent_id = || {
+        v.get("agent_id")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
     };
 
     match v.get("hook_event_name").and_then(|x| x.as_str()) {
@@ -418,6 +450,39 @@ pub fn parse(raw: &str) -> Event {
                 Event::PostAsk(ask)
             }
         }
+        Some("PostToolUse") if v.get("tool_name").and_then(|x| x.as_str()) == Some("LSP") => {
+            let input = v.get("tool_input");
+            let text = |key: &str| {
+                input
+                    .and_then(|i| i.get(key))
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+            };
+            // `workspaceSymbol` may come without a `filePath`: the call is
+            // still counted, and its answer's headings still recorded.
+            let file = text("filePath").unwrap_or_default();
+            let response = v
+                .get("tool_response")
+                .and_then(|r| r.get("result"))
+                .and_then(|r| r.as_str())
+                .map(|r| {
+                    let mut end = r.len().min(MAX_RESPONSE);
+                    while !r.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    r[..end].to_string()
+                });
+            Event::PostLsp(Box::new(LspCall {
+                operation: text("operation").unwrap_or_default(),
+                file_path: path_at(Some(&file)).unwrap_or_default(),
+                response,
+                cwd: cwd.clone(),
+                session: str_at("session_id"),
+                permission_mode: str_at("permission_mode"),
+                agent_id: agent_id(),
+            }))
+        }
         Some("PreToolUse") if v.get("tool_name").and_then(|x| x.as_str()) == Some("Grep") => {
             let input = v.get("tool_input");
             let text = |key: &str| {
@@ -489,6 +554,7 @@ pub fn parse(raw: &str) -> Event {
                 permission_mode: str_at("permission_mode"),
                 change,
                 agent: agent(),
+                agent_id: agent_id(),
             });
             if stage == "PreToolUse" {
                 Event::PreFile(op)
