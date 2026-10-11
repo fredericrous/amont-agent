@@ -8,5 +8,6 @@ Canonical plan: [relais/docs/plans/2026-10-11-plan-review-learns-model.md](https
 
 ## Implementation review
 
-- approve-with-changes, round 1 (77k, 79 s): 7 findings, all fixed in 68fa3de (prune errors and test, ledger-wide round 1, null features, named lock field); the skill and Verification items land in the relais plan.
-- Delta (87k, 27 s): approve-with-changes, every finding resolved, no new finding.
+- approve, final round (84k, 18 s) on tree 9efab3e8; Windows CI then made the concurrency test unix-only (flock; `holds-until:` for Windows, File::lock needs 1.89 > MSRV 1.85).
+- Earlier rounds, approve-with-changes (77k/79 s, 87k/27 s, 73k/66 s, 80k/18 s): 14 findings, all fixed: prune errors and test, ledger-wide round 1, null features, status on stderr, POSIX flags, named errors, no disabled lints.
+- Re-verified on the final binary: two concurrent runs from an empty dir → 8 rows, then `already recorded round 5 of 1a0350da061a; nothing written` on stderr, stdout empty.
