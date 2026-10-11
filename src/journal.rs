@@ -300,18 +300,26 @@ fn try_record(entry: &Entry) -> Option<()> {
 fn append(path: &std::path::Path, max: u64, line: &str) -> Option<()> {
     // Rotation happens BEFORE the write, so `journal.log` always exists
     // afterwards and doctor's liveness mtime stays correct.
+    let mut stuck = None;
     if fs::metadata(path).map(|m| m.len() > max).unwrap_or(false) {
-        rotate(path, max);
+        stuck = rotate(path, max).err();
     }
     // The header goes in through `create_new`: of several writers that find
     // no file, exactly one creates it and writes the header.
-    create_with_header(path);
+    create_with_header(path)?;
     let mut f = open_private(path)?;
+    if let Some(why) = stuck {
+        // The journal kept growing past its cap: said once per write, in the
+        // journal itself, where `doctor` and a reader of the file see it.
+        let _ = f.write_all(format!("F {} - - rotate-failed - - - {why}\n", now()).as_bytes());
+    }
     f.write_all(line.as_bytes()).ok()?;
     Some(())
 }
 
-fn create_with_header(path: &std::path::Path) {
+/// `None` only when this writer created the file and could not write its
+/// header: the record is then dropped rather than left without one.
+fn create_with_header(path: &std::path::Path) -> Option<()> {
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -319,16 +327,19 @@ fn create_with_header(path: &std::path::Path) {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    // AlreadyExists (or any other failure) is not an error here.
+    // AlreadyExists (or any other failure to create) is not an error here.
     if let Ok(mut f) = opts.open(path) {
-        let _ = f.write_all(format!("{FORMAT}\n").as_bytes());
+        f.write_all(format!("{FORMAT}\n").as_bytes()).ok()?;
     }
+    Some(())
 }
 
 /// Shift the generations by renames only; nothing is read or rewritten. A
 /// short-lived lock file makes one writer do it: the others append to the
 /// file as it is. A stale lock (a crashed writer) is ignored after a minute.
-fn rotate(path: &std::path::Path, max: u64) {
+/// `Err` only when the live file could not be moved: older generations that
+/// fail to shift cost history, never the cap.
+fn rotate(path: &std::path::Path, max: u64) -> Result<(), String> {
     let lock = generation(path, 0);
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -339,18 +350,22 @@ fn rotate(path: &std::path::Path, max: u64) {
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age.as_secs() > 60);
         if !stale || fs::remove_file(&lock).is_err() || opts.open(&lock).is_err() {
-            return;
+            return Ok(());
         }
     }
+    let mut moved = Ok(());
     // Re-check under the lock: another writer may have rotated already.
     if fs::metadata(path).map(|m| m.len() > max).unwrap_or(false) {
         let _ = fs::remove_file(generation(path, GENERATIONS));
         for n in (1..GENERATIONS).rev() {
             let _ = fs::rename(generation(path, n), generation(path, n + 1));
         }
-        let _ = fs::rename(path, generation(path, 1));
+        moved = fs::rename(path, generation(path, 1)).map_err(|e| e.kind().to_string());
     }
     let _ = fs::remove_file(&lock);
+    moved
+        .map(|_| ())
+        .map_err(|why| why.replace(char::is_whitespace, "-"))
 }
 
 /// Build the whole record as one line. Separated from the write so it can be
@@ -908,6 +923,27 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A live file that cannot be moved keeps growing: the journal says so
+    /// rather than keeping quiet about a broken cap.
+    #[test]
+    fn a_rotation_that_cannot_move_the_live_file_is_journalled() {
+        let dir = scratch("stuck");
+        let path = dir.join("journal.log");
+        append(&path, 100, &rec(1, &"z".repeat(200))).expect("first");
+        // Every generation is a non-empty directory: no rename can land, so
+        // the live file stays where it is, past its cap.
+        for n in 1..=GENERATIONS {
+            fs::create_dir(generation(&path, n)).unwrap();
+            fs::write(generation(&path, n).join("x"), "x").unwrap();
+        }
+        append(&path, 100, &rec(2, "late")).expect("still appends");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains(" rotate-failed "), "{text}");
+        assert!(text.contains(" late"), "{text}");
+        assert!(!generation(&path, 0).exists(), "the lock is released");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_tally_reads_every_generation_with_the_floor() {
         let dir = scratch("gens");
@@ -936,6 +972,7 @@ mod tests {
     /// Entry point for the child processes of the test below; a no-op unless
     /// the parent set the environment.
     #[test]
+    #[ignore = "a helper: spawned by eight_processes_lose_no_record_and_tear_no_line"]
     fn child_writer() {
         let (Some(p), Some(id)) = (
             std::env::var_os("AMONT_JOURNAL_TEST_PATH"),
@@ -962,6 +999,7 @@ mod tests {
                 std::process::Command::new(&exe)
                     .args([
                         "--exact",
+                        "--ignored",
                         "journal::tests::child_writer",
                         "--test-threads=1",
                     ])

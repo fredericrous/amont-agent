@@ -170,4 +170,30 @@ journalled `lsp`: never dropped.
 | live | after release: one `claude -p` session that calls LSP then Reads the file | journal shows `lsp`, and no advisory on the Read |
 | live | after release, `code-read-not-lsp` at `deny` in a scratch repo's `git config`: a whole Read with no LSP call first | refused, text names `documentSymbol`; after an LSP call the Read passes |
 
+## Verification record (Phase 1, before the push)
+
+| check | actual |
+|---|---|
+| fixture | captured live from `claude -p` (documentSymbol, findReferences): `tool_response` is an object, answer text in `result`. A missing file is a `tool_use_error` that never reaches PostToolUse; the `Error performing` fixture uses a real transcript text in the success envelope. ✅ |
+| unit, generations | 12 rotations leave journal.log + .1….10, each with FORMAT; tally across generations honours `since`; 8 processes × 60 records across the threshold: none lost, none torn. ✅ |
+| unit, asked_files | the three fixtures, workspaceSymbol (filePath ignored, outside-repo and non-code headings dropped), hover. ✅ |
+| unit, normal form | symlinked dir, `./`, `..` give one key; newline → Unrecorded. ✅ |
+| hook e2e | documentSymbol then Read silent with `lsp` before `lsp-first`; findReferences-named file and error answer silent; unparsed answer `lsp-unparsed`; other session and agents a1/a2 still advised, own agent silent (main and a1); deny refuses naming documentSymbol and passes after an LSP call. ✅ (10 KB files, see Decision log) |
+| install/doctor | without the block: `missing: PostToolUse LSP`; after install none. ✅ |
+| doctor | `doctor_reads_the_window_across_generations`: `.3`, `.1` and the live file seeded → `journal: 3 generations, oldest record 6d ago`, liveness `last ran` from `journal.log`. On a copy of the live (unrotated) journal: `1 generation, oldest record 17h ago`. ✅ |
+| timing | release build, 40 calls each: small answer p95 7.8 ms; 64 KiB repeated files 10.3 ms; 64 KiB naming 129 distinct files 13.3 ms; all 120 p95 12.5 ms (budget 15). ✅ |
+| make check | fmt, clippy -D warnings, tests: green. ✅ |
+| live | Phase 2, after the release. |
+
+## Decision log
+
+- 2026-10-11: journal retention added as part of Phase 1 (delta review, backend approve-with-changes) after measuring a 17 h window.
+- Rotation uses a `journal.log.0` lock file (create_new, stale after 60 s) so only one writer shifts generations: concurrent rotations cannot drop a generation early. Stricter than the plan's "one extra shift is acceptable".
+- deliberate: `lsp-first` quiets `code-read-not-lsp` only. `read-unbounded-large` still speaks past 16 KB, since after LSP names a line the remedy is the window around it. The plan's 20 KB "silent" rows were written against the wrong threshold; those e2e rows use 10 KB, and `an_lsp_call_leaves_the_size_advice_speaking` pins the 20 KB case.
+- Timing: the first build took 41 ms p95 on a 64 KiB answer (one `canonicalize` per heading line). Heading spellings are now deduplicated, and relative headings are joined lexically onto the cwd's normal form (one canonicalize per answer). A symlink inside the repository may then miss, which only means a later Read is advised.
+- At `deny`, every whole Read is refused until LSP is asked (not once per file), and the once-per-file advice key is per agent: the refusal's way through has to stay true on the second try.
+- A `workspaceSymbol` payload without `filePath` is still recorded and counted (headings only).
+- A live file that cannot be rotated leaves a `rotate-failed` record in it; a header that cannot be written drops the record instead of leaving a file without one.
+- Implementation via relais: generations (run-65d8b340b227c-15496, accepted, sonnet); LSP record (run-65d8b504185f3-1666f, needs_decision on Cargo.toml/Cargo.lock: only the version bump, accepted by hand, then the two fixes above).
+
 <!-- panel: repos=amont-agent adds= reviewers=backend body-sha=f93bcc397a39 -->

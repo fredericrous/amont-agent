@@ -339,7 +339,7 @@ fn heading_path(line: &str) -> Option<&str> {
 /// the cwd's repository. Touches the file system only to normalise paths.
 pub fn asked_files(call: &crate::payload::LspCall) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
-    if call.operation != "workspaceSymbol" {
+    if call.operation != "workspaceSymbol" && !call.file_path.as_os_str().is_empty() {
         files.push(normal(&call.file_path));
     }
     let repo = normal(&git_root(&call.cwd).unwrap_or_else(|| call.cwd.clone()));
@@ -360,6 +360,9 @@ pub fn asked_files(call: &crate::payload::LspCall) -> Vec<PathBuf> {
         // `canonicalize` per answer instead of one per file. Only a symlink
         // inside the repository then spells a file differently, and a missed
         // match only means a later Read is advised.
+        // holds-until: the PostToolUse LSP budget (15 ms p95 on a 64 KiB
+        // answer) has room for one `canonicalize` per distinct heading, or a
+        // `lsp-first` miss is reported for a file reached through a symlink.
         let abs = if named.is_absolute() {
             normal(named)
         } else {
@@ -537,6 +540,25 @@ mod tests {
             .unwrap()
             .starts_with("Error performing"));
         assert_eq!(asked_files(&err).len(), 1, "filePath alone");
+    }
+
+    #[test]
+    fn a_payload_without_a_file_path_still_counts_its_headings() {
+        let raw = r#"{"hook_event_name":"PostToolUse","tool_name":"LSP","session_id":"s","cwd":"/nonexistent/repo",
+            "tool_input":{"operation":"workspaceSymbol","query":"Foo"},
+            "tool_response":{"result":"src/a.rs:\n  Foo (Struct) - Line 3"}}"#;
+        let crate::payload::Event::PostLsp(c) = crate::payload::parse(raw) else {
+            panic!("a workspaceSymbol call without filePath is still ours");
+        };
+        assert_eq!(
+            asked_files(&c),
+            [PathBuf::from("/nonexistent/repo/src/a.rs")]
+        );
+        let mut hover = *c;
+        hover.operation = "hover".into();
+        assert!(asked_files(&hover)
+            .iter()
+            .all(|p| !p.as_os_str().is_empty()));
     }
 
     #[test]

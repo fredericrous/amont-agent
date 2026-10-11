@@ -459,9 +459,9 @@ pub fn parse(raw: &str) -> Event {
                     .filter(|s| !s.trim().is_empty())
                     .map(str::to_string)
             };
-            let Some(file) = text("filePath") else {
-                return Event::NotOurs;
-            };
+            // `workspaceSymbol` may come without a `filePath`: the call is
+            // still counted, and its answer's headings still recorded.
+            let file = text("filePath").unwrap_or_default();
             let response = v
                 .get("tool_response")
                 .and_then(|r| r.get("result"))

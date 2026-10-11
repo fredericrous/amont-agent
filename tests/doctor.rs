@@ -345,6 +345,38 @@ fn a_recent_firing_outweighs_an_old_heartbeat() {
     assert_eq!(code, 0, "a live guard must not exit non-zero:\n{out}");
 }
 
+/// After a rotation the window line counts every generation and dates the
+/// oldest record, and liveness still reads the live `journal.log`.
+#[test]
+fn doctor_reads_the_window_across_generations() {
+    let h = Home::new("generations");
+    h.with_a_session();
+    install_both(&h);
+    let dir = h.0.join("amont-agent");
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(dir.join("heartbeat"), "x\n").expect("heartbeat");
+    backdate(&dir.join("heartbeat"), "202001010000");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let rec = |ago: u64| format!("amont-agent-v1\nF {} r deny denied - - - x\n", now - ago);
+    std::fs::write(dir.join("journal.log.3"), rec(6 * 86_400)).expect(".3");
+    std::fs::write(dir.join("journal.log.1"), rec(86_400)).expect(".1");
+    std::fs::write(dir.join("journal.log"), rec(10)).expect("live");
+
+    let (code, out) = h.run(&["doctor"]);
+    assert!(
+        out.contains("journal: 3 generations, oldest record 6d"),
+        "{out}"
+    );
+    assert!(
+        out.contains("last ran"),
+        "liveness from journal.log:\n{out}"
+    );
+    assert_eq!(code, 0, "{out}");
+}
+
 /// And the journal only ever CONFIRMS. With no firings recorded, an old
 /// heartbeat beside a much newer session still means the hook stopped —
 /// which is the accusation the check exists to make, and which the fix above
