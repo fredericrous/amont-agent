@@ -76,6 +76,12 @@ pulldown-cmark = { version = "=0.13.4", default-features = false }
 # What we WRITE is emitted by `src/json.rs`, a hand-rolled escaper, so the
 # hook's answer shares no representation with the payloads we parse.
 
+[features]
+# Failure injection for the integration tests, which spawn the binary and so
+# cannot use `cfg(test)`. Never on in a build that ships: nothing reachable
+# from the CLI reads these variables without it.
+test-hooks = []
+
 [profile.release]
 strip = true
 opt-level = "s"
