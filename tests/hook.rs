@@ -1585,6 +1585,14 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
     let off = LspWorld::new("silent-off", false);
     let mid = off.file("src/mid.rs", 9_000);
     assert_eq!(off.read("ls-5", &mid, "").stdout, "", "plugin off");
+    let nobin = LspWorld::new("silent-nobin", true);
+    let mid = nobin.file("src/mid.rs", 9_000);
+    std::fs::remove_file(nobin.bin.join("fleet-lsp")).expect("rm stub");
+    assert_eq!(
+        nobin.read("ls-7", &mid, "").stdout,
+        "",
+        "no fleet-lsp on PATH"
+    );
     let outside = LspWorld::new("silent-nogit", true);
     let mid = outside.file("src/mid.rs", 9_000);
     std::fs::remove_dir_all(outside.repo.join(".git")).expect("rm .git");

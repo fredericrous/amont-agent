@@ -77,20 +77,27 @@ pub fn exempt(path: &Path) -> bool {
     crate::rules::persisted_output_dump::is_persisted(&path.to_string_lossy())
 }
 
-/// What the hook says: the mechanism, then the way through. `code` is a
-/// file LSP answers for, which is found with LSP before any grep. It speaks
-/// only when `code-read-not-lsp` is observing, since that rule otherwise
-/// takes the Read.
-pub fn phrase(shown: &str, bytes: u64, code: bool) -> (String, String) {
+/// How the remedy says to find the part of the file that is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Finder {
+    /// A code file LSP answers for. Shown only when `code-read-not-lsp` is
+    /// observing, since that rule otherwise takes the Read.
+    Lsp,
+    Grep,
+}
+
+/// What the hook says: the mechanism, then the way through.
+pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
     let kb = bytes.div_ceil(1024);
     let quoted = format!("'{}'", shown.replace('\'', "'\\''"));
-    let find = if code {
-        "Find the part you need first with LSP (`documentSymbol`, `goToDefinition`)".to_string()
-    } else {
-        format!(
+    let find = match finder {
+        Finder::Lsp => {
+            "Find the part you need first with LSP (`documentSymbol`, `goToDefinition`)".to_string()
+        }
+        Finder::Grep => format!(
             "Find the part you need first with the Grep tool (or `grep -n '<anchor>' \
              {quoted} | head`)"
-        )
+        ),
     };
     (
         format!(
@@ -154,7 +161,7 @@ mod tests {
         file(&f, 16_385);
         let bytes = applies(&f, "full").expect("one byte over");
         assert_eq!(bytes, 16_385);
-        assert!(phrase("a.rs", bytes, false).0.contains("17 KB"));
+        assert!(phrase("a.rs", bytes, Finder::Grep).0.contains("17 KB"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -200,9 +207,9 @@ mod tests {
 
     #[test]
     fn the_remedy_quotes_the_path() {
-        let (_, remedy) = phrase("/a b/it's.rs", 20_480, false);
+        let (_, remedy) = phrase("/a b/it's.rs", 20_480, Finder::Grep);
         assert!(remedy.contains(r#"'/a b/it'\''s.rs'"#), "{remedy}");
-        let (_, lsp) = phrase("/a b/it's.rs", 20_480, true);
+        let (_, lsp) = phrase("/a b/it's.rs", 20_480, Finder::Lsp);
         assert!(
             lsp.contains("documentSymbol") && !lsp.contains("grep"),
             "{lsp}"

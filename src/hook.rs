@@ -538,7 +538,13 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
                 let rule = &rules::code_read_not_lsp::RULE;
                 let stance = crate::stance::resolve(rule);
                 let first = stance == Stance::Observe
-                    || crate::lsp::first_time(&op.session, &format!("read {}", op.path.display()));
+                    || first_telling(
+                        rule,
+                        &op.session,
+                        &format!("read {}", op.path.display()),
+                        &op.cwd,
+                        &op.permission_mode,
+                    );
                 if first {
                     note_file(rule, stance, op, &shown);
                     let (reason, remedy) = rules::code_read_not_lsp::phrase(&shown, bytes);
@@ -559,8 +565,13 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
         if let Some(bytes) = rules::read_unbounded_large::applies(&op.path, &op.window) {
             let rule = &rules::read_unbounded_large::RULE;
             let stance = crate::stance::resolve(rule);
-            let code = crate::lsp::is_code(&shown) && crate::lsp::serves(&op.path).is_ok();
-            let (reason, remedy) = rules::read_unbounded_large::phrase(&shown, bytes, code);
+            use rules::read_unbounded_large::Finder;
+            let finder = if crate::lsp::is_code(&shown) && crate::lsp::serves(&op.path).is_ok() {
+                Finder::Lsp
+            } else {
+                Finder::Grep
+            };
+            let (reason, remedy) = rules::read_unbounded_large::phrase(&shown, bytes, finder);
             let text = decision::phrase(rule.id, &reason, &remedy);
             note_file(rule, stance, op, &shown);
             match stance {
@@ -640,7 +651,14 @@ fn grep_gate(
     }
     let search = rules::symbol_grep_not_lsp::search_at(parsed, finding.span.start)
         .ok_or("the command no longer matches")?;
-    if crate::lsp::first_time(&bash.session, &format!("grep {}", search.pattern)) {
+    let key = format!("grep {}", search.pattern);
+    if first_telling(
+        &rules::symbol_grep_not_lsp::RULE,
+        &bash.session,
+        &key,
+        &bash.cwd,
+        &bash.permission_mode,
+    ) {
         Ok(())
     } else {
         Err("this session was told about this pattern")
@@ -668,7 +686,13 @@ fn on_grep(op: &crate::payload::GrepOp) -> Decision {
     let rule = &sg::RULE;
     let stance = crate::stance::resolve(rule);
     if stance != Stance::Observe
-        && !crate::lsp::first_time(&op.session, &format!("grep {}", op.pattern))
+        && !first_telling(
+            rule,
+            &op.session,
+            &format!("grep {}", op.pattern),
+            &op.cwd,
+            &op.permission_mode,
+        )
     {
         return Decision::Silent;
     }
@@ -687,6 +711,28 @@ fn on_grep(op: &crate::payload::GrepOp) -> Decision {
         Stance::Observe => Decision::Silent,
         Stance::Advise => Decision::Advise(text),
         Stance::Deny => Decision::Deny(text),
+    }
+}
+
+/// Whether a rule about to speak has not yet told this session about `key`.
+/// A record that could not be kept is journalled, and the rule speaks: being
+/// told twice costs less than never being told.
+fn first_telling(rule: &Rule, session: &str, key: &str, cwd: &std::path::Path, mode: &str) -> bool {
+    match crate::lsp::told(session, key) {
+        crate::lsp::Told::First => true,
+        crate::lsp::Told::Before => false,
+        crate::lsp::Told::Unrecorded(why) => {
+            journal::record(&journal::Entry {
+                rule: rule.id,
+                stance: "-",
+                outcome: "unrecorded",
+                session,
+                repo: &repo_name(cwd),
+                mode,
+                excerpt: why,
+            });
+            true
+        }
     }
 }
 

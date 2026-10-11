@@ -178,19 +178,24 @@ fn plugin_enabled(repo: &Path) -> bool {
         Some(repo.join(".claude/settings.json")),
         Some(repo.join(".claude/settings.local.json")),
     ];
-    let mut enabled = false;
-    for file in files.into_iter().flatten() {
-        if let Some(said) = fleet_lsp_enabled_in(&file) {
-            enabled = said;
-        }
-    }
-    enabled
+    let said: Vec<Option<bool>> = files
+        .into_iter()
+        .map(|f| f.and_then(|f| std::fs::read_to_string(f).ok()))
+        .map(|text| text.as_deref().and_then(fleet_lsp_enabled_in))
+        .collect();
+    most_specific(&said)
 }
 
-/// What one settings file says about the fleet-lsp plugin, if anything.
-fn fleet_lsp_enabled_in(file: &Path) -> Option<bool> {
-    let text = std::fs::read_to_string(file).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+/// The last file, in user-project-local order, that says anything; off when
+/// none does.
+fn most_specific(said: &[Option<bool>]) -> bool {
+    said.iter().rev().find_map(|s| *s).unwrap_or(false)
+}
+
+/// What one settings file says about the fleet-lsp plugin, if anything. A
+/// file that does not parse says nothing.
+fn fleet_lsp_enabled_in(text: &str) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
     v.get("enabledPlugins")?
         .as_object()?
         .iter()
@@ -202,7 +207,11 @@ fn fleet_lsp_enabled_in(file: &Path) -> Option<bool> {
 /// installed: the last entry of the first key named `<plugin>@…`.
 fn plugin_install_path(plugin: &str) -> Option<PathBuf> {
     let file = crate::settings::config_dir()?.join("plugins/installed_plugins.json");
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    install_path_in(&std::fs::read_to_string(file).ok()?, plugin)
+}
+
+fn install_path_in(installed: &str, plugin: &str) -> Option<PathBuf> {
+    let v: serde_json::Value = serde_json::from_str(installed).ok()?;
     let prefix = format!("{plugin}@");
     let (_, entries) = v
         .get("plugins")?
@@ -233,36 +242,48 @@ pub fn on_path(program: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// `true` the first time this session is told about `key` (a file, or a
-/// grep pattern), and `false` after. A record that cannot be read or
-/// written answers `true`: telling twice is the safe direction.
-///
+/// Whether this session was already told about `key` (a file, or a grep
+/// pattern), recording it when not.
+pub enum Told {
+    /// First time: recorded now.
+    First,
+    /// Told before in this session.
+    Before,
+    /// First time as far as can be known, and the record could not be kept:
+    /// the next call may be told again. The reason is for the journal.
+    Unrecorded(&'static str),
+}
+
 /// One line per key in `<journal>/sessions/<session>.lsp`, appended; the
 /// session sweep removes it with the session's other files after a week.
-/// Two hooks racing on the same key can both answer `true`.
-pub fn first_time(session: &str, key: &str) -> bool {
+/// Two hooks racing on the same key can both answer `First`. A record that
+/// cannot be kept is `Unrecorded`: telling twice is the safe direction.
+pub fn told(session: &str, key: &str) -> Told {
     use std::io::Write;
     if !crate::session_state::usable_id(session) || key.contains('\n') {
-        return true;
+        return Told::Unrecorded("no usable session id or key");
     }
     let Some(dir) = crate::journal::dir().map(|d| d.join("sessions")) else {
-        return true;
+        return Told::Unrecorded("no journal directory");
     };
     let file = dir.join(format!("{session}.lsp"));
     if let Ok(seen) = std::fs::read_to_string(&file) {
         if seen.lines().any(|l| l == key) {
-            return false;
+            return Told::Before;
         }
     }
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Told::Unrecorded("the sessions directory could not be created");
+    }
+    let written = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&file)
-    {
-        let _ = writeln!(f, "{key}");
+        .and_then(|mut f| writeln!(f, "{key}"));
+    match written {
+        Ok(()) => Told::First,
+        Err(_) => Told::Unrecorded("the session record could not be written"),
     }
-    true
 }
 
 #[cfg(test)]
@@ -318,6 +339,58 @@ mod tests {
         assert_eq!(tools_of(list).unwrap(), ["Read", "LSP"]);
         assert_eq!(tools_of("---\nname: x\n---\ntools: Read"), None);
         assert_eq!(tools_of("no front matter"), None);
+    }
+
+    #[test]
+    fn the_most_specific_settings_file_decides() {
+        assert!(!most_specific(&[None, None, None]), "off when nobody says");
+        assert!(most_specific(&[Some(true), None, None]));
+        assert!(
+            !most_specific(&[Some(true), Some(false), None]),
+            "project wins"
+        );
+        assert!(
+            most_specific(&[Some(false), None, Some(true)]),
+            "local wins"
+        );
+        let on = r#"{"enabledPlugins":{"fleet-lsp@fleet-lsp":true,"x@y":false}}"#;
+        assert_eq!(fleet_lsp_enabled_in(on), Some(true));
+        assert_eq!(
+            fleet_lsp_enabled_in(r#"{"enabledPlugins":{"x@y":true}}"#),
+            None
+        );
+        assert_eq!(
+            fleet_lsp_enabled_in(r#"{"enabledPlugins":{"fleet-lsp@a":"yes"}}"#),
+            None
+        );
+        assert_eq!(
+            fleet_lsp_enabled_in(r#"{"enabledPlugins":{"fleet-"#),
+            None,
+            "truncated"
+        );
+        assert_eq!(fleet_lsp_enabled_in(""), None);
+    }
+
+    #[test]
+    fn a_plugin_is_found_where_it_was_installed() {
+        let installed = r#"{"version":2,"plugins":{
+            "relais@relais-local":[{"installPath":"/old"},{"installPath":"/p/relais/0.12.0"}],
+            "relaisx@other":[{"installPath":"/wrong"}]}}"#;
+        assert_eq!(
+            install_path_in(installed, "relais"),
+            Some(PathBuf::from("/p/relais/0.12.0")),
+            "the last entry"
+        );
+        assert_eq!(install_path_in(installed, "fleet-lsp"), None);
+        assert_eq!(
+            install_path_in(r#"{"plugins":{"relais@x":[]}}"#, "relais"),
+            None
+        );
+        assert_eq!(
+            install_path_in(r#"{"plugins":"#, "relais"),
+            None,
+            "malformed"
+        );
     }
 
     #[test]

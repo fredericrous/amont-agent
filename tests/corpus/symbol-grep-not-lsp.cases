@@ -34,3 +34,5 @@ nomatch	grep -n "machine git.daddyshome.fr" ~/.netrc
 nomatch	grep -rn "sandbox" crates/relais/src/context/mod.rs
 nomatch	grep -rniE "inline" --include='*.ts' .
 nomatch	R=/x; grep -rln "VaultTransitUnseal" $R/kubernetes/monitor
+match	grep -rn PanelDockGroup --include='*.{ts,tsx}' .
+match	grep -rn FileOp ..

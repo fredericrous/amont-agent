@@ -379,3 +379,44 @@ fn doctor_does_not_journal_its_own_probe() {
         after.len().saturating_sub(before.len())
     );
 }
+
+/// Whether the LSP rules can speak is said by name: they are silent without
+/// fleet-lsp, outside a git tree or with the plugin off, and nothing else
+/// would show it.
+#[test]
+fn doctor_says_whether_the_lsp_rules_can_speak_here() {
+    let h = Home::new("lsp-line");
+    let repo = h.0.join("repo");
+    std::fs::create_dir_all(repo.join(".git")).expect("repo");
+    let bin = h.0.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    let stub = bin.join("fleet-lsp");
+    std::fs::write(&stub, "#!/bin/sh\n").expect("stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let doctor = |plugin_on: bool| {
+        std::fs::write(
+            h.0.join("settings.json"),
+            format!(r#"{{"enabledPlugins":{{"fleet-lsp@fleet-lsp":{plugin_on}}}}}"#),
+        )
+        .expect("settings");
+        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("doctor")
+            .current_dir(&repo)
+            .env("CLAUDE_CONFIG_DIR", &h.0)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env_remove("AMONT_AGENT_OFF")
+            .output()
+            .expect("the binary runs");
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)
+    };
+    let on = doctor(true);
+    assert!(on.contains("LSP rules: fleet-lsp at"), "{on}");
+    assert!(on.contains("plugin enabled"), "{on}");
+    let off = doctor(false);
+    assert!(off.contains("LSP rules are silent here"), "{off}");
+    assert!(off.contains("the fleet-lsp plugin is not enabled"), "{off}");
+}

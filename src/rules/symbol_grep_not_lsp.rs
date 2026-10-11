@@ -32,11 +32,11 @@ pub const RULE: Rule = Rule {
     max_stance: Stance::Deny,
     evidence: Evidence {
         // `amont-agent backtest`, per 1,000 Bash calls, weeks from 09-07:
-        // 25.2, 46.8, 55.9, 59.0, 54.3. Hand-labelled samples of 50 hits:
+        // 25.4, 46.8, 55.9, 59.2, 54.4. Hand-labelled samples of 50 hits:
         // 34 real symbol lookups before the shape test (lowercase words,
         // `-i`, `$` paths), 44 after. The Grep tool (4.5 per 1,000 tool calls
         // in W41) is not replayed; fixtures check it.
-        per_1000: 54.3,
+        per_1000: 54.4,
         measured: "2026-10-11",
         trend: Trend::Flat(5),
     },
@@ -252,7 +252,10 @@ pub fn search(cmd: &Simple) -> Option<Search<'_>> {
         if w.expanded || t.contains('$') {
             return None;
         }
-        if after_ddash || w.quoted || !t.starts_with('-') || t == "-" {
+        // A word whose quotes start after its leading dash is still a flag:
+        // `--include='*.{ts,tsx}'`.
+        let flag = t.starts_with('-') && t != "-" && (!w.quoted || w.raw.starts_with('-'));
+        if after_ddash || !flag {
             operands.push(w);
             continue;
         }
@@ -362,6 +365,9 @@ fn file_shaped(path: &str) -> bool {
         .rsplit('/')
         .next()
         .unwrap_or(path);
+    if name.chars().all(|c| c == '.') {
+        return false;
+    }
     name.get(1..).is_some_and(|rest| rest.contains('.'))
 }
 
@@ -493,6 +499,11 @@ mod tests {
         assert!(fires("git -C ../relais grep -n FileOp -- crates"));
         assert!(fires("cd /x && grep -n parse_args src/main.go | head"));
         assert!(fires("grep -e FileOp -r src"));
+        assert!(
+            fires("grep -rn FileOp --include='*.{ts,tsx}' ."),
+            "a quoted include"
+        );
+        assert!(fires("grep -rn FileOp .."), "a parent directory");
     }
 
     #[test]
