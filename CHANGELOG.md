@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`amont-agent plan-apply <plan.md>` applies plan-review patches with no
+  model.** Reviewers hand back `Patches:` JSON pairs; the command reads them
+  from the transcript, applies each `old_string` that occurs exactly once,
+  lists the rest as `unmatched` and appends an
+  `amont-agent-review-merge-v1` row to the plan-review ledger. `--dry-run`,
+  `--check` (verify the remainder after a fallback) and `--record-fallback`
+  (record the fallback subagent's row). Exit 3 is new: some patch
+  unmatched. See `docs/plan-review.md`.
+
+### Fixed
+
+- `plan-review record` no longer counts an `agent_id` in a merge row as an
+  already recorded reviewer.
+
 ## v2.35.0
 
 ### Added

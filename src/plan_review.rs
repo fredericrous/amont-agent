@@ -112,6 +112,35 @@ pub fn canonical(text: &str) -> String {
     body
 }
 
+/// Whether the byte at `offset` of `text` lies in a region [`canonical`]
+/// strips: front matter, `## Review panel`, `## Full reviews` and after, or
+/// the machine comment. An edit there does not change the plan's sha.
+pub(crate) fn outside_body(text: &str, offset: usize) -> bool {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let comment = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .filter(|&i| is_machine_comment(lines[i]));
+    let front = front_matter_end(&lines);
+    let mut fence = Fence::default();
+    let (mut dropping, mut reviews) = (false, false);
+    let mut start = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let end = start + line.len() + 1;
+        if i >= front {
+            if let Some(title) = fence.h2(line) {
+                reviews |= title.starts_with(FULL_REVIEWS);
+                dropping = title == REVIEW_SECTION;
+            }
+        }
+        if offset < end {
+            return i < front || Some(i) == comment || reviews || dropping;
+        }
+        start = end;
+    }
+    false
+}
+
 /// The index of the first line after YAML front matter, or 0 when there is
 /// none: a `---` first line with no closing `---` is text, not front matter.
 fn front_matter_end(lines: &[&str]) -> usize {
@@ -227,8 +256,10 @@ pub(crate) struct Fence {
 }
 
 impl Fence {
-    /// The title of an ATX H2 outside any fence; updates the fence state.
-    pub(crate) fn h2<'a>(&mut self, line: &'a str) -> Option<&'a str> {
+    /// The line's text when it is prose outside any fence, indented at most
+    /// 3; updates the fence state. A fence line, a line inside code, and an
+    /// indented line are `None`.
+    pub(crate) fn prose<'a>(&mut self, line: &'a str) -> Option<&'a str> {
         let indent = line.len() - line.trim_start_matches(' ').len();
         let t = line.trim_start_matches(' ');
         if indent <= 3 {
@@ -249,8 +280,25 @@ impl Fence {
         if self.open.is_some() || indent > 3 {
             return None;
         }
-        let title = t.strip_prefix("## ")?;
+        Some(t)
+    }
+
+    /// The title of an ATX H2 outside any fence; updates the fence state.
+    pub(crate) fn h2<'a>(&mut self, line: &'a str) -> Option<&'a str> {
+        let title = self.prose(line)?.strip_prefix("## ")?;
         Some(title.trim().trim_end_matches('#').trim_end())
+    }
+
+    /// The title of an ATX heading of any level outside any fence; updates
+    /// the fence state.
+    pub(crate) fn heading<'a>(&mut self, line: &'a str) -> Option<&'a str> {
+        let t = self.prose(line)?;
+        let hashes = t.len() - t.trim_start_matches('#').len();
+        if hashes == 0 || hashes > 6 {
+            return None;
+        }
+        let rest = t[hashes..].strip_prefix(' ')?;
+        Some(rest.trim().trim_end_matches('#').trim_end())
     }
 }
 

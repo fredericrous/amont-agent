@@ -1,4 +1,5 @@
-//! Replacing `settings.json` without ever leaving it half-written.
+//! Replacing `settings.json` (and a plan, for `plan-apply`) without ever
+//! leaving it half-written.
 //!
 //! Vendored from `amont-runtime::hookfile`, which stages several files and
 //! then swaps them as a group because installing hooks means writing five
