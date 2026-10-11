@@ -21,7 +21,10 @@
 //! `git config amont.agent.push-preview.ui true`), a pushed branch carries a
 //! file under `app/`, `src/`, `web/` or a `.tsx/.jsx/.css/.html` whose
 //! nearest `package.json` looks like an interface and whose diff is not
-//! comments only (`crate::preview`), the plan the branch landed does not
+//! comments only (`crate::preview`; tests and test-tool configs never
+//! count: `*.test.*`, `*.spec.*`, `__tests__/`, and an unrendered file
+//! under `e2e/`, `tests/`, `test/` or named `vitest.*`, `jest.*`,
+//! `playwright.*`, `cypress.*`), the plan the branch landed does not
 //! declare the preview's evidence (an approved `## Preview` section whose
 //! first line is `evidence:`; never for a picked mockup), and that commit
 //! has no approval. A push this guard cannot read is journalled with
