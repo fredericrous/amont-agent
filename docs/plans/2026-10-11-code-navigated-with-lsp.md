@@ -253,6 +253,7 @@ separate per-session file, not the read log of `session_state`: its
 - **approve-with-changes** (round 1, 89k tokens, 122 s; Delta, 101k, 20 s): round-1 findings 1, 3–6 fixed in e51495b; 2 and 7 recorded in this plan.
 - Fixed: pure settings/plugin helpers with tests, `Told` instead of swallowed errors, `Finder` enum, quoted long flags, no-PATH and doctor tests.
 - deliberate: `unrecorded` journal rows carry stance `-`, as the hook's `partial` rows already do (`hook.rs` `on_bash`), and `status` reads them.
+- Delta 2 **approve** (106k, 19 s): Windows CI failed one doctor test (a `:`-joined PATH); fixed in 5f71192 (`EXE_SUFFIX`, `join_paths`).
 - Next: Phase 2, release v2.32.0, `amont-agent install --write`, the live N ≥ 5 row.
 
 ### Outcome, one week after release
