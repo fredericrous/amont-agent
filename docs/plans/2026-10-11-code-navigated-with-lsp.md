@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/code-navigated-with-lsp
 repos: [amont-agent]
 adrs: [ADR-0022]
@@ -214,7 +214,7 @@ separate per-session file, not the read log of `session_state`: its
 ## Phases
 
 1. [x] Rules, `src/lsp.rs`, Grep payload + matcher, remedies, tests, docs — one PR.
-2. [ ] Release (`tag-release`), `brew upgrade amont-agent`, `amont-agent install`
+2. [x] Release (`tag-release`), `brew upgrade amont-agent`, `amont-agent install`
    to add the Grep block; observe in a fresh session.
 
 ## Decision log
@@ -246,7 +246,7 @@ separate per-session file, not the read log of `session_state`: its
 | install | `amont-agent install` on a settings copy with the old blocks | one new `Grep` block, old blocks unchanged, idempotent on rerun | `tests/settings_merge.rs`: PreToolUse blocks Bash, Read\|Edit\|Write\|MultiEdit, Grep, AskUserQuestion, ExitPlanMode; existing tests for idempotence and uninstall pass. |
 | doctor | settings copy without the Grep block | doctor prints `missing: PreToolUse Grep` | `a_settings_file_without_the_grep_block_is_reported_by_name`: printed; after `install --write`, no `missing:`. Pass. |
 | doctor | fleet-lsp stub on PATH, plugin on, then off | "LSP rules" line shows the path and the state, or the failing gate | `doctor_says_whether_the_lsp_rules_can_speak_here`: on → `LSP rules: fleet-lsp at …, plugin enabled`; off → `silent here … the fleet-lsp plugin is not enabled`. Pass. |
-| live | after release+install, N ≥ 5 fresh `claude -p` runs asking to find `fn agent_type` in relais | the advisory appears; report how often the next call is LSP | **Phase 2.** Before the push, a pilot of the release binary on the real `~/.claude` config: main, Explore, relais worker (plugin 0.12.0), plan-review-backend and implementation-review advised; plan-review-ui-design (no LSP) silent; `grep -rn worker_agent_type crates` in relais advised. |
+| live | after release+install, N ≥ 5 fresh `claude -p` runs asking to find `fn agent_type` in relais | the advisory appears; report how often the next call is LSP | v2.32.0 via brew, `install --write` (Grep block added), doctor: `LSP rules: fleet-lsp at /usr/local/bin/fleet-lsp, plugin enabled`. 5 runs (sonnet), "Find fn agent_type…": `symbol-grep-not-lsp` advised in **4/5**; after it, LSP was the next call in 2 and the call after next in 2 (one `find` between), then `findReferences`/`incomingCalls`. Run 5's `grep -E 'fn agen…\|…'` is an alternation: silent by design. The Grep tool is not available to a main session here (the call errors before any hook), so only subagents that list it reach that branch. A first batch with a prompt naming no symbol: windowed Reads and regex searches, silent by design; LSP first in 1/5. |
 
 ## Implementation review
 
@@ -255,7 +255,7 @@ separate per-session file, not the read log of `session_state`: its
 - deliberate: `unrecorded` journal rows carry stance `-`, as the hook's `partial` rows already do (`hook.rs` `on_bash`), and `status` reads them.
 - Delta 2 **approve** (106k, 19 s): Windows CI failed one doctor test (a `:`-joined PATH); fixed in 5f71192 (`EXE_SUFFIX`, `join_paths`).
 - Windows CI then failed the Grep-tool test (path judged by spelling); fixed by asking the filesystem, `GrepScope { File, Dir, Missing }`. Delta 3 approve-with-changes → Delta 4 **approve** (114k, 10 s) on tree `3e3a678a`.
-- Next: Phase 2, release v2.32.0, `amont-agent install --write`, the live N ≥ 5 row.
+- Phase 2 done: v2.32.0 released (all release jobs green, 6 assets, tap formula, crates.io), installed, live row recorded.
 
 ### Outcome, one week after release
 
