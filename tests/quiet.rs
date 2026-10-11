@@ -210,7 +210,18 @@ fn sigint_is_forwarded_and_leaves_no_tmp() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    // Wait until the wrapper is ready rather than for a fixed time: macOS can
+    // hold the first exec of a freshly built binary for seconds, and a SIGINT
+    // that lands before `main` runs kills it with the default action. The
+    // `.tmp` log is opened only after the handlers are installed.
+    let ready_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while files(&logs(&home), ".tmp").is_empty() {
+        assert!(
+            std::time::Instant::now() < ready_by,
+            "no .tmp log after 30 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let pid = child.id().to_string();
     assert!(Command::new("kill")
         .args(["-INT", &pid])
