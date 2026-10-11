@@ -628,12 +628,11 @@ fn a_command_that_cannot_start_records_its_exit() {
     let home = scratch("active-127");
     let out = quiet(&home, &["--", "no-such-command-xyz"]);
     assert_eq!(out.status.code(), Some(127));
-    let entries: Vec<_> = std::fs::read_dir(active(&home))
-        .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).collect())
-        .unwrap_or_default();
-    // No log file was made for a command that never ran, so no entry either;
-    // if one was written, it must carry the real exit, not null.
-    for p in entries {
-        assert_eq!(read_entry(&p)["exit"], 127);
-    }
+    // The log and the entry exist before the spawn is tried, so a command
+    // that never ran still leaves one entry, ending with its real exit.
+    let entries = entries(&active(&home));
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let v = read_entry(&entries[0]);
+    assert_eq!(v["exit"], 127);
+    assert!(v["ended"].as_u64().is_some());
 }
