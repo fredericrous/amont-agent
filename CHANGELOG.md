@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`plan-apply --check` verifies an overlapped patch on its `old_string`
+  being gone.** Two reviewers' patches on the same lines are resolved by one
+  merged edit that holds neither `new_string`; every such patch was reported
+  unverified and the fallback recorded `verified: false` (12 of 12 on
+  2026-10-11).
+
 ## v2.37.0
 
 ### Added

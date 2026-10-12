@@ -214,7 +214,7 @@ never count as a recorded reviewer.
 | flag | effect |
 |---|---|
 | `--dry-run` | report what would change; write nothing, no row |
-| `--check [--before <sha>]` | write nothing; a patch is verified when its `new_string` occurs once and its `old_string` is gone (a `new_string` that contains its `old_string` skips the absence test). Patches resolve by the body before the apply: `--before` (12 to 64 hex), else the latest `command` row of this plan, else the current body |
+| `--check [--before <sha>]` | write nothing; a patch is verified when its `new_string` occurs once and its `old_string` is gone (a `new_string` that contains its `old_string` skips the absence test; a patch the apply step recorded as `overlaps` is verified on its `old_string` being gone alone, since the one merged edit that resolves two overlapping patches holds neither `new_string`). Patches resolve by the body before the apply: `--before` (12 to 64 hex), else the latest `command` row of this plan, else the current body |
 | `--record-fallback` | after a subagent applied the unmatched edits: find its launch by the `<<<APPLY` block its prompt starts with, check the findings on stdin, and write one `mode: "subagent"` row (`agent_id`, `model`, `tokens`, `seconds`, `verified`); a rerun writes nothing |
 
 | exit | meaning |
