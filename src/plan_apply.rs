@@ -8,7 +8,7 @@
 //! and one `amont-agent-review-merge-v1` row per call goes to the plan-review
 //! ledger. `--check` verifies the remainder afterwards.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -537,6 +537,37 @@ fn clip(s: String) -> String {
     t
 }
 
+/// The labels the apply step recorded as `overlaps` in its latest `command`
+/// row for this plan — the row for `before` when one carries that sha,
+/// else the latest. A fallback resolves two overlapping patches with one
+/// merged edit, so neither reviewer's `new_string` can be expected in the
+/// text; such a patch verifies on its `old_string` being gone.
+fn overlapped(rows: &[serde_json::Value], plan: &str, before: Option<&str>) -> BTreeSet<String> {
+    let commands: Vec<&serde_json::Value> = rows
+        .iter()
+        .filter(|r| is_merge(r, plan))
+        .filter(|r| r.get("mode").and_then(|m| m.as_str()) == Some("command"))
+        .collect();
+    let row = before
+        .and_then(|sha| {
+            commands
+                .iter()
+                .rev()
+                .find(|r| r.get("body_sha_before").and_then(|s| s.as_str()) == Some(sha))
+        })
+        .or_else(|| commands.last())
+        .copied();
+    row.and_then(|r| r.get("unmatched")?.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|u| u.as_str())
+        .filter_map(|u| {
+            let (label, reason) = u.split_once(": ")?;
+            reason.starts_with("overlaps ").then(|| label.to_string())
+        })
+        .collect()
+}
+
 /// A patch the check can verify: `new` once, `old` gone (unless `new`
 /// contains `old`, when the absence cannot hold).
 fn verify(text: &str, p: &Patch) -> Result<(), String> {
@@ -736,19 +767,33 @@ fn apply(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
 // ---------------------------------------------------------------- check
 
 /// Check lines and the counts, for `--check` and `--record-fallback`.
-fn run_check(text: &str, items: &[Item]) -> (String, Vec<String>, usize) {
+fn run_check(
+    text: &str,
+    items: &[Item],
+    overlapped: &BTreeSet<String>,
+) -> (String, Vec<String>, usize) {
     let mut said = String::new();
     let mut failed = Vec::new();
     let mut ok = 0;
     for item in items {
-        let (label, verdict) = match item {
-            Item::Missing(label, why) => (label, Err(why.clone())),
-            Item::Patch(p) => (&p.label, verify(text, p)),
+        let (label, verdict, note) = match item {
+            Item::Missing(label, why) => (label, Err(why.clone()), ""),
+            Item::Patch(p) if overlapped.contains(&p.label) => {
+                // The merged edit holds neither new_string: only the old
+                // text's absence can be asked of it.
+                let verdict = if text.contains(&p.old) {
+                    Err("old_string is still present (overlapped)".to_string())
+                } else {
+                    Ok(())
+                };
+                (&p.label, verdict, " (overlapped; old_string gone)")
+            }
+            Item::Patch(p) => (&p.label, verify(text, p), ""),
         };
         match verdict {
             Ok(()) => {
                 ok += 1;
-                said.push_str(&clip(format!("verified {label}")));
+                said.push_str(&clip(format!("verified {label}{note}")));
             }
             Err(why) => {
                 said.push_str(&clip(format!("unverified {label}: {why}")));
@@ -771,23 +816,23 @@ fn check(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
     } else {
         (Vec::new(), String::new())
     };
+    let ledger = store()?.join("outcomes.jsonl");
+    let recorded =
+        rows(&ledger).map_err(|e| Fail::Io(format!("cannot read {}: {e}", ledger.display())))?;
     let prefix = match &opts.before {
         Some(b) => b.clone(),
-        None => {
-            let ledger = store()?.join("outcomes.jsonl");
-            rows(&ledger)
-                .map_err(|e| Fail::Io(format!("cannot read {}: {e}", ledger.display())))?
-                .iter()
-                .rev()
-                .filter(|r| is_merge(r, &plan_path))
-                .filter(|r| r.get("mode").and_then(|m| m.as_str()) == Some("command"))
-                .find_map(|r| r.get("body_sha_before")?.as_str().map(str::to_string))
-                .unwrap_or(current)
-        }
+        None => recorded
+            .iter()
+            .rev()
+            .filter(|r| is_merge(r, &plan_path))
+            .filter(|r| r.get("mode").and_then(|m| m.as_str()) == Some("command"))
+            .find_map(|r| r.get("body_sha_before")?.as_str().map(str::to_string))
+            .unwrap_or(current),
     };
     let sha = resolve(&launches, &prefix)?;
     let items = gather(findings, &launches, sha.as_deref(), &source)?;
-    let (said, failed, _) = run_check(&text, &items);
+    let overlapped = overlapped(&recorded, &plan_path, sha.as_deref());
+    let (said, failed, _) = run_check(&text, &items, &overlapped);
     Ok((said, if failed.is_empty() { 0 } else { 3 }))
 }
 
@@ -858,7 +903,8 @@ fn fallback(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
         sha.as_deref(),
         &transcript.display().to_string(),
     )?;
-    let (said, failed, ok) = run_check(&text, &items);
+    let overlapped = overlapped(&seen, &plan_path, sha.as_deref());
+    let (said, failed, ok) = run_check(&text, &items, &overlapped);
     let verified = failed.is_empty();
     let row = serde_json::json!({
         "schema": MERGE_SCHEMA,

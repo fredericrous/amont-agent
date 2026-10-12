@@ -739,3 +739,71 @@ fn stdin_on_a_terminal_is_a_usage_error() {
     // The data lines never appear: the command refused before reading.
     assert!(!said.lines().any(|l| l.starts_with("applied ")), "{said}");
 }
+
+/// Two reviewers' patches on the same lines: the second is recorded
+/// `overlaps`, and whoever applies it writes one merged edit that holds
+/// neither new_string. The check asks only that its old_string is gone.
+fn overlapping_world(name: &str) -> (World, String) {
+    let mut w = World::new(name);
+    w.review(
+        "backend",
+        "a1",
+        &patches(&[(1, "alpha beta", "A"), (2, "beta\n\ndup", "B")]),
+    );
+    let o = w.run(&[], F12);
+    assert_eq!(o.status.code(), Some(3), "{}", err(&o));
+    assert!(
+        out(&o).contains("unmatched backend#2: overlaps backend#1\n"),
+        "{}",
+        out(&o)
+    );
+    let apply_block = out(&o).trim_end().lines().last().unwrap().to_string();
+    (w, apply_block)
+}
+
+#[test]
+fn check_verifies_an_overlapped_patch_on_its_old_string_gone() {
+    let (w, _) = overlapping_world("overlap-check");
+    // The merged edit: neither "B" nor the old "beta\n\ndup" is in the text.
+    let merged = w.text().replacen("A\n\ndup\n", "A\n\nmerged dup\n", 1);
+    std::fs::write(&w.plan, merged).unwrap();
+    let o = w.run(&["--check"], F12);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let said = out(&o);
+    assert!(said.contains("verified backend#1\n"), "{said}");
+    assert!(
+        said.contains("verified backend#2 (overlapped; old_string gone)\n"),
+        "{said}"
+    );
+    assert!(said.contains("verified 2, unverified 0\n"), "{said}");
+}
+
+#[test]
+fn an_overlapped_patch_whose_old_string_remains_stays_unverified() {
+    let (w, _) = overlapping_world("overlap-remains");
+    // The old text is back on the overlapped lines: nothing was merged.
+    let undone = w.text().replacen("A\n\ndup\n", "A beta\n\ndup\n", 1);
+    std::fs::write(&w.plan, undone).unwrap();
+    let o = w.run(&["--check"], F12);
+    assert_eq!(o.status.code(), Some(3), "{}", err(&o));
+    let said = out(&o);
+    assert!(said.contains("verified backend#1\n"), "{said}");
+    assert!(
+        said.contains("unverified backend#2: old_string is still present (overlapped)\n"),
+        "{said}"
+    );
+}
+
+#[test]
+fn record_fallback_verifies_an_overlapped_patch() {
+    let (mut w, apply_block) = overlapping_world("overlap-fallback");
+    let merged = w.text().replacen("A\n\ndup\n", "A\n\nmerged dup\n", 1);
+    std::fs::write(&w.plan, merged).unwrap();
+    w.fallback(&format!("{apply_block}\n\nApply the edits."), "gp-2");
+    let o = w.run(&["--record-fallback"], F12);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert!(out(&o).contains("verified 2, unverified 0"), "{}", out(&o));
+    let rows = w.rows();
+    assert_eq!(rows[1]["mode"], "subagent");
+    assert_eq!(rows[1]["verified"], true, "{:?}", rows[1]);
+}
