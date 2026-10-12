@@ -36,8 +36,16 @@ fn active(home: &Path) -> PathBuf {
     home.join("active")
 }
 
+/// Entries as a watcher sees them: a dotfile is a writer's temp, renamed
+/// away the next moment.
 fn entries(dir: &Path) -> Vec<PathBuf> {
     files(dir, ".json")
+        .into_iter()
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
+        .collect()
 }
 
 fn read_entry(path: &Path) -> serde_json::Value {

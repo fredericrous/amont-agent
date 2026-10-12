@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.37.0
 
 ### Added
 
