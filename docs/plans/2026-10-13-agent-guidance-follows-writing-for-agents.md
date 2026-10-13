@@ -86,8 +86,18 @@ CHANGELOG), `docs/rules.md` rows, `CHANGELOG.md`. Released as 2.39.0
   advises; `CLAUDE.md.tmpl` crossing 8,192 advises; shrinking silent; a
   shape finding told once per file; `src/main.rs` silent; other memory
   files exempt; a lint-suppression deny still denies.
+- `cargo run -- rules --json`, filtered to `agent-guidance*` → expected both
+  ids, advise/advise; printed `agent-guidance-written` advise/advise 0.66 and
+  `agent-guidance-shape` advise/advise 0.65.
 - Unit tests in `agent_guidance_shape.rs` (12): every trigger form passes,
-  including the two measured fleet descriptions; `Use Foo` is not a trigger.
+  including `Use at/before/after` and the two measured fleet descriptions;
+  `Use Foo` is not a trigger.
 - `tools/agent-guidance-rate.py` over 131,285 tool calls: 86 guidance
   writes, 0.66 per 1,000 (SKILL.md 0.22, CLAUDE.md 0.21, MEMORY.md 0.18,
   other 0.05) — in each rule's `Evidence`.
+
+## Implementation review
+Round 1: approve-with-changes (64k tokens, 54 s). Fixed: `combine` names every
+`Decision` (Ask kept, Deny > Ask > Advise; other variants keep their text);
+explicit stance arms; `Use at/before/after` tested; `holds-until` on the
+trigger heuristic; `rules --json` recorded.

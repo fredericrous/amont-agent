@@ -53,6 +53,11 @@ pub const BUDGET: usize = 8192;
 /// (`Use when`, `Use for`, `Use in plan mode`, …) or a `whenever` clause
 /// (`Load this first … whenever …`). Both forms are measured triggers in the
 /// fleet's own skills (guidance.pointer-names-when, ADR-0032).
+///
+/// holds-until: a description gets past it with a `Use` that names no case
+/// ("Use the CLI.") — accepted, since the rule only advises and a reviewer
+/// reads the description. Replace it with the trigger rate from
+/// `skill-trigger-test` if such descriptions show up in the journal.
 fn has_trigger(value: &str) -> bool {
     value.to_lowercase().contains("whenever")
         || value.match_indices("Use ").any(|(at, _)| {
@@ -189,6 +194,9 @@ mod tests {
             "Does x. Use when y.",
             "Does x. Use whenever y.",
             "Does x. Use for y.",
+            "Does x. Use at the start of a task.",
+            "Does x. Use before a push.",
+            "Does x. Use after a merge.",
             "Does x. Use proactively, without being asked.",
             "Run the panel. Use in plan mode every time a plan is presented.",
             "Load this FIRST, before any command, whenever a bug's cause is not known yet.",

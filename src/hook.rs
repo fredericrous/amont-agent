@@ -655,21 +655,35 @@ fn write_decision(op: &crate::payload::FileOp) -> Decision {
 /// way every text is carried, joined with blank lines.
 fn combine(decisions: impl IntoIterator<Item = Decision>) -> Decision {
     let mut denied = false;
+    let mut asked = false;
     let mut texts: Vec<String> = Vec::new();
     for decision in decisions {
         match decision {
+            Decision::Silent => {}
             Decision::Deny(text) => {
                 denied = true;
                 texts.push(text);
             }
+            Decision::Ask(text) => {
+                asked = true;
+                texts.push(text);
+            }
             Decision::Advise(text) => texts.push(text),
-            _ => {}
+            // A write rule answers Silent, Advise, Ask or Deny; these belong
+            // to other events. If one ever reaches here, its text is kept as
+            // advice rather than dropped.
+            Decision::Context(text)
+            | Decision::Assert(text)
+            | Decision::Continue(text)
+            | Decision::UserNote(text) => texts.push(text),
         }
     }
     if texts.is_empty() {
         Decision::Silent
     } else if denied {
         Decision::Deny(texts.join("\n\n"))
+    } else if asked {
+        Decision::Ask(texts.join("\n\n"))
     } else {
         Decision::Advise(texts.join("\n\n"))
     }
@@ -708,7 +722,8 @@ fn guidance_written(op: &crate::payload::FileOp) -> Decision {
     note_file(rule, stance, op, &shown);
     match stance {
         Stance::Observe => Decision::Silent,
-        _ => Decision::Advise(agw::phrase(&shown)),
+        // The ceiling is advise (`max_stance`); a deny stance still advises.
+        Stance::Advise | Stance::Deny => Decision::Advise(agw::phrase(&shown)),
     }
 }
 
@@ -754,7 +769,8 @@ fn guidance_shape(op: &crate::payload::FileOp) -> Decision {
     note_file(rule, stance, op, &ags::excerpt(&shown, kind));
     match stance {
         Stance::Observe => Decision::Silent,
-        _ => Decision::Advise(text),
+        // The ceiling is advise (`max_stance`); a deny stance still advises.
+        Stance::Advise | Stance::Deny => Decision::Advise(text),
     }
 }
 
