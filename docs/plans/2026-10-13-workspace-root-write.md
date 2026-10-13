@@ -118,7 +118,7 @@ missing.
 - `docs/rules.md`: add a table row, and a paragraph under "Why only three of
   them deny".
 - `CHANGELOG.md`: add the rule under `## Unreleased` / `### Added`.
-- `Cargo.toml`: bump to 2.38.0.
+- `Cargo.toml`: no bump here; the release PR carries it (Decision log).
 - `docs/plans/2026-10-13-workspace-root-write.md`: this plan, which lands as the
   first commit.
 

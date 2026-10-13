@@ -363,16 +363,17 @@ fn is_temp_dir(dir: &Path) -> bool {
 }
 
 fn said(ctx: &Context, t: &Target, root: &Path, name: &str) -> Confirmed {
+    // A count that could not be read is left out, never printed as zero.
     let loose = std::fs::read_dir(root)
         .map(|rd| {
             rd.flatten()
                 .filter(|e| e.file_type().is_ok_and(|ft| !ft.is_dir()))
                 .count()
         })
-        .unwrap_or(0);
+        .map_or_else(|_| String::new(), |n| format!(" ({n} files there today)"));
     let reason = format!(
         "`{name}` would land in `{}`, a workspace root that is in no repository: git never \
-         shows the file and nothing sweeps it ({loose} files there today).",
+         shows the file and nothing sweeps it{loose}.",
         tilde(root)
     );
     let worktree = ctx
@@ -571,6 +572,9 @@ fn input_paths(tool: &str, input: &serde_json::Value, out: &mut Vec<PathBuf>) {
 
 /// The absolute directories a Bash command names with `git -C <p>` or
 /// `cd <p>`, in the order written.
+// holds-until: a session that names its worktree only through a relative or
+// quoted-with-spaces `cd`/`git -C` operand. A miss only degrades the remedy to
+// the scratch directory; the shell parser would read every form.
 fn bash_paths(command: &str) -> Vec<PathBuf> {
     let words: Vec<&str> = command.split_whitespace().collect();
     let mut out = Vec::new();
@@ -842,9 +846,7 @@ mod tests {
 
     #[test]
     fn a_home_target_is_resolved_against_home() {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            return;
-        };
+        let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
         let parsed = lex("");
         let ctx = Context {
             cwd: Path::new("/"),
