@@ -33,6 +33,7 @@
 | `equals-separator` | `observe` | a bare word beginning with `=` (`echo ===`, `[ x == y ]`), which zsh reads as a command lookup and whose failure aborts the whole command list |
 | `unsplit-expansion` | `observe` | an unquoted `$var` under `set --` or `for … in`, which zsh leaves as one word: the positionals or the loop get the whole string and the command runs wrong while reporting success |
 | `path-operand-missing` | `advise` | a read of a path that is not there — under the grep shim a warning in mid-stream, for the coreutils one line and carry on — which the chain then reports as success |
+| `workspace-root-write` | `deny` | an output redirect or `tee` target that lands directly in a workspace root (a directory in no git tree that holds several repositories), where the file belongs to no repository, is never shown by git and is never swept; the refusal names the linked worktree this session works in, or its scratch directory |
 | `stat-bsd-format` | `advise` | `stat -f '%…'` on GNU stat (or `-c` on BSD), which prints a filesystem report where a timestamp was wanted |
 | `whole-file-dump` | `advise` | a file poured whole into the tool result by `cat`/`sed -n`/`head` — 31% of all result bytes measured — where the Read tool would have windowed it |
 | `persisted-output-dump` | `advise` | reading back whole a tool result the harness saved to a file for being too large, paying for it twice |
@@ -53,7 +54,7 @@ with the stance in force on this machine rather than the shipped one: a rule
 you promoted in `~/.gitconfig` reads `deny (ships as observe)`, and a rule
 with a ceiling names it, `(max advise)`.
 
-## Why only three of them deny
+## Why only four of them deny
 
 `pipe-to-tail` blocks because seven consecutive weeks of measurement showed no
 downward trend while every other habit halved. That is the bar: a rule earns
@@ -84,6 +85,20 @@ prompt resets the count. Anything it cannot establish — no repository, a git
 failure, an unreadable plan, a session id it will not use as a file name —
 lets the turn end. To turn it off without uninstalling:
 `git config --global amont.agent.plan-phases-open.stance observe`.
+
+`workspace-root-write` is the fourth, and ships at `deny` straight away
+instead of walking the observe, advise ladder. The evidence is on disk, not in a
+rate: 86 `*.log` and `*.err` files in `~/Developer/Perso`, none of them in a
+repository, none swept, none traceable to a task, and the refusal carries a
+one-word fix. `examine` reads only the shape (a write redirect or a `tee`
+operand with a literal target); `confirm` establishes the fact, that the
+directory the clause runs in, after its `cd`s, is in no git tree and has at
+least two children with a `.git`. The system temp directories are never roots.
+The remedy names the linked worktree the session touched last, but only when
+`git check-ignore` says a file of that name is ignored there (an untracked log
+would hold `worktree-sweep` forever), and otherwise the session's scratch
+directory, which `worktree-sweep --scratch` clears. To demote it to a record:
+`git config --global amont.agent.workspace-root-write.stance observe`.
 
 `stale-base` advises from the start because it refuses nothing, speaks only
 after measuring a real gap, and names a failure no correcting loop can see —

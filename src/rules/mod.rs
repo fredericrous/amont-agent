@@ -68,6 +68,7 @@ pub mod tool_shell;
 pub mod unbounded_background_push;
 pub mod unsplit_expansion;
 pub mod whole_file_dump;
+pub mod workspace_root_write;
 pub mod worktree_isolation;
 pub mod worktree_remove_force;
 
@@ -348,6 +349,10 @@ pub struct Context<'a> {
     /// A subagent's own transcript, when the call runs inside one: the
     /// payload's `agent_transcript_path`. `transcript` is then the parent's.
     pub agent_transcript: Option<&'a std::path::Path>,
+    /// The command as written. A `confirm` of an [`Examine::Analysis`] rule
+    /// re-reads the finding's span through the analysis; `""` where there is
+    /// no command (tests).
+    pub command: &'a str,
 }
 
 impl Context<'_> {
@@ -468,7 +473,18 @@ pub const RULES: &[Rule] = &[
     lint_suppression_added::RULE,
     request_fanout::RULE,
     test_output_trimmed::RULE,
+    workspace_root_write::RULE,
 ];
+
+/// `text` against `cwd`: absolute stays as written, anything else is under
+/// `cwd`.
+pub(crate) fn resolve(cwd: &std::path::Path, text: &str) -> std::path::PathBuf {
+    if text.starts_with('/') {
+        std::path::PathBuf::from(text)
+    } else {
+        cwd.join(text)
+    }
+}
 
 pub fn by_id(id: &str) -> Option<&'static Rule> {
     RULES.iter().find(|r| r.id == id)
@@ -534,6 +550,7 @@ mod tests {
             tool_use_id: "",
             transcript: None,
             agent_transcript: None,
+            command: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -558,6 +575,7 @@ mod tests {
             tool_use_id: "",
             transcript: None,
             agent_transcript: None,
+            command: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -576,6 +594,7 @@ mod tests {
             tool_use_id: "",
             transcript: None,
             agent_transcript: None,
+            command: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -594,6 +613,7 @@ mod tests {
             tool_use_id: "",
             transcript: None,
             agent_transcript: None,
+            command: "",
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -614,6 +634,7 @@ mod tests {
                 tool_use_id: "",
                 transcript: None,
                 agent_transcript: None,
+                command: "",
             };
             assert_eq!(
                 ctx.cwd_at(at_of(&parsed, "stash")),
@@ -634,6 +655,7 @@ mod tests {
             tool_use_id: "",
             transcript: None,
             agent_transcript: None,
+            command: "",
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));

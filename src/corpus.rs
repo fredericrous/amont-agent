@@ -100,6 +100,10 @@ pub fn path_for(rule: &str) -> PathBuf {
 /// entry is.
 const EMBEDDED: &[(&str, &str)] = &[
     (
+        "workspace-root-write",
+        include_str!("../tests/corpus/workspace-root-write.cases"),
+    ),
+    (
         "pipe-to-tail",
         include_str!("../tests/corpus/pipe-to-tail.cases"),
     ),
