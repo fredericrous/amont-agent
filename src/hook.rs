@@ -1349,7 +1349,11 @@ mod write_tests {
             Decision::Silent => ("silent", String::new()),
             Decision::Advise(t) => ("advise", t),
             Decision::Deny(t) => ("deny", t),
-            _ => ("other", String::new()),
+            Decision::Ask(t) => ("ask", t),
+            Decision::Context(t)
+            | Decision::Assert(t)
+            | Decision::Continue(t)
+            | Decision::UserNote(t) => ("other", t),
         }
     }
 
@@ -1379,5 +1383,29 @@ mod write_tests {
             Decision::Advise("three".into()),
         ]));
         assert_eq!((kind, t.as_str()), ("deny", "one\n\ntwo\n\nthree"));
+    }
+
+    #[test]
+    fn an_ask_beats_advice_and_carries_every_text() {
+        let (kind, t) = text(combine([
+            Decision::Advise("one".into()),
+            Decision::Ask("two".into()),
+        ]));
+        assert_eq!((kind, t.as_str()), ("ask", "one\n\ntwo"));
+    }
+
+    #[test]
+    fn a_deny_beats_an_ask() {
+        let (kind, t) = text(combine([
+            Decision::Ask("one".into()),
+            Decision::Deny("two".into()),
+        ]));
+        assert_eq!((kind, t.as_str()), ("deny", "one\n\ntwo"));
+    }
+
+    #[test]
+    fn text_from_another_event_is_kept_as_advice() {
+        let (kind, t) = text(combine([Decision::Context("one".into())]));
+        assert_eq!((kind, t.as_str()), ("advise", "one"));
     }
 }
