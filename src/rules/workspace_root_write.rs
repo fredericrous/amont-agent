@@ -612,7 +612,6 @@ mod tests {
     use super::*;
     use crate::rules::Dialect;
     use crate::shell::lex;
-    #[cfg(unix)]
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -738,10 +737,15 @@ mod tests {
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
         std::fs::create_dir_all(&dir).expect("fixture dir");
-        dir.canonicalize().expect("canonical")
+        let dir = dir.canonicalize().expect("canonical");
+        // Windows canonicalizes to a verbatim `\\?\C:\…` path, which
+        // `git worktree add` rejects; the plain drive path names the same place.
+        match dir.to_str().and_then(|d| d.strip_prefix(r"\\?\")) {
+            Some(plain) => PathBuf::from(plain),
+            None => dir,
+        }
     }
 
-    #[cfg(unix)]
     fn git(dir: &Path, args: &[&str]) {
         let out = Command::new("git")
             .arg("-C")
@@ -797,13 +801,13 @@ mod tests {
         }
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn a_root_with_two_repositories_fires() {
         let root = root("fires");
         assert!(fires_in("make > x.log", &root));
         assert!(fires_in("make 2>&1 | tee x.log", &root));
+        // A Windows path in a shell word is backslash-escaped: Unix paths only.
+        #[cfg(unix)]
         assert!(fires_in(&format!("make > {}/x.log", root.display()), &root));
         assert!(fires_in("make > ./x.log", &root));
         assert!(fires_in("make > a/../x.log", &root));
@@ -948,7 +952,6 @@ mod tests {
 
     // ---- the remedy
 
-    #[cfg(unix)]
     fn line(tool: &str, key: &str, value: &str) -> String {
         format!(
             "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"name\":\"{tool}\",\"input\":{{\"{key}\":{}}}}}]}}}}\n",
@@ -956,7 +959,6 @@ mod tests {
         )
     }
 
-    #[cfg(unix)]
     fn transcript(dir: &Path, lines: &[String]) -> PathBuf {
         let slug = dir.join("-proj");
         std::fs::create_dir_all(&slug).unwrap();
@@ -968,7 +970,6 @@ mod tests {
     /// A primary checkout with two linked worktrees that ignore `*.log`
     /// (`w1`, `w2`) and one that does not (`w3`), beside a submodule-like
     /// directory `sub`.
-    #[cfg(unix)]
     struct Trees {
         top: PathBuf,
         primary: PathBuf,
@@ -978,7 +979,6 @@ mod tests {
         sub: PathBuf,
     }
 
-    #[cfg(unix)]
     fn trees(tag: &str) -> Trees {
         let top = fixture(tag);
         let primary = top.join("primary");
@@ -1011,13 +1011,10 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn rd(p: &Path) -> String {
         p.join("src/lib.rs").display().to_string()
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn the_latest_of_two_linked_worktrees_wins() {
         let t = trees("latest");
@@ -1031,7 +1028,8 @@ mod tests {
         assert_eq!(latest_worktree(&tr, TAIL_BYTES), Some(t.w2.clone()));
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
+    // holds-until: `bash_paths` reads absolute Unix operands only (see its
+    // comment); Windows `cd C:\…` forms end it.
     #[cfg(unix)]
     #[test]
     fn every_path_key_and_bash_form_counts() {
@@ -1065,8 +1063,6 @@ mod tests {
         assert_eq!(latest_worktree(&tr, TAIL_BYTES), None);
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn a_primary_checkout_touched_last_is_skipped() {
         let t = trees("primary");
@@ -1081,8 +1077,6 @@ mod tests {
         assert_eq!(tree_of(&t.primary), Tree::Other);
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn a_submodule_touched_last_is_skipped() {
         let t = trees("submodule");
@@ -1097,8 +1091,6 @@ mod tests {
         assert_eq!(tree_of(&t.sub), Tree::Other);
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn a_path_in_no_tree_is_passed_over() {
         let t = trees("notree");
@@ -1112,8 +1104,6 @@ mod tests {
         assert_eq!(latest_worktree(&tr, TAIL_BYTES), Some(t.w1.clone()));
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn the_tail_drops_its_first_cut_line() {
         let t = trees("cut");
@@ -1143,8 +1133,6 @@ mod tests {
         assert_eq!(latest_worktree(&p, TAIL_BYTES), None);
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn a_worktree_that_ignores_the_file_is_named() {
         let t = trees("named");
@@ -1165,8 +1153,6 @@ mod tests {
         assert!(remedy.ends_with("If the file belongs in the root on purpose, ask the person."));
     }
 
-    // Git fixtures on Windows get `\\?\` canonical paths git cannot use.
-    #[cfg(unix)]
     #[test]
     fn a_worktree_that_does_not_ignore_it_is_not_named() {
         let t = trees("unignored");
