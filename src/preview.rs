@@ -1114,6 +1114,7 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) -> Optio
         tool_use_id: &bash.tool_use_id,
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
     };
     let here = ctx.cwd_at(cmd.at);
     let dir = match cmd.flag_value("--repo") {
@@ -1672,6 +1673,7 @@ pub fn record_before(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed)
         tool_use_id: &bash.tool_use_id,
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
     };
     let Push::Resolved { repo, targets } = push_target::resolve(&ctx.cwd_at(cmd.at), cmd) else {
         return;

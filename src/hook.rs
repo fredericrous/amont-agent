@@ -263,6 +263,7 @@ fn on_bash(bash: &Bash) -> Decision {
                 tool_use_id: &bash.tool_use_id,
                 transcript: bash.transcript.as_deref(),
                 agent_transcript: bash.agent_transcript.as_deref(),
+                command: &bash.command,
             };
             let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
             let verdict = reread_verdict(
@@ -407,6 +408,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
         tool_use_id: &bash.tool_use_id,
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
     };
 
     // A `cat`-shaped dump that has now run is a read the session should
@@ -1003,6 +1005,7 @@ fn confirmed(
         tool_use_id: &bash.tool_use_id,
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
     };
     // The directory that matters is the one the matched clause runs in,
     // `cd`s followed — not the session's. A session left in a removed
@@ -1137,6 +1140,7 @@ fn attributed_repo(id: &str, bash: &Bash) -> String {
             tool_use_id: &bash.tool_use_id,
             transcript: bash.transcript.as_deref(),
             agent_transcript: bash.agent_transcript.as_deref(),
+            command: &bash.command,
         };
         crate::push_target::repository(&ctx.cwd_at(cmd.at), cmd)
     });

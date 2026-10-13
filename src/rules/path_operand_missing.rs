@@ -38,9 +38,8 @@
 //! `docker exec` is looked at: a remote path is not this filesystem's to
 //! check.
 
-use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
+use crate::rules::{resolve, Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::{Connector, Parsed, Simple, Word};
-use std::path::{Path, PathBuf};
 
 pub const RULE: Rule = Rule {
     id: "path-operand-missing",
@@ -403,14 +402,6 @@ fn parent_of(text: &str) -> &str {
         Some(0) => "/",
         Some(i) => &text[..i],
         None => ".",
-    }
-}
-
-fn resolve(cwd: &Path, text: &str) -> PathBuf {
-    if text.starts_with('/') {
-        PathBuf::from(text)
-    } else {
-        cwd.join(text)
     }
 }
 

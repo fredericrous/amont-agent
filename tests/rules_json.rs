@@ -112,7 +112,12 @@ fn the_rules_that_refuse_by_default() {
     deny.sort_unstable();
     assert_eq!(
         deny,
-        ["pipe-to-tail", "plan-phases-open", "plan-review-panel"]
+        [
+            "pipe-to-tail",
+            "plan-phases-open",
+            "plan-review-panel",
+            "workspace-root-write"
+        ]
     );
 }
 

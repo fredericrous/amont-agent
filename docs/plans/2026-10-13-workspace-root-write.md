@@ -135,7 +135,7 @@ ladder would collect, and the refusal carries a one-word fix.
 
 - [x] 1. Worktree `feat/workspace-root-write` from `origin/main` (using
   `worktree-task`), with the plan as the first commit.
-- [ ] 2. Implement the rule, the helpers hoist and the tests.
+- [x] 2. Implement the rule, the helpers hoist and the tests.
   - Unit tests: `examine` shapes, including `&>`, `2>`, `tee -a`, `sudo tee`,
     `> /dev/null`, `2>&1`, `>&file`, `>!`, `cat <<EOF > x.log`, `$VAR.log`,
     `> ~/Developer/Perso/x.log`, `> "~/x.log"` (unknown, skipped),
