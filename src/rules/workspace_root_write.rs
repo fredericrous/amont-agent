@@ -576,7 +576,7 @@ fn input_paths(tool: &str, input: &serde_json::Value, out: &mut Vec<PathBuf>) {
     }
     for key in ["file_path", "path", "notebook_path", "filePath"] {
         if let Some(p) = input.get(key).and_then(|p| p.as_str()) {
-            if p.starts_with('/') {
+            if Path::new(p).is_absolute() {
                 out.push(PathBuf::from(p));
             }
         }
@@ -1161,6 +1161,8 @@ mod tests {
         let (_, remedy) = said_of(verdict("make > probe.log", &ws, Some(&tr)));
         assert!(!remedy.contains("works in the worktree"), "{remedy}");
         assert!(!remedy.contains(&t.w3.display().to_string()), "{remedy}");
+        // The session's own directory needs the owner's uid, a Unix fact.
+        #[cfg(unix)]
         assert!(remedy.contains("sess-1/probe.log"), "{remedy}");
         assert!(remedy.contains("worktree-sweep --scratch"), "{remedy}");
         assert!(remedy.ends_with("ask the person."), "{remedy}");
