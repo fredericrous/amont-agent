@@ -177,7 +177,8 @@ ladder would collect, and the refusal carries a one-word fix.
 approve (Delta), after approve-with-changes in round 1 (61k, 37 s; Delta 63k, 8 s).
 Fixed: an unread loose-file count is omitted, not printed as 0; `holds-until:` on `bash_paths`; stale Cargo line in Files; the HOME test expects HOME.
 deliberate: `home_is_never_a_root` and the temp-dir test read the real HOME and temp dir, because they test the exclusion of the machine's actual directories.
-Next: Phase 4 (PR, merge on green), then Phase 5 (release 2.38.0, live check).
+CI fix (Windows: unix-only `uid` and symlink, gated with `cfg(unix)`): approve (33k, 12 s). The `None` scratch path falls back to the generic pattern in `said`; Windows runs only the pure-logic tests, deliberate, since the rule is about Unix paths.
+Next: Phase 4 (PR #104, merge on green), then Phase 5 (release 2.38.0, live check).
 
 ## Verification
 
