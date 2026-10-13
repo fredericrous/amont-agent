@@ -62,3 +62,32 @@ CHANGELOG), `docs/rules.md` rows, `CHANGELOG.md`. Released as 2.39.0
 - For the size ratchet, a new file's `before` is 0.
 - The plan's Verification (Phase 2) lists the hook tests this slice must
   pass; they are the acceptance of the relais run.
+
+## Decision log
+- 2026-10-13 — relais run run-65dbe29adbe0d-12ee6 was interrupted (worker
+  hit its wall time); its preserved patch passed `make check` and was
+  salvaged (recorded with `mcp__relais__decide`).
+- 2026-10-13 — The trigger check accepts any `Use <word> …` or `whenever …`
+  clause, not only the seven phrases in the plan: the measured
+  `diagnosing-bugs` description ("Load this FIRST … whenever …") and
+  `plan-review` ("Use in plan mode …") failed the narrow list.
+- 2026-10-13 — deliberate: no hook test for "a write that also adds a lint
+  suppression carries both texts". No file can trigger both:
+  `lint-suppression-added` reads code files, the guidance rules read `.md`
+  guidance files. The collector's deny path is tested.
+
+## Observed (before the push)
+- `make check` → ok (fmt, clippy -D warnings ×2, test_bump_tap, cargo test
+  --locked, quiet test), 121 s.
+- Hook tests (tests/hook.rs, `guidance_*`): Edit to a SKILL.md advises once;
+  5 Edits → one advice; two-line and `>` descriptions flagged;
+  `disable-model-invocation` skill silent; Fragment edit silent and
+  journalled; growing a 9 KB CLAUDE.md advises with byte numbers; 7 → 9 KB
+  advises; `CLAUDE.md.tmpl` crossing 8,192 advises; shrinking silent; a
+  shape finding told once per file; `src/main.rs` silent; other memory
+  files exempt; a lint-suppression deny still denies.
+- Unit tests in `agent_guidance_shape.rs` (12): every trigger form passes,
+  including the two measured fleet descriptions; `Use Foo` is not a trigger.
+- `tools/agent-guidance-rate.py` over 131,285 tool calls: 86 guidance
+  writes, 0.66 per 1,000 (SKILL.md 0.22, CLAUDE.md 0.21, MEMORY.md 0.18,
+  other 0.05) — in each rule's `Evidence`.
