@@ -179,6 +179,7 @@ Fixed: an unread loose-file count is omitted, not printed as 0; `holds-until:` o
 deliberate: `home_is_never_a_root` and the temp-dir test read the real HOME and temp dir, because they test the exclusion of the machine's actual directories.
 CI fix (Windows: unix-only `uid` and symlink, gated with `cfg(unix)`): approve (33k, 12 s). The `None` scratch path falls back to the generic pattern in `said`; Windows runs only the pure-logic tests, deliberate, since the rule is about Unix paths.
 Windows fixtures: approve after a Delta (54k + 60k). Fixed at the locus: `fixture()` strips the verbatim `\\?\` prefix, so the git-backed tests run on Windows. Gated: one Unix-path shell assertion and `every_path_key_and_bash_form_counts` (holds-until on `bash_paths`).
+Windows transcript pick: approve (Delta, 62k). `input_paths` used `starts_with('/')`; now `Path::is_absolute`. deliberate: a Git Bash `/c/…` path is not absolute on Windows and names no worktree.
 Next: Phase 4 (PR #104, merge on green), then Phase 5 (release 2.38.0, live check).
 
 ## Verification
