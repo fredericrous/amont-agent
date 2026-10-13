@@ -146,7 +146,7 @@ ladder would collect, and the refusal carries a one-word fix.
     resolved through `cwd_at`, a symlinked root, and a temp dir with two git
     children that does not fire.
   - The transcript pick on a fixture JSONL.
-- [ ] 3. Backtest, then fill in `Evidence`. Gate: replay the built rule,
+- [x] 3. Backtest, then fill in `Evidence`. Gate: replay the built rule,
   `confirm` included, over the shape hits of the last 30 days that ran with
   the workspace root as cwd: take the hits from `backtest --json` and feed each one as a PreToolUse payload to the built binary with `cwd` set to the root, as in the end-to-end check. List each hit and its verdict in `Evidence`. If any hit is a file meant to stay in the root
   (not a scratch log or output), ship at Advise instead of Deny. Update the
@@ -155,6 +155,22 @@ ladder would collect, and the refusal carries a one-word fix.
   (`merge-when-green`).
 - [ ] 5. Release 2.38.0 (`tag-release`), `brew upgrade amont-agent`, then
   observe it live. After one week, count the root's loose `*.log` and `*.err` files (86 now; it must not grow) and read the deny and `unconfirmed` counts from the journal.
+
+## Decision log
+
+- 2026-10-13: Phase 2 ran through relais (run-65db850448ff2-14756). Its reviewer was unavailable; the candidate passed `make check`, and was salvaged with one edit. The no-worktree remedy no longer adds "or in the repository the task is about", because a primary checkout is never named.
+- 2026-10-13: the version bump moves to the release PR (`chore(release): 2.38.0`), the convention of every earlier release.
+- 2026-10-13: the Phase 3 replay showed that `$HOME` qualifies as a root (`~/apisix-workshop` and `~/emsdk` are clones), so `>> ~/.netrc` would be refused. `$HOME` is now excluded like the temp directories, with a test.
+
+## Phase 3 results
+
+- Backtest since 2026-09-07: 9,856 shape hits in 83,733 calls (117.7 per 1000, flat over 6 weeks). The backtester does not run `confirm`.
+- Replay of 3,357 distinct commands recorded with `~/Developer/Perso` as cwd, through the built binary, `confirm` included: 22 denied, 3,335 passed.
+  - 18 `*.tmp.mjs` probes, `scratch-relay.log` (from `../../`): scratch, correctly refused.
+  - `tsconfig.build.json` and `.env` (one each): artifacts of the replay. The transcript records the session's directory, not the shell's live cwd, and neither file exists in the root. Live payloads carry the real cwd.
+  - `.aval19-dir`, written to `~`: the `$HOME` false positive, fixed (Decision log).
+- Gate: no file meant to stay in the root was refused, so the rule ships at Deny.
+- End to end on the built binary, in a tempdir root with two git children and this session's transcript: `echo x > probe.log` and `make &> build.log` were denied, naming this worktree (it ignores `*.log`). `tee -a notes.txt` was denied, naming the session scratch directory (`notes.txt` is not ignored). `cd a && … > probe.log`, `> /tmp/probe.log` and `$(cd a && echo x > y.log)` passed.
 
 ## Verification
 

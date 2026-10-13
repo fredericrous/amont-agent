@@ -9,6 +9,7 @@
   target whose directory is in no git tree and holds at least two repositories
   is denied, and the refusal names the linked worktree the session touched
   last (when it ignores the file) or the session's scratch directory.
+  Temp directories and `$HOME` are never roots.
   Demote it with
   `git config --global amont.agent.workspace-root-write.stance observe`.
   `Context` gains `command`, so a `confirm` of an analysis rule can re-read

@@ -50,11 +50,15 @@ pub const RULE: Rule = Rule {
     default_stance: Stance::Deny,
     max_stance: Stance::Deny,
     evidence: Evidence {
-        // The shape rate: a redirect or `tee` to a literal path. The backtester
-        // never runs `confirm`, so this is not the rate of writes into a root.
-        // The measurement is on disk: 86 `*.log`/`*.err` files in
-        // `~/Developer/Perso` on 2026-10-13.
-        per_1000: 0.0,
+        // The shape rate: a redirect or `tee` to a literal path, 9,856 of
+        // 83,733 calls since 2026-09-07. The backtester never runs `confirm`,
+        // so this is not the rate of writes into a root. That was replayed
+        // through the built binary: of 3,357 commands recorded with
+        // `~/Developer/Perso` as their cwd, 22 were refused, all scratch
+        // files (`*.tmp.mjs` probes, `../../scratch-relay.log`). The replay
+        // also found `$HOME` qualifying as a root, which is now excluded. The
+        // measurement on disk: 86 `*.log`/`*.err` files in the root.
+        per_1000: 117.7,
         measured: "2026-10-13",
         trend: Trend::Flat(6),
     },
@@ -343,11 +347,14 @@ fn is_workspace_root(dir: &Path) -> bool {
 }
 
 /// The system's own scratch directories hold worktrees and are where the
-/// remedy points.
+/// remedy points. `$HOME` is excluded too: it often holds a clone or two, and
+/// dotfiles (`>> ~/.netrc`) belong there on purpose.
 fn is_temp_dir(dir: &Path) -> bool {
     let mut temps = vec![std::env::temp_dir(), PathBuf::from("/tmp")];
-    if let Some(t) = std::env::var_os("CLAUDE_CODE_TMPDIR").filter(|t| !t.is_empty()) {
-        temps.push(PathBuf::from(t));
+    for var in ["CLAUDE_CODE_TMPDIR", "HOME"] {
+        if let Some(t) = std::env::var_os(var).filter(|t| !t.is_empty()) {
+            temps.push(PathBuf::from(t));
+        }
     }
     temps
         .iter()
@@ -883,6 +890,15 @@ mod tests {
         assert!(!is_workspace_root(
             &PathBuf::from("/tmp").canonicalize().unwrap()
         ));
+    }
+
+    #[test]
+    fn home_is_never_a_root() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap())
+            .canonicalize()
+            .unwrap();
+        assert!(is_temp_dir(&home));
+        assert!(!is_workspace_root(&home));
     }
 
     #[test]
