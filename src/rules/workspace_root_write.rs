@@ -42,7 +42,6 @@ use crate::rules::{
     resolve, Confirmed, Context, Evidence, Examine, Finding, Input, Rule, Stance, Trend,
 };
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 pub const RULE: Rule = Rule {
@@ -450,11 +449,25 @@ fn ignores(worktree: &Path, name: &str) -> bool {
 fn scratch_dir(transcript: &Path) -> Option<PathBuf> {
     let session = transcript.file_stem()?;
     let slug = transcript.parent()?.file_name()?;
-    let uid = std::fs::metadata(transcript).ok()?.uid();
+    let uid = owner_uid(transcript)?;
     let base = std::env::var_os("CLAUDE_CODE_TMPDIR")
         .filter(|t| !t.is_empty())
         .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
     Some(base.join(format!("claude-{uid}")).join(slug).join(session))
+}
+
+/// The uid that owns `path`, which names the `claude-<uid>` directory.
+#[cfg(unix)]
+fn owner_uid(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    Some(std::fs::metadata(path).ok()?.uid())
+}
+
+/// Windows has no uid in the scratch path: the remedy falls back to the
+/// generic scratch pattern.
+#[cfg(not(unix))]
+fn owner_uid(_path: &Path) -> Option<u32> {
+    None
 }
 
 // --------------------------------------------------------------- transcript
@@ -844,6 +857,8 @@ mod tests {
         assert!(fires_in("echo $(cd a && make); make > x.log", &root));
     }
 
+    // `HOME` and `/tmp` are Unix facts; Windows CI sets neither.
+    #[cfg(unix)]
     #[test]
     fn a_home_target_is_resolved_against_home() {
         let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
@@ -875,6 +890,7 @@ mod tests {
         assert_eq!(at(""), Some(home));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_root_fires() {
         let root = root("sym");
@@ -884,6 +900,8 @@ mod tests {
         assert!(fires_in(&format!("make > {}/x.log", link.display()), &root));
     }
 
+    // `HOME` and `/tmp` are Unix facts; Windows CI sets neither.
+    #[cfg(unix)]
     #[test]
     fn a_temp_dir_with_two_repositories_never_fires() {
         let temp = std::env::temp_dir().canonicalize().unwrap();
@@ -894,6 +912,8 @@ mod tests {
         ));
     }
 
+    // `HOME` and `/tmp` are Unix facts; Windows CI sets neither.
+    #[cfg(unix)]
     #[test]
     fn home_is_never_a_root() {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap())
@@ -1135,11 +1155,12 @@ mod tests {
         assert!(remedy.ends_with("ask the person."), "{remedy}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_scratch_directory_is_built_from_the_transcript() {
         let t = trees("scratch");
         let tr = transcript(&t.top, &[]);
-        let uid = std::fs::metadata(&tr).unwrap().uid();
+        let uid = owner_uid(&tr).unwrap();
         let d = scratch_dir(&tr).expect("scratch dir");
         assert!(d.ends_with(format!("claude-{uid}/-proj/sess-1")), "{d:?}");
     }
