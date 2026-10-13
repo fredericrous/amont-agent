@@ -101,3 +101,5 @@ Round 1: approve-with-changes (64k tokens, 54 s). Fixed: `combine` names every
 `Decision` (Ask kept, Deny > Ask > Advise; other variants keep their text);
 explicit stance arms; `Use at/before/after` tested; `holds-until` on the
 trigger heuristic; `rules --json` recorded.
+Delta: approve, with one new low finding (no test for the Ask path in `combine`); tests added, confirmed approve on tree 197ed06f (≈200k tokens, ~90 s in all).
+Next: release 2.39.0, then Phase 4 (live).
