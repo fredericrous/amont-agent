@@ -185,6 +185,14 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/lint-suppression-added.cases"),
     ),
     (
+        "agent-guidance-written",
+        include_str!("../tests/corpus/agent-guidance-written.cases"),
+    ),
+    (
+        "agent-guidance-shape",
+        include_str!("../tests/corpus/agent-guidance-shape.cases"),
+    ),
+    (
         "git-add-broad",
         include_str!("../tests/corpus/git-add-broad.cases"),
     ),

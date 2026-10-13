@@ -27,6 +27,8 @@ use std::ops::Range;
 
 use crate::shell::Parsed;
 
+pub mod agent_guidance_shape;
+pub mod agent_guidance_written;
 pub mod amend_pushed;
 pub mod bare_stash_pop;
 pub mod branch_force_delete;
@@ -471,6 +473,8 @@ pub const RULES: &[Rule] = &[
     code_read_not_lsp::RULE,
     symbol_grep_not_lsp::RULE,
     lint_suppression_added::RULE,
+    agent_guidance_written::RULE,
+    agent_guidance_shape::RULE,
     request_fanout::RULE,
     test_output_trimmed::RULE,
     workspace_root_write::RULE,

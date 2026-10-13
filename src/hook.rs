@@ -510,7 +510,7 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
         if let Some(agent) = crate::lsp::agent_key(op.agent_id.as_deref()) {
             crate::session_state::record(&op.session, &agent, "write", &op.path, "full", true);
         }
-        return lint_suppression(op);
+        return write_decision(op);
     }
     let mut advise: Vec<String> = Vec::new();
     let mut deny: Vec<String> = Vec::new();
@@ -638,6 +638,153 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
     } else {
         Decision::Silent
     }
+}
+
+/// Every write rule's verdict on one Write, Edit or MultiEdit, collected:
+/// any Deny makes the result a Deny, and either way every text is carried,
+/// joined with blank lines, as the Read branch does.
+fn write_decision(op: &crate::payload::FileOp) -> Decision {
+    combine([
+        lint_suppression(op),
+        guidance_written(op),
+        guidance_shape(op),
+    ])
+}
+
+/// The verdicts of several rules as one: any Deny makes a Deny, and either
+/// way every text is carried, joined with blank lines.
+fn combine(decisions: impl IntoIterator<Item = Decision>) -> Decision {
+    let mut denied = false;
+    let mut asked = false;
+    let mut texts: Vec<String> = Vec::new();
+    for decision in decisions {
+        match decision {
+            Decision::Silent => {}
+            Decision::Deny(text) => {
+                denied = true;
+                texts.push(text);
+            }
+            Decision::Ask(text) => {
+                asked = true;
+                texts.push(text);
+            }
+            Decision::Advise(text) => texts.push(text),
+            // A write rule answers Silent, Advise, Ask or Deny; these belong
+            // to other events. If one ever reaches here, its text is kept as
+            // advice rather than dropped.
+            Decision::Context(text)
+            | Decision::Assert(text)
+            | Decision::Continue(text)
+            | Decision::UserNote(text) => texts.push(text),
+        }
+    }
+    if texts.is_empty() {
+        Decision::Silent
+    } else if denied {
+        Decision::Deny(texts.join("\n\n"))
+    } else if asked {
+        Decision::Ask(texts.join("\n\n"))
+    } else {
+        Decision::Advise(texts.join("\n\n"))
+    }
+}
+
+/// The key a once-per-session telling is kept under: per agent, so a subagent
+/// is told on its own.
+fn telling_key(what: &str, op: &crate::payload::FileOp) -> String {
+    match &op.agent_id {
+        None => format!("{what} {}", op.path.display()),
+        Some(id) => format!("{what} {} @{id}", op.path.display()),
+    }
+}
+
+/// A write to a file agents read as guidance: told once per session and file.
+fn guidance_written(op: &crate::payload::FileOp) -> Decision {
+    use rules::agent_guidance_written as agw;
+    if op.change.is_none() || !agw::is_guidance(&op.path) {
+        return Decision::Silent;
+    }
+    let rule = &agw::RULE;
+    let stance = crate::stance::resolve(rule);
+    let shown = op.path.to_string_lossy().into_owned();
+    let first = stance == Stance::Observe
+        || first_telling(
+            rule,
+            &op.session,
+            &telling_key("write", op),
+            &op.cwd,
+            &op.permission_mode,
+        );
+    if !first {
+        journal_repeat(rule, stance, op, &shown);
+        return Decision::Silent;
+    }
+    note_file(rule, stance, op, &shown);
+    match stance {
+        Stance::Observe => Decision::Silent,
+        // The ceiling is advise (`max_stance`); a deny stance still advises.
+        Stance::Advise | Stance::Deny => Decision::Advise(agw::phrase(&shown)),
+    }
+}
+
+/// A write that leaves a skill unfindable or an always-on file over budget.
+/// Judged only on a whole-file rebuild; a fragment is journalled and silent.
+fn guidance_shape(op: &crate::payload::FileOp) -> Decision {
+    use rules::agent_guidance_shape as ags;
+    use rules::lint_suppression_added as lsa;
+    let (Some(change), Some(kind)) = (&op.change, ags::kind(&op.path)) else {
+        return Decision::Silent;
+    };
+    let rule = &ags::RULE;
+    let stance = crate::stance::resolve(rule);
+    let shown = op.path.to_string_lossy().into_owned();
+    let rebuilt = lsa::reconstruct(&op.path, change);
+    if let lsa::Mode::Fragment(why) = rebuilt.mode {
+        journal::record(&journal::Entry {
+            rule: rule.id,
+            stance: stance.as_str(),
+            outcome: "fragment",
+            session: &op.session,
+            repo: &repo_name(&op.cwd),
+            mode: &op.permission_mode,
+            excerpt: &format!("{shown} {}", why.as_str()),
+        });
+        return Decision::Silent;
+    }
+    let Some(text) = ags::check(&op.path, kind, &rebuilt.before, &rebuilt.after) else {
+        return Decision::Silent;
+    };
+    let first = stance == Stance::Observe
+        || first_telling(
+            rule,
+            &op.session,
+            &telling_key("shape", op),
+            &op.cwd,
+            &op.permission_mode,
+        );
+    if !first {
+        journal_repeat(rule, stance, op, &shown);
+        return Decision::Silent;
+    }
+    note_file(rule, stance, op, &ags::excerpt(&shown, kind));
+    match stance {
+        Stance::Observe => Decision::Silent,
+        // The ceiling is advise (`max_stance`); a deny stance still advises.
+        Stance::Advise | Stance::Deny => Decision::Advise(text),
+    }
+}
+
+/// A finding already told this session: journalled, not said again.
+fn journal_repeat(rule: &Rule, stance: Stance, op: &crate::payload::FileOp, shown: &str) {
+    journal::record(&journal::Entry {
+        rule: rule.id,
+        stance: stance.as_str(),
+        outcome: "told-before",
+        session: &op.session,
+        repo: &repo_name(&op.cwd),
+        mode: &op.permission_mode,
+        excerpt: shown,
+    });
 }
 
 /// An Edit, MultiEdit or Write that adds a lint suppression or loosens a lint
@@ -1190,5 +1337,75 @@ fn heartbeat() {
         // may read them.
         journal::private(&tmp, 0o600);
         let _ = std::fs::rename(&tmp, dir.join("heartbeat"));
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    fn text(d: Decision) -> (&'static str, String) {
+        match d {
+            Decision::Silent => ("silent", String::new()),
+            Decision::Advise(t) => ("advise", t),
+            Decision::Deny(t) => ("deny", t),
+            Decision::Ask(t) => ("ask", t),
+            Decision::Context(t)
+            | Decision::Assert(t)
+            | Decision::Continue(t)
+            | Decision::UserNote(t) => ("other", t),
+        }
+    }
+
+    #[test]
+    fn silence_stays_silent() {
+        assert_eq!(
+            text(combine([Decision::Silent, Decision::Silent])).0,
+            "silent"
+        );
+    }
+
+    #[test]
+    fn advice_is_joined_with_a_blank_line() {
+        let (kind, t) = text(combine([
+            Decision::Advise("one".into()),
+            Decision::Silent,
+            Decision::Advise("two".into()),
+        ]));
+        assert_eq!((kind, t.as_str()), ("advise", "one\n\ntwo"));
+    }
+
+    #[test]
+    fn any_deny_denies_and_carries_every_text() {
+        let (kind, t) = text(combine([
+            Decision::Advise("one".into()),
+            Decision::Deny("two".into()),
+            Decision::Advise("three".into()),
+        ]));
+        assert_eq!((kind, t.as_str()), ("deny", "one\n\ntwo\n\nthree"));
+    }
+
+    #[test]
+    fn an_ask_beats_advice_and_carries_every_text() {
+        let (kind, t) = text(combine([
+            Decision::Advise("one".into()),
+            Decision::Ask("two".into()),
+        ]));
+        assert_eq!((kind, t.as_str()), ("ask", "one\n\ntwo"));
+    }
+
+    #[test]
+    fn a_deny_beats_an_ask() {
+        let (kind, t) = text(combine([
+            Decision::Ask("one".into()),
+            Decision::Deny("two".into()),
+        ]));
+        assert_eq!((kind, t.as_str()), ("deny", "one\n\ntwo"));
+    }
+
+    #[test]
+    fn text_from_another_event_is_kept_as_advice() {
+        let (kind, t) = text(combine([Decision::Context("one".into())]));
+        assert_eq!((kind, t.as_str()), ("advise", "one"));
     }
 }
