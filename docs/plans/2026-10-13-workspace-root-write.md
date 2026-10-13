@@ -172,6 +172,13 @@ ladder would collect, and the refusal carries a one-word fix.
 - Gate: no file meant to stay in the root was refused, so the rule ships at Deny.
 - End to end on the built binary, in a tempdir root with two git children and this session's transcript: `echo x > probe.log` and `make &> build.log` were denied, naming this worktree (it ignores `*.log`). `tee -a notes.txt` was denied, naming the session scratch directory (`notes.txt` is not ignored). `cd a && … > probe.log`, `> /tmp/probe.log` and `$(cd a && echo x > y.log)` passed.
 
+## Implementation review
+
+approve (Delta), after approve-with-changes in round 1 (61k, 37 s; Delta 63k, 8 s).
+Fixed: an unread loose-file count is omitted, not printed as 0; `holds-until:` on `bash_paths`; stale Cargo line in Files; the HOME test expects HOME.
+deliberate: `home_is_never_a_root` and the temp-dir test read the real HOME and temp dir, because they test the exclusion of the machine's actual directories.
+Next: Phase 4 (PR, merge on green), then Phase 5 (release 2.38.0, live check).
+
 ## Verification
 
 - `make check` (fmt, clippy `-D warnings` with and without `test-hooks`, all
