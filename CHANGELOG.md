@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`agent-guidance-written` and `agent-guidance-shape` advise on writes to
+  agent guidance.** A Write, Edit or MultiEdit to `SKILL.md`, `CLAUDE.md`,
+  `CLAUDE.md.tmpl`, `AGENTS.md`, `MEMORY.md` or an agent definition is told
+  once per session and file that the `guidance.*` and `prose.*` rules apply
+  (ADR-0026, ADR-0032). `agent-guidance-shape` checks the rebuilt file: a
+  skill without a one-line `description:` that says when to use it (a
+  `Use <word> …` or `whenever …` clause; skills with
+  `disable-model-invocation: true` are exempt), and an always-on file that
+  grows past 8,192 bytes. Both are advise-only. The write branch of the hook
+  now collects every write rule's text. `tools/agent-guidance-rate.py`
+  counts the writes: 0.66 per 1,000 tool calls over 131,285 calls.
+
 ## v2.38.0
 
 ### Added

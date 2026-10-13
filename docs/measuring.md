@@ -183,6 +183,22 @@ config rows that need one (`[tool.pyright]`, `[tool.ruff*]`, `[lints.*]`,
 itself. `--self-test` classifies `tests/fixtures/suppressions.txt`, which a
 Rust unit test classifies too; `tests/suppression_rate.rs` runs it.
 
+### Guidance writes from transcripts
+
+`agent-guidance-written` and `agent-guidance-shape` are write-tier rules too.
+`tools/agent-guidance-rate.py` counts the Edit, MultiEdit and Write calls to
+`SKILL.md`, `CLAUDE.md`, `CLAUDE.md.tmpl`, `AGENTS.md`, `MEMORY.md` and agent
+definitions per 1000 tool calls, per kind of file:
+
+```sh
+tools/agent-guidance-rate.py
+tools/agent-guidance-rate.py --weeks 8
+```
+
+It counts writes to the paths. A transcript never holds the file, so it cannot
+size it. Run it to recount the rules' `per_1000` and again two weeks after a
+release.
+
 ### What came before a publish, from transcripts
 
 `publish-without-skill` asks a question the backtester cannot: whether the

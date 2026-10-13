@@ -2149,3 +2149,260 @@ fn the_same_agent_rereading_a_certain_window_is_refused_under_deny() {
     let other = f.pre_read("", r#","offset":41,"limit":5"#);
     assert!(!said_reread(&other), "{}", other.stdout);
 }
+
+// ---- agent-guidance-written and agent-guidance-shape ---------------------------
+
+const GOOD_SKILL: &str =
+    "---\nname: x\ndescription: Does x. Use when asked for x.\n---\nbody one\n";
+
+fn edit_body(old: &str, new: &str) -> String {
+    format!(r#","old_string":{old:?},"new_string":{new:?}"#)
+}
+
+fn write_body(content: &str) -> String {
+    format!(
+        r#","content":{}"#,
+        serde_json::Value::String(content.to_string())
+    )
+}
+
+#[test]
+fn guidance_an_edit_to_a_skill_is_told_the_guidance_rules() {
+    let f = ReadFixture::with_content("agw-1", "SKILL.md", GOOD_SKILL);
+    let said = f.file_event(
+        "PreToolUse",
+        "Edit",
+        "agw-s1",
+        &edit_body("body one", "body two"),
+    );
+    assert!(
+        said.reason().contains("agent-guidance-written"),
+        "{}",
+        said.stdout
+    );
+    assert!(said.reason().contains("ADR-0026"), "{}", said.stdout);
+    assert!(
+        said.reason().contains("aval relevant --path"),
+        "{}",
+        said.stdout
+    );
+    assert!(
+        !said.reason().contains("agent-guidance-shape"),
+        "{}",
+        said.stdout
+    );
+    assert_eq!(said.decision(), None, "advise, not deny: {}", said.stdout);
+}
+
+#[test]
+fn guidance_five_edits_in_a_session_give_one_advice() {
+    let f = ReadFixture::with_content("agw-5", "SKILL.md", GOOD_SKILL);
+    let mut told = 0;
+    for i in 0..5 {
+        let said = f.file_event(
+            "PreToolUse",
+            "Edit",
+            "agw-s5",
+            &edit_body("body one", &format!("body one {i}")),
+        );
+        if said.reason().contains("agent-guidance-written") {
+            told += 1;
+        }
+    }
+    assert_eq!(told, 1);
+    let rows = journal_rows("agw-s5");
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("agent-guidance-written") && r.contains("told-before")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn guidance_a_multi_line_or_block_description_is_flagged() {
+    for (i, fm) in [
+        "---\nname: x\ndescription: >\n  Does x. Use when asked.\n---\n",
+        "---\nname: x\ndescription: Does x.\n  Use when asked.\n---\n",
+        "---\nname: x\ndescription: Does x.\n---\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let f = ReadFixture::with_content(&format!("ags-{i}"), "SKILL.md", GOOD_SKILL);
+        let said = f.file_event("PreToolUse", "Write", &format!("ags-s{i}"), &write_body(fm));
+        assert!(
+            said.reason().contains("agent-guidance-shape"),
+            "{i}: {}",
+            said.stdout
+        );
+        assert!(
+            said.reason().contains("guidance.pointer-names-when"),
+            "{i}: {}",
+            said.stdout
+        );
+    }
+}
+
+#[test]
+fn guidance_a_skill_that_disables_model_invocation_is_silent_on_shape() {
+    let f = ReadFixture::with_content("ags-dmi", "SKILL.md", GOOD_SKILL);
+    let said = f.file_event(
+        "PreToolUse",
+        "Write",
+        "ags-sd",
+        &write_body(
+            "---\nname: x\ndescription: >\n  Does x.\ndisable-model-invocation: true\n---\n",
+        ),
+    );
+    assert!(
+        !said.reason().contains("agent-guidance-shape"),
+        "{}",
+        said.stdout
+    );
+}
+
+#[test]
+fn guidance_an_edit_that_matches_nothing_is_silent_on_shape_and_journalled() {
+    let f = ReadFixture::with_content("ags-frag", "SKILL.md", "---\nname: x\n---\n");
+    let said = f.file_event(
+        "PreToolUse",
+        "Edit",
+        "ags-sf",
+        &edit_body("not there", "new"),
+    );
+    assert!(
+        !said.reason().contains("agent-guidance-shape"),
+        "{}",
+        said.stdout
+    );
+    let rows = journal_rows("ags-sf");
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("agent-guidance-shape") && r.contains("fragment")),
+        "{rows:?}"
+    );
+}
+
+fn shape_edit(name: &str, file: &str, before: usize, after: usize, session: &str) -> Reply {
+    let f = ReadFixture::with_content(name, file, &format!("{}\nmark\n", "x".repeat(before)));
+    f.file_event(
+        "PreToolUse",
+        "Edit",
+        session,
+        &edit_body("mark", &format!("mark{}", "y".repeat(after - before))),
+    )
+}
+
+#[test]
+fn guidance_growing_an_oversized_file_advises_with_numbers() {
+    let said = shape_edit("ags-big", "CLAUDE.md", 9000, 9100, "ags-sb");
+    assert!(
+        said.reason().contains("agent-guidance-shape"),
+        "{}",
+        said.stdout
+    );
+    assert!(said.reason().contains("8192"), "{}", said.stdout);
+    assert!(said.reason().contains("100 bytes"), "{}", said.stdout);
+    assert!(
+        said.reason().contains("guidance.always-on-is-an-index"),
+        "{}",
+        said.stdout
+    );
+}
+
+#[test]
+fn guidance_crossing_the_budget_advises() {
+    let said = shape_edit("ags-cross", "CLAUDE.md", 7000, 9000, "ags-sc");
+    assert!(
+        said.reason().contains("agent-guidance-shape"),
+        "{}",
+        said.stdout
+    );
+}
+
+#[test]
+fn guidance_a_template_crossing_the_budget_advises() {
+    let dir = home().join("ags-tmpl").join("dot_claude");
+    let _ = std::fs::remove_dir_all(home().join("ags-tmpl"));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let file = dir.join("CLAUDE.md.tmpl");
+    std::fs::write(&file, "x".repeat(8000)).expect("a template");
+    let f = ReadFixture { dir, file };
+    let said = f.file_event(
+        "PreToolUse",
+        "Write",
+        "ags-st",
+        &write_body(&"x".repeat(8300)),
+    );
+    assert!(
+        said.reason().contains("agent-guidance-shape"),
+        "{}",
+        said.stdout
+    );
+}
+
+#[test]
+fn guidance_shrinking_an_oversized_file_is_silent_on_shape() {
+    let f = ReadFixture::with_content("ags-shrink", "CLAUDE.md", &"x".repeat(9000));
+    let said = f.file_event(
+        "PreToolUse",
+        "Write",
+        "ags-ss",
+        &write_body(&"x".repeat(8500)),
+    );
+    assert!(
+        !said.reason().contains("agent-guidance-shape"),
+        "{}",
+        said.stdout
+    );
+}
+
+#[test]
+fn guidance_a_shape_finding_is_told_once_per_file() {
+    let f = ReadFixture::with_content("ags-once", "SKILL.md", GOOD_SKILL);
+    let bad = write_body("---\nname: x\ndescription: Does x.\n---\n");
+    let first = f.file_event("PreToolUse", "Write", "ags-so", &bad);
+    let second = f.file_event("PreToolUse", "Write", "ags-so", &bad);
+    assert!(
+        first.reason().contains("agent-guidance-shape"),
+        "{}",
+        first.stdout
+    );
+    assert!(
+        !second.reason().contains("agent-guidance-shape"),
+        "{}",
+        second.stdout
+    );
+}
+
+#[test]
+fn guidance_a_write_to_source_is_silent() {
+    let f = ReadFixture::with_content("agw-src", "main.rs", "fn main() {}\n");
+    let said = f.file_event(
+        "PreToolUse",
+        "Write",
+        "agw-ss",
+        &write_body("fn main() { }\n"),
+    );
+    assert_eq!(said.stdout, "", "{}", said.stdout);
+}
+
+#[test]
+fn guidance_other_memory_files_are_exempt() {
+    let f = ReadFixture::with_content("agw-mem", "feedback_x.md", "a\n");
+    let said = f.file_event("PreToolUse", "Write", "agw-sm", &write_body("b\n"));
+    assert_eq!(said.stdout, "", "{}", said.stdout);
+}
+
+#[test]
+fn guidance_a_denying_lint_rule_still_denies() {
+    let f = ReadFixture::with_content("agw-deny", "x.py", "def f(a):\n    return g(a)\n");
+    let cfg = "[amont \"agent.lint-suppression-added\"]\n\tstance = deny";
+    let said = f.file_event_with_global("PreToolUse", "Edit", "agw-sd", ADD_IGNORE, cfg);
+    assert_eq!(said.decision().as_deref(), Some("deny"), "{}", said.stdout);
+    assert!(
+        said.reason().contains("lint-suppression-added"),
+        "{}",
+        said.stdout
+    );
+}
