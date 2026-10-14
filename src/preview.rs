@@ -1107,6 +1107,7 @@ pub fn bind(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed) -> Optio
     let cmd = clauses.iter().find(|c| is_register(c))?;
     // Where the leading `cd`s left the shell, with `cwd_at`'s semantics.
     let ctx = crate::rules::Context {
+        platform: Some(crate::rules::Platform::host()),
         cwd: &bash.cwd,
         parsed,
         background: bash.background,
@@ -1666,6 +1667,7 @@ pub fn record_before(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed)
         return;
     };
     let ctx = crate::rules::Context {
+        platform: Some(crate::rules::Platform::host()),
         cwd: &bash.cwd,
         parsed,
         background: bash.background,

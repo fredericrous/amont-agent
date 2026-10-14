@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **`gui-open-unbounded` speaks only on macOS.** `open` launches an app only
+  there, so the rule is silent on Linux, Windows and other platforms, where the
+  hook knows its platform. A replay has no platform and keeps the advice. The
+  platform is read at build time (`Platform::host`) and passed to `confirm` as
+  `Context::platform`, the same split as the shell dialect.
+
 ## v2.40.0
 
 ### Added
