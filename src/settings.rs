@@ -263,6 +263,10 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // nothing is installed twice.
     ("PreToolUse", Some("Grep")),
     ("PostToolUse", Some("Bash")),
+    // `land-retry` (amont land): a land that ends unverified or not-observed
+    // exits non-zero after the remote accepted its push, so its check must
+    // see the failed call too.
+    ("PostToolUseFailure", Some("Bash")),
     // A Read is remembered only once it has run: a Read that was refused, or
     // that failed on a path that is not there, put nothing in context, and
     // `file-reread` must not later say it did. Its own block rather than

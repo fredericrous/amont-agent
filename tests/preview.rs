@@ -113,7 +113,16 @@ impl World {
     }
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> (i32, String, String) {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        // A test that installed the fake `amont` puts it first.
+        let fake = self.root.join("bin");
+        if fake.join("amont").is_file() {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let mut dirs = vec![fake];
+            dirs.extend(std::env::split_paths(&path));
+            cmd.env("PATH", std::env::join_paths(dirs).unwrap());
+        }
+        let mut child = cmd
             .args(args)
             .current_dir(&self.work)
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
@@ -283,6 +292,24 @@ impl World {
         }));
     }
 
+    /// An `amont` answering `land --dry-run --json` as 1.54.0 does, primed
+    /// once so a Gatekeeper hold on its first exec is not paid in the hook.
+    #[cfg(unix)]
+    fn fake_amont(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = self.root.join("bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = r#"#!/bin/sh
+[ "$*" = "land --dry-run --json" ] || exit 2
+b=$(git symbolic-ref --short HEAD) || exit 1
+printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"refs/heads/%s","retried":false,"status":"would-land","receipt_dir":"%s","lease":false}\n' "$b" "$(git rev-parse HEAD)" "$b" "$(git rev-parse --absolute-git-dir)/amont/land"
+"#;
+        let path = dir.join("amont");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = Command::new(&path).output();
+    }
+
     fn push_advised(&self, session: &str) -> bool {
         self.pre_bash(session, "push1", "git push -u origin feat/x")
             .contains("amont-agent/push-preview")
@@ -312,6 +339,25 @@ fn an_unapproved_ui_push_is_advised_and_a_docs_only_one_is_not() {
 /// whole history read as an unapproved interface change. Commits any remote
 /// already has were previewed (or were never this session's): only what is
 /// new to every remote is judged — and that is still judged.
+/// `amont land` publishes like `git push`: a UI change it would land is
+/// advised the same way, and a docs-only one is not.
+#[test]
+#[cfg(unix)]
+fn an_unapproved_ui_land_is_advised_like_a_push() {
+    let w = World::new("land");
+    w.fake_amont();
+    w.commit("docs/plan.md", "x\n");
+    assert!(
+        !w.pre_bash("s", "land1", "amont land --json")
+            .contains("amont-agent/push-preview"),
+        "docs-only lands carry nothing to preview"
+    );
+    w.commit("app/routes/home.tsx", "export default 1\n");
+    assert!(w
+        .pre_bash("s", "land2", "amont land --json")
+        .contains("amont-agent/push-preview"));
+}
+
 #[test]
 fn a_ui_commit_already_on_another_remote_needs_no_preview() {
     let w = World::new("seed");

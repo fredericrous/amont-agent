@@ -60,7 +60,9 @@ pub const RULE: Rule = Rule {
 /// The push clause, if this command has one worth judging.
 fn detect(parsed: &Parsed) -> Option<&Simple> {
     parsed.judgeable().find(|cmd| {
-        cmd.program() == Some("git")
+        // A land runs the same pre-push gate inside its push.
+        (crate::land::is_land(cmd) && !cmd.has_flag("--dry-run"))
+            || cmd.program() == Some("git")
             && cmd.subcommand() == Some("push")
             && !cmd.has_flag("--dry-run")
             && !cmd.has_short('n')

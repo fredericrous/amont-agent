@@ -469,13 +469,14 @@ pub enum Needs {
 /// approved preview covers? `Ok` fires the rule and says why; `Err` names
 /// why it did not.
 pub fn needs_preview(
-    cwd: &Path,
+    ctx: &crate::rules::Context,
     cmd: &crate::shell::Simple,
     stance: Stance,
 ) -> Result<Needs, &'static str> {
-    match push_target::resolve(cwd, cmd) {
+    match push_target::resolve_for(ctx, cmd) {
         Push::DryRun => Err("a dry run publishes nothing"),
         Push::DeleteOnly => Err("a delete publishes nothing"),
+        Push::Refused(_) => Err("amont refuses this land, so it publishes nothing"),
         Push::Unresolvable { repo, shape } => {
             if repo.as_deref().is_some_and(gated) && stance == Stance::Deny {
                 // Under deny a shape nobody can read is held: `--all` must
@@ -1677,9 +1678,20 @@ pub fn record_before(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed)
         agent_transcript: bash.agent_transcript.as_deref(),
         command: &bash.command,
     };
-    let Push::Resolved { repo, targets } = push_target::resolve(&ctx.cwd_at(cmd.at), cmd) else {
+    let Push::Resolved { repo, targets } = push_target::resolve_for(&ctx, cmd) else {
         return;
     };
+    // A land's judged sha is kept for every repository, gated or not: the
+    // retry check (`land-retry`) compares it with what the land's receipt
+    // says it pushed, and the implementation review covers more repositories
+    // than the preview does.
+    if crate::land::is_land(cmd) {
+        if let (Some(t), crate::land::Answer::Would(l)) =
+            (targets.first(), crate::land::dry_run(&ctx.cwd_at(cmd.at)))
+        {
+            record_land(&bash.tool_use_id, &t.src, &l);
+        }
+    }
     if !gated(&repo) {
         return;
     }
@@ -1716,6 +1728,104 @@ pub fn record_before(bash: &crate::payload::Bash, parsed: &crate::shell::Parsed)
             let _ = crate::atomic::write_atomic(&d.join(&bash.tool_use_id), &body);
         }
     }
+}
+
+/// What PreToolUse judged for one land: the sha, and where its receipt will
+/// be written. Nanoseconds since the epoch, compared with the receipt's own
+/// `started`, which comes later.
+pub struct LandJudged {
+    pub judged: String,
+    pub receipt_dir: PathBuf,
+    pub branch: String,
+    pub since: i128,
+}
+
+/// How long a land's judgement record is kept: the check reads it moments
+/// later, and a week covers a session left open.
+const LAND_RECORD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+fn record_land(tool_use_id: &str, judged: &str, l: &crate::land::Landing) {
+    // The same rule `land_judged` reads with: an id that names no single file
+    // in `lands/` would be written where nothing reads it.
+    if tool_use_id.is_empty() || tool_use_id.contains('/') {
+        return;
+    }
+    // No clock, no record: a `since` of 0 would match every older receipt of
+    // the branch, and the check would then judge the wrong land.
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        eprintln!("amont-agent: land-retry: the clock is before 1970, so this land's judgement is not recorded");
+        return;
+    };
+    let since = now.as_nanos() as i128;
+    let body = format!(
+        "{}\t{}\t{}\t{since}\n",
+        clean(judged),
+        clean(&l.receipt_dir.to_string_lossy()),
+        clean(&l.branch)
+    );
+    let Some(d) = dir().map(|d| d.join("lands")) else {
+        eprintln!(
+            "amont-agent: land-retry: no state directory, so this land's judgement is not recorded"
+        );
+        return;
+    };
+    if ensure(&d).is_none() {
+        eprintln!("amont-agent: land-retry: could not create {}", d.display());
+        return;
+    }
+    prune_land_records(&d);
+    let path = d.join(tool_use_id);
+    if let Err(e) = crate::atomic::write_atomic(&path, &body) {
+        eprintln!(
+            "amont-agent: land-retry: could not write {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// Deletes judgement records older than [`LAND_RECORD_KEEP`].
+fn prune_land_records(dir: &Path) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!(
+                "amont-agent: land-retry: could not list {}: {e}",
+                dir.display()
+            );
+            return;
+        }
+    };
+    for e in entries.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > LAND_RECORD_KEEP);
+        if old {
+            if let Err(err) = std::fs::remove_file(e.path()) {
+                eprintln!(
+                    "amont-agent: land-retry: could not delete the old record {}: {err}",
+                    e.path().display()
+                );
+            }
+        }
+    }
+}
+
+/// The land PreToolUse judged for this call, if it recorded one.
+pub fn land_judged(tool_use_id: &str) -> Option<LandJudged> {
+    if tool_use_id.is_empty() || tool_use_id.contains('/') {
+        return None;
+    }
+    let text = std::fs::read_to_string(dir()?.join("lands").join(tool_use_id)).ok()?;
+    let mut f = text.trim_end().split('\t');
+    Some(LandJudged {
+        judged: f.next()?.to_string(),
+        receipt_dir: PathBuf::from(f.next()?),
+        branch: f.next()?.to_string(),
+        since: f.next()?.parse().ok()?,
+    })
 }
 
 /// One branch destination as recorded before the push.

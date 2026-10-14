@@ -17,11 +17,14 @@
 //! the admission test this crate applies to any new guard: *does the failure it
 //! prevents go unnoticed?*
 //!
-//! ## Only successful calls
+//! ## Only successful calls, with one exception
 //!
-//! Claude Code sends a failed tool call to `PostToolUseFailure`, a separate
-//! event this crate ignores. So everything reaching here claimed to work, and
-//! an assertion's whole job is to ask whether the claim holds.
+//! Claude Code sends a failed tool call to `PostToolUseFailure`. Everything
+//! reaching [`examine_all`] claimed to work, and an assertion's whole job is
+//! to ask whether the claim holds. The exception is `land-retry`, which
+//! [`after_failure`] also runs on a failed call: an `amont land` that ends
+//! `unverified` or `not-observed` exits non-zero after the remote accepted
+//! its push, and that push may be one nobody judged.
 //!
 //! ## The same two halves as a rule, on the other side of execution
 //!
@@ -53,6 +56,7 @@ use std::time::{Duration, Instant};
 use crate::rules::{Context, Evidence, Stance};
 use crate::shell::Parsed;
 
+pub mod land_retry;
 pub mod push_landed;
 pub mod push_published;
 
@@ -90,7 +94,22 @@ pub struct Assertion {
     pub verify: fn(&Context, &Claim) -> Verdict,
 }
 
-pub const ASSERTIONS: &[Assertion] = &[push_landed::ASSERTION, push_published::ASSERTION];
+pub const ASSERTIONS: &[Assertion] = &[
+    push_landed::ASSERTION,
+    push_published::ASSERTION,
+    land_retry::ASSERTION,
+];
+
+/// The assertions that also run on a FAILED call (`PostToolUseFailure`).
+pub const AFTER_FAILURE: &[Assertion] = &[land_retry::ASSERTION];
+
+/// [`examine_all`] over [`AFTER_FAILURE`].
+pub fn after_failure(parsed: &Parsed) -> Vec<(&'static Assertion, Claim)> {
+    AFTER_FAILURE
+        .iter()
+        .filter_map(|a| (a.examine)(parsed).map(|c| (a, c)))
+        .collect()
+}
 
 /// Consumed by `explain` and `graduate` once this tier has a measured rate;
 /// kept beside `ASSERTIONS` so the lookup has one spelling from the start.

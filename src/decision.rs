@@ -58,6 +58,9 @@ pub enum Decision {
     /// since the tool has already run — but it would be a second channel for
     /// one decision, which the module note above rejects. So: JSON, exit 0.
     Assert(String),
+    /// [`Decision::Assert`], answering a `PostToolUseFailure`: the reply
+    /// must name the event it answers.
+    AssertAfterFailure(String),
     /// Keep the turn going: a `Stop` hook's top-level `decision: "block"`,
     /// whose reason the model reads as what to do next. Not a
     /// `hookSpecificOutput`; that shape does not exist for `Stop`.
@@ -110,13 +113,18 @@ impl Decision {
                     )])
                 );
             }
-            Decision::Assert(text) => {
+            Decision::Assert(text) | Decision::AssertAfterFailure(text) => {
+                let event = if matches!(self, Decision::AssertAfterFailure(_)) {
+                    "PostToolUseFailure"
+                } else {
+                    "PostToolUse"
+                };
                 println!(
                     "{}",
                     json::object(&[format!(
                         "\"hookSpecificOutput\":{}",
                         json::object(&[
-                            json::string_field("hookEventName", "PostToolUse"),
+                            json::string_field("hookEventName", event),
                             json::string_field("additionalContext", &clamp(text)),
                         ])
                     )])

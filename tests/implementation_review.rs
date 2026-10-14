@@ -107,6 +107,14 @@ impl World {
 
     fn bin(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        // A test that installed the fake `amont` (below) puts it first.
+        let fake = self.root.join("bin");
+        if fake.join("amont").is_file() {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let mut dirs = vec![fake];
+            dirs.extend(std::env::split_paths(&path));
+            c.env("PATH", std::env::join_paths(dirs).unwrap());
+        }
         c.env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("GIT_CONFIG_GLOBAL", self.root.join("global"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -154,7 +162,7 @@ impl World {
         }
         if let Some(text) = o["additionalContext"].as_str() {
             return match o["hookEventName"].as_str() {
-                Some("PostToolUse") => Said::Assert(text.to_string()),
+                Some("PostToolUse" | "PostToolUseFailure") => Said::Assert(text.to_string()),
                 _ => Said::Advise(text.to_string()),
             };
         }
@@ -172,6 +180,59 @@ impl World {
             "tool_use_id": self.id(), "permission_mode": "default",
             "tool_input": {"command": cmd}
         });
+        if let Some(t) = transcript {
+            payload["transcript_path"] = serde_json::json!(t);
+        }
+        self.hook(payload)
+    }
+
+    /// An `amont` that answers `land --dry-run --json` the way 1.54.0 does,
+    /// from the repository it runs in: the branch, HEAD, the per-worktree
+    /// receipt directory, and amont's own refusal on `main`.
+    #[cfg(unix)]
+    fn fake_amont(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = self.root.join("bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = r#"#!/bin/sh
+[ "$*" = "land --dry-run --json" ] || exit 2
+b=$(git symbolic-ref --short HEAD) || exit 1
+if [ "$b" = main ] || [ "$b" = master ]; then
+  printf '{"branch":"%s","remote":"origin","push_url":"","pushed":"","dst":"refs/heads/%s","retried":false,"status":"refused","receipt_dir":"","lease":false}\n' "$b" "$b"
+  echo 'amont: land: main and master change by pull request, never by a push' >&2
+  exit 1
+fi
+printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"refs/heads/%s","retried":false,"status":"would-land","receipt_dir":"%s","lease":false}\n' "$b" "$(git rev-parse HEAD)" "$b" "$(git rev-parse --absolute-git-dir)/amont/land"
+"#;
+        let path = dir.join("amont");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The first exec of a fresh script can be held by Gatekeeper for
+        // seconds on macOS, longer under a parallel suite: run it once here,
+        // outside the hook's 3 s budget for the dry-run.
+        let _ = Command::new(&path).output();
+    }
+
+    /// A Bash payload for `stage` with an explicit `tool_use_id`, so a
+    /// `PreToolUse` and its `PostToolUse` describe the same call.
+    fn bash_event(
+        &self,
+        stage: &str,
+        dir: &Path,
+        tool_use_id: &str,
+        cmd: &str,
+        background: bool,
+        transcript: Option<&Path>,
+    ) -> Said {
+        let mut payload = serde_json::json!({
+            "hook_event_name": stage, "tool_name": "Bash",
+            "cwd": dir, "session_id": "s1", "prompt_id": "p1",
+            "tool_use_id": tool_use_id, "permission_mode": "default",
+            "tool_input": {"command": cmd, "run_in_background": background}
+        });
+        if stage != "PreToolUse" {
+            payload["tool_response"] = serde_json::json!({"stdout": "", "stderr": ""});
+        }
         if let Some(t) = transcript {
             payload["transcript_path"] = serde_json::json!(t);
         }
@@ -996,4 +1057,255 @@ fn a_resumed_round_without_its_own_notification_does_not_pass() {
     std::fs::write(&t, forged).unwrap();
     assert!(matches!(w.push(&repo, "s1", Some(&t)), Said::Advise(_)));
     assert!(w.last_line().contains("review=stale"), "{}", w.last_line());
+}
+
+// --- `amont land` is a push ----------------------------------------------
+
+/// A landing receipt in the repository's per-worktree receipt directory,
+/// written the way amont 1.54.0 writes one.
+#[cfg(unix)]
+fn receipt(repo: &Path, branch: &str, pushed: &str, status: &str) {
+    let dir = PathBuf::from(git(repo, &["rev-parse", "--absolute-git-dir"])).join("amont/land");
+    std::fs::create_dir_all(&dir).unwrap();
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::fs::write(
+        dir.join(format!("{started}-1.json")),
+        format!(
+            r#"{{"started":{started},"ended":{started},"branch":"{branch}","remote":"origin","push_url":"u","dst":"refs/heads/{branch}","pushed":"{pushed}","retried":true,"status":"{status}"}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+fn land_journal(w: &World) -> Vec<String> {
+    std::fs::read_to_string(w.root.join("claude/amont-agent/journal.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("F ") && l.contains(" land-retry "))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+#[cfg(unix)]
+fn a_land_is_held_like_a_push_until_it_is_reviewed() {
+    let w = World::new("land-review");
+    w.fake_amont();
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let empty = w.transcript("empty", &Transcript::default());
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+
+    match w.push_cmd(&repo, "s1", Some(&empty), "amont land --json") {
+        Said::Deny(text) => {
+            assert!(text.contains(&tree[..12]), "names the tree: {text}");
+            assert!(text.contains("tree-sha --block"), "and the remedy: {text}");
+        }
+        other => panic!("an unreviewed land must be held, got {other:?}"),
+    }
+
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let reviewed = w.transcript("t", &t);
+    assert_eq!(
+        w.push_cmd(&repo, "s1", Some(&reviewed), "amont land --json"),
+        Said::Silent
+    );
+    let dir = repo.display().to_string();
+    assert_eq!(
+        w.push_cmd(
+            &repo,
+            "s1",
+            Some(&reviewed),
+            &format!("cd {dir} && amont land")
+        ),
+        Said::Silent,
+        "the `cd <dir> &&` form is read too"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_land_shape_that_cannot_be_read_is_held_under_deny_and_names_the_one_that_is() {
+    let w = World::new("land-shapes");
+    w.fake_amont();
+    let repo = w.repo("app");
+    let empty = w.transcript("empty", &Transcript::default());
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    for cmd in [
+        "git commit -m x && amont land",
+        "git fetch --set-upstream origin x && amont land",
+        "amont land; true",
+        "amont land && false",
+        "amont land | cat",
+        "amont land > out",
+        "GIT_DIR=/other/.git GIT_WORK_TREE=/other amont land",
+        "env A=b amont land",
+        "sudo amont land",
+        "timeout 60 amont land",
+    ] {
+        match w.push_cmd(&repo, "s1", Some(&empty), cmd) {
+            Said::Deny(text) => assert!(
+                text.contains("cannot be read") && text.contains("amont land [--json] [--force]"),
+                "{cmd}: names the shape that is read: {text}"
+            ),
+            other => panic!("{cmd} must be held, got {other:?}"),
+        }
+    }
+    let id = w.id();
+    match w.bash_event("PreToolUse", &repo, &id, "amont land", true, Some(&empty)) {
+        Said::Deny(text) => assert!(text.contains("background"), "{text}"),
+        other => panic!("a background land must be held, got {other:?}"),
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_land_amont_refuses_is_not_held() {
+    let w = World::new("land-main");
+    w.fake_amont();
+    let repo = w.repo("app");
+    git(&repo, &["checkout", "-q", "main"]);
+    let empty = w.transcript("empty", &Transcript::default());
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    assert_eq!(
+        w.push_cmd(&repo, "s1", Some(&empty), "amont land"),
+        Said::Silent,
+        "amont refuses a land on main itself: nothing is published"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_retried_land_that_pushed_an_unjudged_commit_is_said() {
+    let w = World::new("land-retry");
+    w.fake_amont();
+    let repo = w.repo("app");
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let reviewed = w.transcript("t", &t);
+
+    // Judged, then the land's pre-push hook moved HEAD and the retry pushed
+    // another commit: the receipt says so.
+    let id = w.id();
+    assert_eq!(
+        w.bash_event(
+            "PreToolUse",
+            &repo,
+            &id,
+            "amont land --json",
+            false,
+            Some(&reviewed)
+        ),
+        Said::Silent
+    );
+    let judged = git(&repo, &["rev-parse", "HEAD"]);
+    let retried = w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { }\n")]);
+    receipt(&repo, "feat/x", &retried, "landed");
+    match w.bash_event("PostToolUse", &repo, &id, "amont land --json", false, None) {
+        Said::Assert(text) => {
+            assert!(
+                text.contains(&retried[..7]) && text.contains(&judged[..7]),
+                "{text}"
+            );
+            assert!(text.contains("no review or preview has seen"), "{text}");
+        }
+        other => panic!("the retried sha must be said, got {other:?}"),
+    }
+    assert!(land_journal(&w).last().unwrap().contains(" broken "));
+
+    // The same on a FAILED call: accepted, then not observed.
+    let id = w.id();
+    w.bash_event(
+        "PreToolUse",
+        &repo,
+        &id,
+        "amont land",
+        false,
+        Some(&reviewed),
+    );
+    let again = w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {  }\n")]);
+    receipt(&repo, "feat/x", &again, "not-observed");
+    match w.bash_event("PostToolUseFailure", &repo, &id, "amont land", false, None) {
+        Said::Assert(text) => assert!(text.contains("possibly pushed"), "{text}"),
+        other => panic!("a failed land that may have pushed is said, got {other:?}"),
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_land_that_pushed_what_was_judged_or_nothing_is_not_said_and_a_missing_record_is_journalled() {
+    let w = World::new("land-held");
+    w.fake_amont();
+    let repo = w.repo("app");
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let reviewed = w.transcript("t", &t);
+
+    let id = w.id();
+    w.bash_event(
+        "PreToolUse",
+        &repo,
+        &id,
+        "amont land",
+        false,
+        Some(&reviewed),
+    );
+    receipt(
+        &repo,
+        "feat/x",
+        &git(&repo, &["rev-parse", "HEAD"]),
+        "landed",
+    );
+    assert_eq!(
+        w.bash_event("PostToolUse", &repo, &id, "amont land", false, None),
+        Said::Silent
+    );
+
+    let id = w.id();
+    w.bash_event(
+        "PreToolUse",
+        &repo,
+        &id,
+        "amont land",
+        false,
+        Some(&reviewed),
+    );
+    receipt(&repo, "feat/x", "0000000", "refused");
+    assert_eq!(
+        w.bash_event("PostToolUseFailure", &repo, &id, "amont land", false, None),
+        Said::Silent,
+        "a refused land published nothing"
+    );
+
+    // No judgement recorded (an empty tool_use_id): skipped, and journalled.
+    assert_eq!(
+        w.bash_event("PostToolUse", &repo, "", "amont land", false, None),
+        Said::Silent
+    );
+    let last = land_journal(&w).last().cloned().unwrap_or_default();
+    // The journal writes a reason with its spaces as underscores.
+    assert!(last.contains("retry-check_skipped"), "{last}");
 }

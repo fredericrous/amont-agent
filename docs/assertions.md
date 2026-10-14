@@ -12,13 +12,23 @@ Nothing in a command string tells you that the push you just ran reported
 |---|---|---|
 | `push-landed` | `git push` | is the branch on the remote, at the commit you have? |
 | `push-published` | `git push` to a UI repository | did it publish a new commit, and was it an approved preview? (records only; see [preview approval](preview.md)) |
+| `land-retry` | `amont land`, successful or failed | did the land push the commit the review and preview judged, or a retry nobody judged? Read from the land's receipt, never the tracking ref |
 
-## Only successful calls
+## Only successful calls, with one exception
 
-Claude Code sends a failed tool call to `PostToolUseFailure`, an event this
-crate ignores. So everything an assertion sees claimed to work — which is the
-whole point. A command that returned an error is already in front of the model;
-there is nothing invisible left to point out.
+Claude Code sends a failed tool call to `PostToolUseFailure`. Everything the
+other assertions see claimed to work, which is the whole point: a command that
+returned an error is already in front of the model, and there is nothing
+invisible left to point out.
+
+`land-retry` is the exception. An `amont land` retries once when its pre-push
+hook moves HEAD, and a land that then ends `unverified` or `not-observed` exits
+non-zero after the remote accepted the push, so it also runs on
+`PostToolUseFailure`. It compares the sha PreToolUse judged (recorded for every
+repository) with the land's receipt (amont 1.54.0): another sha `landed` is said
+as an unreviewed push, another sha `unverified` or `not-observed` as a possibly
+unreviewed one; a refused, unreachable or interrupted land published nothing.
+No record, no receipt or more than one is journalled as `retry-check skipped`.
 
 ## An assertion cannot refuse
 

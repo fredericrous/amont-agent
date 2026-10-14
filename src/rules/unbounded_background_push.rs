@@ -43,6 +43,12 @@ pub const RULE: Rule = Rule {
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
     let cmd = crate::push_target::find(parsed)?;
+    // A land in the background is already unresolvable for the push guards,
+    // which name the one shape they read; wrapping it in `timeout` would
+    // make it unresolvable too.
+    if crate::land::is_land(cmd) {
+        return None;
+    }
     // A dry run sends nothing and runs no gate; `timeout` is the deadline.
     if cmd.is_dry_run() || cmd.has_short('n') || cmd.wrapped_by("timeout") {
         return None;
