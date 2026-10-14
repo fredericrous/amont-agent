@@ -43,6 +43,7 @@ pub mod gh_pr_merge_auto;
 pub mod git_add_broad;
 pub mod glob_in_flag_value;
 pub mod glob_no_match;
+pub mod gui_open_unbounded;
 pub mod implementation_review;
 pub mod kubectl_gitops;
 pub mod lint_suppression_added;
@@ -450,6 +451,7 @@ pub const RULES: &[Rule] = &[
     implementation_review::RULE,
     foreground_poll::RULE,
     unbounded_background_push::RULE,
+    gui_open_unbounded::RULE,
     sed_in_place::RULE,
     kubectl_gitops::RULE,
     tag_after_commit::RULE,

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`gui-open-unbounded`: an app launch sent to the background needs a
+  deadline.** `open -a <App>` (or `open <x>.app`, `open -b <id>`) was measured
+  to hang twice on 2026-10-14 (63 and 10 minutes, `open -a Simulator` in a
+  happier N1 session): the chain after it never ran, the output stayed empty
+  and no completion notice came. Trials the same day hung with `-g` and `-j`
+  too, and on Finder, so no flag counts as a deadline; only `timeout` does, and
+  `-R`, which launches nothing. The rule advises on a background launch with no
+  `timeout` and names `timeout 15 open -a <App>` as a call of its own, or the
+  headless `xcrun simctl` verbs. Each clause is judged alone, so a bounded
+  launch does not hide another. A foreground call (the tool's own timeout
+  bounds it), `open README.md` and `open https://…` stay silent.
+
 ## v2.39.0
 
 ### Added
