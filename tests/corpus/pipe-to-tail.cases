@@ -47,3 +47,6 @@ nomatch	git push --force-with-lease origin feat/x
 nomatch	git log --oneline | head -20
 nomatch	set -o pipefail; git push origin main 2>&1 | tail -3
 nomatch	setopt pipefail; git push origin main 2>&1 | tail -3
+# --- reviewed 2026-10-14: amont land pushes, so trimming its output hides a failed land
+match	amont land 2>&1 | tail -3
+nomatch	set -o pipefail; amont land 2>&1 | tail -3

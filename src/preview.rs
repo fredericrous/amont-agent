@@ -1740,20 +1740,58 @@ pub struct LandJudged {
     pub since: i128,
 }
 
+/// How long a land's judgement record is kept: the check reads it moments
+/// later, and a week covers a session left open.
+const LAND_RECORD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 fn record_land(tool_use_id: &str, judged: &str, l: &crate::land::Landing) {
-    let since = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i128)
-        .unwrap_or(0);
+    // No clock, no record: a `since` of 0 would match every older receipt of
+    // the branch, and the check would then judge the wrong land.
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        eprintln!("amont-agent: land-retry: the clock is before 1970, so this land's judgement is not recorded");
+        return;
+    };
+    let since = now.as_nanos() as i128;
     let body = format!(
         "{}\t{}\t{}\t{since}\n",
         clean(judged),
         clean(&l.receipt_dir.to_string_lossy()),
         clean(&l.branch)
     );
-    if let Some(d) = dir().map(|d| d.join("lands")) {
-        if ensure(&d).is_some() {
-            let _ = crate::atomic::write_atomic(&d.join(tool_use_id), &body);
+    let Some(d) = dir().map(|d| d.join("lands")) else {
+        eprintln!(
+            "amont-agent: land-retry: no state directory, so this land's judgement is not recorded"
+        );
+        return;
+    };
+    if ensure(&d).is_none() {
+        eprintln!("amont-agent: land-retry: could not create {}", d.display());
+        return;
+    }
+    prune_land_records(&d);
+    let path = d.join(tool_use_id);
+    if let Err(e) = crate::atomic::write_atomic(&path, &body) {
+        eprintln!(
+            "amont-agent: land-retry: could not write {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// Deletes judgement records older than [`LAND_RECORD_KEEP`].
+fn prune_land_records(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > LAND_RECORD_KEEP);
+        if old {
+            let _ = std::fs::remove_file(e.path());
         }
     }
 }

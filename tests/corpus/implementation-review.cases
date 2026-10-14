@@ -33,3 +33,10 @@ nomatch	git push origin HEAD:refs/heads/master
 nomatch	amont-agent tree-sha --block
 nomatch	cat ~/.claude/amont-agent/journal.log
 nomatch	grep -c 'implementation-review' ~/.claude/amont-agent/journal.log
+# --- reviewed 2026-10-14: `amont land` is a push (plan agents-land-through-amont-land, Phase 2). examine fires on every land that is not a dry run; an unsupported shape is held by confirm, not here.
+match	amont land --json
+match	amont land
+match	cd ../wt && amont land
+match	git commit -m x && amont land
+nomatch	amont land --dry-run --json
+nomatch	echo amont land

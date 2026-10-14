@@ -65,7 +65,14 @@ fn judge(judged: &str, status: &str, pushed: &str) -> Verdict {
     let published = match status {
         "landed" => true,
         "unverified" | "not-observed" => false,
-        _ => return Verdict::Held,
+        // Nothing was published.
+        "refused" | "unreachable" | "interrupted" => return Verdict::Held,
+        // A status a newer amont added: not a pass on a guess.
+        _ => {
+            return Verdict::Unknown(
+                "retry-check skipped: a receipt status this version does not know",
+            )
+        }
     };
     if pushed == judged {
         return Verdict::Held;
@@ -118,6 +125,14 @@ mod tests {
             Verdict::Broken { reason, .. } => assert!(reason.contains("possibly")),
             _ => panic!("an accepted push of another sha is said"),
         }
+    }
+
+    #[test]
+    fn an_unknown_status_is_skipped_not_passed() {
+        assert!(matches!(
+            judge("aaa", "landed-twice", "bbb"),
+            Verdict::Unknown(_)
+        ));
     }
 
     #[test]

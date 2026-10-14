@@ -1325,6 +1325,7 @@ fn attributed_repo(id: &str, bash: &Bash) -> String {
         rules::push_preview::RULE.id,
         rules::implementation_review::RULE.id,
         crate::assertions::push_published::ASSERTION.id,
+        crate::assertions::land_retry::ASSERTION.id,
     ];
     if !pushes.contains(&id) {
         return repo_name(&bash.cwd);
