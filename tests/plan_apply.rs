@@ -170,7 +170,12 @@ impl World {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        c.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        // A usage error exits before it reads stdin, so the child may close
+        // the pipe first: that is the behaviour under test, not a failure of
+        // the write. Any other write error still fails the test.
+        if let Err(e) = c.stdin.take().unwrap().write_all(stdin.as_bytes()) {
+            assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+        }
         c.wait_with_output().unwrap()
     }
 
