@@ -1096,6 +1096,9 @@ fn a_background_push_without_a_deadline_is_advised() {
     );
 }
 
+// `open` is a launcher only on macOS: off it the rule is silent, which the
+// test below asserts, so the platform is checked on every CI host.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_background_gui_launch_without_a_deadline_is_advised() {
     let cwd = serde_json::Value::String(home().display().to_string());
@@ -1147,6 +1150,25 @@ fn a_background_gui_launch_without_a_deadline_is_advised() {
     assert!(
         !fires(true, "open -R /Applications/Foo.app"),
         "revealing in Finder launches nothing"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_background_gui_launch_is_silent_off_macos() {
+    let cwd = serde_json::Value::String(home().display().to_string());
+    let payload = |cmd: &str| {
+        send(&format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+                 "session_id":"guiopen-2","permission_mode":"default",
+                 "tool_input":{{"command":"{cmd}","run_in_background":true}}}}"#
+        ))
+    };
+    assert!(
+        !payload("open -a Simulator")
+            .reason()
+            .contains("gui-open-unbounded"),
+        "`open` launches an app only on macOS"
     );
 }
 
