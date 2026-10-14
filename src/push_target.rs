@@ -50,6 +50,9 @@ pub enum Push {
         repo: Option<PathBuf>,
         shape: &'static str,
     },
+    /// An `amont land` that amont itself refuses (a protected branch, a dirty
+    /// tree, no branch): it publishes nothing, so there is nothing to judge.
+    Refused(String),
 }
 
 /// The push as written: directories, remote, refspecs.
@@ -391,13 +394,61 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     crate::git::stdout_in(dir, args).filter(|s| !s.is_empty())
 }
 
-/// The `git … push` clause of a command, if it has exactly one. Pure.
+/// The first `git … push` or `amont land` clause of a command. Pure.
+/// [`resolve_for`] reads a command with more than one as unresolvable.
 pub fn find(parsed: &crate::shell::Parsed) -> Option<&Simple> {
-    let mut pushes = parsed
-        .judgeable()
-        .filter(|c| c.program() == Some("git") && c.subcommand() == Some("push"));
-    let first = pushes.next()?;
-    Some(first)
+    parsed.judgeable().find(|c| publishes(c))
+}
+
+fn publishes(c: &Simple) -> bool {
+    (c.program() == Some("git") && c.subcommand() == Some("push")) || crate::land::is_land(c)
+}
+
+/// [`resolve`], for a guard that has the whole call: a command with more
+/// than one push or land is unresolvable (only the first would be judged),
+/// and an `amont land` is resolved by asking amont what it would push.
+pub fn resolve_for(ctx: &crate::rules::Context, cmd: &Simple) -> Push {
+    let cwd = ctx.cwd_at(cmd.at);
+    if ctx.parsed.clauses().iter().filter(|c| publishes(c)).count() > 1 {
+        return Push::Unresolvable {
+            repo: toplevel(&cwd),
+            shape: "more than one push or land in one command: push each in its own command",
+        };
+    }
+    if !crate::land::is_land(cmd) {
+        return resolve(&cwd, cmd);
+    }
+    if cmd.is_dry_run() {
+        return Push::DryRun;
+    }
+    if let Err(shape) = crate::land::shape(ctx.parsed, cmd, ctx.background) {
+        return Push::Unresolvable {
+            repo: toplevel(&cwd),
+            shape,
+        };
+    }
+    match crate::land::dry_run(&cwd) {
+        crate::land::Answer::Would(l) => match toplevel(&cwd) {
+            Some(repo) => Push::Resolved {
+                repo,
+                targets: vec![Target {
+                    remote: l.remote,
+                    src: l.pushed,
+                    dst: l.dst,
+                    kind: Kind::Branch,
+                }],
+            },
+            None => Push::Unresolvable {
+                repo: None,
+                shape: "not a git repository",
+            },
+        },
+        crate::land::Answer::Refused(why) => Push::Refused(why),
+        crate::land::Answer::Unknown(shape) => Push::Unresolvable {
+            repo: toplevel(&cwd),
+            shape,
+        },
+    }
 }
 
 #[cfg(test)]

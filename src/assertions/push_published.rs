@@ -34,7 +34,9 @@ pub const ASSERTION: Assertion = Assertion {
 
 fn examine(parsed: &Parsed) -> Option<Claim> {
     let cmd = crate::push_target::find(parsed)?;
-    if cmd.is_dry_run() || cmd.has_short('n') {
+    // A land verifies its own landing and says so in its receipt; reading the
+    // remote by name here would read the fetch URL, not the push URL it used.
+    if crate::land::is_land(cmd) || cmd.is_dry_run() || cmd.has_short('n') {
         return None;
     }
     Some(Claim {

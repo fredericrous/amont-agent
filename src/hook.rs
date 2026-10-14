@@ -125,6 +125,7 @@ fn decide(raw: &str) -> Decision {
         Event::PostFile(op) => on_post_file(&op),
         Event::PreBash(bash) => on_bash(&bash),
         Event::PostBash(bash) => on_post_bash(&bash),
+        Event::PostBashFailure(bash) => on_post_bash_failure(&bash),
     }
 }
 
@@ -468,6 +469,53 @@ fn on_post_bash(bash: &Bash) -> Decision {
     }
 }
 
+/// A Bash call that FAILED: only [`assertions::AFTER_FAILURE`] run, with the
+/// same verdict handling as [`on_post_bash`]. A detached call has not ended.
+fn on_post_bash_failure(bash: &Bash) -> Decision {
+    if bash.background {
+        return Decision::Silent;
+    }
+    let parsed = shell::lex(&bash.command);
+    if !parsed.fully_read() {
+        return Decision::Silent;
+    }
+    let claimed = assertions::after_failure(&parsed);
+    if claimed.is_empty() {
+        return Decision::Silent;
+    }
+    let ctx = Context {
+        platform: Some(crate::rules::Platform::host()),
+        cwd: &bash.cwd,
+        parsed: &parsed,
+        background: bash.background,
+        timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
+        transcript: bash.transcript.as_deref(),
+        agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
+    };
+    let mut spoken = Vec::new();
+    for (assertion, claim) in &claimed {
+        let stance = crate::stance::resolve_assertion(assertion);
+        match (assertion.verify)(&ctx, claim) {
+            Verdict::Unknown(why) => note_claim(assertion, "unverified", why, bash, claim),
+            Verdict::Held => note_claim(assertion, stance.as_str(), "held", bash, claim),
+            Verdict::Noted(outcome) => note_claim(assertion, stance.as_str(), outcome, bash, claim),
+            Verdict::Broken { reason, remedy } => {
+                note_claim(assertion, stance.as_str(), "broken", bash, claim);
+                if stance != Stance::Observe {
+                    spoken.push(decision::phrase(assertion.id, &reason, &remedy));
+                }
+            }
+        }
+    }
+    if spoken.is_empty() {
+        Decision::Silent
+    } else {
+        Decision::AssertAfterFailure(spoken.join("\n\n"))
+    }
+}
+
 fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, claim: &Claim) {
     let excerpt = crate::backtest::excerpt(&bash.command, claim.span.start, claim.span.end);
     journal::record(&journal::Entry {
@@ -676,6 +724,7 @@ fn combine(decisions: impl IntoIterator<Item = Decision>) -> Decision {
             // advice rather than dropped.
             Decision::Context(text)
             | Decision::Assert(text)
+            | Decision::AssertAfterFailure(text)
             | Decision::Continue(text)
             | Decision::UserNote(text) => texts.push(text),
         }
@@ -1356,6 +1405,7 @@ mod write_tests {
             Decision::Ask(t) => ("ask", t),
             Decision::Context(t)
             | Decision::Assert(t)
+            | Decision::AssertAfterFailure(t)
             | Decision::Continue(t)
             | Decision::UserNote(t) => ("other", t),
         }

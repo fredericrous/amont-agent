@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- **`amont land` is a push.** A land runs `git push` as a child process the
+  hook never sees, so every push guard was walked around by typing `amont
+  land`. A land clause is now resolved by `amont land --dry-run --json`
+  (amont 1.54.0), once per hook call within 3 s, and the implementation
+  review, the preview, push-preflight and pipe-to-tail judge it as they judge
+  a `git push`. Only `amont land [--json] [--force]`, alone or after one `cd
+  <dir> &&`, in the foreground, is read; any other shape (clauses around it,
+  pipes, redirections, env assignments, wrappers, `run_in_background`) is
+  unresolvable and held under deny with the readable shape named. A land
+  amont refuses itself (main, a dirty tree) is not held. A command with more
+  than one push or land is unresolvable.
+- **`land-retry`.** A land retries once when its pre-push hook moves HEAD,
+  and the retry pushes a commit nobody judged. The judged sha is recorded for
+  every land before it runs and compared afterwards with the land's receipt,
+  on `PostToolUse` and now `PostToolUseFailure` (registered by `amont-agent
+  install`): another commit pushed is said as an unreviewed push.
+
 ### Changed
 
 - **`gui-open-unbounded` speaks only on macOS.** `open` launches an app only

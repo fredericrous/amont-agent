@@ -243,6 +243,9 @@ pub enum Event {
     /// whole reason the tier exists — `git push` exiting 0 without the push
     /// landing is not a failure anyone can see.
     PostBash(Box<Bash>),
+    /// A Bash tool call that ran and FAILED (`PostToolUseFailure`). Only the
+    /// assertions that must see a failed call read it (`land-retry`).
+    PostBashFailure(Box<Bash>),
     /// A session opening. The guard leaves proof that it ran, and — this being
     /// the one moment a fetch is worth its cost — says where the checkout
     /// stands against the remote.
@@ -597,7 +600,7 @@ pub fn parse(raw: &str) -> Event {
                 Event::NotOurs
             }
         }
-        Some(stage @ ("PreToolUse" | "PostToolUse")) => {
+        Some(stage @ ("PreToolUse" | "PostToolUse" | "PostToolUseFailure")) => {
             // Exact, not a prefix. An MCP server may expose a tool whose name
             // merely starts with `Bash`, and that tool is not this one.
             if v.get("tool_name").and_then(|x| x.as_str()) != Some("Bash") {
@@ -657,10 +660,10 @@ pub fn parse(raw: &str) -> Event {
                 agent_transcript,
                 agent: agent(),
             });
-            if stage == "PreToolUse" {
-                Event::PreBash(bash)
-            } else {
-                Event::PostBash(bash)
+            match stage {
+                "PreToolUse" => Event::PreBash(bash),
+                "PostToolUse" => Event::PostBash(bash),
+                _ => Event::PostBashFailure(bash),
             }
         }
         _ => Event::NotOurs,
@@ -797,16 +800,18 @@ mod tests {
         assert!(matches!(parse(write), Event::NotOurs));
     }
 
-    /// A failure is already in front of the model. `PostToolUseFailure` carries
-    /// no `tool_response` at all — the exit code lives in an `error` string —
-    /// and this crate has nothing to add to a command that already said it
-    /// failed.
+    /// A failed Bash call is its own event: only the assertions that must see
+    /// a failed call (`land-retry`) read it, and every other assertion still
+    /// sees only calls that claimed to work.
     #[test]
-    fn a_failed_call_is_not_ours() {
+    fn a_failed_call_is_its_own_event() {
         let raw = r#"{"hook_event_name":"PostToolUseFailure","tool_name":"Bash",
                       "tool_input":{"command":"git push"},
                       "error":"Exit code 128\nfatal: could not read from remote"}"#;
-        assert!(matches!(parse(raw), Event::NotOurs));
+        match parse(raw) {
+            Event::PostBashFailure(b) => assert_eq!(b.command, "git push"),
+            _ => panic!("expected a failed Bash call"),
+        }
     }
 
     /// A detached call reports success the instant it is handed a task id.

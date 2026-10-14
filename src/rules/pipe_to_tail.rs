@@ -64,6 +64,7 @@ const MUTATING: &[(&str, &[&str])] = &[
     ("kubectl", &["apply", "delete", "replace"]),
     ("helm", &["install", "upgrade"]),
     ("npm", &["publish"]),
+    ("amont", &["land"]),
 ];
 
 /// Sinks that TRIM. The defect is identical for `tee`, `less` and `jq`, and

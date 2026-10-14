@@ -271,11 +271,12 @@ pub enum Judged {
 /// Judge the push in `cmd`, whose clause runs in `cwd`.
 pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     use crate::push_target::{self, Kind, Push};
-    let cwd = ctx.cwd_at(cmd.at);
-    let (repo, targets) = match push_target::resolve(&cwd, cmd) {
+    let (repo, targets) = match push_target::resolve_for(ctx, cmd) {
         Push::Resolved { repo, targets } => (repo, targets),
         Push::DryRun => return Judged::Decline("dry-run"),
         Push::DeleteOnly => return Judged::Decline("delete-only"),
+        // amont refuses this land itself: nothing is published.
+        Push::Refused(_) => return Judged::Decline("land-refused"),
         Push::Unresolvable { shape, .. } => {
             // Under `deny` an unreadable shape is held, so `--all` is not the
             // way around the gate; otherwise it is journalled and passes.
