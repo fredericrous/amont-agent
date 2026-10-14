@@ -1745,6 +1745,11 @@ pub struct LandJudged {
 const LAND_RECORD_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
 fn record_land(tool_use_id: &str, judged: &str, l: &crate::land::Landing) {
+    // The same rule `land_judged` reads with: an id that names no single file
+    // in `lands/` would be written where nothing reads it.
+    if tool_use_id.is_empty() || tool_use_id.contains('/') {
+        return;
+    }
     // No clock, no record: a `since` of 0 would match every older receipt of
     // the branch, and the check would then judge the wrong land.
     let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
@@ -1780,8 +1785,15 @@ fn record_land(tool_use_id: &str, judged: &str, l: &crate::land::Landing) {
 
 /// Deletes judgement records older than [`LAND_RECORD_KEEP`].
 fn prune_land_records(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!(
+                "amont-agent: land-retry: could not list {}: {e}",
+                dir.display()
+            );
+            return;
+        }
     };
     for e in entries.flatten() {
         let old = e
@@ -1791,7 +1803,12 @@ fn prune_land_records(dir: &Path) {
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age > LAND_RECORD_KEEP);
         if old {
-            let _ = std::fs::remove_file(e.path());
+            if let Err(err) = std::fs::remove_file(e.path()) {
+                eprintln!(
+                    "amont-agent: land-retry: could not delete the old record {}: {err}",
+                    e.path().display()
+                );
+            }
         }
     }
 }
