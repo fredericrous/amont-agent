@@ -17,3 +17,9 @@ This repository carries Phase 2: amont-agent treats `amont land` as a push. A la
 
 - 2026-10-14 — The end-to-end tests use a fake `amont` that answers `land --dry-run --json` as 1.54.0 does: CI installs no amont, and the tests must not depend on a machine's version. It is primed once per test, because the first exec of a fresh script can be held by Gatekeeper beyond the 3 s budget under a parallel suite (seen: three tests timed out until it was). The real amont is exercised by the live run above.
 - 2026-10-14 — Whether Claude Code fires `PostToolUseFailure` for a Bash call that exits non-zero, and what that payload carries, is checked live after the release, once `amont-agent install` has registered the event: the docs confirm the reply shape (`hookEventName: "PostToolUseFailure"` with `additionalContext`), not the trigger.
+
+## Implementation review
+
+approve, after round 1 (approve-with-changes: verification recorded, unknown receipt status skipped, record failures said, corpus and preview tests added, records pruned) and two Deltas (both lows fixed).
+Still to observe live after the release and `amont-agent install`: PostToolUseFailure firing for a failing land, and a UI land held under the preview gate's deny.
+80k + 86k + 88k tokens; reviewed tree 08354c9.
