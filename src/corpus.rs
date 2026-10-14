@@ -225,6 +225,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/unbounded-background-push.cases"),
     ),
     (
+        "gui-open-unbounded",
+        include_str!("../tests/corpus/gui-open-unbounded.cases"),
+    ),
+    (
         "forge-merge-by-hand",
         include_str!("../tests/corpus/forge-merge-by-hand.cases"),
     ),

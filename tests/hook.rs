@@ -1096,6 +1096,60 @@ fn a_background_push_without_a_deadline_is_advised() {
     );
 }
 
+#[test]
+fn a_background_gui_launch_without_a_deadline_is_advised() {
+    let cwd = serde_json::Value::String(home().display().to_string());
+    let payload = |background: bool, cmd: &str| {
+        let bg = if background {
+            r#","run_in_background":true"#
+        } else {
+            ""
+        };
+        send(&format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+                 "session_id":"guiopen-1","permission_mode":"default",
+                 "tool_input":{{"command":"{cmd}"{bg}}}}}"#
+        ))
+    };
+    let fires = |background: bool, cmd: &str| {
+        payload(background, cmd)
+            .reason()
+            .contains("gui-open-unbounded")
+    };
+    assert!(
+        fires(
+            true,
+            "xcrun simctl boot X 2>/dev/null; open -a Simulator; yarn ios:dev > build.log 2>&1"
+        ),
+        "the 2026-10-14 chain"
+    );
+    assert!(fires(true, "open /Applications/Foo.app"), "an .app operand");
+    assert!(
+        fires(true, "open -g -a Simulator") && fires(true, "open -j -a Simulator"),
+        "-g and -j are not a deadline"
+    );
+    assert!(
+        !fires(true, "timeout 15 open -a Simulator"),
+        "`timeout` is the deadline"
+    );
+    assert!(
+        fires(true, "timeout 15 open -a Simulator; open -a Safari"),
+        "one bounded launch does not hide another"
+    );
+    assert!(
+        !fires(false, "open -a Simulator"),
+        "in the foreground the tool's own timeout bounds it"
+    );
+    assert!(
+        !fires(true, "open README.md") && !fires(true, "open https://example.com"),
+        "only an app launch is flagged"
+    );
+    assert!(
+        !fires(true, "open -R /Applications/Foo.app"),
+        "revealing in Finder launches nothing"
+    );
+}
+
 /// A pipeline we cannot read costs us that pipeline, not the line.
 ///
 /// The `xargs` run is unreadable; the `git commit … | tail -1` beside it is

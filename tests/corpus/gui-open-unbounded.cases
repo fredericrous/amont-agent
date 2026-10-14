@@ -1,0 +1,26 @@
+# amont-agent-cases-v1
+# Reviewed judgements for this rule; the format is described in
+# unbounded-background-push.cases. The corpus replays `examine` only: whether the
+# call ran in the background is `confirm`'s question, so a bare `open -a` is a
+# match here even when, in a session, it ran in the foreground.
+
+# --- the rule should fire (2026-10-14, happier N1 session) ---
+match	xcrun simctl boot FAC0CECF-9098-4F9C-A5F3-BE1519D9B41B 2>/dev/null; open -a Simulator; cd apps/ui && yarn ios:dev --device FAC0CECF > build.log 2>&1
+match	open -a Simulator
+match	open -g -a Simulator
+match	open -j -a Simulator
+match	open -a "Google Chrome" https://example.com
+match	open /Applications/Xcode.app
+match	open -b com.apple.iphonesimulator
+match	timeout 15 open -a Simulator; open -a Safari
+
+# --- the rule must stay silent ---
+nomatch	timeout 15 open -a Simulator
+nomatch	timeout -k 5 15 open -a Simulator && echo launched
+nomatch	open README.md
+nomatch	open https://example.com
+nomatch	open .
+nomatch	open -R /Applications/Xcode.app
+nomatch	xcrun simctl io booted screenshot /tmp/s.png
+nomatch	echo open -a Simulator
+nomatch	git commit -m "open -a Simulator hangs"
