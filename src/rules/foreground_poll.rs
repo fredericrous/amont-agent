@@ -257,6 +257,7 @@ mod tests {
         let parsed = lex("while true; do sleep 5; done");
         let f = examine(&parsed).expect("fires");
         let ctx = Context {
+            platform: None,
             cwd: std::path::Path::new("/"),
             parsed: &parsed,
             background: true,
@@ -283,6 +284,7 @@ mod tests {
         assert_eq!(budget(&parsed), Some(60));
         let f = examine(&parsed).expect("fires");
         let ctx = Context {
+            platform: None,
             cwd: std::path::Path::new("/"),
             parsed: &parsed,
             background: false,

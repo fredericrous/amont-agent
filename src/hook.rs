@@ -256,6 +256,7 @@ fn on_bash(bash: &Bash) -> Decision {
     if !bash.background {
         for d in &dumped {
             let ctx = Context {
+                platform: Some(crate::rules::Platform::host()),
                 cwd: &bash.cwd,
                 parsed: &parsed,
                 background: bash.background,
@@ -401,6 +402,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
     }
 
     let ctx = Context {
+        platform: Some(crate::rules::Platform::host()),
         cwd: &bash.cwd,
         parsed: &parsed,
         background: bash.background,
@@ -1145,6 +1147,7 @@ fn confirmed(
         });
     };
     let ctx = Context {
+        platform: Some(crate::rules::Platform::host()),
         cwd: &bash.cwd,
         parsed,
         background: bash.background,
@@ -1280,6 +1283,7 @@ fn attributed_repo(id: &str, bash: &Bash) -> String {
     let parsed = shell::lex(&bash.command);
     let resolved = crate::push_target::find(&parsed).and_then(|cmd| {
         let ctx = Context {
+            platform: Some(crate::rules::Platform::host()),
             cwd: &bash.cwd,
             parsed: &parsed,
             background: bash.background,

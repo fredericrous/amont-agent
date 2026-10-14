@@ -18,7 +18,7 @@
 | `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |
 | `foreground-poll` | `advise` | a polling loop or `gh run watch` in the foreground, where the tool's ten-minute clock will kill it one poll short |
 | `unbounded-background-push` | `advise` | a `git push` sent to the background with its output kept in a file and no `timeout`, so the pre-push gate inside it can run for as long as it likes with nothing ending it or reporting it |
-| `gui-open-unbounded` | `advise` | a macOS app launch (`open -a <App>`, `open <x>.app`) with no `timeout`, sent in the background: measured to hang twice on 2026-10-14, and the chain after it never ran |
+| `gui-open-unbounded` | `advise` | a macOS app launch (`open -a <App>`, `open <x>.app`) with no `timeout`, sent in the background; silent on platforms where `open` is not a launcher: measured to hang twice on 2026-10-14, and the chain after it never ran |
 | `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
 | `kubectl-gitops` | `advise` | an imperative `kubectl` write in a repository Flux or Argo reconciles |
 | `tag-after-commit` | `advise` | `git tag` chained onto a `git commit` that a hook may have refused |

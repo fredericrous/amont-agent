@@ -289,6 +289,39 @@ impl Dialect {
     }
 }
 
+/// The machine the command would run on.
+///
+/// The same split as [`Dialect`]: the hook knows it ([`Platform::host`]), a
+/// replay does not, because a transcript records no machine. It is read by a
+/// `confirm` that asks whether a finding is a problem here (`open` launches
+/// an app only on macOS), never by `examine`, so the shape a rule matches is
+/// the same on every platform. Where it is not known, as in a replay, the
+/// [`Context`] carries `None` and a rule keeps its advice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    MacOs,
+    Linux,
+    Windows,
+    /// Some other OS the binary was built for (a BSD, say).
+    Other,
+}
+
+impl Platform {
+    /// The machine this binary was built for. A compile-time fact, so there is
+    /// nothing to read at run time.
+    pub fn host() -> Platform {
+        if cfg!(target_os = "macos") {
+            Platform::MacOs
+        } else if cfg!(target_os = "linux") {
+            Platform::Linux
+        } else if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else {
+            Platform::Other
+        }
+    }
+}
+
 /// Everything a rule may judge a command by: the source as written, the shell
 /// it runs in, the legacy lexer's reading of it, and — computed at most once,
 /// and only when a rule asks — the shell analysis ([`crate::analysis`]).
@@ -356,6 +389,9 @@ pub struct Context<'a> {
     /// re-reads the finding's span through the analysis; `""` where there is
     /// no command (tests).
     pub command: &'a str,
+    /// The machine the command runs on: `Some(Platform::host())` in the hook.
+    /// `None` where it is not known (a replay, a test that does not ask).
+    pub platform: Option<Platform>,
 }
 
 impl Context<'_> {
@@ -549,6 +585,7 @@ mod tests {
             "cd /tmp/here && echo $(cd /tmp/sub && git status) && git worktree add ../x -b feat/y",
         );
         let ctx = Context {
+            platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
@@ -574,6 +611,7 @@ mod tests {
     fn a_leading_cd_moves_the_question() {
         let parsed = lex("cd /tmp/elsewhere && git worktree add ../x -b feat/y");
         let ctx = Context {
+            platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
@@ -593,6 +631,7 @@ mod tests {
     fn a_relative_cd_resolves_against_the_session_and_the_last_wins() {
         let parsed = lex("cd sub; cd deeper && git stash pop");
         let ctx = Context {
+            platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
@@ -612,6 +651,7 @@ mod tests {
     fn a_cd_after_the_clause_does_not_count() {
         let parsed = lex("git stash pop && cd /tmp/after");
         let ctx = Context {
+            platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,
@@ -633,6 +673,7 @@ mod tests {
         for command in ["cd $(mktemp -d) && git stash pop", "cd - && git stash pop"] {
             let parsed = lex(command);
             let ctx = Context {
+                platform: None,
                 cwd: std::path::Path::new("/session"),
                 parsed: &parsed,
                 background: false,
@@ -654,6 +695,7 @@ mod tests {
     fn tilde_is_home() {
         let parsed = lex("cd ~/work/repo && git stash pop");
         let ctx = Context {
+            platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
             background: false,

@@ -39,8 +39,17 @@
 //! The remedy is `timeout 15 open -a <App>` as a call of its own, or no GUI at
 //! all: `xcrun simctl boot`, `simctl io <udid> screenshot` and `simctl openurl`
 //! work headless.
+//!
+//! ## Platform
+//!
+//! `open` is a macOS command. Linux has `xdg-open`, Windows has `start`, and
+//! their hang, if they have one, is unmeasured, so this rule speaks only where
+//! `open` is a launcher: `confirm` is silent when the hook's platform is known
+//! and is not macOS. The shape is matched everywhere, as for every rule; a
+//! replay has no platform and keeps the advice. The binary itself ships to
+//! every platform, since rules are compiled in unconditionally.
 
-use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Rule, Stance, Trend};
+use crate::rules::{Confirmed, Context, Evidence, Examine, Finding, Platform, Rule, Stance, Trend};
 use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
@@ -119,6 +128,13 @@ fn is_app_path(word: &str) -> bool {
 }
 
 fn confirm(ctx: &Context, _f: &Finding) -> Confirmed {
+    // `open` launches an app only on macOS; elsewhere it is not this hang.
+    if matches!(
+        ctx.platform,
+        Some(Platform::Linux | Platform::Windows | Platform::Other)
+    ) {
+        return Confirmed::No("`open` is not an app launcher on this platform");
+    }
     if !ctx.background {
         return Confirmed::No("in the foreground the tool's own timeout bounds the launch");
     }
@@ -161,6 +177,52 @@ mod tests {
         assert!(!fires("timeout -k 5 15 open -a Simulator && echo ok"));
         assert!(fires("timeout 15 open -a Simulator; open -a Safari"));
         assert!(fires("timeout 15 open -a Simulator && open -g -a Safari"));
+    }
+
+    /// The confirm verdict for a background `open -a Simulator` on `platform`.
+    fn confirmed_on(platform: Option<Platform>, background: bool) -> Confirmed {
+        let parsed = lex("open -a Simulator");
+        let ctx = Context {
+            cwd: std::path::Path::new("/"),
+            parsed: &parsed,
+            background,
+            timeout_ms: None,
+            tool_use_id: "",
+            transcript: None,
+            agent_transcript: None,
+            command: "open -a Simulator",
+            platform,
+        };
+        let finding = Finding {
+            reason: String::new(),
+            remedy: String::new(),
+            span: 0..0,
+        };
+        confirm(&ctx, &finding)
+    }
+
+    #[test]
+    fn a_background_launch_is_confirmed_only_where_open_is_macos() {
+        assert!(matches!(
+            confirmed_on(Some(Platform::MacOs), true),
+            Confirmed::Yes
+        ));
+        // `open` is not a launcher on Linux or Windows: the advice would be noise.
+        assert!(matches!(
+            confirmed_on(Some(Platform::Linux), true),
+            Confirmed::No(_)
+        ));
+        assert!(matches!(
+            confirmed_on(Some(Platform::Windows), true),
+            Confirmed::No(_)
+        ));
+        assert!(matches!(
+            confirmed_on(Some(Platform::Other), true),
+            Confirmed::No(_)
+        ));
+        // A replay cannot know the platform: it keeps the advice, as the
+        // corpus and the backtester always have.
+        assert!(matches!(confirmed_on(None, true), Confirmed::Yes));
     }
 
     #[test]

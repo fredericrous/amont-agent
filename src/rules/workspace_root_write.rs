@@ -778,6 +778,7 @@ mod tests {
         let parsed = lex(command);
         let finding = examine(&Input::new(command, Dialect::Bash, &parsed)).expect("shape");
         let ctx = Context {
+            platform: None,
             cwd,
             parsed: &parsed,
             background: false,
@@ -872,6 +873,7 @@ mod tests {
         let home = PathBuf::from(std::env::var_os("HOME").expect("HOME is set"));
         let parsed = lex("");
         let ctx = Context {
+            platform: None,
             cwd: Path::new("/"),
             parsed: &parsed,
             background: false,
@@ -937,6 +939,7 @@ mod tests {
         let parsed = lex("make > x.log");
         let finding = examine(&Input::new("make > x.log", Dialect::Bash, &parsed)).unwrap();
         let ctx = Context {
+            platform: None,
             cwd: &root,
             parsed: &parsed,
             background: false,
