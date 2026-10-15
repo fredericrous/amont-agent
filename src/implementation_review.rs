@@ -49,6 +49,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::git;
 use crate::journal;
 use crate::plan_review::{completed_agents_resumable, hex, sha256, Completed};
+use crate::provenance::Review as Bound;
 use crate::rules::{Confirmed, Context, Stance};
 use crate::shell::Simple;
 
@@ -468,6 +469,12 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     // The branch patch, computed once: a pass found here or below is filed
     // under it, and a miss by tree is looked up by it.
     let key = patch_key(&repo, &merge_base, pushed);
+    let plans: Vec<String> = changed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
     // Said when the push is held: no earlier review could carry over.
     let unkeyed = key
         .as_ref()
@@ -475,17 +482,32 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         .map(|why| format!(" No earlier review could carry over by patch: {why}."))
         .unwrap_or_default();
     let key = key.ok();
+    let push = crate::provenance::Push {
+        repo: &repo,
+        name: &name,
+        pushed,
+        canon: &tree,
+        patch: key.as_ref().map(|k| k.patch.as_str()),
+        plans: &plans,
+        target,
+    };
     if let Some(verdict) = remembered(&name, &tree) {
         if let Some(k) = &key {
             if remembered_patch(&name, k).is_none() {
                 remember_patch(&name, k, &tree, &verdict, "tree");
             }
         }
-        return Judged::Decline(if verdict == "overruled" {
-            "overruled"
-        } else {
-            "reviewed"
-        });
+        let overruled = verdict == "overruled";
+        provenance(
+            &push,
+            if overruled {
+                Bound::Overruled
+            } else {
+                Bound::Reviewed
+            },
+            &tree,
+        );
+        return Judged::Decline(if overruled { "overruled" } else { "reviewed" });
     }
     if let Some((verdict, old_tree)) = key.as_ref().and_then(|k| remembered_patch(&name, k)) {
         remember(
@@ -494,7 +516,17 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &verdict,
             &format!("patch {}", short(&old_tree)),
         );
-        return Judged::Decline(if verdict == "overruled" {
+        let overruled = verdict == "overruled";
+        provenance(
+            &push,
+            if overruled {
+                Bound::Overruled
+            } else {
+                Bound::ByPatch
+            },
+            &old_tree,
+        );
+        return Judged::Decline(if overruled {
             "overruled-by-patch"
         } else {
             "reviewed-by-patch"
@@ -538,6 +570,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                 if let Some(k) = &key {
                     remember_patch(&name, k, &tree, v.as_str(), "transcript");
                 }
+                provenance(&push, Bound::Reviewed, &tree);
                 Judged::Decline("reviewed")
             }
         };
@@ -558,6 +591,35 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             short(&tree)
         ),
         excerpt: format!("tree={} review=missing verdict=-", short(&tree)),
+    }
+}
+
+/// Files the provenance record of a pass. A failure is journalled and never
+/// changes the judgment.
+fn provenance(push: &crate::provenance::Push, review: Bound, review_canon: &str) {
+    let Some(preview) = crate::preview::outcome(push.repo, push.target) else {
+        note(
+            "provenance-deferred",
+            "-",
+            push.name,
+            "the preview has not stood",
+        );
+        return;
+    };
+    match crate::provenance::write(push, review, review_canon, preview) {
+        Ok(crate::provenance::Filed::Written(file)) => note(
+            "provenance-written",
+            "-",
+            push.name,
+            &file.display().to_string(),
+        ),
+        Ok(crate::provenance::Filed::Kept(file)) => note(
+            "provenance-kept",
+            "-",
+            push.name,
+            &file.display().to_string(),
+        ),
+        Err(why) => note("provenance-write-failed", "-", push.name, &why),
     }
 }
 
@@ -616,14 +678,18 @@ pub fn confirm_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Confirmed {
 /// and `..` folded, no symlink followed) and, where the store exists, by
 /// its canonical form too. Only the hook writes there.
 pub fn guards_path(path: &Path) -> bool {
-    let Some(store) = store() else {
-        return false;
-    };
+    HOOK_ONLY_DIRS
+        .iter()
+        .filter_map(|d| Some(journal::dir()?.join(d)))
+        .any(|store| guards_store(path, &store))
+}
+
+fn guards_store(path: &Path, store: &Path) -> bool {
     let here = lexical(path);
-    if here.starts_with(lexical(&store)) {
+    if here.starts_with(lexical(store)) {
         return true;
     }
-    if let Ok(real) = std::fs::canonicalize(&store) {
+    if let Ok(real) = std::fs::canonicalize(store) {
         if here.starts_with(&real) {
             return true;
         }
@@ -688,12 +754,17 @@ pub fn store_clause(parsed: &crate::shell::Parsed) -> Option<std::ops::Range<usi
 /// Windows writes the same directory with backslashes.
 pub fn names_store(word: &str) -> bool {
     let word = word.replace('\\', "/");
-    word.contains(&format!("amont-agent/{RULE_ID}/"))
-        || word.contains(&format!("amont-agent/{RULE_ID}")) && word.ends_with(RULE_ID)
+    HOOK_ONLY_DIRS.iter().any(|d| {
+        word.contains(&format!("amont-agent/{d}/"))
+            || word.contains(&format!("amont-agent/{d}")) && word.ends_with(d)
+    })
 }
 
+/// The directories under the config dir that only the hook writes.
+const HOOK_ONLY_DIRS: &[&str] = &[RULE_ID, "provenance"];
+
 pub const GUARD_REASON: &str =
-    "pass files under amont-agent/implementation-review/ are written by the hook alone: from a completed review in this session's transcript, or from the person's Overrule.";
+    "files under amont-agent/implementation-review/ and amont-agent/provenance/ are written by the hook alone: the pass files from a completed review in this session's transcript or the person's Overrule, the provenance records from a push the hook passed.";
 pub const GUARD_REMEDY: &str =
     "Run the review (worktree-task F4b) or ask the person; never write the record by hand.";
 

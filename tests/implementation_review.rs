@@ -330,9 +330,35 @@ printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"ref
         std::fs::read_to_string(self.root.join("claude/amont-agent/journal.log"))
             .unwrap_or_default()
             .lines()
-            .filter(|l| l.starts_with("F ") && l.contains(" implementation-review "))
+            .filter(|l| {
+                l.starts_with("F ")
+                    && l.contains(" implementation-review ")
+                    && !l.contains(" provenance-")
+            })
             .map(str::to_string)
             .collect()
+    }
+
+    /// The provenance lines the hook journalled.
+    fn provenance_journal(&self) -> Vec<String> {
+        std::fs::read_to_string(self.root.join("claude/amont-agent/journal.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(" implementation-review ") && l.contains(" provenance-"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn provenance_dir(&self) -> PathBuf {
+        self.root.join("claude/amont-agent/provenance")
+    }
+
+    fn edit_tool(&self, dir: &Path, path: &Path) -> Said {
+        self.hook(serde_json::json!({
+            "hook_event_name": "PreToolUse", "tool_name": "Edit",
+            "cwd": dir, "session_id": "s1", "permission_mode": "default",
+            "tool_input": {"file_path": path, "old_string": "a", "new_string": "b"}
+        }))
     }
 
     fn last_line(&self) -> String {
@@ -1043,6 +1069,141 @@ fn a_reviewer_resumed_on_a_new_tree_passes_that_tree() {
     assert!(w.pass_file("app", &now).is_file());
 }
 
+/// A real hand-back entry (2026-10-15), anonymised: Claude Code's own
+/// `origin` with `kind: peer`, `handback: true`, the agent's id in
+/// `senderTaskId` and its report in `body`.
+const HANDBACK: &str = include_str!("fixtures/handback-entry.jsonl");
+
+/// What a completion says when its report was handed back.
+const POINTER: &str = "This agent's report was delivered to you as a message from aa339dbce3244a139 (its SubagentHandback call). Read it there; it is not repeated here.";
+
+/// The fixture's hand-back entry, saying `verdict`.
+fn handback(verdict: &str) -> String {
+    let line = HANDBACK.trim_end();
+    assert!(line.contains("Verdict: approve\\n"), "fixture shape");
+    line.replace("Verdict: approve\\n", &format!("Verdict: {verdict}\\n"))
+}
+
+/// The resumed fixture bound to `app` (launch on `launch`, last round on
+/// `last`), every completion pointing at a hand-back, with `inserts` placed
+/// after the given 1-based fixture lines.
+fn handed_back_rounds(launch: &str, last: &str, inserts: &[(usize, String)]) -> String {
+    let mut out = String::new();
+    for (n, line) in resumed_for(launch, last).lines().enumerate() {
+        let line = line
+            .replace(
+                "Verdict: approve-with-changes\\nFindings:\\n1. … (trimmed)",
+                POINTER,
+            )
+            .replace("Verdict: approve\\nFindings:\\n1. … (trimmed)", POINTER);
+        assert!(
+            !line.contains("Verdict:"),
+            "every result points at a hand-back"
+        );
+        out.push_str(&line);
+        out.push('\n');
+        for (after, entry) in inserts {
+            if *after == n + 1 {
+                out.push_str(entry);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_verdict_handed_back_as_a_message_is_read() {
+    let w = World::new("handback");
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let t = w.root.join("handback.jsonl");
+    let launch_only: String = handed_back_rounds(&tree, &tree, &[(2, handback("approve"))])
+        .lines()
+        .take(4)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&t, launch_only).unwrap();
+    assert_eq!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+    assert!(w.pass_file("app", &tree).is_file());
+}
+
+#[test]
+fn a_hand_back_from_another_agent_is_not_this_reviews_verdict() {
+    let w = World::new("handback-other");
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let t = w.root.join("handback.jsonl");
+    let other = handback("approve").replace(
+        "\"senderTaskId\":\"aa339dbce3244a139\"",
+        "\"senderTaskId\":\"someoneelse000000\"",
+    );
+    assert!(other.contains("someoneelse000000"));
+    let launch_only: String = handed_back_rounds(&tree, &tree, &[(2, other)])
+        .lines()
+        .take(4)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&t, launch_only).unwrap();
+    assert_ne!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+}
+
+/// Three rounds of one reviewer, each handed back: the last round's own
+/// hand-back decides, never an earlier round's.
+#[test]
+fn each_resumed_round_reads_its_own_hand_back() {
+    let w = World::new("handback-rounds");
+    let repo = w.repo("app");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    let t = w.root.join("rounds.jsonl");
+
+    // Rework, rework, approve: the last round approves the new tree.
+    let rounds = [
+        (2, handback("rework")),
+        (5, handback("rework")),
+        (8, handback("approve")),
+    ];
+    std::fs::write(&t, handed_back_rounds(&launched_on, &now, &rounds)).unwrap();
+    assert_eq!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+
+    // Approve, approve, rework: the earlier approvals do not carry over.
+    let w = World::new("handback-rounds-swapped");
+    let repo = w.repo("app");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    let t = w.root.join("rounds.jsonl");
+    let rounds = [
+        (2, handback("approve")),
+        (5, handback("approve")),
+        (8, handback("rework")),
+    ];
+    std::fs::write(&t, handed_back_rounds(&launched_on, &now, &rounds)).unwrap();
+    assert_ne!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+
+    // The last round handed nothing back: an earlier approve is not its verdict.
+    let w = World::new("handback-rounds-missing");
+    let repo = w.repo("app");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    let t = w.root.join("rounds.jsonl");
+    let rounds = [(2, handback("approve")), (5, handback("approve"))];
+    std::fs::write(&t, handed_back_rounds(&launched_on, &now, &rounds)).unwrap();
+    assert_ne!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+}
+
 #[test]
 fn a_resumed_round_without_its_own_notification_does_not_pass() {
     let w = World::new("resumed-forged");
@@ -1526,4 +1687,297 @@ fn a_patch_id_that_cannot_be_computed_holds_the_push() {
     let text = advised(&said);
     assert!(text.contains("(stale)"), "{text}");
     assert!(text.contains("could carry over by patch"), "{text}");
+}
+
+fn lines_of(f: &Path) -> Vec<String> {
+    std::fs::read_to_string(f)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_passing_push_with_a_plan_writes_the_provenance_record() {
+    let w = World::new("prov");
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let full_tree = git(&repo, &["rev-parse", "HEAD^{tree}"]);
+    reviewed(&w, &repo);
+    let f = w.provenance_dir().join("app").join(&head);
+    let l = lines_of(&f);
+    assert_eq!(l.len(), 9, "{l:?}");
+    assert_eq!(l[0], "amont-provenance-v1");
+    assert_eq!(l[1], format!("commit {head}"));
+    assert_eq!(l[2], format!("tree {full_tree}"));
+    assert_eq!(l[3], format!("canon {tree}"));
+    assert!(l[4].starts_with("patch "), "{}", l[4]);
+    let plan = &l[5];
+    let parts: Vec<&str> = plan.split(' ').collect();
+    assert_eq!(parts[0], "plan");
+    assert_eq!(parts[1], "docs/plans/2026-09-29-x.md");
+    assert_eq!(parts[2].len(), 64, "{plan}");
+    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("plan-sha")
+        .arg(repo.join("docs/plans/2026-09-29-x.md"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        parts[2],
+        String::from_utf8_lossy(&shown.stdout).trim(),
+        "the body sha plan-sha prints"
+    );
+    assert_eq!(l[6], format!("review reviewed {tree}"));
+    assert_eq!(l[7], "preview not-required");
+    assert_eq!(
+        l[8],
+        format!("producer amont-agent {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(std::fs::read_to_string(&f).unwrap().ends_with('\n'));
+    assert!(
+        w.provenance_journal()
+            .iter()
+            .any(|j| j.contains(" provenance-written ")),
+        "{:?}",
+        w.provenance_journal()
+    );
+}
+
+#[test]
+fn a_by_patch_pass_writes_the_old_canonical_tree() {
+    let w = World::new("provpatch");
+    let repo = w.repo("app");
+    let before = w.tree(&repo);
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let after = w.tree(&repo);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&format!("canon {after}")), "{l:?}");
+    assert!(l.contains(&format!("review by-patch {before}")), "{l:?}");
+    assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
+    let again = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert_eq!(again, l, "a second push leaves the record as it was");
+    let journal = w.provenance_journal();
+    let written = journal
+        .iter()
+        .filter(|j| j.contains(" provenance-written ") && j.contains(&head))
+        .count();
+    assert_eq!(written, 1, "{journal:?}");
+    assert!(
+        journal.iter().any(|j| j.contains(" provenance-kept ")),
+        "{journal:?}"
+    );
+    assert!(
+        !journal
+            .iter()
+            .any(|j| j.contains(" provenance-write-failed ")),
+        "{journal:?}"
+    );
+}
+
+#[test]
+fn a_plan_approved_with_evidence_is_recorded_as_preview_evidence() {
+    let w = World::new("provevidence");
+    let repo = w.repo("app");
+    let plan_rel = "docs/plans/2026-09-29-x.md";
+    let plan = "---\nstatus: active\n---\n# X\n\n## Preview\n\nevidence: nothing visible is left to judge.\n";
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    w.commit(&repo, &[(plan_rel, plan)]);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("plan-sha")
+        .arg(repo.join(plan_rel))
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&shown.stdout).trim().to_string();
+    let approved = w.root.join("claude/amont-agent/plan-approved");
+    std::fs::create_dir_all(&approved).unwrap();
+    std::fs::write(approved.join(&sha), "s\tp\t1\n").unwrap();
+    reviewed(&w, &repo);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&"preview evidence".to_string()), "{l:?}");
+}
+
+#[test]
+fn a_mockup_change_with_an_approval_is_recorded_as_preview_approved() {
+    let w = World::new("provapproved");
+    let repo = w.repo("app");
+    let plan_rel = "docs/plans/2026-09-29-x.md";
+    // Evidence is declared and approved, yet a listed mockup screen means
+    // only the person's approval can stand.
+    let plan = "---\nstatus: active\n---\n# X\n\n## Preview\n\nevidence: nothing visible is left to judge.\n";
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    w.commit(&repo, &[(plan_rel, plan)]);
+    let head = w.commit(
+        &repo,
+        &[
+            ("src/lib.rs", "fn a() { b() }\nfn b() {}\n"),
+            ("docs/mockups/pill/Main.dc.html", "<x-dc></x-dc>\n"),
+        ],
+    );
+    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("plan-sha")
+        .arg(repo.join(plan_rel))
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&shown.stdout).trim().to_string();
+    let approved = w.root.join("claude/amont-agent/plan-approved");
+    std::fs::create_dir_all(&approved).unwrap();
+    std::fs::write(approved.join(&sha), "s\tp\t1\n").unwrap();
+    let previews = w.root.join("claude/amont-agent/previews");
+    std::fs::create_dir_all(&previews).unwrap();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        previews.join("approvals"),
+        format!(
+            "{}\t{head}\t{at}\ttest\n",
+            // The key the preview guard reads: git's toplevel, which on
+            // Windows is not `canonicalize`'s verbatim `\\?\` path.
+            git(&repo, &["rev-parse", "--show-toplevel"])
+        ),
+    )
+    .unwrap();
+    reviewed(&w, &repo);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&"preview approved".to_string()), "{l:?}");
+}
+
+#[test]
+fn a_gated_change_outside_the_interface_is_recorded_as_not_required() {
+    let w = World::new("provnoui");
+    let repo = w.repo("app");
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    w.commit(&repo, &[("docs/plans/2026-09-29-x.md", "# X\n")]);
+    let head = w.commit(&repo, &[("README.md", "words\n")]);
+    reviewed(&w, &repo);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&"preview not-required".to_string()), "{l:?}");
+}
+
+#[test]
+fn a_preview_not_yet_approved_defers_the_record_until_it_is() {
+    let w = World::new("provdefer");
+    let repo = w.repo("app");
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    w.commit(&repo, &[("docs/plans/2026-09-29-x.md", "# X\n")]);
+    let head = w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    // The preview rule holds this push; the review rule passes it.
+    let _held = w.push(&repo, "s1", Some(&transcript));
+    let file = w.provenance_dir().join("app").join(&head);
+    assert!(!file.exists(), "a held preview must not freeze a record");
+    assert!(
+        w.provenance_journal()
+            .iter()
+            .any(|j| j.contains(" provenance-deferred ")),
+        "{:?}",
+        w.provenance_journal()
+    );
+    let previews = w.root.join("claude/amont-agent/previews");
+    std::fs::create_dir_all(&previews).unwrap();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        previews.join("approvals"),
+        format!(
+            "{}\t{head}\t{at}\ttest\n",
+            // The key the preview guard reads: git's toplevel, which on
+            // Windows is not `canonicalize`'s verbatim `\\?\` path.
+            git(&repo, &["rev-parse", "--show-toplevel"])
+        ),
+    )
+    .unwrap();
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let l = lines_of(&file);
+    assert!(l.contains(&"preview approved".to_string()), "{l:?}");
+}
+
+#[test]
+fn a_held_push_or_a_push_without_a_plan_writes_no_provenance() {
+    let w = World::new("provnone");
+    let repo = w.repo("app");
+    let held = w.push(&repo, "s1", None);
+    assert!(matches!(held, Said::Advise(_) | Said::Deny(_)), "{held:?}");
+    assert!(!w.provenance_dir().exists(), "a held push writes nothing");
+
+    let w = World::new("provnoplan");
+    let repo = w.repo("app");
+    git(&repo, &["checkout", "-q", "-b", "other", "origin/main"]);
+    w.commit(&repo, &[("src/z.rs", "fn z() {}\n")]);
+    assert_eq!(
+        w.push_cmd(&repo, "s1", None, "git push -u origin other"),
+        Said::Silent
+    );
+    assert!(!w.provenance_dir().exists(), "no plan, no record");
+}
+
+#[test]
+fn an_unwritable_provenance_directory_is_journalled_and_the_push_passes() {
+    let w = World::new("provfail");
+    let repo = w.repo("app");
+    std::fs::create_dir_all(w.root.join("claude/amont-agent")).unwrap();
+    std::fs::write(w.provenance_dir(), "a file where the directory goes").unwrap();
+    let transcript = {
+        let mut t = Transcript::default();
+        t.review(
+            &w,
+            AGENT,
+            &w.block(&repo),
+            "Verdict: approve",
+            Done::Foreground,
+        );
+        w.transcript("t", &t)
+    };
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(
+        w.last_line().contains(" unconfirmed reviewed "),
+        "{}",
+        w.last_line()
+    );
+    assert!(
+        w.provenance_journal()
+            .iter()
+            .any(|j| j.contains(" provenance-write-failed ")),
+        "{:?}",
+        w.provenance_journal()
+    );
+}
+
+#[test]
+fn only_the_hook_writes_a_provenance_record() {
+    let w = World::new("provguard");
+    let repo = w.repo("app");
+    let target = w.provenance_dir().join("r").join("x");
+    assert!(matches!(w.write_tool(&repo, &target), Said::Deny(_)));
+    assert!(matches!(w.edit_tool(&repo, &target), Said::Deny(_)));
+    let cmd = format!("cp x '{}'", target.display());
+    assert!(matches!(w.push_cmd(&repo, "s1", None, &cmd), Said::Deny(_)));
+    let cmd = format!("echo y > '{}'", target.display());
+    assert!(matches!(w.push_cmd(&repo, "s1", None, &cmd), Said::Deny(_)));
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "y\n").unwrap();
+    let cmd = format!("cat '{}'", target.display());
+    let said = w.push_cmd(&repo, "s1", None, &cmd);
+    assert!(matches!(said, Said::Silent), "{said:?}");
 }

@@ -49,6 +49,7 @@ mod plan_review;
 mod plan_words;
 mod plans;
 mod preview;
+mod provenance;
 mod publish_cmd;
 mod push_target;
 #[cfg(unix)]
@@ -60,6 +61,7 @@ mod settings;
 mod shape;
 mod shell;
 mod shim;
+mod shipped;
 mod skill_window;
 mod stale;
 mod stance;
@@ -110,6 +112,10 @@ usage: amont-agent <command>
   tree-sha [--block] [-C <dir>] [--] [<rev>]
                         the canonical tree id an implementation review
                         binds to: HEAD's tree without docs/plans/
+  shipped <plan.md> [--json]
+                        what shipped under a plan, derived from git: per
+                        repository its merge commits, PRs, releases, and
+                        signed provenance
   quiet [--max-bytes N[k]] -- <cmd…>
                         run a command with its output in a log file: one line
                         on a pass, the failure on a fail, the real exit code.
@@ -168,9 +174,10 @@ enum Sub {
     TreeSha,
     Attestations,
     Quiet,
+    Shipped,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 22] = [
+const SUBCOMMANDS: [(&str, Sub); 23] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -193,6 +200,7 @@ const SUBCOMMANDS: [(&str, Sub); 22] = [
     ("tree-sha", Sub::TreeSha),
     ("attestations", Sub::Attestations),
     ("quiet", Sub::Quiet),
+    ("shipped", Sub::Shipped),
 ];
 
 enum Invocation {
@@ -338,6 +346,7 @@ fn main() -> ExitCode {
             Sub::Rules => run_rules(&args),
             Sub::Preview => run_preview(&args),
             Sub::PlanSha => run_plan_sha(&args),
+            Sub::Shipped => shipped::run(&args),
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);

@@ -358,7 +358,7 @@ pub fn meta(text: &str) -> Result<Meta, String> {
 }
 
 /// A directory name under the root, and nothing that could leave it.
-fn valid_name(n: &str) -> bool {
+pub(crate) fn valid_name(n: &str) -> bool {
     !n.is_empty()
         && n != "."
         && !n.contains("..")
@@ -816,10 +816,14 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
     // agentId → the agent type it was launched as.
     let mut agents: HashMap<String, String> = HashMap::new();
     // SendMessage id → (to, message), until its result says it resumed.
-    let mut sends: HashMap<String, (String, String)> = HashMap::new();
+    let mut sends: HashMap<String, (String, String, usize)> = HashMap::new();
     // A resumed round's id → the agentId its notification must carry.
     let mut rounds: HashMap<String, String> = HashMap::new();
-    for line in reader.split(b'\n') {
+    // Launch or round id → the transcript line it started on.
+    let mut starts: HashMap<String, usize> = HashMap::new();
+    // (agentId, line, report) of every hand-back (see `handed_back`).
+    let mut handbacks: Vec<(String, usize, String)> = Vec::new();
+    for (at, line) in reader.split(b'\n').enumerate() {
         let Ok(raw) = line else { break };
         let Ok(text) = std::str::from_utf8(&raw) else {
             continue;
@@ -830,7 +834,8 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             || text.contains("agentId")
             || (resumable && (text.contains("SendMessage") || text.contains("AgentId")));
         let notice = text.contains("task-notification");
-        if !review && !notice {
+        let handback = text.contains("\"handback\"");
+        if !review && !notice && !handback {
             continue;
         }
         // A truncated last line is a session being written right now.
@@ -863,6 +868,7 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                             let prompt = field("prompt").unwrap_or("");
                             if !launched.contains_key(id) {
                                 order.push(id.to_string());
+                                starts.insert(id.to_string(), at);
                                 launched.insert(
                                     id.to_string(),
                                     (agent.to_string(), prompt.to_string()),
@@ -871,7 +877,10 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                         }
                         Some("SendMessage") if resumable => {
                             if let (Some(to), Some(message)) = (field("to"), field("message")) {
-                                sends.insert(id.to_string(), (to.to_string(), message.to_string()));
+                                sends.insert(
+                                    id.to_string(),
+                                    (to.to_string(), message.to_string(), at),
+                                );
                             }
                         }
                         _ => {}
@@ -910,7 +919,7 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                                     agents.insert(agent_id.to_string(), agent.clone());
                                 }
                             }
-                        } else if let Some((to, message)) = sends.remove(id) {
+                        } else if let Some((to, message, sent_at)) = sends.remove(id) {
                             let Some(agent) = agents.get(&to) else {
                                 continue;
                             };
@@ -918,10 +927,14 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                                 continue;
                             }
                             order.push(id.to_string());
+                            starts.insert(id.to_string(), sent_at);
                             launched.insert(id.to_string(), (agent.clone(), message));
                             rounds.insert(id.to_string(), to);
                         }
                     }
+                }
+                if let Some((agent_id, body)) = handed_back(&e) {
+                    handbacks.push((agent_id, at, body));
                 }
                 let origin = e
                     .get("origin")
@@ -968,10 +981,46 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             done.insert(n.tool_use_id, n.result);
         }
     }
+    // Each launch or round's agent, and where it started: a hand-back belongs
+    // to the round of its agent that started last before it.
+    let agent_of: HashMap<String, String> = order
+        .iter()
+        .filter_map(|id| {
+            let a = rounds
+                .get(id)
+                .cloned()
+                .or_else(|| facts.get(id).and_then(|f| f.agent_id.clone()))?;
+            Some((id.clone(), a))
+        })
+        .collect();
+    let report_of = |id: &str| -> Option<String> {
+        let agent = agent_of.get(id)?;
+        let start = *starts.get(id)?;
+        let next = agent_of
+            .iter()
+            .filter(|(other, a)| *a == agent && other.as_str() != id)
+            .filter_map(|(other, _)| starts.get(other).copied())
+            .filter(|&s| s > start)
+            .min()
+            .unwrap_or(usize::MAX);
+        handbacks
+            .iter()
+            .filter(|(a, at, _)| a == agent && *at > start && *at < next)
+            .map(|(_, _, body)| body.clone())
+            .next_back()
+    };
     order
         .into_iter()
         .filter_map(|id| {
-            let result = done.remove(&id)?;
+            let mut result = done.remove(&id)?;
+            // The completion only points at the report: take the hand-back
+            // of this round. None found leaves the pointer, which carries no
+            // verdict.
+            if result.contains(HANDED_BACK) {
+                if let Some(report) = report_of(&id) {
+                    result = report;
+                }
+            }
             let (agent, prompt) = launched.remove(&id)?;
             let f = facts.remove(&id).unwrap_or_default();
             Some(Completed {
@@ -985,6 +1034,23 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             })
         })
         .collect()
+}
+
+/// What a completion says when its agent handed its report back as a
+/// message instead of returning it.
+const HANDED_BACK: &str = "report was delivered to you as a message";
+
+/// A subagent's hand-back, as Claude Code records it: a `user` entry whose
+/// `origin` it wrote itself (`kind: peer`, `handback: true`), with the agent's
+/// id in `senderTaskId` and its report in `body`. Read from those structured
+/// fields only, as a notification is; the message text is never parsed.
+fn handed_back(e: &serde_json::Value) -> Option<(String, String)> {
+    let o = e.get("origin")?;
+    let s = |k: &str| o.get(k).and_then(|v| v.as_str());
+    if s("kind") != Some("peer") || o.get("handback").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    Some((s("senderTaskId")?.to_string(), s("body")?.to_string()))
 }
 
 /// The text of a tool result's content: a string, or its text parts joined.
@@ -2129,6 +2195,35 @@ mod tests {
         assert!(parse_blocks("plan-review-language", &p.replace(" lang=rust", "")).is_empty());
         assert_eq!(parse_blocks("plan-review-backend", &p)[0].role, "backend");
         assert!(parse_blocks("plan-review-backend", "<<<PLAN path=/x sha=short>>>").is_empty());
+    }
+
+    /// The plan-review panel reads launches through the same scan, so a
+    /// panelist that handed its report back is read too.
+    #[test]
+    fn a_launch_that_handed_back_completes_with_its_report() {
+        let launch: Vec<&str> = include_str!("../tests/fixtures/sendmessage-resume.jsonl")
+            .lines()
+            .take(3)
+            .collect();
+        let pointer = "This agent's report was delivered to you as a message from aa339dbce3244a139 (its SubagentHandback call).";
+        let notice = launch[2].replace(
+            "Verdict: approve-with-changes\\nFindings:\\n1. … (trimmed)",
+            pointer,
+        );
+        assert_ne!(notice, launch[2]);
+        let handback = include_str!("../tests/fixtures/handback-entry.jsonl").trim_end();
+        let text = format!("{}\n{}\n{handback}\n{notice}\n", launch[0], launch[1]);
+        let done = completed_agents(std::io::Cursor::new(text.clone()), "implementation-review");
+        assert_eq!(done.len(), 1);
+        assert!(
+            done[0].result.contains("Verdict: approve"),
+            "{}",
+            done[0].result
+        );
+        // Without the hand-back, the pointer stays and carries no verdict.
+        let alone = format!("{}\n{}\n{notice}\n", launch[0], launch[1]);
+        let done = completed_agents(std::io::Cursor::new(alone), "implementation-review");
+        assert!(!done[0].result.contains("Verdict:"), "{}", done[0].result);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! commit is published only after the person approves that exact commit,
 //! seen on localhost — unless the plan the person approved declares, in a
 //! `## Preview` section, that the evidence is enough ([`on_plan_answered`],
-//! `planned_evidence`).
+//! `evidence_of`).
 //!
 //! ## The flow this module keeps honest
 //!
@@ -493,26 +493,25 @@ pub fn needs_preview(
             let mut any_ui = false;
             let mut evidenced = false;
             for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
-                let Some(ui) = carries_ui(&repo, t) else {
+                let Some(stands) = standing(&repo, t) else {
                     return if stance == Stance::Deny {
                         Ok(Needs::Unreadable("the published files cannot be listed"))
                     } else {
                         Err("the published files cannot be listed")
                     };
                 };
-                if ui {
-                    any_ui = true;
-                    let screens = mockup_screens(&repo, &t.src);
-                    // Evidence never stands for a picked mockup's preview,
-                    // nor when the screens cannot be listed.
-                    if matches!(&screens, Ok(s) if s.is_empty()) && planned_evidence(&repo, &t.src)
-                    {
+                match stands {
+                    Standing::NoUi => {}
+                    Standing::Evidence(detail) => {
+                        any_ui = true;
+                        note("evidence", "-", &repo.to_string_lossy(), &detail);
                         evidenced = true;
-                        continue;
                     }
-                    if !approved(&repo, &t.src) {
-                        let mockup = screens.map_or(true, |s| !s.is_empty());
-                        return Ok(Needs::Unapproved { mockup });
+                    Standing::Approval { mockup } => {
+                        any_ui = true;
+                        if !approved(&repo, &t.src) {
+                            return Ok(Needs::Unapproved { mockup });
+                        }
                     }
                 }
             }
@@ -524,6 +523,54 @@ pub fn needs_preview(
                 Err("no interface change")
             }
         }
+    }
+}
+
+/// What stands for one branch target's preview, decided without a journal
+/// line: the gate and the provenance record both read it.
+enum Standing {
+    /// No interface change: nothing to preview.
+    NoUi,
+    /// The approved plan declares the evidence (the journal detail).
+    Evidence(String),
+    /// An interface change that needs the person's approval; `mockup` when
+    /// a picked mockup's screens are listed or cannot be listed.
+    Approval { mockup: bool },
+}
+
+/// The standing of a branch target, or `None` when its files cannot be
+/// listed. Evidence never stands for a picked mockup's preview, nor when the
+/// screens cannot be listed.
+fn standing(repo: &Path, t: &Target) -> Option<Standing> {
+    if !carries_ui(repo, t)? {
+        return Some(Standing::NoUi);
+    }
+    let screens = mockup_screens(repo, &t.src);
+    if matches!(&screens, Ok(s) if s.is_empty()) {
+        if let Some(detail) = evidence_of(repo, &t.src) {
+            return Some(Standing::Evidence(detail));
+        }
+    }
+    Some(Standing::Approval {
+        mockup: screens.map_or(true, |s| !s.is_empty()),
+    })
+}
+
+/// What the preview rule says of a pushed branch target, for the provenance
+/// record: `Evidence` when the gate passes on the plan's evidence, `Approved`
+/// when it passes on the person's approval, `NotRequired` for no interface
+/// change (or a repository without one). `None` when nothing has stood yet: a
+/// push the gate would hold, or whose files cannot be listed. The record is
+/// written once per commit, so it waits for the push that passes.
+pub(crate) fn outcome(repo: &Path, t: &Target) -> Option<crate::provenance::Preview> {
+    use crate::provenance::Preview;
+    if !gated(repo) {
+        return Some(Preview::NotRequired);
+    }
+    match standing(repo, t)? {
+        Standing::NoUi => Some(Preview::NotRequired),
+        Standing::Evidence(_) => Some(Preview::Evidence),
+        Standing::Approval { .. } => approval_of(repo, &t.src).map(|_| Preview::Approved),
     }
 }
 
@@ -771,32 +818,46 @@ fn approvals() -> Vec<Approval> {
 /// which skips `docs/plans/`) equal to this commit's. A reword, an amend or
 /// a plan-only change keeps the tree, so the approval still stands.
 pub fn approved(repo: &Path, commit: &str) -> bool {
+    match approval_of(repo, commit) {
+        None => false,
+        Some(ApprovedBy::Exact) => true,
+        Some(ApprovedBy::ByTree(from)) => {
+            note(
+                "approved-by-tree",
+                "-",
+                &repo.to_string_lossy(),
+                &format!("{}\u{2192}{}", short(&from), short(commit)),
+            );
+            true
+        }
+    }
+}
+
+/// How an approved commit is approved.
+enum ApprovedBy {
+    /// The commit itself.
+    Exact,
+    /// A commit with the same canonical tree: the approved commit's sha.
+    ByTree(String),
+}
+
+/// How the commit is approved, or `None` when it is not.
+fn approval_of(repo: &Path, commit: &str) -> Option<ApprovedBy> {
     let repo_s = repo.to_string_lossy();
     let mine: Vec<Approval> = approvals()
         .into_iter()
         .filter(|a| *a.0 == *repo_s)
         .collect();
     if mine.iter().any(|a| a.1 == commit) {
-        return true;
+        return Some(ApprovedBy::Exact);
     }
     if !mine.iter().any(|a| a.4.is_some()) {
-        return false;
+        return None;
     }
-    let Ok(tree) = crate::implementation_review::canonical_tree(repo, commit) else {
-        return false;
-    };
-    match mine.iter().find(|a| a.4.as_deref() == Some(tree.as_str())) {
-        Some(a) => {
-            note(
-                "approved-by-tree",
-                "-",
-                &repo_s,
-                &format!("{}\u{2192}{}", short(&a.1), short(commit)),
-            );
-            true
-        }
-        None => false,
-    }
+    let tree = crate::implementation_review::canonical_tree(repo, commit).ok()?;
+    mine.iter()
+        .find(|a| a.4.as_deref() == Some(tree.as_str()))
+        .map(|a| ApprovedBy::ByTree(a.1.clone()))
 }
 
 fn approve(regs: &[Registration], channel: &str) {
@@ -1658,48 +1719,31 @@ fn first_plan(repo: &Path, from: &str, commit: &str) -> Option<(String, String)>
 /// a plan under `docs/plans/` since that merge base, and it is not a
 /// pointer (`canonical:`); that plan, read at the commit that added it, has
 /// a canonical body sha in `plan-approved/`; and its `## Preview` section
-/// starts with `evidence: <reason>`. A pass is journalled `evidence` with
-/// the plan, the commit and the sha. Any miss is silent: the approval path
+/// starts with `evidence: <reason>`. The result is the journal detail of a
+/// pass (the plan, the commit and the sha), and the gate journals it as
+/// `evidence`. Any miss is `None`, silent: the approval path
 /// decides, as before.
-fn planned_evidence(repo: &Path, commit: &str) -> bool {
-    let Some(base) =
-        crate::stale::remote_of(repo).and_then(|r| crate::stale::default_base(repo, &r))
-    else {
-        return false;
-    };
-    let Some(from) = git(repo, &["merge-base", &base, commit]) else {
-        return false;
-    };
-    let Some((added, path)) = first_plan(repo, &from, commit) else {
-        return false;
-    };
-    let Some(text) = crate::git::stdout_in(repo, &["show", &format!("{added}:{path}")]) else {
-        return false;
-    };
+fn evidence_of(repo: &Path, commit: &str) -> Option<String> {
+    let base = crate::stale::remote_of(repo).and_then(|r| crate::stale::default_base(repo, &r))?;
+    let from = git(repo, &["merge-base", &base, commit])?;
+    let (added, path) = first_plan(repo, &from, commit)?;
+    let text = crate::git::stdout_in(repo, &["show", &format!("{added}:{path}")])?;
     let (front, _) = crate::plans::split_front_matter(&text);
     if crate::plans::field(front, "canonical").is_some_and(|c| !c.is_empty()) {
-        return false;
+        return None;
     }
     let Ok(shas) = crate::plan_review::shas(&text) else {
-        return false;
+        return None;
     };
     if !plan_approved(&shas.sha) {
-        return false;
+        return None;
     }
-    let Some(reason) = preview_evidence(&text) else {
-        return false;
-    };
-    note(
-        "evidence",
-        "-",
-        &repo.to_string_lossy(),
-        &format!(
-            "{path} commit={} sha={} evidence: {reason}",
-            short(commit),
-            &shas.sha[..12]
-        ),
-    );
-    true
+    let reason = preview_evidence(&text)?;
+    Some(format!(
+        "{path} commit={} sha={} evidence: {reason}",
+        short(commit),
+        &shas.sha[..12]
+    ))
 }
 
 // --- publication ----------------------------------------------------------

@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A verdict handed back as a message is read.** A reviewer that delivers
+  its report with a hand-back (Claude Code marks it `origin.kind: peer`,
+  `handback: true`) left only a pointer in its completion, so the
+  implementation-review and plan-review hooks found no verdict and held the
+  push. The report is now read from that structured entry, paired with the
+  agent's id.
+
+### Added
+
+- **`amont-agent shipped <plan.md> [--json]`.** Read-only: per repository of
+  the plan, each merge commit on origin/main that touched it, with its PR, head,
+  first release tag, and the signed `amont-provenance` record and attestation
+  gates found for it (ADR-0036); see docs/shipped.md.
+- **Provenance record.** When the implementation-review hook passes a push
+  that carries a plan, it writes the unsigned `amont-provenance-v1` payload to
+  `<config dir>/amont-agent/provenance/<repo>/<pushed sha>` (ADR-0036); the
+  record is written once per commit and carries `preview approved`, `evidence` or `not-required` as the preview gate
+  decides, and is deferred while the preview gate holds the push
+  (`provenance-deferred`); a re-push keeps it (journalled `provenance-kept`); the
+  directory is hook-only like the pass files, and `.github/allowed_signers`
+  lists the `amont-provenance` namespace.
+
 ## v2.42.0
 
 ### Changed
