@@ -330,9 +330,35 @@ printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"ref
         std::fs::read_to_string(self.root.join("claude/amont-agent/journal.log"))
             .unwrap_or_default()
             .lines()
-            .filter(|l| l.starts_with("F ") && l.contains(" implementation-review "))
+            .filter(|l| {
+                l.starts_with("F ")
+                    && l.contains(" implementation-review ")
+                    && !l.contains(" provenance-")
+            })
             .map(str::to_string)
             .collect()
+    }
+
+    /// The provenance lines the hook journalled.
+    fn provenance_journal(&self) -> Vec<String> {
+        std::fs::read_to_string(self.root.join("claude/amont-agent/journal.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains(" implementation-review ") && l.contains(" provenance-"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn provenance_dir(&self) -> PathBuf {
+        self.root.join("claude/amont-agent/provenance")
+    }
+
+    fn edit_tool(&self, dir: &Path, path: &Path) -> Said {
+        self.hook(serde_json::json!({
+            "hook_event_name": "PreToolUse", "tool_name": "Edit",
+            "cwd": dir, "session_id": "s1", "permission_mode": "default",
+            "tool_input": {"file_path": path, "old_string": "a", "new_string": "b"}
+        }))
     }
 
     fn last_line(&self) -> String {
@@ -1526,4 +1552,144 @@ fn a_patch_id_that_cannot_be_computed_holds_the_push() {
     let text = advised(&said);
     assert!(text.contains("(stale)"), "{text}");
     assert!(text.contains("could carry over by patch"), "{text}");
+}
+
+fn lines_of(f: &Path) -> Vec<String> {
+    std::fs::read_to_string(f)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_passing_push_with_a_plan_writes_the_provenance_record() {
+    let w = World::new("prov");
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let full_tree = git(&repo, &["rev-parse", "HEAD^{tree}"]);
+    let transcript = reviewed(&w, &repo);
+    let _ = transcript;
+    let f = w.provenance_dir().join("app").join(&head);
+    let l = lines_of(&f);
+    assert_eq!(l.len(), 9, "{l:?}");
+    assert_eq!(l[0], "amont-provenance-v1");
+    assert_eq!(l[1], format!("commit {head}"));
+    assert_eq!(l[2], format!("tree {full_tree}"));
+    assert_eq!(l[3], format!("canon {tree}"));
+    assert!(l[4].starts_with("patch "), "{}", l[4]);
+    let plan = &l[5];
+    let parts: Vec<&str> = plan.split(' ').collect();
+    assert_eq!(parts[0], "plan");
+    assert_eq!(parts[1], "docs/plans/2026-09-29-x.md");
+    assert_eq!(parts[2].len(), 64, "{plan}");
+    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("plan-sha")
+        .arg(repo.join("docs/plans/2026-09-29-x.md"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        parts[2],
+        String::from_utf8_lossy(&shown.stdout).trim(),
+        "the body sha plan-sha prints"
+    );
+    assert_eq!(l[6], format!("review reviewed {tree}"));
+    assert_eq!(l[7], "preview not-required");
+    assert_eq!(
+        l[8],
+        format!("producer amont-agent {}", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(std::fs::read_to_string(&f).unwrap().ends_with('\n'));
+    assert!(
+        w.provenance_journal()
+            .iter()
+            .any(|j| j.contains(" provenance-written ")),
+        "{:?}",
+        w.provenance_journal()
+    );
+}
+
+#[test]
+fn a_by_patch_pass_writes_the_old_canonical_tree() {
+    let w = World::new("provpatch");
+    let repo = w.repo("app");
+    let before = w.tree(&repo);
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let after = w.tree(&repo);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&format!("canon {after}")), "{l:?}");
+    assert!(l.contains(&format!("review by-patch {before}")), "{l:?}");
+}
+
+#[test]
+fn a_held_push_or_a_push_without_a_plan_writes_no_provenance() {
+    let w = World::new("provnone");
+    let repo = w.repo("app");
+    let held = w.push(&repo, "s1", None);
+    assert!(matches!(held, Said::Advise(_) | Said::Deny(_)), "{held:?}");
+    assert!(!w.provenance_dir().exists(), "a held push writes nothing");
+
+    let w = World::new("provnoplan");
+    let repo = w.repo("app");
+    git(&repo, &["checkout", "-q", "-b", "other", "origin/main"]);
+    w.commit(&repo, &[("src/z.rs", "fn z() {}\n")]);
+    assert_eq!(
+        w.push_cmd(&repo, "s1", None, "git push -u origin other"),
+        Said::Silent
+    );
+    assert!(!w.provenance_dir().exists(), "no plan, no record");
+}
+
+#[test]
+fn an_unwritable_provenance_directory_is_journalled_and_the_push_passes() {
+    let w = World::new("provfail");
+    let repo = w.repo("app");
+    std::fs::create_dir_all(w.root.join("claude/amont-agent")).unwrap();
+    std::fs::write(w.provenance_dir(), "a file where the directory goes").unwrap();
+    let transcript = {
+        let mut t = Transcript::default();
+        t.review(
+            &w,
+            AGENT,
+            &w.block(&repo),
+            "Verdict: approve",
+            Done::Foreground,
+        );
+        w.transcript("t", &t)
+    };
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(
+        w.last_line().contains(" unconfirmed reviewed "),
+        "{}",
+        w.last_line()
+    );
+    assert!(
+        w.provenance_journal()
+            .iter()
+            .any(|j| j.contains(" provenance-write-failed ")),
+        "{:?}",
+        w.provenance_journal()
+    );
+}
+
+#[test]
+fn only_the_hook_writes_a_provenance_record() {
+    let w = World::new("provguard");
+    let repo = w.repo("app");
+    let target = w.provenance_dir().join("r").join("x");
+    assert!(matches!(w.write_tool(&repo, &target), Said::Deny(_)));
+    assert!(matches!(w.edit_tool(&repo, &target), Said::Deny(_)));
+    let cmd = format!("cp x '{}'", target.display());
+    assert!(matches!(w.push_cmd(&repo, "s1", None, &cmd), Said::Deny(_)));
+    let cmd = format!("echo y > '{}'", target.display());
+    assert!(matches!(w.push_cmd(&repo, "s1", None, &cmd), Said::Deny(_)));
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "y\n").unwrap();
+    let cmd = format!("cat '{}'", target.display());
+    let said = w.push_cmd(&repo, "s1", None, &cmd);
+    assert!(matches!(said, Said::Silent), "{said:?}");
 }

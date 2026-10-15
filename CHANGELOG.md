@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Provenance record.** When the implementation-review hook passes a push
+  that carries a plan, it writes the unsigned `amont-provenance-v1` payload to
+  `<config dir>/amont-agent/provenance/<repo>/<pushed sha>` (ADR-0036); the
+  directory is hook-only like the pass files, and `.github/allowed_signers`
+  lists the `amont-provenance` namespace.
+
 ## v2.42.0
 
 ### Changed

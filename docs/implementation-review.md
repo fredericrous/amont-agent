@@ -159,6 +159,28 @@ stance. Reading the record (`ls`, `cat`, `find`, `grep`) is allowed. The
 Bash half is best-effort by nature: a parser cannot see inside `python -c`
 beyond its words.
 
+`~/.claude/amont-agent/provenance/` is guarded the same way (below).
+
+## The provenance record
+
+When the hook passes a push that carries a plan, it writes the unsigned
+`amont-provenance-v1` payload to
+`~/.claude/amont-agent/provenance/<repo>/<pushed sha>`. The format is attest
+SPEC `amont-provenance-v1`; the decision is ADR-0036. One datum per line:
+`amont-provenance-v1`, `commit`, `tree` (the full tree), `canon` (the
+canonical tree), `patch` (only when the branch patch could be computed),
+`plan <path> <body sha>` (the plan under `docs/plans/` changed on the branch,
+read from the pushed tree), `review <reviewed|by-patch|overruled> <canonical
+tree the review read>`, `preview <approved|not-required>` and
+`producer amont-agent <version>`.
+
+It is written on `reviewed`, `reviewed-by-patch`, `overruled`,
+`overruled-by-patch` and on a transcript pass; never for a held push or a push
+declined as no-plan, no-branch, dry-run or nothing-new. A write that fails is
+journalled `provenance-write-failed` and never changes the judgment; a write
+that lands is journalled `provenance-written`. Like the pass files, the
+directory is hook-only: Write, Edit and Bash writes are refused.
+
 ## What the journal records
 
 One line per push, under the rule's id, in the buckets `amont-agent

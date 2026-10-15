@@ -49,6 +49,7 @@ mod plan_review;
 mod plan_words;
 mod plans;
 mod preview;
+mod provenance;
 mod publish_cmd;
 mod push_target;
 #[cfg(unix)]
