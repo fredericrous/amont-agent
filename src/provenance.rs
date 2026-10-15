@@ -101,22 +101,36 @@ pub fn record_file(repo: &str, commit: &str) -> Option<PathBuf> {
     )
 }
 
+/// Whether a plan file is a pointer: a non-empty `canonical:` in its front
+/// matter, as the preview gate reads it.
+fn is_pointer(text: &str) -> bool {
+    let (front, _) = crate::plans::split_front_matter(text);
+    crate::plans::field(front, "canonical").is_some_and(|c| !c.is_empty())
+}
+
 /// The plan file changed on the branch, read from the pushed tree: its path
 /// and body sha. `plans` are the non-empty, trimmed paths changed under
-/// `docs/plans`.
+/// `docs/plans`. A `.reviews.md` sidecar is never the plan; of several plan
+/// files the one that is not a pointer wins.
 pub fn plan_of(repo: &Path, commit: &str, plans: &[String]) -> Result<(String, String), String> {
-    let path = plans
+    let mut found: Vec<(&String, String)> = Vec::new();
+    for p in plans
         .iter()
-        .find(|p| {
-            p.ends_with(".md")
-                && git::succeeds_in(repo, &["cat-file", "-e", &format!("{commit}:{p}")])
-        })
+        .filter(|p| p.ends_with(".md") && !p.ends_with(".reviews.md"))
+    {
+        if let Some(bytes) = git::bytes_in(repo, &["show", &format!("{commit}:{p}")], None)
+            .map_err(|e| format!("git could not be run: {e}"))?
+        {
+            found.push((p, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+    let (path, text) = found
+        .iter()
+        .find(|(_, t)| !is_pointer(t))
+        .or_else(|| found.first())
         .ok_or("no plan file under docs/plans/ exists in the pushed tree")?;
-    let bytes = git::bytes_in(repo, &["show", &format!("{commit}:{path}")], None)
-        .map_err(|e| format!("git could not be run: {e}"))?
-        .ok_or("git could not read the plan")?;
-    let shas = crate::plan_review::shas(&String::from_utf8_lossy(&bytes))
-        .map_err(|e| format!("the plan has no body sha: {e}"))?;
+    let shas =
+        crate::plan_review::shas(text).map_err(|e| format!("the plan has no body sha: {e}"))?;
     Ok((path.to_string(), shas.sha))
 }
 
@@ -234,5 +248,56 @@ mod tests {
         assert!(record_file("../x", "ab").is_none());
         assert!(record_file("r", "../ab").is_none());
         assert!(record_file("r/s", "ab").is_none());
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn a_reviews_sidecar_is_never_the_plan() {
+        let dir = std::env::temp_dir().join(format!("amont-plan-of-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs/plans")).unwrap();
+        git_in(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(
+            dir.join("docs/plans/a.md"),
+            "---\nstatus: active\n---\n# A\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("docs/plans/a.reviews.md"),
+            "---\nstatus: active\n---\n# R\n\nreviews\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("docs/plans/b.md"),
+            "---\ncanonical: x/b.md\n---\n# B\n",
+        )
+        .unwrap();
+        git_in(&dir, &["add", "-A"]);
+        git_in(&dir, &["commit", "-q", "-m", "x"]);
+        let plans: Vec<String> = [
+            "docs/plans/a.reviews.md",
+            "docs/plans/b.md",
+            "docs/plans/a.md",
+        ]
+        .map(String::from)
+        .to_vec();
+        let (path, _) = plan_of(&dir, "HEAD", &plans).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(path, "docs/plans/a.md");
     }
 }

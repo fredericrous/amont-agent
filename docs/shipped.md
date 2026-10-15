@@ -18,7 +18,7 @@ command goes on with the notes it has. Nothing else is written.
 
 For each first-parent commit on `origin/main` that touched the file:
 
-- **PR**: a trailing `(#n)` in the subject.
+- **PR**: the last `(#n)` anywhere in the subject (GitHub's `... (#n)` and Forgejo's `Merge pull request '...' (#n) from ... into main`).
 - **head**: the second parent of a merge commit; for a squash, `gh pr view <n>
   --json headRefOid` when `gh` is available and origin is github.com, else
   unknown.
@@ -34,17 +34,30 @@ signature; one note may hold several blocks. The lookup tries, in order:
 2. the same ref on the merge commit's tree;
 3. every note in that ref, read in one `git cat-file --batch` pass, for a
    block whose `patch` equals the merge commit's own patch id
-   (`git diff --binary <first parent> <merge> -- . ':!docs/plans' | git
-   patch-id --verbatim`).
+   (the writer's own function, `implementation_review::branch_patch`, with the
+   merge's first parent as base).
 
-A block whose `commit` is not reachable from an origin ref is ignored.
+A block whose `commit` is neither reachable from an origin ref nor the merge's
+PR head (its second parent, or `gh`'s `headRefOid`) is ignored; the PR head is
+accepted even when its branch is gone from origin.
+
+The plan a record binds is the changed `docs/plans/*.md` that is not a
+`.reviews.md` sidecar and, among several, not a pointer (front matter
+`canonical:`). In a repository holding only a pointer file, the record's `plan`
+line binds the pointer's body-sha.
 
 ## Statuses
 
 - `verified`: the signature verifies, with `ssh-keygen -Y verify -n
   amont-provenance`, for a principal of the committed
   `.github/allowed_signers` (or `.forgejo/allowed_signers`).
-- `signed, signer not allowed`: no listed principal verifies it.
+- `signed, signer not allowed`: the signature is structurally valid
+  (`ssh-keygen -Y check-novalidate`) but no listed principal verifies it.
+- `signed, no allowed_signers`: valid signature, no allowed_signers file.
+- `unsigned`: the block carries no signature.
+- `bad signature`: the signature does not hold for the payload (tampered).
+- `signature not checked`: `ssh-keygen` could not be run, or no scratch
+  file could be written; nothing is said about the record.
 - `no provenance`: nothing found.
 
 Flags on a record: `plan line does not match tree` (its `plan` body sha

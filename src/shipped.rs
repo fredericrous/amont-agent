@@ -4,6 +4,7 @@
 //! signature check, which it removes.
 
 use std::ffi::OsString;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -137,9 +138,10 @@ fn plan_repos(text: &str) -> Result<Vec<String>, String> {
 }
 
 fn pr_number(subject: &str) -> Option<u64> {
-    let inner = subject.trim_end().strip_suffix(')')?;
-    let at = inner.rfind("(#")?;
-    inner[at + 2..].parse().ok()
+    subject.rmatch_indices("(#").find_map(|(at, _)| {
+        let rest = &subject[at + 2..];
+        rest[..rest.find(')')?].parse().ok()
+    })
 }
 
 /// `owner/repo` of a github.com origin URL.
@@ -214,7 +216,13 @@ fn notes_show(dir: &Path, note_ref: &str, object: &str) -> Option<String> {
     git::stdout_in(dir, &["notes", &ref_arg, "show", object])
 }
 
-fn reachable(dir: &Path, commit: &str) -> bool {
+/// Is the record's commit on origin, or the PR head of this merge (whose
+/// branch may be gone from origin)?
+fn reachable(dir: &Path, commit: &str, head: Option<&str>) -> bool {
+    head == Some(commit) && !commit.is_empty() || reachable_from_origin(dir, commit)
+}
+
+fn reachable_from_origin(dir: &Path, commit: &str) -> bool {
     if commit.is_empty() || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
         return false;
     }
@@ -233,17 +241,7 @@ fn reachable(dir: &Path, commit: &str) -> bool {
 }
 
 fn patch_id(dir: &Path, parent: &str, merge: &str) -> Option<String> {
-    let diff = git::bytes_in(
-        dir,
-        &["diff", "--binary", parent, merge, "--", ".", ":!docs/plans"],
-        None,
-    )
-    .ok()??;
-    let out = git::bytes_in(dir, &["patch-id", "--verbatim"], Some(&diff)).ok()??;
-    String::from_utf8_lossy(&out)
-        .split_whitespace()
-        .next()
-        .map(str::to_string)
+    crate::implementation_review::branch_patch(dir, parent, merge).ok()
 }
 
 struct Found {
@@ -258,7 +256,7 @@ fn lookup(dir: &Path, merge: &str, head: Option<&str>, parent: Option<&str>) -> 
             continue;
         };
         for block in blocks(&text) {
-            if block.is_record() && reachable(dir, block.field("commit").unwrap_or("")) {
+            if block.is_record() && reachable(dir, block.field("commit").unwrap_or(""), head) {
                 return Some(Found { block, object });
             }
         }
@@ -280,7 +278,7 @@ fn lookup(dir: &Path, merge: &str, head: Option<&str>, parent: Option<&str>) -> 
         for block in blocks(&String::from_utf8_lossy(&bytes)) {
             if block.is_record()
                 && block.field("patch") == Some(want.as_str())
-                && reachable(dir, block.field("commit").unwrap_or(""))
+                && reachable(dir, block.field("commit").unwrap_or(""), head)
             {
                 return Some(Found {
                     block,
@@ -298,9 +296,70 @@ fn scratch_dir() -> Option<PathBuf> {
     Some(d)
 }
 
-/// Does the signature verify for any principal of the committed
-/// allowed_signers, under the `amont-provenance` namespace?
-fn signature_verifies(dir: &Path, block: &Block) -> bool {
+/// What a record's signature status is when it could not be checked at all:
+/// no `ssh-keygen`, or no scratch file for it. Never a verdict on the record.
+const NOT_CHECKED: &str = "signature not checked";
+
+/// Run `ssh-keygen` with `args`, feeding the payload on stdin: `Some(ok)` for
+/// its answer, `None` when it could not be run.
+fn keygen_accepts(args: &[&std::ffi::OsStr], payload: &str) -> Option<bool> {
+    let mut child = Command::new("ssh-keygen")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(payload.as_bytes());
+    }
+    child.wait().ok().map(|s| s.success())
+}
+
+/// The status of a block's signature: `verified` when a principal of the
+/// committed allowed_signers verifies it under the `amont-provenance`
+/// namespace; `unsigned` without a signature; `bad signature` when the
+/// signature is not valid for the payload at all; `signed, no
+/// allowed_signers` without the file; `signature not checked` when
+/// `ssh-keygen` or a scratch file is unavailable; else `signed, signer not
+/// allowed`.
+fn signature_status(dir: &Path, block: &Block) -> &'static str {
+    if block.sig.trim().is_empty() {
+        return "unsigned";
+    }
+    let Some(tmp) = scratch_dir() else {
+        return NOT_CHECKED;
+    };
+    let (sig_file, signers_file) = (tmp.join("sig"), tmp.join("allowed_signers"));
+    let status = signature_status_in(dir, block, &sig_file, &signers_file);
+    let _ = std::fs::remove_dir_all(&tmp);
+    status
+}
+
+fn signature_status_in(
+    dir: &Path,
+    block: &Block,
+    sig_file: &Path,
+    signers_file: &Path,
+) -> &'static str {
+    if std::fs::write(sig_file, &block.sig).is_err() {
+        return NOT_CHECKED;
+    }
+    let namespace = std::ffi::OsStr::new(NAMESPACE);
+    let check = [
+        "-Y".as_ref(),
+        "check-novalidate".as_ref(),
+        "-n".as_ref(),
+        namespace,
+        "-s".as_ref(),
+        sig_file.as_os_str(),
+    ];
+    match keygen_accepts(&check, &block.payload) {
+        None => return NOT_CHECKED,
+        Some(false) => return "bad signature",
+        Some(true) => {}
+    }
     let signers = [".github/allowed_signers", ".forgejo/allowed_signers"]
         .iter()
         .find_map(|p| {
@@ -308,45 +367,39 @@ fn signature_verifies(dir: &Path, block: &Block) -> bool {
                 .ok()
                 .flatten()
         });
-    let (Some(signers), Some(tmp)) = (signers, scratch_dir()) else {
-        return false;
+    let Some(signers) = signers else {
+        return "signed, no allowed_signers";
     };
+    if std::fs::write(signers_file, &signers).is_err() {
+        return NOT_CHECKED;
+    }
     let text = String::from_utf8_lossy(&signers).into_owned();
-    let (sig_file, signers_file) = (tmp.join("sig"), tmp.join("allowed_signers"));
-    let written = std::fs::write(&sig_file, &block.sig).is_ok()
-        && std::fs::write(&signers_file, &signers).is_ok();
-    let mut verified = false;
-    if written {
-        let principals = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with('#'))
-            .filter_map(|l| l.split_whitespace().next())
-            .flat_map(|f| f.split(','))
-            .map(|p| p.trim_matches('"').to_string());
-        for who in principals {
-            let child = Command::new("ssh-keygen")
-                .args(["-Y", "verify", "-n", NAMESPACE, "-I", &who])
-                .arg("-s")
-                .arg(&sig_file)
-                .arg("-f")
-                .arg(&signers_file)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn();
-            let Ok(mut child) = child else { break };
-            if let Some(mut stdin) = child.stdin.take() {
-                use std::io::Write;
-                let _ = stdin.write_all(block.payload.as_bytes());
-            }
-            if child.wait().is_ok_and(|s| s.success()) {
-                verified = true;
-                break;
-            }
+    let principals = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.split_whitespace().next())
+        .flat_map(|f| f.split(','))
+        .map(|p| p.trim_matches('"').to_string());
+    for who in principals {
+        let args = [
+            "-Y".as_ref(),
+            "verify".as_ref(),
+            "-n".as_ref(),
+            namespace,
+            "-I".as_ref(),
+            std::ffi::OsStr::new(&who),
+            "-s".as_ref(),
+            sig_file.as_os_str(),
+            "-f".as_ref(),
+            signers_file.as_os_str(),
+        ];
+        match keygen_accepts(&args, &block.payload) {
+            None => return NOT_CHECKED,
+            Some(true) => return "verified",
+            Some(false) => {}
         }
     }
-    let _ = std::fs::remove_dir_all(&tmp);
-    verified
+    "signed, signer not allowed"
 }
 
 fn plan_sha_at(dir: &Path, rev: &str, path: &str) -> Option<String> {
@@ -358,11 +411,7 @@ fn plan_sha_at(dir: &Path, rev: &str, path: &str) -> Option<String> {
 
 fn describe(dir: &Path, found: &Found, plan_file: &str) -> Prov {
     let b = &found.block;
-    let status = if signature_verifies(dir, b) {
-        "verified"
-    } else {
-        "signed, signer not allowed"
-    };
+    let status = signature_status(dir, b);
     let mut plan = b.field("plan").unwrap_or("").split_whitespace();
     let path = plan.next().unwrap_or("").to_string();
     let plan_sha = plan.next().unwrap_or("").to_string();
@@ -413,9 +462,16 @@ fn rows_of(name: &str, dir: &Path, plan_file: &str) -> Vec<Row> {
         ],
     )
     .unwrap_or_default();
+    // The URL git fetches from (an `insteadOf` alias resolved), else the
+    // configured one: either may be the one that names GitHub.
     let slug = git::stdout_in(dir, &["remote", "get-url", "origin"])
         .as_deref()
-        .and_then(github_slug);
+        .and_then(github_slug)
+        .or_else(|| {
+            git::stdout_in(dir, &["config", "--get", "remote.origin.url"])
+                .as_deref()
+                .and_then(github_slug)
+        });
     let mut rows = Vec::new();
     for line in log.lines() {
         let mut f = line.splitn(3, '\u{1f}');
@@ -534,7 +590,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        print!("{USAGE}");
+        let _ = write!(std::io::stdout(), "{USAGE}");
         return ExitCode::SUCCESS;
     }
     let mut json = false;
@@ -622,11 +678,27 @@ pub fn run(args: &[OsString]) -> ExitCode {
     }
     if json {
         let all: Vec<serde_json::Value> = rows.iter().map(to_json).collect();
-        println!("{}", serde_json::Value::Array(all));
+        let _ = writeln!(std::io::stdout(), "{}", serde_json::Value::Array(all));
     } else {
         for l in lines {
-            println!("{l}");
+            let _ = writeln!(std::io::stdout(), "{l}");
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pr_number;
+
+    #[test]
+    fn pr_number_is_the_last_marker_anywhere() {
+        assert_eq!(pr_number("feat: a (#7)"), Some(7));
+        assert_eq!(
+            pr_number("Merge pull request 'feat: x' (#12) from feat/x into main"),
+            Some(12)
+        );
+        assert_eq!(pr_number("fix (#3) again (#4)"), Some(4));
+        assert_eq!(pr_number("no number (#x)"), None);
+    }
 }

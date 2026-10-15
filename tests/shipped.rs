@@ -168,6 +168,10 @@ impl World {
     /// Stdout, stderr and exit code. The newest merge is the first line; the
     /// `init` commit that created the plan is the last.
     fn shipped(&self, extra: &[&str]) -> (String, String, i32) {
+        self.shipped_with_gh(extra, "/nonexistent/gh")
+    }
+
+    fn shipped_with_gh(&self, extra: &[&str], gh: &str) -> (String, String, i32) {
         let plan = self.plan_file();
         let out = Command::new(BIN)
             .current_dir(&self.top)
@@ -178,7 +182,7 @@ impl World {
             .env("CLAUDE_CONFIG_DIR", self.top.join("claude"))
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("AMONT_AGENT_GH", "/nonexistent/gh")
+            .env("AMONT_AGENT_GH", gh)
             .stdin(Stdio::null())
             .output()
             .expect("runs");
@@ -308,6 +312,69 @@ fn a_key_missing_from_allowed_signers_is_not_allowed() {
         out.trim_end().ends_with("signed, signer not allowed"),
         "{out}"
     );
+}
+
+#[test]
+fn a_block_without_a_signature_is_unsigned() {
+    let w = World::new("unsigned");
+    let head = w.feature();
+    let merge = w.squash("feat: a (#3)");
+    let tree = git(&w.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    w.note(PROV, &tree, &w.record(&head, &w.body_sha(2), None));
+    let (out, _, _) = w.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert!(out.trim_end().ends_with("unsigned"), "{out}");
+}
+
+#[test]
+fn a_tampered_payload_is_a_bad_signature() {
+    let w = World::new("tampered");
+    let head = w.feature();
+    let merge = w.squash("feat: a (#3)");
+    let tree = git(&w.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let signed = w.sign(&w.record(&head, &w.body_sha(2), None), "key");
+    let tampered = signed.replace("preview not-required", "preview not-requirez");
+    assert_ne!(signed, tampered);
+    w.note(PROV, &tree, &tampered);
+    let (out, _, _) = w.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert!(out.trim_end().ends_with("bad signature"), "{out}");
+}
+
+#[test]
+fn a_record_on_the_pr_head_survives_the_branch_being_deleted() {
+    let w = World::new("pruned");
+    let head = w.feature();
+    let merge = w.squash("feat: a (#8)");
+    let tree = git(&w.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let signed = w.sign(&w.record(&head, &w.body_sha(2), None), "key");
+    w.note(PROV, &tree, &signed);
+    git(&w.repo, &["push", "origin", "--delete", "feature"]);
+    git(&w.repo, &["fetch", "--prune", "origin"]);
+    // The origin looks like GitHub by name only; fetches still reach the bare repo.
+    let bare = w.top.join("origin.git");
+    let slug_url = "https://github.com/o/r.git";
+    git(&w.repo, &["config", "remote.origin.url", slug_url]);
+    git(
+        &w.repo,
+        &[
+            "config",
+            &format!("url.{}.insteadOf", bare.to_str().unwrap()),
+            slug_url,
+        ],
+    );
+    let gh = w.top.join("gh");
+    std::fs::write(
+        &gh,
+        format!("#!/bin/sh\necho '{{\"headRefOid\":\"{head}\"}}'\n"),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (out, err, code) = w.shipped_with_gh(&[], gh.to_str().unwrap());
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(out.trim_end().ends_with("verified"), "{out} / {err}");
 }
 
 #[test]
