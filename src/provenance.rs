@@ -102,14 +102,13 @@ pub fn record_file(repo: &str, commit: &str) -> Option<PathBuf> {
 }
 
 /// The plan file changed on the branch, read from the pushed tree: its path
-/// and body sha. `plans` are the paths changed under `docs/plans`.
+/// and body sha. `plans` are the non-empty, trimmed paths changed under
+/// `docs/plans`.
 pub fn plan_of(repo: &Path, commit: &str, plans: &[String]) -> Result<(String, String), String> {
     let path = plans
         .iter()
-        .map(|p| p.trim())
         .find(|p| {
-            !p.is_empty()
-                && p.ends_with(".md")
+            p.ends_with(".md")
                 && git::succeeds_in(repo, &["cat-file", "-e", &format!("{commit}:{p}")])
         })
         .ok_or("no plan file under docs/plans/ exists in the pushed tree")?;
@@ -129,17 +128,28 @@ pub struct Push<'a> {
     pub canon: &'a str,
     pub patch: Option<&'a str>,
     pub plans: &'a [String],
+    /// The branch target the push publishes: the preview rule reads it.
+    pub target: &'a crate::push_target::Target,
+}
+
+/// What `write` did with the record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Filed {
+    /// The record was written to this file.
+    Written(PathBuf),
+    /// The record of this repository and commit already exists and was kept.
+    Kept(PathBuf),
 }
 
 /// Write the record once per commit: a second push of the same commit finds
 /// the file and leaves it, so the first pass's origin (by-patch, say) stays.
-/// `Ok(path)` or why it could not be.
+/// `Ok` says whether it wrote or kept the file, `Err` why it could not be.
 pub fn write(
     p: &Push,
     review: Review,
     review_canon: &str,
     preview: Preview,
-) -> Result<PathBuf, String> {
+) -> Result<Filed, String> {
     let commit = git::stdout_in(
         p.repo,
         &[
@@ -150,6 +160,12 @@ pub fn write(
         ],
     )
     .ok_or("the pushed commit cannot be resolved")?;
+    // The path needs the full sha, so resolving it is the one git call before
+    // the check: a kept record never reads the tree or the plan again.
+    let file = record_file(p.name, &commit).ok_or("no provenance directory is known")?;
+    if file.exists() {
+        return Ok(Filed::Kept(file));
+    }
     let tree = git::stdout_in(
         p.repo,
         &[
@@ -161,7 +177,6 @@ pub fn write(
     )
     .ok_or("the pushed tree cannot be resolved")?;
     let (plan_path, plan_sha) = plan_of(p.repo, &commit, p.plans)?;
-    let file = record_file(p.name, &commit).ok_or("no provenance directory is known")?;
     let body = payload(&Record {
         commit: &commit,
         tree: &tree,
@@ -174,15 +189,12 @@ pub fn write(
         preview,
         version: env!("CARGO_PKG_VERSION"),
     });
-    if file.exists() {
-        return Ok(file);
-    }
     let dir = file.parent().ok_or("no provenance directory is known")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     crate::journal::private(dir, 0o700);
     crate::atomic::write_atomic(&file, &body).map_err(|e| format!("{}: {e}", file.display()))?;
     crate::journal::private(&file, 0o600);
-    Ok(file)
+    Ok(Filed::Written(file))
 }
 
 #[cfg(test)]

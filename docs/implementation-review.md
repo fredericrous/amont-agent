@@ -178,7 +178,14 @@ It is written on `reviewed`, `reviewed-by-patch`, `overruled`,
 `overruled-by-patch` and on a transcript pass; never for a held push or a push
 declined as no-plan, no-branch, dry-run or nothing-new. A write that fails is
 journalled `provenance-write-failed` and never changes the judgment; a write
-that lands is journalled `provenance-written`. Like the pass files, the
+that lands is journalled `provenance-written`. The record is written once
+per repository and commit: a re-push of the same commit finds the file and
+keeps it (the first pass's origin stays), journalled `provenance-kept`.
+The `preview` datum is the preview gate's own decision: `evidence` when the
+plan's evidence stood, `approved` when the person's approval did,
+`not-required` for no interface change. While the preview has not stood
+(the gate holds the push), no record is written, journalled
+`provenance-deferred`: the push that passes writes it. Like the pass files, the
 directory is hook-only: Write, Edit and Bash writes are refused.
 
 ## What the journal records

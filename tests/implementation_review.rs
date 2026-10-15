@@ -1625,6 +1625,22 @@ fn a_by_patch_pass_writes_the_old_canonical_tree() {
     assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
     let again = lines_of(&w.provenance_dir().join("app").join(&head));
     assert_eq!(again, l, "a second push leaves the record as it was");
+    let journal = w.provenance_journal();
+    let written = journal
+        .iter()
+        .filter(|j| j.contains(" provenance-written ") && j.contains(&head))
+        .count();
+    assert_eq!(written, 1, "{journal:?}");
+    assert!(
+        journal.iter().any(|j| j.contains(" provenance-kept ")),
+        "{journal:?}"
+    );
+    assert!(
+        !journal
+            .iter()
+            .any(|j| j.contains(" provenance-write-failed ")),
+        "{journal:?}"
+    );
 }
 
 #[test]
@@ -1636,6 +1652,7 @@ fn a_plan_approved_with_evidence_is_recorded_as_preview_evidence() {
     git(&repo, &["reset", "-q", "--hard", "origin/main"]);
     w.commit(&repo, &[(plan_rel, plan)]);
     w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
     let head = git(&repo, &["rev-parse", "HEAD"]);
     let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
         .arg("plan-sha")
@@ -1649,6 +1666,112 @@ fn a_plan_approved_with_evidence_is_recorded_as_preview_evidence() {
     reviewed(&w, &repo);
     let l = lines_of(&w.provenance_dir().join("app").join(&head));
     assert!(l.contains(&"preview evidence".to_string()), "{l:?}");
+}
+
+#[test]
+fn a_mockup_change_with_an_approval_is_recorded_as_preview_approved() {
+    let w = World::new("provapproved");
+    let repo = w.repo("app");
+    let plan_rel = "docs/plans/2026-09-29-x.md";
+    // Evidence is declared and approved, yet a listed mockup screen means
+    // only the person's approval can stand.
+    let plan = "---\nstatus: active\n---\n# X\n\n## Preview\n\nevidence: nothing visible is left to judge.\n";
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    w.commit(&repo, &[(plan_rel, plan)]);
+    let head = w.commit(
+        &repo,
+        &[
+            ("src/lib.rs", "fn a() { b() }\nfn b() {}\n"),
+            ("docs/mockups/pill/Main.dc.html", "<x-dc></x-dc>\n"),
+        ],
+    );
+    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("plan-sha")
+        .arg(repo.join(plan_rel))
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&shown.stdout).trim().to_string();
+    let approved = w.root.join("claude/amont-agent/plan-approved");
+    std::fs::create_dir_all(&approved).unwrap();
+    std::fs::write(approved.join(&sha), "s\tp\t1\n").unwrap();
+    let previews = w.root.join("claude/amont-agent/previews");
+    std::fs::create_dir_all(&previews).unwrap();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        previews.join("approvals"),
+        format!(
+            "{}\t{head}\t{at}\ttest\n",
+            repo.canonicalize().unwrap().display()
+        ),
+    )
+    .unwrap();
+    reviewed(&w, &repo);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&"preview approved".to_string()), "{l:?}");
+}
+
+#[test]
+fn a_gated_change_outside_the_interface_is_recorded_as_not_required() {
+    let w = World::new("provnoui");
+    let repo = w.repo("app");
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    w.commit(&repo, &[("docs/plans/2026-09-29-x.md", "# X\n")]);
+    let head = w.commit(&repo, &[("README.md", "words\n")]);
+    reviewed(&w, &repo);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&"preview not-required".to_string()), "{l:?}");
+}
+
+#[test]
+fn a_preview_not_yet_approved_defers_the_record_until_it_is() {
+    let w = World::new("provdefer");
+    let repo = w.repo("app");
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    w.commit(&repo, &[("docs/plans/2026-09-29-x.md", "# X\n")]);
+    let head = w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    // The preview rule holds this push; the review rule passes it.
+    let _held = w.push(&repo, "s1", Some(&transcript));
+    let file = w.provenance_dir().join("app").join(&head);
+    assert!(!file.exists(), "a held preview must not freeze a record");
+    assert!(
+        w.provenance_journal()
+            .iter()
+            .any(|j| j.contains(" provenance-deferred ")),
+        "{:?}",
+        w.provenance_journal()
+    );
+    let previews = w.root.join("claude/amont-agent/previews");
+    std::fs::create_dir_all(&previews).unwrap();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        previews.join("approvals"),
+        format!(
+            "{}\t{head}\t{at}\ttest\n",
+            repo.canonicalize().unwrap().display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let l = lines_of(&file);
+    assert!(l.contains(&"preview approved".to_string()), "{l:?}");
 }
 
 #[test]

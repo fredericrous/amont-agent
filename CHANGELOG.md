@@ -7,7 +7,9 @@
 - **Provenance record.** When the implementation-review hook passes a push
   that carries a plan, it writes the unsigned `amont-provenance-v1` payload to
   `<config dir>/amont-agent/provenance/<repo>/<pushed sha>` (ADR-0036); the
-  record is written once per commit and carries `preview approved`, `evidence` or `not-required`; the
+  record is written once per commit and carries `preview approved`, `evidence` or `not-required` as the preview gate
+  decides, and is deferred while the preview gate holds the push
+  (`provenance-deferred`); a re-push keeps it (journalled `provenance-kept`); the
   directory is hook-only like the pass files, and `.github/allowed_signers`
   lists the `amont-provenance` namespace.
 
