@@ -48,7 +48,10 @@ The rules are the entries of `AGENTS.md`, `CLAUDE.md`, `.adr.yaml`, `.adr/`
 and `.claude/` in the pushed tree. So a rebase onto a moved `main` that
 does not touch the patch or the rules keeps the review. A rebase that
 resolved a conflict, changed a line of the patch's context, or brought new
-rules does not. A person's overrule carries over on the same terms.
+rules does not. A person's overrule carries over on the same terms, once
+the overruled tree itself has been pushed (the push files it under its
+patch); journalled `overruled-by-patch`. When the patch cannot be computed,
+the held message says why.
 
 ```sh
 amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]
@@ -160,8 +163,8 @@ beyond its words.
 
 One line per push, under the rule's id, in the buckets `amont-agent
 status` counts: a declined push as `unconfirmed` with the reason
-(`reviewed`, `reviewed-by-patch`, `overruled`, `no-plan`, `dry-run`, `no-branch`,
-`unresolvable`), a spoken one as `advised`, `denied` or `watched`. The
+(`reviewed`, `reviewed-by-patch`, `overruled`, `overruled-by-patch`,
+`no-plan`, `dry-run`, `no-branch`, `unresolvable`), a spoken one as `advised`, `denied` or `watched`. The
 excerpt of a spoken line is structured:
 
 ```

@@ -109,7 +109,7 @@ impl World {
         let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
         // A test that installed the fake `amont` (below) puts it first.
         let fake = self.root.join("bin");
-        if fake.join("amont").is_file() {
+        if fake.join("amont").is_file() || fake.join("git").is_file() {
             let path = std::env::var_os("PATH").unwrap_or_default();
             let mut dirs = vec![fake];
             dirs.extend(std::env::split_paths(&path));
@@ -1469,11 +1469,46 @@ fn an_overrule_carries_over_by_patch() {
     advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
     assert!(
-        w.last_line().contains(" unconfirmed reviewed-by-patch "),
+        w.last_line().contains(" unconfirmed overruled-by-patch "),
         "{}",
         w.last_line()
     );
     let f = w.pass_file("app", &w.tree(&repo));
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
     assert_eq!(v["verdict"], "overruled");
+}
+
+/// `git patch-id` failing is a miss: the rebased push is held, and says why.
+#[cfg(unix)]
+#[test]
+fn a_patch_id_that_cannot_be_computed_holds_the_push() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new("bypatch-noid");
+    let repo = w.repo("app");
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let shim = bin.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = patch-id ] && exit 1; done\nexec {} \"$@\"\n",
+            real.trim()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let said = w.push(&repo, "s1", Some(&transcript));
+    let text = advised(&said);
+    assert!(text.contains("(stale)"), "{text}");
+    assert!(text.contains("could carry over by patch"), "{text}");
 }

@@ -161,12 +161,12 @@ pub fn rules_fingerprint(repo: &Path, rev: &str) -> Result<String, String> {
     Ok(hex(&sha256(&bytes)))
 }
 
-/// Both halves of the key for `pushed`, or `None` when either cannot be
-/// computed (journalled by the caller as a miss, never as a pass).
-pub fn patch_key(repo: &Path, merge_base: &str, pushed: &str) -> Option<PatchKey> {
-    Some(PatchKey {
-        patch: branch_patch(repo, merge_base, pushed).ok()?,
-        rules: rules_fingerprint(repo, pushed).ok()?,
+/// Both halves of the key for `pushed`, or why either cannot be computed:
+/// a miss, never a pass, and the caller says the reason when it holds.
+pub fn patch_key(repo: &Path, merge_base: &str, pushed: &str) -> Result<PatchKey, String> {
+    Ok(PatchKey {
+        patch: branch_patch(repo, merge_base, pushed)?,
+        rules: rules_fingerprint(repo, pushed)?,
     })
 }
 
@@ -468,6 +468,13 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     // The branch patch, computed once: a pass found here or below is filed
     // under it, and a miss by tree is looked up by it.
     let key = patch_key(&repo, &merge_base, pushed);
+    // Said when the push is held: no earlier review could carry over.
+    let unkeyed = key
+        .as_ref()
+        .err()
+        .map(|why| format!(" No earlier review could carry over by patch: {why}."))
+        .unwrap_or_default();
+    let key = key.ok();
     if let Some(verdict) = remembered(&name, &tree) {
         if let Some(k) = &key {
             if remembered_patch(&name, k).is_none() {
@@ -487,7 +494,11 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &verdict,
             &format!("patch {}", short(&old_tree)),
         );
-        return Judged::Decline("reviewed-by-patch");
+        return Judged::Decline(if verdict == "overruled" {
+            "overruled-by-patch"
+        } else {
+            "reviewed-by-patch"
+        });
     }
     let Some(transcript) = ctx.transcript else {
         return unknown(Some(&tree), "the payload carried no transcript_path");
@@ -534,7 +545,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     if let Some(older) = mine.last() {
         return Judged::Say {
             reason: format!(
-                "the implementation review of {name} read tree {}; this push carries tree {} (stale).",
+                "the implementation review of {name} read tree {}; this push carries tree {} (stale).{unkeyed}",
                 short(&older.sha),
                 short(&tree)
             ),
@@ -543,7 +554,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     }
     Judged::Say {
         reason: format!(
-            "no implementation review of {name} tree {} is in this session.",
+            "no implementation review of {name} tree {} is in this session.{unkeyed}",
             short(&tree)
         ),
         excerpt: format!("tree={} review=missing verdict=-", short(&tree)),
