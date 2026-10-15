@@ -469,6 +469,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     // The branch patch, computed once: a pass found here or below is filed
     // under it, and a miss by tree is looked up by it.
     let key = patch_key(&repo, &merge_base, pushed);
+    let plans: Vec<String> = changed.lines().map(|l| l.trim().to_string()).collect();
     // Said when the push is held: no earlier review could carry over.
     let unkeyed = key
         .as_ref()
@@ -482,7 +483,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         pushed,
         canon: &tree,
         patch: key.as_ref().map(|k| k.patch.as_str()),
-        changed: &changed,
+        plans: &plans,
     };
     if let Some(verdict) = remembered(&name, &tree) {
         if let Some(k) = &key {
@@ -590,8 +591,10 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
 /// Files the provenance record of a pass. A failure is journalled and never
 /// changes the judgment.
 fn provenance(push: &crate::provenance::Push, review: Bound, review_canon: &str) {
-    let preview = if crate::preview::approved(push.repo, push.pushed) {
+    let preview = if crate::preview::approved_quietly(push.repo, push.pushed) {
         crate::provenance::Preview::Approved
+    } else if crate::preview::planned_evidence_quietly(push.repo, push.pushed) {
+        crate::provenance::Preview::Evidence
     } else {
         crate::provenance::Preview::NotRequired
     };

@@ -771,32 +771,44 @@ fn approvals() -> Vec<Approval> {
 /// which skips `docs/plans/`) equal to this commit's. A reword, an amend or
 /// a plan-only change keeps the tree, so the approval still stands.
 pub fn approved(repo: &Path, commit: &str) -> bool {
+    match approval_of(repo, commit) {
+        None => false,
+        Some(None) => true,
+        Some(Some(from)) => {
+            note(
+                "approved-by-tree",
+                "-",
+                &repo.to_string_lossy(),
+                &format!("{}\u{2192}{}", short(&from), short(commit)),
+            );
+            true
+        }
+    }
+}
+
+/// [`approved`] without the journal line, for a reader that only reports.
+pub(crate) fn approved_quietly(repo: &Path, commit: &str) -> bool {
+    approval_of(repo, commit).is_some()
+}
+
+/// How the commit is approved: `None` when it is not, `Some(None)` when
+/// exactly, `Some(Some(sha))` when by content, from the approved commit `sha`.
+fn approval_of(repo: &Path, commit: &str) -> Option<Option<String>> {
     let repo_s = repo.to_string_lossy();
     let mine: Vec<Approval> = approvals()
         .into_iter()
         .filter(|a| *a.0 == *repo_s)
         .collect();
     if mine.iter().any(|a| a.1 == commit) {
-        return true;
+        return Some(None);
     }
     if !mine.iter().any(|a| a.4.is_some()) {
-        return false;
+        return None;
     }
-    let Ok(tree) = crate::implementation_review::canonical_tree(repo, commit) else {
-        return false;
-    };
-    match mine.iter().find(|a| a.4.as_deref() == Some(tree.as_str())) {
-        Some(a) => {
-            note(
-                "approved-by-tree",
-                "-",
-                &repo_s,
-                &format!("{}\u{2192}{}", short(&a.1), short(commit)),
-            );
-            true
-        }
-        None => false,
-    }
+    let tree = crate::implementation_review::canonical_tree(repo, commit).ok()?;
+    mine.iter()
+        .find(|a| a.4.as_deref() == Some(tree.as_str()))
+        .map(|a| Some(a.1.clone()))
 }
 
 fn approve(regs: &[Registration], channel: &str) {
@@ -1662,44 +1674,43 @@ fn first_plan(repo: &Path, from: &str, commit: &str) -> Option<(String, String)>
 /// the plan, the commit and the sha. Any miss is silent: the approval path
 /// decides, as before.
 fn planned_evidence(repo: &Path, commit: &str) -> bool {
-    let Some(base) =
-        crate::stale::remote_of(repo).and_then(|r| crate::stale::default_base(repo, &r))
-    else {
-        return false;
-    };
-    let Some(from) = git(repo, &["merge-base", &base, commit]) else {
-        return false;
-    };
-    let Some((added, path)) = first_plan(repo, &from, commit) else {
-        return false;
-    };
-    let Some(text) = crate::git::stdout_in(repo, &["show", &format!("{added}:{path}")]) else {
-        return false;
-    };
+    match evidence_of(repo, commit) {
+        Some(detail) => {
+            note("evidence", "-", &repo.to_string_lossy(), &detail);
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`planned_evidence`] without the journal line, for a reader that only
+/// reports.
+pub(crate) fn planned_evidence_quietly(repo: &Path, commit: &str) -> bool {
+    evidence_of(repo, commit).is_some()
+}
+
+/// The journal detail of a pass, or `None` on any miss.
+fn evidence_of(repo: &Path, commit: &str) -> Option<String> {
+    let base = crate::stale::remote_of(repo).and_then(|r| crate::stale::default_base(repo, &r))?;
+    let from = git(repo, &["merge-base", &base, commit])?;
+    let (added, path) = first_plan(repo, &from, commit)?;
+    let text = crate::git::stdout_in(repo, &["show", &format!("{added}:{path}")])?;
     let (front, _) = crate::plans::split_front_matter(&text);
     if crate::plans::field(front, "canonical").is_some_and(|c| !c.is_empty()) {
-        return false;
+        return None;
     }
     let Ok(shas) = crate::plan_review::shas(&text) else {
-        return false;
+        return None;
     };
     if !plan_approved(&shas.sha) {
-        return false;
+        return None;
     }
-    let Some(reason) = preview_evidence(&text) else {
-        return false;
-    };
-    note(
-        "evidence",
-        "-",
-        &repo.to_string_lossy(),
-        &format!(
-            "{path} commit={} sha={} evidence: {reason}",
-            short(commit),
-            &shas.sha[..12]
-        ),
-    );
-    true
+    let reason = preview_evidence(&text)?;
+    Some(format!(
+        "{path} commit={} sha={} evidence: {reason}",
+        short(commit),
+        &shas.sha[..12]
+    ))
 }
 
 // --- publication ----------------------------------------------------------

@@ -32,6 +32,7 @@ impl Review {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preview {
     Approved,
+    Evidence,
     NotRequired,
 }
 
@@ -39,6 +40,7 @@ impl Preview {
     fn word(self) -> &'static str {
         match self {
             Preview::Approved => "approved",
+            Preview::Evidence => "evidence",
             Preview::NotRequired => "not-required",
         }
     }
@@ -100,11 +102,11 @@ pub fn record_file(repo: &str, commit: &str) -> Option<PathBuf> {
 }
 
 /// The plan file changed on the branch, read from the pushed tree: its path
-/// and body sha. `changed` is `git diff --name-only` under `docs/plans`.
-pub fn plan_of(repo: &Path, commit: &str, changed: &str) -> Result<(String, String), String> {
-    let path = changed
-        .lines()
-        .map(str::trim)
+/// and body sha. `plans` are the paths changed under `docs/plans`.
+pub fn plan_of(repo: &Path, commit: &str, plans: &[String]) -> Result<(String, String), String> {
+    let path = plans
+        .iter()
+        .map(|p| p.trim())
         .find(|p| {
             !p.is_empty()
                 && p.ends_with(".md")
@@ -126,10 +128,12 @@ pub struct Push<'a> {
     pub pushed: &'a str,
     pub canon: &'a str,
     pub patch: Option<&'a str>,
-    pub changed: &'a str,
+    pub plans: &'a [String],
 }
 
-/// Write the record; `Ok(path)` or why it could not be.
+/// Write the record once per commit: a second push of the same commit finds
+/// the file and leaves it, so the first pass's origin (by-patch, say) stays.
+/// `Ok(path)` or why it could not be.
 pub fn write(
     p: &Push,
     review: Review,
@@ -156,7 +160,7 @@ pub fn write(
         ],
     )
     .ok_or("the pushed tree cannot be resolved")?;
-    let (plan_path, plan_sha) = plan_of(p.repo, &commit, p.changed)?;
+    let (plan_path, plan_sha) = plan_of(p.repo, &commit, p.plans)?;
     let file = record_file(p.name, &commit).ok_or("no provenance directory is known")?;
     let body = payload(&Record {
         commit: &commit,
@@ -170,6 +174,9 @@ pub fn write(
         preview,
         version: env!("CARGO_PKG_VERSION"),
     });
+    if file.exists() {
+        return Ok(file);
+    }
     let dir = file.parent().ok_or("no provenance directory is known")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     crate::journal::private(dir, 0o700);

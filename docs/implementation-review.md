@@ -171,7 +171,7 @@ SPEC `amont-provenance-v1`; the decision is ADR-0036. One datum per line:
 canonical tree), `patch` (only when the branch patch could be computed),
 `plan <path> <body sha>` (the plan under `docs/plans/` changed on the branch,
 read from the pushed tree), `review <reviewed|by-patch|overruled> <canonical
-tree the review read>`, `preview <approved|not-required>` and
+tree the review read>`, `preview <approved|evidence|not-required>` and
 `producer amont-agent <version>`.
 
 It is written on `reviewed`, `reviewed-by-patch`, `overruled`,

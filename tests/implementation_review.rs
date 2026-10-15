@@ -1569,8 +1569,7 @@ fn a_passing_push_with_a_plan_writes_the_provenance_record() {
     let tree = w.tree(&repo);
     let head = git(&repo, &["rev-parse", "HEAD"]);
     let full_tree = git(&repo, &["rev-parse", "HEAD^{tree}"]);
-    let transcript = reviewed(&w, &repo);
-    let _ = transcript;
+    reviewed(&w, &repo);
     let f = w.provenance_dir().join("app").join(&head);
     let l = lines_of(&f);
     assert_eq!(l.len(), 9, "{l:?}");
@@ -1623,6 +1622,33 @@ fn a_by_patch_pass_writes_the_old_canonical_tree() {
     let l = lines_of(&w.provenance_dir().join("app").join(&head));
     assert!(l.contains(&format!("canon {after}")), "{l:?}");
     assert!(l.contains(&format!("review by-patch {before}")), "{l:?}");
+    assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
+    let again = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert_eq!(again, l, "a second push leaves the record as it was");
+}
+
+#[test]
+fn a_plan_approved_with_evidence_is_recorded_as_preview_evidence() {
+    let w = World::new("provevidence");
+    let repo = w.repo("app");
+    let plan_rel = "docs/plans/2026-09-29-x.md";
+    let plan = "---\nstatus: active\n---\n# X\n\n## Preview\n\nevidence: nothing visible is left to judge.\n";
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    w.commit(&repo, &[(plan_rel, plan)]);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("plan-sha")
+        .arg(repo.join(plan_rel))
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&shown.stdout).trim().to_string();
+    let approved = w.root.join("claude/amont-agent/plan-approved");
+    std::fs::create_dir_all(&approved).unwrap();
+    std::fs::write(approved.join(&sha), "s\tp\t1\n").unwrap();
+    reviewed(&w, &repo);
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&"preview evidence".to_string()), "{l:?}");
 }
 
 #[test]
