@@ -1309,3 +1309,171 @@ fn a_land_that_pushed_what_was_judged_or_nothing_is_not_said_and_a_missing_recor
     // The journal writes a reason with its spaces as underscores.
     assert!(last.contains("retry-check_skipped"), "{last}");
 }
+
+// ------------------------------------------------- by patch (ADR-0034)
+
+/// `main` gains `files`, is published, and `feat/x` is rebased onto it.
+/// `resolve` settles a conflict by taking `feat/x`'s side with an edit.
+fn advance_main_and_rebase(w: &World, repo: &Path, files: &[(&str, &str)]) {
+    git(repo, &["checkout", "-q", "main"]);
+    w.commit(repo, files);
+    git(repo, &["push", "-q", "origin", "main"]);
+    git(repo, &["fetch", "-q", "origin"]);
+    git(repo, &["checkout", "-q", "feat/x"]);
+    git(repo, &["rebase", "-q", "origin/main"]);
+}
+
+/// A reviewed `feat/x` whose pass is remembered, and its transcript.
+fn reviewed(w: &World, repo: &Path) -> PathBuf {
+    let mut t = Transcript::default();
+    t.review(
+        w,
+        AGENT,
+        &w.block(repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(repo, "s1", Some(&transcript)), Said::Silent);
+    transcript
+}
+
+#[test]
+fn a_conflict_free_rebase_keeps_the_review_by_patch() {
+    let w = World::new("bypatch");
+    let repo = w.repo("app");
+    let before = w.tree(&repo);
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    let after = w.tree(&repo);
+    assert_ne!(before, after, "the rebase moved the tree");
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let line = w.last_line();
+    assert!(line.contains(" unconfirmed reviewed-by-patch "), "{line}");
+    let f = w.pass_file("app", &after);
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    assert_eq!(v["how"], format!("patch {}", &before[..12]));
+    // Remembered for the new tree: the next push answers by tree.
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    assert!(
+        w.last_line().contains(" unconfirmed reviewed "),
+        "{}",
+        w.last_line()
+    );
+}
+
+#[test]
+fn a_rebase_that_changes_the_patch_or_the_rules_needs_a_new_review() {
+    // A context line of the patch changed on main.
+    let w = World::new("bypatch-context");
+    let repo = w.repo("app");
+    git(&repo, &["checkout", "-q", "main"]);
+    w.commit(&repo, &[("src/ctx.rs", "1\n2\n3\n4\n5\n6\n7\n")]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["checkout", "-q", "feat/x"]);
+    git(&repo, &["rebase", "-q", "origin/main"]);
+    w.commit(&repo, &[("src/ctx.rs", "1\n2\n3\nfour\n5\n6\n7\n")]);
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, &[("src/ctx.rs", "1\ntwo\n3\n4\n5\n6\n7\n")]);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+
+    // Only the rules changed on main.
+    let w = World::new("bypatch-rules");
+    let repo = w.repo("app");
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, &[("AGENTS.md", "# new rules\n")]);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+}
+
+#[test]
+fn a_resolved_conflict_a_code_edit_or_whitespace_needs_a_new_review() {
+    // A conflict on the reviewed line, resolved by hand.
+    let w = World::new("bypatch-conflict");
+    let repo = w.repo("app");
+    let transcript = reviewed(&w, &repo);
+    git(&repo, &["checkout", "-q", "main"]);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { c() }\nfn c() {}\n")]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["checkout", "-q", "feat/x"]);
+    let _ = Command::new("git")
+        .current_dir(&repo)
+        .args(["rebase", "-q", "origin/main"])
+        .output();
+    std::fs::write(
+        repo.join("src/lib.rs"),
+        "fn a() { b(); c() }\nfn b() {}\nfn c() {}\n",
+    )
+    .unwrap();
+    git(&repo, &["add", "src/lib.rs"]);
+    let out = Command::new("git")
+        .current_dir(&repo)
+        .env("GIT_EDITOR", "true")
+        .args(["rebase", "--continue"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+
+    // A code edit after the review.
+    let w = World::new("bypatch-edit");
+    let repo = w.repo("app");
+    let transcript = reviewed(&w, &repo);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b(); b() }\nfn b() {}\n")]);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+
+    // Whitespace only: `--verbatim` counts it.
+    let w = World::new("bypatch-space");
+    let repo = w.repo("app");
+    let transcript = reviewed(&w, &repo);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {} \n")]);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+}
+
+#[test]
+fn an_overrule_carries_over_by_patch() {
+    let w = World::new("bypatch-overrule");
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: rework",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    let q = format!("[implementation-review app@{tree}] Overrule the review?");
+    w.ask("PreToolUse", "s1", "q", &q, None, false, Some(&transcript));
+    w.ask(
+        "PostToolUse",
+        "s1",
+        "q",
+        &q,
+        Some("Overrule"),
+        false,
+        Some(&transcript),
+    );
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(
+        w.last_line().contains(" unconfirmed reviewed-by-patch "),
+        "{}",
+        w.last_line()
+    );
+    let f = w.pass_file("app", &w.tree(&repo));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    assert_eq!(v["verdict"], "overruled");
+}

@@ -39,6 +39,17 @@ with every entry under `docs/plans/` left out, 64 hex in any object format,
 computed read-only. Recording the review in the plan therefore never makes
 it stale; a code change does.
 
+A pass also holds for another tree with the same **branch patch**, when the
+repository's rule files are unchanged (ADR-0034,
+`work.implementation-review-binding`). The patch is `git diff --binary
+<merge-base> <pushed> -- . ':!docs/plans'` hashed by `git patch-id
+--verbatim`: whitespace counts, index lines and hunk line numbers do not.
+The rules are the entries of `AGENTS.md`, `CLAUDE.md`, `.adr.yaml`, `.adr/`
+and `.claude/` in the pushed tree. So a rebase onto a moved `main` that
+does not touch the patch or the rules keeps the review. A rebase that
+resolved a conflict, changed a line of the patch's context, or brought new
+rules does not. A person's overrule carries over on the same terms.
+
 ```sh
 amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]
 ```
@@ -76,11 +87,18 @@ on stderr); 2 on a usage error.
    delta on the same tree is not a pass.
 6. On the first transcript binding that passes, writes the pass file
    (0700 directory, 0600 file), so a new session pushing the same tree
-   passes without a transcript.
+   passes without a transcript. The pass is also filed under `by-patch/`
+   with the patch, the rules fingerprint and the tree.
+7. **No binding for this tree**: looks the branch patch up under
+   `by-patch/`. A pass there whose rules fingerprint matches is copied to
+   `by-tree/` for this tree (`"how": "patch <old tree>"`), and the push
+   passes as `reviewed-by-patch`. A patch or fingerprint that cannot be
+   computed is a miss.
 
 | situation | `advise` (ships) | `deny` |
 |---|---|---|
 | reviewed this tree, verdict not `rework` | silent | passes |
+| reviewed the same branch patch, rules unchanged | silent | passes |
 | no plan on the branch | silent | silent |
 | reviewed an older tree | note, names both trees | held, names both trees |
 | verdict `rework`, no delta | note | held |
@@ -142,7 +160,7 @@ beyond its words.
 
 One line per push, under the rule's id, in the buckets `amont-agent
 status` counts: a declined push as `unconfirmed` with the reason
-(`reviewed`, `overruled`, `no-plan`, `dry-run`, `no-branch`,
+(`reviewed`, `reviewed-by-patch`, `overruled`, `no-plan`, `dry-run`, `no-branch`,
 `unresolvable`), a spoken one as `advised`, `denied` or `watched`. The
 excerpt of a spoken line is structured:
 

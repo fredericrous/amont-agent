@@ -28,6 +28,15 @@
 //! session's transcript whose block names this repository and tree, or a
 //! pass remembered under `<state>/implementation-review/by-tree/`.
 //!
+//! A pass also holds for another tree with the same **branch patch** when
+//! the repository's rule files are unchanged (ADR-0034,
+//! `work.implementation-review-binding`): a conflict-free rebase onto a
+//! moved `main` changes the tree, not the diff the reviewer read. The patch
+//! is `git diff --binary <merge-base> <pushed> -- . ':!docs/plans'` hashed by
+//! `git patch-id --verbatim`; the rules are `AGENTS.md`, `CLAUDE.md`,
+//! `.adr.yaml`, `.adr/` and `.claude/` in the pushed tree. A pass is filed
+//! under `by-patch/` too, and a hit there is journalled `reviewed-by-patch`.
+//!
 //! The verdict is read, not assumed: a review that said `rework` and got
 //! no later delta on the same tree is not a pass. Only the hook writes a
 //! pass file — from a transcript binding, or from the person's `Overrule`
@@ -80,6 +89,85 @@ pub fn canonical_tree(repo: &Path, rev: &str) -> Result<String, String> {
         bytes.push(0);
     }
     Ok(hex(&sha256(&bytes)))
+}
+
+/// The files whose content a review was read against, besides the diff:
+/// the repository's active rules.
+const RULE_FILES: &[&[u8]] = &[b"AGENTS.md", b"CLAUDE.md", b".adr.yaml"];
+const RULE_DIRS: &[&[u8]] = &[b".adr/", b".claude/"];
+
+/// What a pass carries over to another tree: the branch patch and the
+/// fingerprint of the rule files. Both must match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchKey {
+    pub patch: String,
+    pub rules: String,
+}
+
+/// The `git patch-id --verbatim` of the branch's diff since `merge_base`,
+/// `docs/plans/` left out. `Err` on an empty diff or any failure: a key
+/// that cannot be computed carries nothing over.
+pub fn branch_patch(repo: &Path, merge_base: &str, pushed: &str) -> Result<String, String> {
+    let diff = git::bytes_in(
+        repo,
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            merge_base,
+            pushed,
+            "--",
+            ".",
+            &format!(":!{PLANS_PATH}"),
+        ],
+        None,
+    )
+    .map_err(|e| format!("git could not be run: {e}"))?
+    .ok_or("`git diff` against the base failed")?;
+    if diff.is_empty() {
+        return Err("the branch changes nothing outside docs/plans/".into());
+    }
+    let out = git::bytes_in(repo, &["patch-id", "--verbatim"], Some(&diff))
+        .map_err(|e| format!("git could not be run: {e}"))?
+        .ok_or("`git patch-id` failed")?;
+    let out = String::from_utf8_lossy(&out);
+    out.split_whitespace()
+        .next()
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .ok_or_else(|| "`git patch-id` printed no id".into())
+}
+
+/// The sha256 of the rule files' entries in `rev`'s tree.
+pub fn rules_fingerprint(repo: &Path, rev: &str) -> Result<String, String> {
+    let spec = format!("{rev}^{{tree}}");
+    let entries = git::ls_tree_entries(repo, &spec)
+        .map_err(|e| format!("git could not be run in {}: {e}", repo.display()))?
+        .ok_or_else(|| format!("`{rev}` does not name a tree in {}", repo.display()))?;
+    let mut bytes: Vec<u8> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .iter()
+            .position(|c| *c == b'\t')
+            .map(|i| &entry[i + 1..])
+            .unwrap_or(&entry[..]);
+        if RULE_FILES.contains(&path) || RULE_DIRS.iter().any(|d| path.starts_with(d)) {
+            bytes.extend_from_slice(&entry);
+            bytes.push(0);
+        }
+    }
+    Ok(hex(&sha256(&bytes)))
+}
+
+/// Both halves of the key for `pushed`, or `None` when either cannot be
+/// computed (journalled by the caller as a miss, never as a pass).
+pub fn patch_key(repo: &Path, merge_base: &str, pushed: &str) -> Option<PatchKey> {
+    Some(PatchKey {
+        patch: branch_patch(repo, merge_base, pushed).ok()?,
+        rules: rules_fingerprint(repo, pushed).ok()?,
+    })
 }
 
 /// The repository's name for a block: the basename of the directory that
@@ -257,6 +345,55 @@ fn remember(repo: &str, sha: &str, verdict: &str, how: &str) -> Option<()> {
     Some(())
 }
 
+fn patch_file(repo: &str, patch: &str) -> Option<PathBuf> {
+    if repo.contains('/')
+        || repo.contains("..")
+        || patch.is_empty()
+        || !patch.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(
+        store()?
+            .join("by-patch")
+            .join(repo)
+            .join(format!("{patch}.json")),
+    )
+}
+
+/// The pass remembered for this patch, when its rules match: the verdict
+/// and the tree it was given for.
+fn remembered_patch(repo: &str, key: &PatchKey) -> Option<(String, String)> {
+    let f = patch_file(repo, &key.patch)?;
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()?;
+    if v.get("rules")?.as_str()? != key.rules {
+        return None;
+    }
+    Some((
+        v.get("verdict")?.as_str()?.to_string(),
+        v.get("tree")?.as_str()?.to_string(),
+    ))
+}
+
+/// Files a pass under its patch too, so a conflict-free rebase keeps it.
+fn remember_patch(repo: &str, key: &PatchKey, tree: &str, verdict: &str, how: &str) -> Option<()> {
+    let f = patch_file(repo, &key.patch)?;
+    private_dir(f.parent()?)?;
+    let body = serde_json::json!({
+        "repo": repo,
+        "patch": key.patch,
+        "rules": key.rules,
+        "tree": tree,
+        "verdict": verdict,
+        "agent": AGENT,
+        "how": how,
+    })
+    .to_string();
+    crate::atomic::write_atomic(&f, &body).ok()?;
+    journal::private(&f, 0o600);
+    Some(())
+}
+
 // ---------------------------------------------------------------- the push
 
 /// What the hook found out about a push.
@@ -328,10 +465,29 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     let Some(name) = repo_name(&repo) else {
         return unknown(Some(&tree), "the repository has no name");
     };
-    match remembered(&name, &tree).as_deref() {
-        Some("overruled") => return Judged::Decline("overruled"),
-        Some(_) => return Judged::Decline("reviewed"),
-        None => {}
+    // The branch patch, computed once: a pass found here or below is filed
+    // under it, and a miss by tree is looked up by it.
+    let key = patch_key(&repo, &merge_base, pushed);
+    if let Some(verdict) = remembered(&name, &tree) {
+        if let Some(k) = &key {
+            if remembered_patch(&name, k).is_none() {
+                remember_patch(&name, k, &tree, &verdict, "tree");
+            }
+        }
+        return Judged::Decline(if verdict == "overruled" {
+            "overruled"
+        } else {
+            "reviewed"
+        });
+    }
+    if let Some((verdict, old_tree)) = key.as_ref().and_then(|k| remembered_patch(&name, k)) {
+        remember(
+            &name,
+            &tree,
+            &verdict,
+            &format!("patch {}", short(&old_tree)),
+        );
+        return Judged::Decline("reviewed-by-patch");
     }
     let Some(transcript) = ctx.transcript else {
         return unknown(Some(&tree), "the payload carried no transcript_path");
@@ -368,6 +524,9 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             },
             Some(v) => {
                 remember(&name, &tree, v.as_str(), "transcript");
+                if let Some(k) = &key {
+                    remember_patch(&name, k, &tree, v.as_str(), "transcript");
+                }
                 Judged::Decline("reviewed")
             }
         };
