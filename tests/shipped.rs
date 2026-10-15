@@ -341,6 +341,8 @@ fn a_tampered_payload_is_a_bad_signature() {
     assert!(out.trim_end().ends_with("bad signature"), "{out}");
 }
 
+// The `gh` stand-in is a shell script, which only a Unix host can run.
+#[cfg(unix)]
 #[test]
 fn a_record_on_the_pr_head_survives_the_branch_being_deleted() {
     let w = World::new("pruned");
