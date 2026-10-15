@@ -819,6 +819,8 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
     let mut sends: HashMap<String, (String, String)> = HashMap::new();
     // A resumed round's id → the agentId its notification must carry.
     let mut rounds: HashMap<String, String> = HashMap::new();
+    // agentId → the reports it handed back, in order (see `handed_back`).
+    let mut handbacks: HashMap<String, std::collections::VecDeque<String>> = HashMap::new();
     for line in reader.split(b'\n') {
         let Ok(raw) = line else { break };
         let Ok(text) = std::str::from_utf8(&raw) else {
@@ -830,7 +832,8 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             || text.contains("agentId")
             || (resumable && (text.contains("SendMessage") || text.contains("AgentId")));
         let notice = text.contains("task-notification");
-        if !review && !notice {
+        let handback = text.contains("\"handback\"");
+        if !review && !notice && !handback {
             continue;
         }
         // A truncated last line is a session being written right now.
@@ -923,6 +926,9 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                         }
                     }
                 }
+                if let Some((agent_id, body)) = handed_back(&e) {
+                    handbacks.entry(agent_id).or_default().push_back(body);
+                }
                 let origin = e
                     .get("origin")
                     .and_then(|o| o.get("kind"))
@@ -971,20 +977,50 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
     order
         .into_iter()
         .filter_map(|id| {
-            let result = done.remove(&id)?;
+            let mut result = done.remove(&id)?;
             let (agent, prompt) = launched.remove(&id)?;
             let f = facts.remove(&id).unwrap_or_default();
+            let agent_id = rounds.remove(&id).or(f.agent_id);
+            // The completion only points at the report: take the agent's next
+            // hand-back. Rounds and hand-backs of one agent come in the same
+            // order, whichever of the two Claude Code recorded first.
+            if result.contains(HANDED_BACK) {
+                if let Some(report) = agent_id
+                    .as_ref()
+                    .and_then(|a| handbacks.get_mut(a))
+                    .and_then(std::collections::VecDeque::pop_front)
+                {
+                    result = report;
+                }
+            }
             Some(Completed {
                 agent,
                 prompt,
                 result,
-                agent_id: rounds.remove(&id).or(f.agent_id),
+                agent_id,
                 model: f.model,
                 tokens: f.tokens,
                 duration_ms: f.duration_ms,
             })
         })
         .collect()
+}
+
+/// What a completion says when its agent handed its report back as a
+/// message instead of returning it.
+const HANDED_BACK: &str = "report was delivered to you as a message";
+
+/// A subagent's hand-back, as Claude Code records it: a `user` entry whose
+/// `origin` it wrote itself (`kind: peer`, `handback: true`), with the agent's
+/// id in `senderTaskId` and its report in `body`. Read from those structured
+/// fields only, as a notification is; the message text is never parsed.
+fn handed_back(e: &serde_json::Value) -> Option<(String, String)> {
+    let o = e.get("origin")?;
+    let s = |k: &str| o.get(k).and_then(|v| v.as_str());
+    if s("kind") != Some("peer") || o.get("handback").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    Some((s("senderTaskId")?.to_string(), s("body")?.to_string()))
 }
 
 /// The text of a tool result's content: a string, or its text parts joined.

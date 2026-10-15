@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A verdict handed back as a message is read.** A reviewer that delivers
+  its report with a hand-back (Claude Code marks it `origin.kind: peer`,
+  `handback: true`) left only a pointer in its completion, so the
+  implementation-review and plan-review hooks found no verdict and held the
+  push. The report is now read from that structured entry, paired with the
+  agent's id.
+
 ### Added
 
 - **`amont-agent shipped <plan.md> [--json]`.** Read-only: per repository of

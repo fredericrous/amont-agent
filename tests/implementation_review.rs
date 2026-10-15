@@ -1069,6 +1069,64 @@ fn a_reviewer_resumed_on_a_new_tree_passes_that_tree() {
     assert!(w.pass_file("app", &now).is_file());
 }
 
+/// The fixture's launch, but the reviewer handed its report back as a message
+/// (Claude Code 2.1.29x): the notification's `<result>` only points at it, and
+/// the verdict is in a `user` entry Claude Code marks `origin.kind: peer`,
+/// `handback: true`, with the agent's id in `senderTaskId`.
+fn handed_back_for(tree: &str, verdict: &str) -> String {
+    let lines: Vec<String> = resumed_for(tree, tree)
+        .lines()
+        .take(3)
+        .map(str::to_string)
+        .collect();
+    let pointer = "This agent's report was delivered to you as a message from aa339dbce3244a139 (its SubagentHandback call). Read it there; it is not repeated here.";
+    let notice = lines[2].replace(
+        "Verdict: approve-with-changes\\nFindings:\\n1. … (trimmed)",
+        pointer,
+    );
+    assert_ne!(notice, lines[2], "the fixture's result was replaced");
+    let handback = serde_json::json!({
+        "type": "user",
+        "isMeta": true,
+        "message": {"role": "user", "content": "Another Claude session sent a message: …"},
+        "origin": {
+            "kind": "peer",
+            "from": "aa339dbce3244a139",
+            "senderTaskId": "aa339dbce3244a139",
+            "name": "implementation-review",
+            "body": format!("[Subagent hand-back] …\n  Verdict: {verdict}\n  Findings:\n  None."),
+            "handback": true,
+        },
+    });
+    format!("{}\n{}\n{handback}\n{notice}\n", lines[0], lines[1])
+}
+
+#[test]
+fn a_verdict_handed_back_as_a_message_is_read() {
+    let w = World::new("handback");
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let t = w.root.join("handback.jsonl");
+    std::fs::write(&t, handed_back_for(&tree, "approve")).unwrap();
+    assert_eq!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+    assert!(w.pass_file("app", &tree).is_file());
+}
+
+#[test]
+fn a_hand_back_from_another_agent_is_not_this_reviews_verdict() {
+    let w = World::new("handback-other");
+    let repo = w.repo("app");
+    let tree = w.tree(&repo);
+    let t = w.root.join("handback.jsonl");
+    let text = handed_back_for(&tree, "approve").replace(
+        "\"senderTaskId\":\"aa339dbce3244a139\"",
+        "\"senderTaskId\":\"someoneelse000000\"",
+    );
+    assert!(text.contains("someoneelse000000"));
+    std::fs::write(&t, text).unwrap();
+    assert_ne!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+}
+
 #[test]
 fn a_resumed_round_without_its_own_notification_does_not_pass() {
     let w = World::new("resumed-forged");
