@@ -78,7 +78,8 @@ amont  #338  9f1c2ab  v1.55.2  review reviewed · preview not-required · plan 0
 `--json` prints one array of `{repo, pr, merge, head, release, provenance:
 {status, review, preview, plan_body_sha, flags} | null, gates}` and nothing
 else on stdout. Exit 0 on success, 2 on a usage error (a missing or unknown
-argument, an unreadable plan), 1 when no repository could be read. Payload
+argument, an unreadable plan), 1 when no repository could be read or the
+answer could not be written (a reader that closed the pipe is not an error). Payload
 files older than 30 days under `<config dir>/amont-agent/provenance/<repo>/`
 are noted on stderr and never deleted.
 

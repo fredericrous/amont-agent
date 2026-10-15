@@ -676,15 +676,23 @@ pub fn run(args: &[OsString]) -> ExitCode {
         eprintln!("amont-agent: no repository could be read");
         return ExitCode::from(1);
     }
-    if json {
+    let mut out = std::io::stdout().lock();
+    let written = if json {
         let all: Vec<serde_json::Value> = rows.iter().map(to_json).collect();
-        let _ = writeln!(std::io::stdout(), "{}", serde_json::Value::Array(all));
+        writeln!(out, "{}", serde_json::Value::Array(all))
     } else {
-        for l in lines {
-            let _ = writeln!(std::io::stdout(), "{l}");
+        lines.iter().try_for_each(|l| writeln!(out, "{l}"))
+    };
+    match written {
+        Ok(()) => ExitCode::SUCCESS,
+        // A reader that stopped reading (`| head`) asked for no more.
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        // Cut-off output must not pass for a complete answer.
+        Err(e) => {
+            eprintln!("amont-agent: could not write the answer: {e}");
+            ExitCode::from(1)
         }
     }
-    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
