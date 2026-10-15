@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Preview approval is keyed by content.** `approve` records the canonical
+  tree of the approved commit (`docs/plans/` skipped) as a fifth field of
+  `approvals`, and a push is not held when its commit has the same tree: a
+  reword, a same-tree amend or a plan-only commit keeps the approval. Old
+  four-field lines match only their own commit. A tree-only match is journalled
+  as `approved-by-tree <old7>→<new7>`.
+- **An implementation review survives a conflict-free rebase.** A pass is
+  also filed under the branch patch (`git patch-id --verbatim` of the diff
+  since the merge-base, `docs/plans/` left out) with a fingerprint of the
+  rule files (`AGENTS.md`, `CLAUDE.md`, `.adr.yaml`, `.adr/`, `.claude/`). A
+  push whose tree has no pass but whose patch and rules match one passes,
+  journalled `reviewed-by-patch`. A resolved conflict, a changed context
+  line, a whitespace edit or new rules still ask for a review (ADR-0034).
+
 ## v2.41.0
 
 ### Added

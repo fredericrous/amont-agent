@@ -96,8 +96,15 @@ terminal, a local page, and the app already open in their browser.
    register's `question_prefix`** (`[preview <id>] <label>`), with options
    exactly `Approve`, `Request changes`, `Hold` — no "(Recommended)"
    suffix.
-6. **Push after `Approve`.** The approval covers that commit; a new commit,
-   amend or rebase needs a new preview.
+6. **Push after `Approve`.** The approval is keyed by content: it covers that
+   commit, and any commit whose canonical tree equals the approved one (the
+   tree with `docs/plans/` left out, as the implementation review reads it).
+   A reword, a same-tree amend, and a commit that changes only
+   `docs/plans/` keep the approval; a commit that changes anything else needs
+   a new preview. `approvals` stores the tree as a fifth tab-separated field;
+   an older four-field line matches only its own commit. A match by tree is
+   journalled as `approved-by-tree <old7>→<new7>`. The 24 h lapse, the
+   registration pin and the question prefix are unchanged.
 
 `--attestation <file>` is accepted for 2.21.0 only, as a deprecated alias of
 `--guide`: the file is read as the guide and refused unless it is one.
