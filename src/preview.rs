@@ -736,7 +736,12 @@ fn save_registrations(regs: &[Registration]) {
     journal::private(&path, 0o600);
 }
 
-fn approvals() -> Vec<(String, String, u64, String)> {
+/// One stored approval: repository, commit, when, channel, and the
+/// canonical tree of the commit (`None` on a line written before trees were
+/// recorded, which then matches by commit only).
+type Approval = (String, String, u64, String, Option<String>);
+
+fn approvals() -> Vec<Approval> {
     let Some(path) = dir().map(|d| d.join("approvals")) else {
         return Vec::new();
     };
@@ -752,18 +757,46 @@ fn approvals() -> Vec<(String, String, u64, String)> {
                 f.get(1)?.to_string(),
                 at,
                 f.get(3).unwrap_or(&"-").to_string(),
+                f.get(4)
+                    .filter(|t| !t.is_empty() && **t != "-")
+                    .map(|t| t.to_string()),
             ))
         })
-        .filter(|(_, _, at, _)| *at >= cutoff)
+        .filter(|(_, _, at, _, _)| *at >= cutoff)
         .collect()
 }
 
-/// Whether the person approved exactly this commit of this repository.
+/// Whether the person approved this commit of this repository: exactly, or
+/// by content — a stored canonical tree ([`crate::implementation_review::canonical_tree`],
+/// which skips `docs/plans/`) equal to this commit's. A reword, an amend or
+/// a plan-only change keeps the tree, so the approval still stands.
 pub fn approved(repo: &Path, commit: &str) -> bool {
-    let repo = repo.to_string_lossy();
-    approvals()
-        .iter()
-        .any(|(r, c, _, _)| *r == repo && c == commit)
+    let repo_s = repo.to_string_lossy();
+    let mine: Vec<Approval> = approvals()
+        .into_iter()
+        .filter(|a| *a.0 == *repo_s)
+        .collect();
+    if mine.iter().any(|a| a.1 == commit) {
+        return true;
+    }
+    if !mine.iter().any(|a| a.4.is_some()) {
+        return false;
+    }
+    let Ok(tree) = crate::implementation_review::canonical_tree(repo, commit) else {
+        return false;
+    };
+    match mine.iter().find(|a| a.4.as_deref() == Some(tree.as_str())) {
+        Some(a) => {
+            note(
+                "approved-by-tree",
+                "-",
+                &repo_s,
+                &format!("{}\u{2192}{}", short(&a.1), short(commit)),
+            );
+            true
+        }
+        None => false,
+    }
 }
 
 fn approve(regs: &[Registration], channel: &str) {
@@ -773,8 +806,15 @@ fn approve(regs: &[Registration], channel: &str) {
     }
     let mut kept = approvals();
     for r in regs {
-        kept.retain(|(repo, c, _, _)| !(repo == &r.repo && c == &r.commit));
-        kept.push((r.repo.clone(), r.commit.clone(), now(), channel.to_string()));
+        kept.retain(|(repo, c, _, _, _)| !(repo == &r.repo && c == &r.commit));
+        let tree = crate::implementation_review::canonical_tree(Path::new(&r.repo), &r.commit).ok();
+        kept.push((
+            r.repo.clone(),
+            r.commit.clone(),
+            now(),
+            channel.to_string(),
+            tree,
+        ));
         note(
             "approved",
             &r.session,
@@ -784,7 +824,14 @@ fn approve(regs: &[Registration], channel: &str) {
     }
     let body: String = kept
         .iter()
-        .map(|(r, c, at, ch)| format!("{}\t{}\t{at}\t{}\n", clean(r), clean(c), clean(ch)))
+        .map(|(r, c, at, ch, tree)| {
+            let mut line = format!("{}\t{}\t{at}\t{}", clean(r), clean(c), clean(ch));
+            if let Some(t) = tree {
+                line.push('\t');
+                line.push_str(&clean(t));
+            }
+            line + "\n"
+        })
         .collect();
     let path = d.join("approvals");
     let _ = crate::atomic::write_atomic(&path, &body);

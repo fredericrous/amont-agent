@@ -1676,3 +1676,60 @@ fn a_preview_heading_inside_a_code_fence_is_not_a_declaration() {
     w.commit("app/a.tsx", "1\n");
     assert!(w.push_advised("s"), "{}", w.journal());
 }
+
+#[test]
+fn an_approval_is_keyed_by_content_not_by_commit() {
+    // reword and same-tree amend
+    let w = World::new("bytree-reword");
+    w.commit("app/routes/home.tsx", "1\n");
+    let id = w.register("s", "p1");
+    w.answer("s", "p1", &id, Some("Approve"));
+    assert!(!w.push_advised("s"));
+    git(&w.work, &["commit", "-q", "--amend", "-m", "reworded"]);
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("approved-by-tree"));
+    git(
+        &w.work,
+        &["commit", "-q", "--amend", "--allow-empty", "-m", "again"],
+    );
+    assert!(!w.push_advised("s"));
+
+    // a plan-only commit
+    let w = World::new("bytree-plans");
+    w.commit("app/routes/home.tsx", "1\n");
+    let id = w.register("s", "p1");
+    w.answer("s", "p1", &id, Some("Approve"));
+    w.commit("docs/plans/2026-10-15-x.md", "plan\n");
+    assert!(!w.push_advised("s"));
+
+    // a UI change
+    let w = World::new("bytree-ui");
+    w.commit("app/routes/home.tsx", "1\n");
+    let id = w.register("s", "p1");
+    w.answer("s", "p1", &id, Some("Approve"));
+    w.commit("app/routes/home.tsx", "2\n");
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn an_old_four_field_approval_matches_only_its_own_commit() {
+    let w = World::new("bytree-old");
+    let first = w.commit("app/routes/home.tsx", "1\n");
+    let dir = w.root.join("claude/amont-agent/previews");
+    std::fs::create_dir_all(&dir).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        dir.join("approvals"),
+        format!(
+            "{}\t{first}\t{now}\toption\n",
+            git(&w.work, &["rev-parse", "--show-toplevel"])
+        ),
+    )
+    .unwrap();
+    assert!(!w.push_advised("s"), "its own commit matches");
+    git(&w.work, &["commit", "-q", "--amend", "-m", "reworded"]);
+    assert!(w.push_advised("s"), "a same-tree commit does not");
+}
