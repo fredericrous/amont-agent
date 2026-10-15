@@ -1507,6 +1507,21 @@ fn a_patch_id_that_cannot_be_computed_holds_the_push() {
     )
     .unwrap();
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A parallel test that forks while this file is still open for writing
+    // keeps a write descriptor until it execs, and exec of the shim then
+    // fails with ETXTBSY (Linux). Run it once, retrying that error, before
+    // the hook depends on it.
+    for _ in 0..100 {
+        match Command::new(&shim).arg("--version").output() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            other => {
+                other.expect("the shim runs");
+                break;
+            }
+        }
+    }
     let said = w.push(&repo, "s1", Some(&transcript));
     let text = advised(&said);
     assert!(text.contains("(stale)"), "{text}");
