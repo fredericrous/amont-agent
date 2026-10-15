@@ -1840,7 +1840,9 @@ fn a_mockup_change_with_an_approval_is_recorded_as_preview_approved() {
         previews.join("approvals"),
         format!(
             "{}\t{head}\t{at}\ttest\n",
-            repo.canonicalize().unwrap().display()
+            // The key the preview guard reads: git's toplevel, which on
+            // Windows is not `canonicalize`'s verbatim `\\?\` path.
+            git(&repo, &["rev-parse", "--show-toplevel"])
         ),
     )
     .unwrap();
@@ -1900,7 +1902,9 @@ fn a_preview_not_yet_approved_defers_the_record_until_it_is() {
         previews.join("approvals"),
         format!(
             "{}\t{head}\t{at}\ttest\n",
-            repo.canonicalize().unwrap().display()
+            // The key the preview guard reads: git's toplevel, which on
+            // Windows is not `canonicalize`'s verbatim `\\?\` path.
+            git(&repo, &["rev-parse", "--show-toplevel"])
         ),
     )
     .unwrap();
