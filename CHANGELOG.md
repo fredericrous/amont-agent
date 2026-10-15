@@ -4,6 +4,10 @@
 
 ### Added
 
+- **`amont-agent shipped <plan.md> [--json]`.** Read-only: per repository of
+  the plan, each merge commit on origin/main that touched it, with its PR, head,
+  first release tag, and the signed `amont-provenance` record and attestation
+  gates found for it (ADR-0036); see docs/shipped.md.
 - **Provenance record.** When the implementation-review hook passes a push
   that carries a plan, it writes the unsigned `amont-provenance-v1` payload to
   `<config dir>/amont-agent/provenance/<repo>/<pushed sha>` (ADR-0036); the

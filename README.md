@@ -74,6 +74,7 @@ code:
 - [The rules](docs/rules.md) and [the assertions](docs/assertions.md)
 - [Measuring and graduating](docs/measuring.md) — the method
 - [Preview approval](docs/preview.md) and [the review panel](docs/plan-review.md)
+- [What shipped under a plan](docs/shipped.md)
 - [The session notice](docs/session-notice.md) — a stale checkout, told at session start
 - [What it will not do](docs/refusals.md) and [the shell analysis](docs/analysis.md)
 

@@ -358,7 +358,7 @@ pub fn meta(text: &str) -> Result<Meta, String> {
 }
 
 /// A directory name under the root, and nothing that could leave it.
-fn valid_name(n: &str) -> bool {
+pub(crate) fn valid_name(n: &str) -> bool {
     !n.is_empty()
         && n != "."
         && !n.contains("..")
