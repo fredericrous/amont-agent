@@ -1069,36 +1069,47 @@ fn a_reviewer_resumed_on_a_new_tree_passes_that_tree() {
     assert!(w.pass_file("app", &now).is_file());
 }
 
-/// The fixture's launch, but the reviewer handed its report back as a message
-/// (Claude Code 2.1.29x): the notification's `<result>` only points at it, and
-/// the verdict is in a `user` entry Claude Code marks `origin.kind: peer`,
-/// `handback: true`, with the agent's id in `senderTaskId`.
-fn handed_back_for(tree: &str, verdict: &str) -> String {
-    let lines: Vec<String> = resumed_for(tree, tree)
-        .lines()
-        .take(3)
-        .map(str::to_string)
-        .collect();
-    let pointer = "This agent's report was delivered to you as a message from aa339dbce3244a139 (its SubagentHandback call). Read it there; it is not repeated here.";
-    let notice = lines[2].replace(
-        "Verdict: approve-with-changes\\nFindings:\\n1. … (trimmed)",
-        pointer,
-    );
-    assert_ne!(notice, lines[2], "the fixture's result was replaced");
-    let handback = serde_json::json!({
-        "type": "user",
-        "isMeta": true,
-        "message": {"role": "user", "content": "Another Claude session sent a message: …"},
-        "origin": {
-            "kind": "peer",
-            "from": "aa339dbce3244a139",
-            "senderTaskId": "aa339dbce3244a139",
-            "name": "implementation-review",
-            "body": format!("[Subagent hand-back] …\n  Verdict: {verdict}\n  Findings:\n  None."),
-            "handback": true,
-        },
-    });
-    format!("{}\n{}\n{handback}\n{notice}\n", lines[0], lines[1])
+/// A real hand-back entry (2026-10-15), anonymised: Claude Code's own
+/// `origin` with `kind: peer`, `handback: true`, the agent's id in
+/// `senderTaskId` and its report in `body`.
+const HANDBACK: &str = include_str!("fixtures/handback-entry.jsonl");
+
+/// What a completion says when its report was handed back.
+const POINTER: &str = "This agent's report was delivered to you as a message from aa339dbce3244a139 (its SubagentHandback call). Read it there; it is not repeated here.";
+
+/// The fixture's hand-back entry, saying `verdict`.
+fn handback(verdict: &str) -> String {
+    let line = HANDBACK.trim_end();
+    assert!(line.contains("Verdict: approve\\n"), "fixture shape");
+    line.replace("Verdict: approve\\n", &format!("Verdict: {verdict}\\n"))
+}
+
+/// The resumed fixture bound to `app` (launch on `launch`, last round on
+/// `last`), every completion pointing at a hand-back, with `inserts` placed
+/// after the given 1-based fixture lines.
+fn handed_back_rounds(launch: &str, last: &str, inserts: &[(usize, String)]) -> String {
+    let mut out = String::new();
+    for (n, line) in resumed_for(launch, last).lines().enumerate() {
+        let line = line
+            .replace(
+                "Verdict: approve-with-changes\\nFindings:\\n1. … (trimmed)",
+                POINTER,
+            )
+            .replace("Verdict: approve\\nFindings:\\n1. … (trimmed)", POINTER);
+        assert!(
+            !line.contains("Verdict:"),
+            "every result points at a hand-back"
+        );
+        out.push_str(&line);
+        out.push('\n');
+        for (after, entry) in inserts {
+            if *after == n + 1 {
+                out.push_str(entry);
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
 
 #[test]
@@ -1107,7 +1118,12 @@ fn a_verdict_handed_back_as_a_message_is_read() {
     let repo = w.repo("app");
     let tree = w.tree(&repo);
     let t = w.root.join("handback.jsonl");
-    std::fs::write(&t, handed_back_for(&tree, "approve")).unwrap();
+    let launch_only: String = handed_back_rounds(&tree, &tree, &[(2, handback("approve"))])
+        .lines()
+        .take(4)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&t, launch_only).unwrap();
     assert_eq!(w.push(&repo, "s1", Some(&t)), Said::Silent);
     assert!(w.pass_file("app", &tree).is_file());
 }
@@ -1118,12 +1134,73 @@ fn a_hand_back_from_another_agent_is_not_this_reviews_verdict() {
     let repo = w.repo("app");
     let tree = w.tree(&repo);
     let t = w.root.join("handback.jsonl");
-    let text = handed_back_for(&tree, "approve").replace(
+    let other = handback("approve").replace(
         "\"senderTaskId\":\"aa339dbce3244a139\"",
         "\"senderTaskId\":\"someoneelse000000\"",
     );
-    assert!(text.contains("someoneelse000000"));
-    std::fs::write(&t, text).unwrap();
+    assert!(other.contains("someoneelse000000"));
+    let launch_only: String = handed_back_rounds(&tree, &tree, &[(2, other)])
+        .lines()
+        .take(4)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&t, launch_only).unwrap();
+    assert_ne!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+}
+
+/// Three rounds of one reviewer, each handed back: the last round's own
+/// hand-back decides, never an earlier round's.
+#[test]
+fn each_resumed_round_reads_its_own_hand_back() {
+    let w = World::new("handback-rounds");
+    let repo = w.repo("app");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    let t = w.root.join("rounds.jsonl");
+
+    // Rework, rework, approve: the last round approves the new tree.
+    let rounds = [
+        (2, handback("rework")),
+        (5, handback("rework")),
+        (8, handback("approve")),
+    ];
+    std::fs::write(&t, handed_back_rounds(&launched_on, &now, &rounds)).unwrap();
+    assert_eq!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+
+    // Approve, approve, rework: the earlier approvals do not carry over.
+    let w = World::new("handback-rounds-swapped");
+    let repo = w.repo("app");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    let t = w.root.join("rounds.jsonl");
+    let rounds = [
+        (2, handback("approve")),
+        (5, handback("approve")),
+        (8, handback("rework")),
+    ];
+    std::fs::write(&t, handed_back_rounds(&launched_on, &now, &rounds)).unwrap();
+    assert_ne!(w.push(&repo, "s1", Some(&t)), Said::Silent);
+
+    // The last round handed nothing back: an earlier approve is not its verdict.
+    let w = World::new("handback-rounds-missing");
+    let repo = w.repo("app");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    let t = w.root.join("rounds.jsonl");
+    let rounds = [(2, handback("approve")), (5, handback("approve"))];
+    std::fs::write(&t, handed_back_rounds(&launched_on, &now, &rounds)).unwrap();
     assert_ne!(w.push(&repo, "s1", Some(&t)), Said::Silent);
 }
 

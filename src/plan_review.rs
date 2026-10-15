@@ -816,12 +816,14 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
     // agentId → the agent type it was launched as.
     let mut agents: HashMap<String, String> = HashMap::new();
     // SendMessage id → (to, message), until its result says it resumed.
-    let mut sends: HashMap<String, (String, String)> = HashMap::new();
+    let mut sends: HashMap<String, (String, String, usize)> = HashMap::new();
     // A resumed round's id → the agentId its notification must carry.
     let mut rounds: HashMap<String, String> = HashMap::new();
-    // agentId → the reports it handed back, in order (see `handed_back`).
-    let mut handbacks: HashMap<String, std::collections::VecDeque<String>> = HashMap::new();
-    for line in reader.split(b'\n') {
+    // Launch or round id → the transcript line it started on.
+    let mut starts: HashMap<String, usize> = HashMap::new();
+    // (agentId, line, report) of every hand-back (see `handed_back`).
+    let mut handbacks: Vec<(String, usize, String)> = Vec::new();
+    for (at, line) in reader.split(b'\n').enumerate() {
         let Ok(raw) = line else { break };
         let Ok(text) = std::str::from_utf8(&raw) else {
             continue;
@@ -866,6 +868,7 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                             let prompt = field("prompt").unwrap_or("");
                             if !launched.contains_key(id) {
                                 order.push(id.to_string());
+                                starts.insert(id.to_string(), at);
                                 launched.insert(
                                     id.to_string(),
                                     (agent.to_string(), prompt.to_string()),
@@ -874,7 +877,10 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                         }
                         Some("SendMessage") if resumable => {
                             if let (Some(to), Some(message)) = (field("to"), field("message")) {
-                                sends.insert(id.to_string(), (to.to_string(), message.to_string()));
+                                sends.insert(
+                                    id.to_string(),
+                                    (to.to_string(), message.to_string(), at),
+                                );
                             }
                         }
                         _ => {}
@@ -913,7 +919,7 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                                     agents.insert(agent_id.to_string(), agent.clone());
                                 }
                             }
-                        } else if let Some((to, message)) = sends.remove(id) {
+                        } else if let Some((to, message, sent_at)) = sends.remove(id) {
                             let Some(agent) = agents.get(&to) else {
                                 continue;
                             };
@@ -921,13 +927,14 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                                 continue;
                             }
                             order.push(id.to_string());
+                            starts.insert(id.to_string(), sent_at);
                             launched.insert(id.to_string(), (agent.clone(), message));
                             rounds.insert(id.to_string(), to);
                         }
                     }
                 }
                 if let Some((agent_id, body)) = handed_back(&e) {
-                    handbacks.entry(agent_id).or_default().push_back(body);
+                    handbacks.push((agent_id, at, body));
                 }
                 let origin = e
                     .get("origin")
@@ -974,30 +981,53 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             done.insert(n.tool_use_id, n.result);
         }
     }
+    // Each launch or round's agent, and where it started: a hand-back belongs
+    // to the round of its agent that started last before it.
+    let agent_of: HashMap<String, String> = order
+        .iter()
+        .filter_map(|id| {
+            let a = rounds
+                .get(id)
+                .cloned()
+                .or_else(|| facts.get(id).and_then(|f| f.agent_id.clone()))?;
+            Some((id.clone(), a))
+        })
+        .collect();
+    let report_of = |id: &str| -> Option<String> {
+        let agent = agent_of.get(id)?;
+        let start = *starts.get(id)?;
+        let next = agent_of
+            .iter()
+            .filter(|(other, a)| *a == agent && other.as_str() != id)
+            .filter_map(|(other, _)| starts.get(other).copied())
+            .filter(|&s| s > start)
+            .min()
+            .unwrap_or(usize::MAX);
+        handbacks
+            .iter()
+            .filter(|(a, at, _)| a == agent && *at > start && *at < next)
+            .map(|(_, _, body)| body.clone())
+            .next_back()
+    };
     order
         .into_iter()
         .filter_map(|id| {
             let mut result = done.remove(&id)?;
-            let (agent, prompt) = launched.remove(&id)?;
-            let f = facts.remove(&id).unwrap_or_default();
-            let agent_id = rounds.remove(&id).or(f.agent_id);
-            // The completion only points at the report: take the agent's next
-            // hand-back. Rounds and hand-backs of one agent come in the same
-            // order, whichever of the two Claude Code recorded first.
+            // The completion only points at the report: take the hand-back
+            // of this round. None found leaves the pointer, which carries no
+            // verdict.
             if result.contains(HANDED_BACK) {
-                if let Some(report) = agent_id
-                    .as_ref()
-                    .and_then(|a| handbacks.get_mut(a))
-                    .and_then(std::collections::VecDeque::pop_front)
-                {
+                if let Some(report) = report_of(&id) {
                     result = report;
                 }
             }
+            let (agent, prompt) = launched.remove(&id)?;
+            let f = facts.remove(&id).unwrap_or_default();
             Some(Completed {
                 agent,
                 prompt,
                 result,
-                agent_id,
+                agent_id: rounds.remove(&id).or(f.agent_id),
                 model: f.model,
                 tokens: f.tokens,
                 duration_ms: f.duration_ms,
@@ -2165,6 +2195,35 @@ mod tests {
         assert!(parse_blocks("plan-review-language", &p.replace(" lang=rust", "")).is_empty());
         assert_eq!(parse_blocks("plan-review-backend", &p)[0].role, "backend");
         assert!(parse_blocks("plan-review-backend", "<<<PLAN path=/x sha=short>>>").is_empty());
+    }
+
+    /// The plan-review panel reads launches through the same scan, so a
+    /// panelist that handed its report back is read too.
+    #[test]
+    fn a_launch_that_handed_back_completes_with_its_report() {
+        let launch: Vec<&str> = include_str!("../tests/fixtures/sendmessage-resume.jsonl")
+            .lines()
+            .take(3)
+            .collect();
+        let pointer = "This agent's report was delivered to you as a message from aa339dbce3244a139 (its SubagentHandback call).";
+        let notice = launch[2].replace(
+            "Verdict: approve-with-changes\\nFindings:\\n1. … (trimmed)",
+            pointer,
+        );
+        assert_ne!(notice, launch[2]);
+        let handback = include_str!("../tests/fixtures/handback-entry.jsonl").trim_end();
+        let text = format!("{}\n{}\n{handback}\n{notice}\n", launch[0], launch[1]);
+        let done = completed_agents(std::io::Cursor::new(text.clone()), "implementation-review");
+        assert_eq!(done.len(), 1);
+        assert!(
+            done[0].result.contains("Verdict: approve"),
+            "{}",
+            done[0].result
+        );
+        // Without the hand-back, the pointer stays and carries no verdict.
+        let alone = format!("{}\n{}\n{notice}\n", launch[0], launch[1]);
+        let done = completed_agents(std::io::Cursor::new(alone), "implementation-review");
+        assert!(!done[0].result.contains("Verdict:"), "{}", done[0].result);
     }
 
     #[test]
