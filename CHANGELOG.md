@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.43.0
 
 ### Fixed
 
