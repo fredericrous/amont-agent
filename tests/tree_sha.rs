@@ -1,5 +1,5 @@
 //! `amont-agent tree-sha`, through the real binary (ADR-0022,
-//! `work.implementation-review`): the canonical tree id an implementation
+//! `work.implementation-review`): the content id an implementation
 //! review binds to.
 
 use std::path::{Path, PathBuf};

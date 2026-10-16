@@ -97,7 +97,7 @@ terminal, a local page, and the app already open in their browser.
    exactly `Approve`, `Request changes`, `Hold` — no "(Recommended)"
    suffix.
 6. **Push after `Approve`.** The approval is keyed by content: it covers that
-   commit, and any commit whose canonical tree equals the approved one (the
+   commit, and any commit whose content id equals the approved one's (the
    tree with `docs/plans/` left out, as the implementation review reads it).
    A reword, a same-tree amend, and a commit that changes only
    `docs/plans/` keep the approval; a commit that changes anything else needs

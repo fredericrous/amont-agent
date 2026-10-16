@@ -3,8 +3,9 @@
 //! reviewer has read the diff against the plan and the active rules, and
 //! its verdict is bound to the tree it read.
 //!
-//! A review is bound to the **canonical tree id** of the commit it read:
-//! the sha256 of `git ls-tree -r -z --full-tree <rev>`'s entries — mode,
+//! A review is bound to the **content id** of the commit it read (attest
+//! SPEC, "Content id"; not attest's canonical tree, which counts whether a
+//! plan exists): the sha256 of `git ls-tree -r -z --full-tree <rev>`'s entries — mode,
 //! type, object id and path, in git's own order — with every entry under
 //! `docs/plans/` left out. So recording the review in the plan never makes
 //! it stale, a later code change does, and the id is 64 hex whatever the
@@ -23,7 +24,7 @@
 //! never the branch's own tracking ref — once a branch is published its
 //! plan commit is on the remote too, and a later push compared to the
 //! tracking ref would show no `docs/plans/` change and skip the rule for
-//! good), whether `docs/plans/` changed since that base, the canonical tree,
+//! good), whether `docs/plans/` changed since that base, the content id,
 //! and then a binding: a completed `implementation-review` agent in this
 //! session's transcript whose block names this repository and tree, or a
 //! pass remembered under `<state>/implementation-review/by-tree/`.
@@ -68,12 +69,22 @@ const OVERRULE: &str = "Overrule";
 
 // ---------------------------------------------------------------- the tree
 
-/// The canonical tree id of `rev` in `repo`: 64 lowercase hex.
-pub fn canonical_tree(repo: &Path, rev: &str) -> Result<String, String> {
+/// The content id of `rev` in `repo` (attest SPEC, "Content id"): what an
+/// implementation review and a preview approval bind to (ADR-0034). Not
+/// attest's canonical tree: it ignores whether a plan exists. 64 lowercase
+/// hex.
+pub fn content_id(repo: &Path, rev: &str) -> Result<String, String> {
     let spec = format!("{rev}^{{tree}}");
     let entries = git::ls_tree_entries(repo, &spec)
         .map_err(|e| format!("git could not be run in {}: {e}", repo.display()))?
         .ok_or_else(|| format!("`{rev}` does not name a tree in {}", repo.display()))?;
+    Ok(content_id_of(&entries))
+}
+
+/// The content id of raw `git ls-tree -r -z --full-tree` records, in git's
+/// order: the sha256 of every record whose path does not start with
+/// `docs/plans/`, each followed by one NUL.
+pub fn content_id_of(entries: &[Vec<u8>]) -> String {
     let mut bytes: Vec<u8> = Vec::new();
     for entry in entries {
         // `<mode> <type> <oid>\t<path>`; the path is everything after the
@@ -86,10 +97,10 @@ pub fn canonical_tree(repo: &Path, rev: &str) -> Result<String, String> {
         if path.starts_with(PLANS_DIR) {
             continue;
         }
-        bytes.extend_from_slice(&entry);
+        bytes.extend_from_slice(entry);
         bytes.push(0);
     }
-    Ok(hex(&sha256(&bytes)))
+    hex(&sha256(&bytes))
 }
 
 /// The files whose content a review was read against, besides the diff:
@@ -459,7 +470,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     if changed.trim().is_empty() {
         return Judged::Decline("no-plan");
     }
-    let tree = match canonical_tree(&repo, pushed) {
+    let tree = match content_id(&repo, pushed) {
         Ok(t) => t,
         Err(why) => return unknown(None, &why),
     };
@@ -486,7 +497,6 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         repo: &repo,
         name: &name,
         pushed,
-        canon: &tree,
         patch: key.as_ref().map(|k| k.patch.as_str()),
         plans: &plans,
         target,
@@ -596,7 +606,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
 
 /// Files the provenance record of a pass. A failure is journalled and never
 /// changes the judgment.
-fn provenance(push: &crate::provenance::Push, review: Bound, review_canon: &str) {
+fn provenance(push: &crate::provenance::Push, review: Bound, review_content: &str) {
     let Some(preview) = crate::preview::outcome(push.repo, push.target) else {
         note(
             "provenance-deferred",
@@ -606,7 +616,7 @@ fn provenance(push: &crate::provenance::Push, review: Bound, review_canon: &str)
         );
         return;
     };
-    match crate::provenance::write(push, review, review_canon, preview) {
+    match crate::provenance::write(push, review, review_content, preview) {
         Ok(crate::provenance::Filed::Written(file)) => note(
             "provenance-written",
             "-",
@@ -938,6 +948,56 @@ mod tests {
     const LAUNCH_TREE: &str = "6066ad987edfbbb3a514b6d9247b126a77a316db2e1350c226ffd14593a0ba35";
     const ROUND_2: &str = "b196a592b3b76cb75155b14491291a45602ae66c6f20ef18e4413a34169556ab";
     const ROUND_3: &str = "85f71e67db10c7737c55b27a3c5753b2617c58dec0d58e7ebae5085898cc12d7";
+
+    /// The known answers attest's SPEC quotes under "Content id". Changing
+    /// one is changing the definition: every stored review and approval
+    /// would stop matching.
+    #[test]
+    fn the_content_id_gives_the_spec_known_answers() {
+        let o1 = "1".repeat(40);
+        let o2 = "2".repeat(40);
+        let id = |recs: &[String]| {
+            content_id_of(
+                &recs
+                    .iter()
+                    .map(|r| r.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        // no records: the sha256 of the empty string
+        assert_eq!(
+            id(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            id(&[format!("100644 blob {o1}\tREADME.md")]),
+            "6f0214fffd79cb8eb5afb2283e46911f5f9022a25b3f339ae8a50a1ee223a0b2"
+        );
+        // every record under the top-level docs/plans/ is left out, a
+        // symlink too; a near name and a nested docs/plans/ are kept
+        let several = [
+            format!("100644 blob {o1}\tREADME.md"),
+            format!("100644 blob {o2}\tdocs/plans/a.md"),
+            format!("100644 blob {o2}\tdocs/plans-old/a.md"),
+            format!("120000 blob {o1}\tdocs/plans/link"),
+            format!("100644 blob {o1}\tx/docs/plans/a.md"),
+        ];
+        let several_id = "0fca850e419d8a202129087fd90f00fe285c4b9cc63b42f4db6162e0a2b12eaf";
+        assert_eq!(id(&several), several_id);
+        // so a plan's existence does not count, unlike attest's canon(T)
+        assert_eq!(
+            id(&[several[0].clone(), several[2].clone(), several[4].clone()]),
+            several_id
+        );
+        // a raw path with a newline: no quoting, no decoding
+        assert_eq!(
+            id(&[
+                format!("100644 blob {o1}\tdocs/a\nb.md"),
+                format!("100644 blob {o2}\tdocs/plans/c\nd.md"),
+            ]),
+            "88a9c5d4a7b3892be98a8492631b3c436954c2000a038b5d641bd054e76e19e0"
+        );
+    }
 
     fn reviews_of(text: &str) -> Vec<(String, Option<Verdict>)> {
         completed_agents_resumable(text.as_bytes(), AGENT)

@@ -784,7 +784,7 @@ fn save_registrations(regs: &[Registration]) {
 }
 
 /// One stored approval: repository, commit, when, channel, and the
-/// canonical tree of the commit (`None` on a line written before trees were
+/// content id of the commit (`None` on a line written before trees were
 /// recorded, which then matches by commit only).
 type Approval = (String, String, u64, String, Option<String>);
 
@@ -814,7 +814,7 @@ fn approvals() -> Vec<Approval> {
 }
 
 /// Whether the person approved this commit of this repository: exactly, or
-/// by content — a stored canonical tree ([`crate::implementation_review::canonical_tree`],
+/// by content — a stored content id ([`crate::implementation_review::content_id`],
 /// which skips `docs/plans/`) equal to this commit's. A reword, an amend or
 /// a plan-only change keeps the tree, so the approval still stands.
 pub fn approved(repo: &Path, commit: &str) -> bool {
@@ -837,7 +837,7 @@ pub fn approved(repo: &Path, commit: &str) -> bool {
 enum ApprovedBy {
     /// The commit itself.
     Exact,
-    /// A commit with the same canonical tree: the approved commit's sha.
+    /// A commit with the same content id: the approved commit's sha.
     ByTree(String),
 }
 
@@ -854,7 +854,7 @@ fn approval_of(repo: &Path, commit: &str) -> Option<ApprovedBy> {
     if !mine.iter().any(|a| a.4.is_some()) {
         return None;
     }
-    let tree = crate::implementation_review::canonical_tree(repo, commit).ok()?;
+    let tree = crate::implementation_review::content_id(repo, commit).ok()?;
     mine.iter()
         .find(|a| a.4.as_deref() == Some(tree.as_str()))
         .map(|a| ApprovedBy::ByTree(a.1.clone()))
@@ -868,7 +868,7 @@ fn approve(regs: &[Registration], channel: &str) {
     let mut kept = approvals();
     for r in regs {
         kept.retain(|(repo, c, _, _, _)| !(repo == &r.repo && c == &r.commit));
-        let tree = crate::implementation_review::canonical_tree(Path::new(&r.repo), &r.commit).ok();
+        let tree = crate::implementation_review::content_id(Path::new(&r.repo), &r.commit).ok();
         kept.push((
             r.repo.clone(),
             r.commit.clone(),

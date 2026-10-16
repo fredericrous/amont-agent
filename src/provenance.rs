@@ -3,6 +3,11 @@
 //! passes a push that carries a plan, it files what it knew about the push
 //! under `<config dir>/amont-agent/provenance/<repo>/<pushed sha>`. Only the
 //! hook writes there; a signer reads it later.
+//!
+//! It records only what the hook witnessed: the plan, the review and the
+//! preview. It writes no `canon` line: attest's canonical tree is a tree fact
+//! the signer computes and inserts itself, and a payload carrying one is
+//! refused there.
 
 use std::path::{Path, PathBuf};
 
@@ -50,22 +55,19 @@ impl Preview {
 pub struct Record<'a> {
     pub commit: &'a str,
     pub tree: &'a str,
-    pub canon: &'a str,
     pub patch: Option<&'a str>,
     pub plan_path: &'a str,
     pub plan_sha: &'a str,
     pub review: Review,
-    pub review_canon: &'a str,
+    /// The content id the review read (attest SPEC, "Content id").
+    pub review_content: &'a str,
     pub preview: Preview,
     pub version: &'a str,
 }
 
 /// The payload: one datum per line, trailing newline.
 pub fn payload(r: &Record) -> String {
-    let mut out = format!(
-        "{MAGIC}\ncommit {}\ntree {}\ncanon {}\n",
-        r.commit, r.tree, r.canon
-    );
+    let mut out = format!("{MAGIC}\ncommit {}\ntree {}\n", r.commit, r.tree);
     if let Some(p) = r.patch {
         out.push_str(&format!("patch {p}\n"));
     }
@@ -74,7 +76,7 @@ pub fn payload(r: &Record) -> String {
         r.plan_path,
         r.plan_sha,
         r.review.word(),
-        r.review_canon,
+        r.review_content,
         r.preview.word(),
         r.version
     ));
@@ -139,7 +141,6 @@ pub struct Push<'a> {
     pub repo: &'a Path,
     pub name: &'a str,
     pub pushed: &'a str,
-    pub canon: &'a str,
     pub patch: Option<&'a str>,
     pub plans: &'a [String],
     /// The branch target the push publishes: the preview rule reads it.
@@ -161,7 +162,7 @@ pub enum Filed {
 pub fn write(
     p: &Push,
     review: Review,
-    review_canon: &str,
+    review_content: &str,
     preview: Preview,
 ) -> Result<Filed, String> {
     let commit = git::stdout_in(
@@ -194,12 +195,11 @@ pub fn write(
     let body = payload(&Record {
         commit: &commit,
         tree: &tree,
-        canon: p.canon,
         patch: p.patch,
         plan_path: &plan_path,
         plan_sha: &plan_sha,
         review,
-        review_canon,
+        review_content,
         preview,
         version: env!("CARGO_PKG_VERSION"),
     });
@@ -219,12 +219,11 @@ mod tests {
         Record {
             commit: "c0",
             tree: "t0",
-            canon: "k0",
             patch,
             plan_path: "docs/plans/p.md",
             plan_sha: "s0",
             review: Review::ByPatch,
-            review_canon: "k1",
+            review_content: "k1",
             preview: Preview::NotRequired,
             version: "1.2.3",
         }
@@ -234,7 +233,7 @@ mod tests {
     fn payload_lines_are_in_order() {
         assert_eq!(
             payload(&rec(Some("p0"))),
-            "amont-provenance-v1\ncommit c0\ntree t0\ncanon k0\npatch p0\nplan docs/plans/p.md s0\nreview by-patch k1\npreview not-required\nproducer amont-agent 1.2.3\n"
+            "amont-provenance-v1\ncommit c0\ntree t0\npatch p0\nplan docs/plans/p.md s0\nreview by-patch k1\npreview not-required\nproducer amont-agent 1.2.3\n"
         );
     }
 

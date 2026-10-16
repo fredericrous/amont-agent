@@ -34,10 +34,12 @@ Would still check by hand: <one to three things>
 
 ## What a review binds to
 
-The **canonical tree id**: the sha256 of `git ls-tree -r` of the commit
-with every entry under `docs/plans/` left out, 64 hex in any object format,
-computed read-only. Recording the review in the plan therefore never makes
-it stale; a code change does.
+The **content id**: the sha256 of `git ls-tree -r -z` of the commit with
+every entry under `docs/plans/` left out, 64 hex in any object format,
+computed read-only (attest SPEC, "Content id"). Recording the review in the
+plan, or adding a plan, therefore never makes it stale; a code change does.
+It is not attest's canonical tree, canon(T), which counts whether a plan
+file exists; `amont-agent tree-sha` prints the content id.
 
 A pass also holds for another tree with the same **branch patch**, when the
 repository's rule files are unchanged (ADR-0034,
@@ -78,7 +80,7 @@ on stderr); 2 on a usage error.
    the first of `<remote>/HEAD`, `<remote>/main`, `<remote>/master` that
    exists, never the branch's own tracking ref and never `HEAD`. The rule
    declines, silently.
-3. Computes the canonical tree of the pushed commit.
+3. Computes the content id of the pushed commit.
 4. Looks for a binding: a completed `implementation-review` agent in this
    session's transcript whose block names this repository and tree, or a
    pass remembered under `~/.claude/amont-agent/implementation-review/by-tree/`.
@@ -167,12 +169,14 @@ When the hook passes a push that carries a plan, it writes the unsigned
 `amont-provenance-v1` payload to
 `~/.claude/amont-agent/provenance/<repo>/<pushed sha>`. The format is attest
 SPEC `amont-provenance-v1`; the decision is ADR-0036. One datum per line:
-`amont-provenance-v1`, `commit`, `tree` (the full tree), `canon` (the
-canonical tree), `patch` (only when the branch patch could be computed),
-`plan <path> <body sha>` (the plan under `docs/plans/` changed on the branch,
-read from the pushed tree), `review <reviewed|by-patch|overruled> <canonical
-tree the review read>`, `preview <approved|evidence|not-required>` and
-`producer amont-agent <version>`.
+`amont-provenance-v1`, `commit`, `tree` (the full tree), `patch` (only when
+the branch patch could be computed), `plan <path> <body sha>` (the plan
+under `docs/plans/` changed on the branch, read from the pushed tree),
+`review <reviewed|by-patch|overruled> <content id the review read>`,
+`preview <approved|evidence|not-required>` and `producer amont-agent
+<version>`. There is no `canon` line: attest's canonical tree is a tree fact
+amont-agent does not own, and the signer, amont, computes it and inserts it
+before signing. A payload that carries one is refused by the signer.
 
 It is written on `reviewed`, `reviewed-by-patch`, `overruled`,
 `overruled-by-patch` and on a transcript pass; never for a held push or a push
