@@ -110,8 +110,9 @@ usage: amont-agent <command>
                         what ~/.claude/amont-agent/attestations keeps and
                         why; --apply moves the rest to a 7-day trash
   tree-sha [--block] [-C <dir>] [--] [<rev>]
-                        the canonical tree id an implementation review
-                        binds to: HEAD's tree without docs/plans/
+                        the content id an implementation review and a
+                        preview approval bind to: HEAD's tree without
+                        docs/plans/ (not attest's canonical tree)
   shipped <plan.md> [--json]
                         what shipped under a plan, derived from git: per
                         repository its merge commits, PRs, releases, and
@@ -937,11 +938,12 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
 const TREE_SHA_USAGE: &str = "\
 usage: amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]
 
-The canonical tree id an implementation review binds to: the sha256 of
-`git ls-tree -r` of <rev> (default HEAD) with every entry under
-docs/plans/ left out, 64 hex in any object format. Recording the review
-in the plan therefore never changes it; a code change does (ADR-0022,
-work.implementation-review).
+The content id an implementation review and a preview approval bind to
+(not attest's canonical tree): the sha256 of `git ls-tree -r -z` of <rev>
+(default HEAD) with every entry under docs/plans/ left out, 64 hex in any
+object format (attest SPEC, \"Content id\"). Recording the review in the
+plan, or adding a plan, therefore never changes it; a code change does
+(ADR-0022, ADR-0034, work.implementation-review).
 
   --block    the review block the implementation-review agent's prompt
              carries: <<<TREE repo=<name> sha=<64 hex>>>>, where <name>
@@ -1006,7 +1008,7 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
         return ExitCode::from(1);
     };
     let rev = rev.as_deref().unwrap_or("HEAD");
-    let sha = match implementation_review::canonical_tree(&repo, rev) {
+    let sha = match implementation_review::content_id(&repo, rev) {
         Ok(s) => s,
         Err(why) => {
             eprintln!("amont-agent: {why}");

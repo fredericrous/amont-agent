@@ -24,7 +24,18 @@
   decides, and is deferred while the preview gate holds the push
   (`provenance-deferred`); a re-push keeps it (journalled `provenance-kept`); the
   directory is hook-only like the pass files, and `.github/allowed_signers`
-  lists the `amont-provenance` namespace.
+  lists the `amont-provenance` namespace. The payload carries no `canon`
+  line: attest's canonical tree is the signer's to compute, and amont writes
+  it before signing; `review` carries the content id the review read.
+
+### Changed
+
+- **The value a review binds to is the content id.** What `tree-sha` prints
+  and an implementation review and a preview approval are keyed by was called
+  the "canonical tree", the name attest's SPEC gives a different value
+  (canon(T), which counts whether a plan file exists). It is now the
+  **content id** (attest SPEC, "Content id"), with known-answer tests. Its
+  definition is unchanged, so stored reviews and approvals still match.
 
 ## v2.42.0
 

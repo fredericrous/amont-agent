@@ -167,7 +167,7 @@ pub fn ls_tree_z(dir: &std::path::Path, tree: &str) -> std::io::Result<Option<Ve
 /// Every entry of `tree`, recursively, as `ls-tree -r -z` prints it: raw
 /// `<mode> <type> <oid>\t<path>` records split on NUL, in git's own order.
 /// The content of a tree stated without reading any blob, which is what
-/// `implementation-review` hashes into a canonical tree id.
+/// `implementation-review` hashes into a content id.
 pub fn ls_tree_entries(dir: &std::path::Path, tree: &str) -> std::io::Result<Option<Vec<Vec<u8>>>> {
     let out = bytes_in(
         dir,

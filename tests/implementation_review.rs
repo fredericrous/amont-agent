@@ -515,11 +515,7 @@ fn a_reviewed_tree_passes_and_recording_the_review_keeps_it_reviewed() {
             "---\nstatus: active\n---\n# X\n\n## Implementation review\n\nVerdict: approve\n",
         )],
     );
-    assert_eq!(
-        w.tree(&repo),
-        tree,
-        "the canonical tree ignores docs/plans/"
-    );
+    assert_eq!(w.tree(&repo), tree, "the content id ignores docs/plans/");
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
 
     // A new session, no transcript: the pass file answers.
@@ -1707,13 +1703,13 @@ fn a_passing_push_with_a_plan_writes_the_provenance_record() {
     reviewed(&w, &repo);
     let f = w.provenance_dir().join("app").join(&head);
     let l = lines_of(&f);
-    assert_eq!(l.len(), 9, "{l:?}");
+    assert_eq!(l.len(), 8, "{l:?}");
     assert_eq!(l[0], "amont-provenance-v1");
     assert_eq!(l[1], format!("commit {head}"));
     assert_eq!(l[2], format!("tree {full_tree}"));
-    assert_eq!(l[3], format!("canon {tree}"));
-    assert!(l[4].starts_with("patch "), "{}", l[4]);
-    let plan = &l[5];
+    // no `canon` line: the signer computes attest's canonical tree itself
+    assert!(l[3].starts_with("patch "), "{}", l[3]);
+    let plan = &l[4];
     let parts: Vec<&str> = plan.split(' ').collect();
     assert_eq!(parts[0], "plan");
     assert_eq!(parts[1], "docs/plans/2026-09-29-x.md");
@@ -1728,10 +1724,10 @@ fn a_passing_push_with_a_plan_writes_the_provenance_record() {
         String::from_utf8_lossy(&shown.stdout).trim(),
         "the body sha plan-sha prints"
     );
-    assert_eq!(l[6], format!("review reviewed {tree}"));
-    assert_eq!(l[7], "preview not-required");
+    assert_eq!(l[5], format!("review reviewed {tree}"));
+    assert_eq!(l[6], "preview not-required");
     assert_eq!(
-        l[8],
+        l[7],
         format!("producer amont-agent {}", env!("CARGO_PKG_VERSION"))
     );
     assert!(std::fs::read_to_string(&f).unwrap().ends_with('\n'));
@@ -1745,7 +1741,7 @@ fn a_passing_push_with_a_plan_writes_the_provenance_record() {
 }
 
 #[test]
-fn a_by_patch_pass_writes_the_old_canonical_tree() {
+fn a_by_patch_pass_writes_the_old_content_id() {
     let w = World::new("provpatch");
     let repo = w.repo("app");
     let before = w.tree(&repo);
@@ -1755,7 +1751,8 @@ fn a_by_patch_pass_writes_the_old_canonical_tree() {
     let after = w.tree(&repo);
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
     let l = lines_of(&w.provenance_dir().join("app").join(&head));
-    assert!(l.contains(&format!("canon {after}")), "{l:?}");
+    assert_ne!(before, after);
+    assert!(!l.iter().any(|x| x.starts_with("canon")), "{l:?}");
     assert!(l.contains(&format!("review by-patch {before}")), "{l:?}");
     assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
     let again = lines_of(&w.provenance_dir().join("app").join(&head));
