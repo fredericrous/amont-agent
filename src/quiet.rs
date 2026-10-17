@@ -267,6 +267,15 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+// The active entry is amont's contract, amont `docs/quiet-runs.md`
+// (decisions ADR-0039); this writer conforms to it.
+//
+// holds-until: amont-agent calls amont-runtime's `active` module, or the
+// person accepts this copy (ADR-0039, `harness.shared-code`). Until then
+// `active_dir`, `ENDED_KEEP_MS`, `pid_alive` and `sweep_active` copy it, and
+// already differ from it: an empty `HOME` names no directory here and a
+// relative one in amont, there is no `%LOCALAPPDATA%` path, and a pid is
+// gone here only on ESRCH where amont counts any error but EPERM as gone.
 fn active_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QUIET_ACTIVE_DIR").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(d));
