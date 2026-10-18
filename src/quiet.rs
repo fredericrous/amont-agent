@@ -274,8 +274,10 @@ fn now_ms() -> u64 {
 // person accepts this copy (ADR-0039, `harness.shared-code`). Until then
 // `active_dir`, `ENDED_KEEP_MS`, `pid_alive` and `sweep_active` copy it, and
 // already differ from it: an empty `HOME` names no directory here and a
-// relative one in amont, there is no `%LOCALAPPDATA%` path, and a pid is
-// gone here only on ESRCH where amont counts any error but EPERM as gone.
+// relative one in amont, there is no `%LOCALAPPDATA%` path, a pid is gone
+// here only on ESRCH where amont counts any error but EPERM as gone, a pid
+// that does not fit an i32 is alive here and gone in amont, and only this
+// sweep removes stale dot-temp files.
 fn active_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QUIET_ACTIVE_DIR").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(d));
