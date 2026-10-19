@@ -129,6 +129,7 @@ Phase 2 (the workspace) is next.
 - 2026-10-19: moving the provenance filing into `provenance.rs` would have made a new `preview` ↔ `provenance` cycle, because `preview::outcome` returned `provenance::Preview`. That outcome type moved to the module that owns it, as `preview::Outcome`. `provenance` now depends on `preview`, and `preview` no longer depends on `provenance`.
 - 2026-10-19: `sha256` and `hex` moved to `src/sha256.rs`, a shared utility. Otherwise `plan_text`, which needs them, would have depended on `plan_review` again.
 - 2026-10-19: the table is 45 rules, not the 48 `rules --json` lists: those are rules plus assertions.
+- 2026-10-19: #126's `tests (windows-latest)` job failed in `tests/boundaries.rs` only. Report paths used `\`, and on a CRLF checkout the test block was never found, so test modules that use `rule_table` were scanned. The test now normalises line endings and joins path components with `/`. On a scratch copy whose sources were converted to CRLF, the old test failed with Windows' exact list and the fixed one passed.
 
 ## Implementation review
 
@@ -136,6 +137,7 @@ approve-with-changes, then approve-with-changes on the Delta.
 - Fixed: the scanner reads grouped imports; `holds-until:` added; a stale `RULES` link; the moved `remove_file` now gives its reason.
 - Recorded here: the deviation, the rule count, and the checks that did not run.
 - Deliberate: the scanner does not read a nested group (`crate::{a::{b}, c}`). No file in `src` has one, and the test is scaffolding that Phase 2's crate graph replaces.
-- Round 1 took 44k tokens and 76 s; the Delta, 49k and 21 s.
+- Windows fix: approve-with-changes, with two low findings kept deliberately. There is no CRLF regression test, because the Windows CI job runs this test on CRLF sources on every PR. The match on the test-block marker stays literal; no source deviates from it, and the test retires in Phase 2.
+- Round 1 took 44k tokens and 76 s; the Delta, 49k and 21 s; the Windows fix review, 18k and 11 s.
 
 <!-- panel: repos=amont-agent adds=ops reviewers=backend,platform,codex body-sha=25225b5a758c -->
