@@ -48,6 +48,15 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # reformatted to serde_json's default.
 serde = "1"
 
+# The quiet-run active entry (`quiet.rs`): the file relais's pane tails while
+# `amont-agent quiet` runs. amont owns that contract and `amont-quiet` is its
+# one implementation (decisions ADR-0039, `harness.shared-code`); this crate
+# carried a copy, which disagreed with amont's in five ways. What this owns:
+# one std-only crate with no dependencies and no build script, released with
+# amont (MSRV 1.74, under ours). If it were abandoned, the copy it replaced is
+# in this repository's history.
+amont-quiet = "1.60"
+
 # A plan's sha (`plan_review::body_sha`) is taken over the Markdown as
 # CommonMark reads it, so a formatter that only moves blank lines, list
 # markers or table padding keeps the review bound, while `a * b` and a list
