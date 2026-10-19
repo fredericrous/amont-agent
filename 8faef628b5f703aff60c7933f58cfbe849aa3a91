@@ -1,0 +1,16 @@
+amont-provenance-v1
+commit 5df44ff81dbb62976163db1477eb63df82022485
+tree 8faef628b5f703aff60c7933f58cfbe849aa3a91
+canon 2bac1fdfaca36940c4ce85aea0e234df0fb36695
+patch 989b302cb78dab48c25d3303b250aa1d927a88ef
+plan docs/plans/2026-10-19-one-quiet-run-entry-implementation.md 896bcb34ee25d7a78e40e46a72933a22524b7b44c93f5510288bf6afc0e2486d
+review reviewed 71ef9962293701f877c01a3acb4e3ba5002205483d0d5b1551583e91d78c54c4
+preview not-required
+producer amont-agent 2.43.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBJCdITsfIGEg8Z+DPXwLwVWIq2XkojBJU1nb9P27xUjrRmBc
+xJmOtBST7FWyvR7oUP88RDAeYbaJhigQQBx/IL
+-----END SSH SIGNATURE-----
