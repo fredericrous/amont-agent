@@ -44,13 +44,13 @@ The intended outcome is three crates in an amont-agent workspace, with dependenc
 
 | Crate | Holds | Depends on |
 |---|---|---|
-| `amont-agent-guard` (lib) | shell, analysis, stance, payload, decision, rules (with three process rules' declarations; see below), assertions, journal (the state root), session_state, push_target, land, stale, lsp, quiet, excerpt, settings, doctor, the rule-evaluation tools (backtest, mine, corpus, graduate, compliance, transcript), and the shared utilities (`atomic`, `git`, `gitconfig`, `json`, `civil`, `term`, `ui`) | `amont-quiet`, serde_json, serde |
+| `amont-agent-guard` (lib) | shell, analysis, stance, payload, decision, rules (with two process rules' declarations; see below), assertions, journal (the state root), session_state, push_target, land, stale, lsp, quiet, excerpt, settings, doctor, the rule-evaluation tools (backtest, mine, corpus, graduate, compliance, transcript), and the shared utilities (`atomic`, `git`, `gitconfig`, `json`, `civil`, `term`, `ui`) | `amont-quiet`, serde_json, serde |
 | `amont-agent-process` (lib) | plan_review, plan_words, plans, plan_phases, the `push_preview` rule, plan_apply, review_outcomes, implementation_review, preview, guide, provenance, shipped, attestations | guard, pulldown-cmark |
 | `amont-agent` (bin) | `main.rs` (the CLI) and `hook.rs` (event dispatch): the composition root that wires both | both |
 
 Choices:
 
-- **The rule table is assembled in `main.rs`** (`systems.construction-in-main`). `push_preview`'s `confirm` calls `preview::needs_preview` (`rules/push_preview.rs:102`; `preview.rs:471`), so it is a process rule in full and moves to the process crate. The guard keeps its own rules, and the declarations of `plan_review_panel`, `implementation_review` and `plan_phases_open`, whose `examine` never matches and whose judgement already lives in the process modules. The guard's readers of `RULES` (22 references in 7 files: `stance`, `ui`, `doctor`, `corpus`, `mine`, `rules/mod`, `main`) take a `&[Rule]` parameter (today's type, `rules/mod.rs:473`), and `main.rs` passes one table in today's order (`rules/mod.rs:473-518`), with `push_preview` at its current position. There is no global registry.
+- **The rule table is assembled in `main.rs`** (`systems.construction-in-main`). `push_preview`'s `confirm` calls `preview::needs_preview` (`rules/push_preview.rs:102`; `preview.rs:471`), so it is a process rule in full and moves to the process crate. The guard keeps its own rules, and the declarations of `plan_review_panel` and `plan_phases_open`, whose `examine` never matches and whose judgement already lives in the process modules. The guard's readers of `RULES` (22 references in 7 files: `stance`, `ui`, `doctor`, `corpus`, `mine`, `rules/mod`, `main`) take a `&[Rule]` parameter (today's type, `rules/mod.rs:473`), and `main.rs` passes one table in today's order (`rules/mod.rs:473-518`), with `push_preview` at its current position. There is no global registry.
 - **The push and land records split between data and policy.** A record is a fact about what a push or a land did, and both the guard's assertions and preview read it. A guard module, `push_record`, takes the record types, their persistence and readers (`take_before`, `land_judged`) and the upkeep of the land records. `record_before` stays in preview, because it computes preview policy (`gated`, `carries_ui` and `approved` at `preview.rs:1786`, `:1802` and `:1811`), and it writes through `push_record`. The paths `previews/pushes` and `previews/lands` are kept, so no state migrates. The assertions' outcomes are compared before and after for a gated and an ungated push, approved and not.
 - **`doctor` receives its process sections.** It takes extra report sections from its caller (dependency inversion), and `main.rs` passes the attestations summary. The doctor output stays the same.
 - **The cycles are broken by moving helpers to where they belong (Fowler, Move Function).**
@@ -106,5 +106,36 @@ Each phase is one PR, through `worktree-task`, then `merge-when-green`. The rele
   - The state directory tree under `~/.claude/amont-agent/` is unchanged after one hook run of each kind.
   - A full plan cycle on this machine still holds and releases. A plan exit, an implementation-review push and a preview question each leave the same `journal.log` deny and pass entries as on the previous release.
 - After the release, `amont-agent --version` on this machine shows it, and the hook's journal records events from the new build.
+
+## Outcome
+
+Phase 1, as observed before the push:
+
+| Check | Expected | Actual |
+|---|---|---|
+| the test suite (`cargo test --features test-hooks`) | main's passing count, 0 failed | main: 1158 passed in 23 binaries. After: 1160 passed in 24 binaries (the 2 tests in `tests/boundaries.rs`), 0 failed. `make test`'s plain `cargo test --locked` also passes |
+| `amont-agent rules --json` | byte-identical | identical (`cmp`). 48 entries on main and after: 45 rules in the table and 3 assertions |
+| `amont-agent doctor` | the same output | identical once relative ages are normalised; the attestations line stays last, as on main |
+| `tests/boundaries.rs` | passes; a planted edge fails it | passes. The planted `use` line, inline path, root edge and grouped import (`use crate::{json, plan_review::Fence}`) are each found; a comment and a test module are not |
+| clippy `--all-targets --features test-hooks -D warnings`, fmt | clean | clean |
+| the assertions' outcomes for a gated and an ungated push, approved and not | unchanged | covered by the existing integration tests, which pass unchanged: `tests/preview.rs` (push-published journal lines, `:1075`) and `tests/implementation_review.rs` (land-retry, `:1245`, `:1348`). The record format is byte-for-byte the same: a missing `before` still writes `-` |
+| the state-directory tree after one hook run of each kind; a full plan cycle's journal entries | unchanged | not run: these need a live session after the release. The integration tests spawn the binary against a scratch state directory, and they pass |
+
+Phase 2 (the workspace) is next.
+
+## Decision log
+
+- 2026-10-19: `rules/implementation_review.rs` was not declaration-only, as the plan assumed. Its `confirm` calls `implementation_review::confirm_push`. `tests/boundaries.rs` found it, and the review panel had not. It moved with `push_preview`, to `src/implementation_review_rule.rs`, at the same position in the table. The guard keeps two process-rule declarations: `plan_review_panel` and `plan_phases_open`.
+- 2026-10-19: moving the provenance filing into `provenance.rs` would have made a new `preview` ↔ `provenance` cycle, because `preview::outcome` returned `provenance::Preview`. That outcome type moved to the module that owns it, as `preview::Outcome`. `provenance` now depends on `preview`, and `preview` no longer depends on `provenance`.
+- 2026-10-19: `sha256` and `hex` moved to `src/sha256.rs`, a shared utility. Otherwise `plan_text`, which needs them, would have depended on `plan_review` again.
+- 2026-10-19: the table is 45 rules, not the 48 `rules --json` lists: those are rules plus assertions.
+
+## Implementation review
+
+approve-with-changes, then approve-with-changes on the Delta.
+- Fixed: the scanner reads grouped imports; `holds-until:` added; a stale `RULES` link; the moved `remove_file` now gives its reason.
+- Recorded here: the deviation, the rule count, and the checks that did not run.
+- Deliberate: the scanner does not read a nested group (`crate::{a::{b}, c}`). No file in `src` has one, and the test is scaffolding that Phase 2's crate graph replaces.
+- Round 1 took 44k tokens and 76 s; the Delta, 49k and 21 s.
 
 <!-- panel: repos=amont-agent adds=ops reviewers=backend,platform,codex body-sha=25225b5a758c -->
