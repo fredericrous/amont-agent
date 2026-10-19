@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: refactor/guard-process-edges
 repos: [amont-agent]
 adrs: [ADR-0039, ADR-0011, ADR-0030, ADR-0010]
@@ -121,7 +121,19 @@ Phase 1, as observed before the push:
 | the assertions' outcomes for a gated and an ungated push, approved and not | unchanged | covered by the existing integration tests, which pass unchanged: `tests/preview.rs` (push-published journal lines, `:1075`) and `tests/implementation_review.rs` (land-retry, `:1245`, `:1348`). The record format is byte-for-byte the same: a missing `before` still writes `-` |
 | the state-directory tree after one hook run of each kind; a full plan cycle's journal entries | unchanged | not run: these need a live session after the release. The integration tests spawn the binary against a scratch state directory, and they pass |
 
-Phase 2 (the workspace) is next.
+Phase 2, as observed before the push:
+
+| Check | Expected | Actual |
+|---|---|---|
+| `cargo tree -p amont-agent-guard` | names neither the process nor the binary | its direct dependencies are `amont-quiet`, `serde` and `serde_json`, and nothing else |
+| a planted `use amont_agent_process as _planted;` in the guard's `doctor.rs` | fails to compile | `error[E0432]: unresolved import amont_agent_process`; the file was then restored |
+| the test suite | main's passing count, 0 failed | 1160 passed, 0 failed, the same count as main: Phase 1's two `tests/boundaries.rs` tests went with the file, and two unit tests run in a new lib target |
+| `cargo +1.85.0 check --workspace --locked --all-targets` | passes | passes |
+| `cargo publish --workspace --dry-run` (cargo 1.94.1) | packages all three crates | it packages all three, in order guard, process, binary; the guard's package holds its 45 corpus files |
+| the stdout check (`tests/hook.rs`), with a planted `println!` in each library's `lib.rs` | fails, once per library | it panicked at `tests/hook.rs:309` for the guard and again for the process; both files were restored |
+| `amont-agent rules --json` and `doctor`, main and this branch run back to back | byte-identical | both identical (`cmp`, `diff`); `rules --json` is 6,885 bytes |
+| the pre-commit gate (fmt, clippy `-D warnings`, the tests) | passes | 25 checks passed |
+| the state-directory tree, and a full plan cycle's journal entries | unchanged | not run: they need the released binary in a live session. They are checked when the release is installed, along with `amont-agent --version` |
 
 ## Decision log
 
@@ -130,6 +142,12 @@ Phase 2 (the workspace) is next.
 - 2026-10-19: `sha256` and `hex` moved to `src/sha256.rs`, a shared utility. Otherwise `plan_text`, which needs them, would have depended on `plan_review` again.
 - 2026-10-19: the table is 45 rules, not the 48 `rules --json` lists: those are rules plus assertions.
 - 2026-10-19: #126's `tests (windows-latest)` job failed in `tests/boundaries.rs` only. Report paths used `\`, and on a CRLF checkout the test block was never found, so test modules that use `rule_table` were scanned. The test now normalises line endings and joins path components with `/`. On a scratch copy whose sources were converted to CRLF, the old test failed with Windows' exact list and the fixed one passed.
+- 2026-10-19: the binary stays the workspace's root package (`members = [".", …]`), not `crates/amont-agent` as Phase 2 step 1 said. amont fetches this repository's fixtures by raw URL, and `tests/`, `tools/` and the Makefile's `-p amont-agent --test quiet` all name root paths. Keeping the root keeps them working with no second change. The compiler holds the boundary either way.
+- 2026-10-19: `tests/boundaries.rs` was removed, as planned: the crate graph replaces it, as shown by the planted import above.
+- 2026-10-19: `Count::mul`/`add` and `Tri::not` became public with the move, and clippy's `should_implement_trait` fired on them. They now implement `std::ops::{Mul, Add, Not}`. The bodies are unchanged and the lint stays on.
+- 2026-10-19: lib crates run doctests. Two indented blocks in `guidance.rs` and `gitconfig.rs` were shell and config text, not Rust, so they are now fenced as `text`.
+- 2026-10-19: `doctor` on this machine read "attestations: 138 → 139 directories" between two runs an hour apart. That is a new attestation directory, not a difference in output: the back-to-back run above is identical.
+- 2026-10-19: `amont-agent-guard` and `amont-agent-process` both return 404 on the crates.io API, so they are unclaimed.
 
 ## Implementation review
 
@@ -139,5 +157,9 @@ approve-with-changes, then approve-with-changes on the Delta.
 - Deliberate: the scanner does not read a nested group (`crate::{a::{b}, c}`). No file in `src` has one, and the test is scaffolding that Phase 2's crate graph replaces.
 - Windows fix: approve-with-changes, with two low findings kept deliberately. There is no CRLF regression test, because the Windows CI job runs this test on CRLF sources on every PR. The match on the test-block marker stays literal; no source deviates from it, and the test retires in Phase 2.
 - Round 1 took 44k tokens and 76 s; the Delta, 49k and 21 s; the Windows fix review, 18k and 11 s.
+
+Phase 2: approve-with-changes, 33k tokens, 24 s.
+- Fixed in this record: the `cargo tree` check, the planted import and the planted stdout write in each library were run and recorded. So were the dry run and the identity checks, both re-run on the final commit. The layout, the trait impls, the `text` fences and the removed test each have a Decision-log line.
+- Deliberate: the state-directory and plan-cycle checks run on the released binary, as the Outcome says. Confirming the token scope (step 7) is a question for the person, asked before the tag.
 
 <!-- panel: repos=amont-agent adds=ops reviewers=backend,platform,codex body-sha=25225b5a758c -->
