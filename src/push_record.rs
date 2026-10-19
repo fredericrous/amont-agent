@@ -174,7 +174,7 @@ pub fn take_before(tool_use_id: &str) -> Vec<Before> {
         return Vec::new();
     };
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&path); // best-effort: a record left behind is swept with the scratch
     text.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();

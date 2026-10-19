@@ -5,8 +5,8 @@
 //! source, every `crate::<module>` path, in `use` lines and inline; comments
 //! and `#[cfg(test)] mod tests` blocks are not code the binary runs.
 //!
-//! Scaffolding until the workspace split, where the crate graph enforces the
-//! same edges and this test goes away with it.
+//! holds-until: the Phase 2 workspace split, where the crate graph enforces
+//! the same edges and this test goes away with it.
 
 use std::path::{Path, PathBuf};
 
@@ -77,12 +77,21 @@ fn named(text: &str) -> Vec<String> {
     let mut rest = text;
     while let Some(i) = rest.find("crate::") {
         let after = &rest[i + "crate::".len()..];
-        let name: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if !name.is_empty() {
-            out.push(name);
+        let ident = |s: &str| -> String {
+            s.trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect()
+        };
+        if let Some(group) = after.strip_prefix('{') {
+            // `use crate::{a, b::c};`: the first segment of each item.
+            let end = group.find('}').unwrap_or(group.len());
+            out.extend(group[..end].split(',').map(ident).filter(|n| !n.is_empty()));
+        } else {
+            let name = ident(after);
+            if !name.is_empty() {
+                out.push(name);
+            }
         }
         rest = after;
     }
@@ -136,6 +145,11 @@ fn a_planted_edge_is_found_in_a_use_line_and_inline() {
     std::fs::create_dir_all(dir.join("rules")).unwrap();
     std::fs::write(dir.join("doctor.rs"), "use crate::preview;\nfn f() {}\n").unwrap();
     std::fs::write(
+        dir.join("ui.rs"),
+        "use crate::{json, plan_review::Fence};\n",
+    )
+    .unwrap();
+    std::fs::write(
         dir.join("rules").join("x.rs"),
         "fn g() { let _ = crate::preview::outcome(); }\n// crate::plan_review in a comment\n",
     )
@@ -153,6 +167,7 @@ fn a_planted_edge_is_found_in_a_use_line_and_inline() {
             "doctor.rs -> preview".to_string(),
             "preview.rs -> hook".to_string(),
             "rules/x.rs -> preview".to_string(),
+            "ui.rs -> plan_review".to_string(),
         ]
     );
 }
