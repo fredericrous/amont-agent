@@ -913,6 +913,48 @@ pub fn mb_text(bytes: u64) -> String {
     mb(bytes)
 }
 
+/// `amont-agent doctor`'s line for this store, which `main.rs` hands to
+/// the doctor: how much it holds, and whether the daily sweep is getting
+/// through. Silent when there is no store yet.
+pub fn doctor_finding() -> Option<crate::doctor::Finding> {
+    use crate::doctor::{ago, now, Finding};
+    let env = Env::live()?;
+    let t = now();
+    let s = summary(&env, t)?;
+    let swept = match s.swept_ago {
+        Some(a) => format!("swept {} ago", ago(a)),
+        None => "never swept".to_string(),
+    };
+    let cited = match s.cited {
+        Some(k) => format!("{k} cited"),
+        None => "cited unknown (scan failed)".to_string(),
+    };
+    let line = format!(
+        "attestations: {} directories, {}, oldest {}; {cited}; {swept}",
+        s.dirs,
+        mb_text(s.bytes),
+        ago(s.oldest),
+    );
+    if let Some(path) = last_scan_failure() {
+        return Some(Finding::warn(
+            line,
+            format!(
+                "the last sweep could not read {path} and removed nothing; \
+                 run `amont-agent attestations` to see why"
+            ),
+        ));
+    }
+    if s.swept_ago.is_some_and(|a| a > 2 * DAY) {
+        return Some(Finding::warn(
+            line,
+            "no SessionStart has swept for over 2 days; \
+             run `amont-agent attestations` to see what it would do"
+                .to_string(),
+        ));
+    }
+    Some(Finding::good(line))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

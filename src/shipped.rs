@@ -404,7 +404,7 @@ fn signature_status_in(
 
 fn plan_sha_at(dir: &Path, rev: &str, path: &str) -> Option<String> {
     let bytes = git::bytes_in(dir, &["show", &format!("{rev}:{path}")], None).ok()??;
-    crate::plan_review::shas(&String::from_utf8_lossy(&bytes))
+    crate::plan_text::shas(&String::from_utf8_lossy(&bytes))
         .ok()
         .map(|s| s.sha)
 }

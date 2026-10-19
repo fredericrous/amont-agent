@@ -47,11 +47,13 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::content_id::content_id;
 use crate::git;
 use crate::journal;
-use crate::plan_review::{completed_agents_resumable, hex, sha256, Completed};
+use crate::plan_review::{completed_agents_resumable, Completed};
 use crate::provenance::Review as Bound;
 use crate::rules::{Confirmed, Context, Stance};
+use crate::sha256::{hex, sha256};
 use crate::shell::Simple;
 
 pub const RULE_ID: &str = "implementation-review";
@@ -61,47 +63,12 @@ const AGENT: &str = "implementation-review";
 pub const BLOCK_OPEN: &str = "<<<TREE ";
 const BLOCK_CLOSE: &str = ">>>";
 /// The directory a review does not bind to: the plan's own record.
-const PLANS_DIR: &[u8] = b"docs/plans/";
 const PLANS_PATH: &str = "docs/plans";
 /// The marker a person's overrule question carries.
 const MARKER: &str = "[implementation-review ";
 const OVERRULE: &str = "Overrule";
 
 // ---------------------------------------------------------------- the tree
-
-/// The content id of `rev` in `repo` (attest SPEC, "Content id"): what an
-/// implementation review and a preview approval bind to (ADR-0034). Not
-/// attest's canonical tree: it ignores whether a plan exists. 64 lowercase
-/// hex.
-pub fn content_id(repo: &Path, rev: &str) -> Result<String, String> {
-    let spec = format!("{rev}^{{tree}}");
-    let entries = git::ls_tree_entries(repo, &spec)
-        .map_err(|e| format!("git could not be run in {}: {e}", repo.display()))?
-        .ok_or_else(|| format!("`{rev}` does not name a tree in {}", repo.display()))?;
-    Ok(content_id_of(&entries))
-}
-
-/// The content id of raw `git ls-tree -r -z --full-tree` records, in git's
-/// order: the sha256 of every record whose path does not start with
-/// `docs/plans/`, each followed by one NUL.
-pub fn content_id_of(entries: &[Vec<u8>]) -> String {
-    let mut bytes: Vec<u8> = Vec::new();
-    for entry in entries {
-        // `<mode> <type> <oid>\t<path>`; the path is everything after the
-        // first tab, and a path is never one that starts inside the plans.
-        let path = entry
-            .iter()
-            .position(|c| *c == b'\t')
-            .map(|i| &entry[i + 1..])
-            .unwrap_or(&entry[..]);
-        if path.starts_with(PLANS_DIR) {
-            continue;
-        }
-        bytes.extend_from_slice(entry);
-        bytes.push(0);
-    }
-    hex(&sha256(&bytes))
-}
 
 /// The files whose content a review was read against, besides the diff:
 /// the repository's active rules.
@@ -604,32 +571,30 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     }
 }
 
-/// Files the provenance record of a pass. A failure is journalled and never
-/// changes the judgment.
+/// Files the provenance record of a pass and journals what came of it. A
+/// failure never changes the judgment.
 fn provenance(push: &crate::provenance::Push, review: Bound, review_content: &str) {
-    let Some(preview) = crate::preview::outcome(push.repo, push.target) else {
-        note(
+    use crate::provenance::Filing;
+    match crate::provenance::file(push, review, review_content) {
+        Filing::Deferred => note(
             "provenance-deferred",
             "-",
             push.name,
             "the preview has not stood",
-        );
-        return;
-    };
-    match crate::provenance::write(push, review, review_content, preview) {
-        Ok(crate::provenance::Filed::Written(file)) => note(
+        ),
+        Filing::Written(file) => note(
             "provenance-written",
             "-",
             push.name,
             &file.display().to_string(),
         ),
-        Ok(crate::provenance::Filed::Kept(file)) => note(
+        Filing::Kept(file) => note(
             "provenance-kept",
             "-",
             push.name,
             &file.display().to_string(),
         ),
-        Err(why) => note("provenance-write-failed", "-", push.name, &why),
+        Filing::Failed(why) => note("provenance-write-failed", "-", push.name, &why),
     }
 }
 
@@ -941,6 +906,7 @@ fn note(outcome: &str, session: &str, repo: &str, excerpt: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content_id::content_id_of;
 
     /// A real session's launch of an implementation reviewer, resumed twice
     /// with `SendMessage` (2026-10-08), anonymised.

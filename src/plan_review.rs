@@ -45,13 +45,14 @@ use std::path::{Path, PathBuf};
 use crate::decision::{self, Decision};
 use crate::journal;
 use crate::payload::PlanExit;
+pub(crate) use crate::plan_text::is_machine_comment;
+use crate::plan_text::{canonical, shas, Fence, Shas, REVIEW_SECTION};
 use crate::rules::{plan_review_panel::RULE, Stance};
+use crate::sha256::{hex, sha256};
 
 /// Opens a review block in a reviewer's prompt.
 pub const BLOCK_OPEN: &str = "<<<PLAN ";
 const BLOCK_CLOSE: &str = ">>>";
-const REVIEW_SECTION: &str = "Review panel";
-const FULL_REVIEWS: &str = "Full reviews";
 pub(crate) const AGENT_PREFIX: &str = "plan-review-";
 /// Refusals of one plan before the call goes to the person instead.
 const REFUSALS_BEFORE_ASK: u32 = 2;
@@ -64,152 +65,6 @@ const MAX_BLOBS: usize = 200;
 /// for a repository kept elsewhere (dotfiles under `~/.local/share/chezmoi`),
 /// else `$AMONT_AGENT_PLAN_ROOT/<name>`, else `~/Developer/Perso/<name>`.
 pub const ENV_ROOT: &str = "AMONT_AGENT_PLAN_ROOT";
-
-// ---------------------------------------------------------------- the body
-
-/// The plan as reviewed: CRLF → LF; YAML front matter (a `---` first line
-/// through the next `---`) and the blank lines after it removed; the
-/// `## Review panel` section, the `## Full reviews …` section to the end,
-/// and a machine comment on the last non-empty line removed; trailing space
-/// and tab trimmed per line; one final newline. Headings inside code fences
-/// are text. Idempotent.
-///
-/// Front matter is skipped because a plan gains it when it lands in a
-/// repository (`docs/plans/`, ADR-0022). The landed copy then hashes like
-/// the approved one the reviewers read, so landing can be checked on the
-/// file it writes.
-pub fn canonical(text: &str) -> String {
-    let text = text.replace("\r\n", "\n");
-    let lines: Vec<&str> = text.split('\n').collect();
-    let comment = lines
-        .iter()
-        .rposition(|l| !l.trim().is_empty())
-        .filter(|&i| is_machine_comment(lines[i]));
-    let mut start = front_matter_end(&lines);
-    while start < lines.len() && lines[start].trim().is_empty() {
-        start += 1;
-    }
-    let mut out: Vec<&str> = Vec::new();
-    let mut fence = Fence::default();
-    let mut dropping = false;
-    for (i, line) in lines.iter().enumerate().skip(start) {
-        if Some(i) == comment {
-            continue;
-        }
-        if let Some(title) = fence.h2(line) {
-            if title.starts_with(FULL_REVIEWS) {
-                break;
-            }
-            dropping = title == REVIEW_SECTION;
-        }
-        if !dropping {
-            out.push(line.trim_end_matches([' ', '\t']));
-        }
-    }
-    let mut body = out.join("\n");
-    body.truncate(body.trim_end_matches(['\n', ' ', '\t']).len());
-    body.push('\n');
-    body
-}
-
-/// Whether the byte at `offset` of `text` lies in a region [`canonical`]
-/// strips: front matter, `## Review panel`, `## Full reviews` and after, or
-/// the machine comment. An edit there does not change the plan's sha.
-pub(crate) fn outside_body(text: &str, offset: usize) -> bool {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let comment = lines
-        .iter()
-        .rposition(|l| !l.trim().is_empty())
-        .filter(|&i| is_machine_comment(lines[i]));
-    let front = front_matter_end(&lines);
-    let mut fence = Fence::default();
-    let (mut dropping, mut reviews) = (false, false);
-    let mut start = 0;
-    for (i, line) in lines.iter().enumerate() {
-        let end = start + line.len() + 1;
-        if i >= front {
-            if let Some(title) = fence.h2(line) {
-                reviews |= title.starts_with(FULL_REVIEWS);
-                dropping = title == REVIEW_SECTION;
-            }
-        }
-        if offset < end {
-            return i < front || Some(i) == comment || reviews || dropping;
-        }
-        start = end;
-    }
-    false
-}
-
-/// The index of the first line after YAML front matter, or 0 when there is
-/// none: a `---` first line with no closing `---` is text, not front matter.
-fn front_matter_end(lines: &[&str]) -> usize {
-    if lines.first().map(|l| l.trim_end()) != Some("---") {
-        return 0;
-    }
-    lines
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, l)| l.trim_end() == "---")
-        .map_or(0, |(i, _)| i + 1)
-}
-
-/// sha256 of what the canonical body says, read as CommonMark
-/// ([`crate::plan_words::words`]), 64 lowercase hex: a formatter that only
-/// moves blank lines, list markers or table padding keeps it.
-pub fn body_sha(text: &str) -> String {
-    #[cfg(test)]
-    if tests::PARSER_PANICS.with(|p| p.get()) {
-        panic!("injected parser panic");
-    }
-    hex(&sha256(
-        crate::plan_words::words(&canonical(text)).as_bytes(),
-    ))
-}
-
-// LEGACY: the byte sha every review was bound to before 2.25. Accepted
-// alongside `body_sha` until the journal shows no `match=legacy` for 14 days.
-/// sha256 of the canonical body's bytes, 64 lowercase hex.
-pub fn legacy_sha(text: &str) -> String {
-    hex(&sha256(canonical(text).as_bytes()))
-}
-
-/// Both shas of a plan.
-pub struct Shas {
-    pub sha: String,
-    pub legacy: String,
-}
-
-/// [`body_sha`] and [`legacy_sha`], with a panic in the Markdown parser
-/// caught here: the hook's own guard turns a panic into silence, which for
-/// this rule would let a plan through unreviewed.
-pub fn shas(text: &str) -> Result<Shas, ShaError> {
-    guarded(|| body_sha(text)).map(|sha| Shas {
-        sha,
-        legacy: legacy_sha(text),
-    })
-}
-
-fn guarded(f: impl FnOnce() -> String) -> Result<String, ShaError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| ShaError::ParserPanicked)
-}
-
-/// Why a plan's sha could not be computed.
-#[derive(Debug, PartialEq)]
-pub enum ShaError {
-    ParserPanicked,
-}
-
-impl std::fmt::Display for ShaError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ShaError::ParserPanicked => {
-                f.write_str("the plan's sha cannot be computed (the Markdown parser panicked)")
-            }
-        }
-    }
-}
 
 /// Whether a review or a baseline at `seen` is of this body.
 fn of_body(seen: &str, sha: &str, legacy: &str) -> bool {
@@ -242,64 +97,6 @@ pub fn block(path: &Path, sha: &str, lang: Option<&str>) -> String {
 /// dotfiles link), or the path as given when it cannot be resolved.
 pub fn real(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn is_machine_comment(line: &str) -> bool {
-    let t = line.trim();
-    t.starts_with("<!-- panel:") && t.ends_with("-->")
-}
-
-/// Tracks fenced code so that a `## Review panel` inside an example is text.
-#[derive(Default)]
-pub(crate) struct Fence {
-    open: Option<(char, usize)>,
-}
-
-impl Fence {
-    /// The line's text when it is prose outside any fence, indented at most
-    /// 3; updates the fence state. A fence line, a line inside code, and an
-    /// indented line are `None`.
-    pub(crate) fn prose<'a>(&mut self, line: &'a str) -> Option<&'a str> {
-        let indent = line.len() - line.trim_start_matches(' ').len();
-        let t = line.trim_start_matches(' ');
-        if indent <= 3 {
-            for c in ['`', '~'] {
-                let run = t.len() - t.trim_start_matches(c).len();
-                if run >= 3 {
-                    match self.open {
-                        None => self.open = Some((c, run)),
-                        Some((o, n)) if o == c && run >= n && t[run..].trim().is_empty() => {
-                            self.open = None
-                        }
-                        _ => {}
-                    }
-                    return None;
-                }
-            }
-        }
-        if self.open.is_some() || indent > 3 {
-            return None;
-        }
-        Some(t)
-    }
-
-    /// The title of an ATX H2 outside any fence; updates the fence state.
-    pub(crate) fn h2<'a>(&mut self, line: &'a str) -> Option<&'a str> {
-        let title = self.prose(line)?.strip_prefix("## ")?;
-        Some(title.trim().trim_end_matches('#').trim_end())
-    }
-
-    /// The title of an ATX heading of any level outside any fence; updates
-    /// the fence state.
-    pub(crate) fn heading<'a>(&mut self, line: &'a str) -> Option<&'a str> {
-        let t = self.prose(line)?;
-        let hashes = t.len() - t.trim_start_matches('#').len();
-        if hashes == 0 || hashes > 6 {
-            return None;
-        }
-        let rest = t[hashes..].strip_prefix(' ')?;
-        Some(rest.trim().trim_end_matches('#').trim_end())
-    }
 }
 
 // ---------------------------------------------------------------- the plan's own claims
@@ -661,7 +458,7 @@ pub fn classify(
             .iter()
             .filter(|p| basename(p) == "package.json")
             .filter_map(|p| blob(p))
-            .any(crate::preview::package_is_ui);
+            .any(crate::plan_text::package_is_ui);
     let ops = own.iter().any(|p| ops_name(p))
         || own
             .iter()
@@ -1709,91 +1506,10 @@ pub fn agent_for(role: &str) -> (String, Option<&str>) {
     }
 }
 
-// ---------------------------------------------------------------- sha256
-
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// FIPS 180-4 SHA-256. Hand-written because the crate carries one
-/// dependency on purpose; pinned by the NIST vectors below.
-pub fn sha256(data: &[u8]) -> [u8; 32] {
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let mut msg = data.to_vec();
-    let bits = (data.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bits.to_be_bytes());
-    for chunk in msg.chunks(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[4 * i],
-                chunk[4 * i + 1],
-                chunk[4 * i + 2],
-                chunk[4 * i + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ (!e & g);
-            let t1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-        }
-        for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
-            *x = x.wrapping_add(y);
-        }
-    }
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[4 * i..4 * i + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan_text::{body_sha, guarded, legacy_sha, ShaError};
 
     /// `remit` reads `roles` backwards, for every class the panel knows.
     #[test]
@@ -1809,28 +1525,6 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn sha256_matches_the_nist_vectors() {
-        assert_eq!(
-            hex(&sha256(b"")),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            hex(&sha256(b"abc")),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_eq!(
-            hex(&sha256(
-                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
-            )),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        );
-        assert_eq!(
-            hex(&sha256(&vec![b'a'; 1_000_000])),
-            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
-        );
     }
 
     const PLAN: &str = "# Title\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nBody.  \n\n```md\n## Review panel\nkept\n```\n\n## Full reviews (reference)\n\n- rust: ok\n\n<!-- panel: repos=amont-agent adds=cli body-sha=abc -->\n";
@@ -1906,11 +1600,6 @@ mod tests {
         assert_ne!(legacy_sha(&formatted), legacy_sha(PLAN));
     }
 
-    thread_local! {
-        /// Makes [`super::body_sha`] panic, as a parser bug would.
-        pub(crate) static PARSER_PANICS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-
     #[test]
     fn a_panic_computing_the_sha_is_an_error_not_silence() {
         assert_eq!(
@@ -1933,9 +1622,9 @@ mod tests {
             transcript: None,
             plan_file: Some(plan),
         };
-        PARSER_PANICS.with(|p| p.set(true));
+        crate::plan_text::PARSER_PANICS.with(|p| p.set(true));
         let (said, _, excerpt) = examine(&ev);
-        PARSER_PANICS.with(|p| p.set(false));
+        crate::plan_text::PARSER_PANICS.with(|p| p.set(false));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
             matches!(said, Said::Ask(ref why) if why.contains("cannot be computed")),

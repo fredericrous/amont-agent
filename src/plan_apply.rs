@@ -457,7 +457,7 @@ fn flatten(s: &str) -> String {
 
 /// The nearest heading above `offset`, outside fenced code.
 fn section_at(text: &str, offset: usize) -> String {
-    let mut fence = plan_review::Fence::default();
+    let mut fence = crate::plan_text::Fence::default();
     let mut title = String::new();
     for line in text[..offset].lines() {
         if let Some(t) = fence.heading(line) {
@@ -496,7 +496,7 @@ fn judge(text: &str, items: &[Item]) -> Vec<Judged> {
                                     len: p.old.len(),
                                     new: p.new.clone(),
                                     section: section_at(text, *s),
-                                    outside: plan_review::outside_body(text, *s),
+                                    outside: crate::plan_text::outside_body(text, *s),
                                 })
                             }
                         }
@@ -644,7 +644,7 @@ fn read_plan(real: &Path) -> Result<String, Fail> {
 }
 
 fn sha_of(text: &str) -> Result<String, Fail> {
-    plan_review::shas(text)
+    crate::plan_text::shas(text)
         .map(|s| s.sha)
         .map_err(|e| Fail::Io(e.to_string()))
 }
@@ -705,7 +705,7 @@ fn apply(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
     let mut after = Some(before.clone());
     if applied > 0 {
         let new = splice(&text, &judged);
-        after = plan_review::shas(&new).ok().map(|s| s.sha);
+        after = crate::plan_text::shas(&new).ok().map(|s| s.sha);
         if after.is_none() {
             eprintln!("amont-agent: sha unavailable (the Markdown parser panicked)");
         }

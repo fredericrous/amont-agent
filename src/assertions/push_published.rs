@@ -4,7 +4,7 @@
 //! The record the preview soak is read from (ADR-0023). A command exiting 0
 //! is not a publication: "Everything up-to-date" is exit 0, and so is a push
 //! of a branch nobody changed. So before the push, the hook remembers where
-//! each branch destination stood (`crate::preview::record_before`, keyed by
+//! each branch destination stood (`crate::preview::record_before`, stored by `crate::push_record`, keyed by
 //! `tool_use_id`); after it, this asks the remote with one `git ls-remote`
 //! per destination and journals one of:
 //!
@@ -46,7 +46,7 @@ fn examine(parsed: &Parsed) -> Option<Claim> {
 }
 
 fn verify(ctx: &Context, _claim: &Claim) -> Verdict {
-    let recorded = crate::preview::take_before(ctx.tool_use_id);
+    let recorded = crate::push_record::take_before(ctx.tool_use_id);
     if recorded.is_empty() {
         return Verdict::Unknown("not a push to a repository with a user interface");
     }
