@@ -266,18 +266,28 @@ fn control_bytes_never_reach_the_output_raw() {
     assert!(!r.stdout.contains('\u{1b}'), "{}", r.stdout);
 }
 
-/// One writer to stdout, enforced by reading this crate's own sources — no
-/// compiler can ask this question, and the failure it prevents is silent.
+/// One writer to stdout, enforced by reading the sources of the binary and
+/// both its crates — no compiler can ask this question, and the failure it
+/// prevents is silent. A source tree that is missing fails the test rather
+/// than passing it unread.
 #[test]
 fn only_the_emitter_writes_to_stdout() {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let trees = [
+        root.join("src"),
+        root.join("crates/amont-agent-guard/src"),
+        root.join("crates/amont-agent-process/src"),
+    ];
+    for t in &trees {
+        assert!(t.is_dir(), "missing source tree {}", t.display());
+    }
     let mut offenders = Vec::new();
     // Exempt: the emitter itself, and the modules that only ever run under a
     // CLI verb a person typed. What makes those safe is that nothing reachable
     // from `hook` calls them — `decide` dispatches to the rules, the journal and
     // the emitter, and to nothing here.
     const NOT_THE_HOOK_PATH: &[&str] = &["decision.rs", "main.rs", "doctor.rs", "backtest.rs"];
-    walk(&src, &mut |path, text| {
+    let mut check = |path: &std::path::Path, text: &str| {
         if NOT_THE_HOOK_PATH.iter().any(|name| path.ends_with(name)) {
             return;
         }
@@ -292,7 +302,10 @@ fn only_the_emitter_writes_to_stdout() {
                 offenders.push(format!("{}:{}", path.display(), n + 1));
             }
         }
-    });
+    };
+    for t in &trees {
+        walk(t, &mut check);
+    }
     assert!(
         offenders.is_empty(),
         "stdout is written outside decision.rs:\n{}",

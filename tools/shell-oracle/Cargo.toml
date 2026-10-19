@@ -1,4 +1,4 @@
-# The verification harness for `src/analysis/`: a SEPARATE cargo workspace.
+# The verification harness for `crates/amont-agent-guard/src/analysis/`: a SEPARATE cargo workspace.
 #
 # It lives in the repository but outside the crate on purpose. amont-agent
 # ships with serde/serde_json only; this harness needs a third-party bash

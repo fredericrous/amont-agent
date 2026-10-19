@@ -199,7 +199,7 @@ fn generated_scripts_stay_inside_the_claimed_interval() {
 
 // ── fixed scripts: Appendix C, runnable subset ──────────────────────────────
 
-/// The Appendix-C commands (src/analysis/interp/tests.rs) that run to
+/// The Appendix-C commands (crates/amont-agent-guard/src/analysis/interp/tests.rs) that run to
 /// completion against stubs (run in an empty directory, so the glob case
 /// matches nothing). Adapted where a helper is not guaranteed on a runner:
 /// `jq` became `head -c0`; the count-away loop gained a `break`. Left out:

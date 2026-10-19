@@ -1,11 +1,11 @@
 [package]
 name = "amont-agent"
-version = "2.44.0"
-edition = "2021"
-license = "MIT"
-repository = "https://github.com/fredericrous/amont-agent"
-authors = ["Frederic Rousseau"]
-description = "A guard that inspects a shell command before Claude Code runs it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "A guard for Claude Code's tool calls: it reads each one before it runs, the work-process verdicts (plan review, implementation review, preview) included"
 readme = "README.md"
 keywords = ["claude", "hooks", "guard", "shell", "git"]
 categories = ["development-tools", "command-line-utilities"]
@@ -25,71 +25,29 @@ categories = ["development-tools", "command-line-utilities"]
 #
 # The msrv job checks THIS crate with `--locked`, so the number is a claim
 # again rather than a comment with syntax. Raising it is a release note.
-rust-version = "1.85.0"
+rust-version.workspace = true
 
 [dependencies]
-# For READING, not writing. Three things need a real parser and none is
-# ours: Claude Code's hook payload, the user's `settings.json`, and the
-# Markdown of a plan (below).
-#
-# Deliberately no `serde` derive. The payload's shape is defined by somebody
-# else and grows between releases; `Value` plus hand-written accessors turns
-# a missing or retyped field into "no opinion", which is this crate's whole
-# posture. A `#[derive(Deserialize)]` struct turns the same field into a hard
-# parse error, and the temptation is then to treat that error as an opinion.
-#
-# `preserve_order` is load-bearing, not cosmetic: without it, rewriting a
-# user's hand-edited `settings.json` reorders their keys alphabetically and
-# produces a diff that looks like we rewrote the file. We did.
+amont-agent-guard.workspace = true
+amont-agent-process.workspace = true
+# The binary's own JSON (`analyze --json`) and its integration tests read
+# and write `Value`s; why this crate reads with serde_json and never derives
+# is argued in the guard's manifest, where most of the parsing lives.
 serde_json = { version = "1", features = ["preserve_order"] }
 
-# Only for `Value::serialize` with a custom PrettyFormatter, which is how
-# `settings.json` keeps the indentation the user chose instead of being
-# reformatted to serde_json's default.
-serde = "1"
-
-# The quiet-run active entry (`quiet.rs`): the file relais's pane tails while
-# `amont-agent quiet` runs. amont owns that contract and `amont-quiet` is its
-# one implementation (decisions ADR-0039, `harness.shared-code`); this crate
-# carried a copy, which disagreed with amont's in five ways. What this owns:
-# one std-only crate with no dependencies and no build script, released with
-# amont (MSRV 1.74, under ours). If it were abandoned, the copy it replaced is
-# in this repository's history.
-amont-quiet = "1.60"
-
-# A plan's sha (`plan_review::body_sha`) is taken over the Markdown as
-# CommonMark reads it, so a formatter that only moves blank lines, list
-# markers or table padding keeps the review bound, while `a * b` and a list
-# item `* b` stay different things. Telling those apart needs block context:
-# a parser, not a line rule (2026-10-06, docs/plans/2026-10-06-plan-sha-ignores-formatting.md).
-#
-# PINNED EXACTLY: a parser change may change the sha of every plan and
-# turn every review in flight stale. A bump is its own PR, and the
-# `body_sha` fixture test is what tells you whether it re-hashes.
-#
-# What this owns: pulldown-cmark plus `bitflags`, `memchr` and `unicase`,
-# all with default features off or unused. Only pulldown-cmark has a build
-# script, and without its `gen-tests` feature it compiles to an empty
-# `main` (spec-test generation); the other three have none. It is
-# the CommonMark parser rustdoc and mdBook use, released a few times a year;
-# MSRV 1.71.1, under ours. If it were abandoned, the pin keeps building, and
-# the fallback is the rung rejected on 2026-10-06: a hand-rolled block
-# scanner, which would have to own CommonMark's list, quote, fence and
-# container-indent rules — the edge cases the line rules got wrong.
-pulldown-cmark = { version = "=0.13.4", default-features = false }
 
 # NO [dev-dependencies]. `serde_json` above is a normal dependency and is
 # therefore already in scope for this crate's tests — restating it buys
 # nothing and costs two places to bump.
 
-# What we WRITE is emitted by `src/json.rs`, a hand-rolled escaper, so the
+# What we WRITE is emitted by `crates/amont-agent-guard/src/json.rs`, a hand-rolled escaper, so the
 # hook's answer shares no representation with the payloads we parse.
 
 [features]
 # Failure injection for the integration tests, which spawn the binary and so
 # cannot use `cfg(test)`. Never on in a build that ships: nothing reachable
-# from the CLI reads these variables without it.
-test-hooks = []
+# from the CLI reads these variables without it. The hooks live in the guard.
+test-hooks = ["amont-agent-guard/test-hooks"]
 
 [profile.release]
 strip = true
@@ -100,3 +58,30 @@ lto = true
 # isolation around rule evaluation: a panic in one rule must not take down a
 # hook that Claude Code is waiting on, because a guard that dies mid-decision
 # is a guard that has no opinion at the exact moment it was asked for one.
+
+[workspace]
+# The binary at the root, and its two components (decisions ADR-0039; plan
+# docs/plans/2026-10-19-guard-and-work-process-components.md). The crate
+# graph holds the boundary: the guard never names the work process or the
+# binary, and the work process never names the binary.
+members = [".", "crates/amont-agent-guard", "crates/amont-agent-process"]
+# The analyzer's syntax oracle is its own workspace, on purpose.
+exclude = ["tools/shell-oracle"]
+
+# Shared, so the three crates cannot disagree about who they are. The
+# version is one for all three: `cargo install amont-agent` resolves the
+# libraries by version, so a release where they differ is one nobody can
+# install.
+[workspace.package]
+version = "2.44.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/fredericrous/amont-agent"
+authors = ["Frederic Rousseau"]
+rust-version = "1.85.0"
+
+# The one place the inter-crate version is written: `path` for a checkout,
+# `version` for crates.io, exact because they are released together.
+[workspace.dependencies]
+amont-agent-guard = { path = "crates/amont-agent-guard", version = "=2.44.0" }
+amont-agent-process = { path = "crates/amont-agent-process", version = "=2.44.0" }

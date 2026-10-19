@@ -26,7 +26,7 @@ import pathlib
 import sys
 from collections import defaultdict
 
-# Keep in step with src/rules/read_unbounded_large.rs.
+# Keep in step with crates/amont-agent-guard/src/rules/read_unbounded_large.rs.
 LARGE = 16 * 1024
 MEDIA = {"png", "jpg", "jpeg", "gif", "webp", "pdf", "ipynb"}
 DOCS = {"diff", "patch"}

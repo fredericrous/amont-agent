@@ -9,8 +9,11 @@ that never left the machine all look identical — and the trimming throws the
 error text away too. No git hook can catch that: the mistake is in the command
 string and never reaches one.
 
-`amont-agent` is a Claude Code `PreToolUse` hook that reads a shell command
-before it runs, and can observe it, advise against it, or refuse it.
+`amont-agent` is a Claude Code hook that reads an agent's tool calls before
+they run — a shell command first of all — and can observe one, advise against
+it, or refuse it. The same guard holds the work-process verdicts a tool call
+waits on: a plan's review panel before `ExitPlanMode`, the implementation
+review and the preview approval before a push.
 
 [![CI](https://github.com/fredericrous/amont-agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/fredericrous/amont-agent/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/github/license/fredericrous/amont-agent)](LICENSE)
@@ -80,15 +83,27 @@ code:
 
 ## Contributing
 
-`make check` runs fmt, clippy `-D warnings` and the tests — exactly what CI
-runs. One crate; `serde` and `serde_json` are its only dependencies, and only
-for reading.
+`make check` runs fmt, clippy `-D warnings` and the tests across the
+workspace — exactly what CI runs. Three crates, so each changes for one reason
+and the compiler keeps them apart (decisions ADR-0039):
+
+| Crate | Holds | Pages |
+|---|---|---|
+| [`amont-agent-guard`](crates/amont-agent-guard) | shell analysis, the rules and their stances, the assertions, the journal, `quiet` | [rules](docs/rules.md), [assertions](docs/assertions.md), [stances](docs/stances.md), [analysis](docs/analysis.md), [measuring](docs/measuring.md), [quiet](docs/quiet.md) |
+| [`amont-agent-process`](crates/amont-agent-process) | the plan-review panel, the implementation review, preview approvals, provenance, `shipped` | [plan review](docs/plan-review.md), [implementation review](docs/implementation-review.md), [preview](docs/preview.md), [shipped](docs/shipped.md) |
+| `amont-agent` (the root) | the CLI and the hook's dispatch: the composition root that wires both | [install](docs/install.md), [configuration](docs/configuration.md), [session notice](docs/session-notice.md) |
+
+The guard never names the work process or the binary; the work process never
+names the binary. Dependencies are `serde`/`serde_json` (for reading),
+`pulldown-cmark` (a plan's sha) and `amont-quiet` (the quiet-run entry), each
+argued in its crate's manifest.
 
 ## Related
 
 [amont](https://github.com/fredericrous/amont) — git hooks that catch a bad
-commit before it exists, by the same author. Independent of this: no shared
-code, and neither needs the other.
+commit before it exists, by the same author. Neither needs the other at run
+time; the one shared code is the quiet-run entry, linked from amont's
+published `amont-quiet` crate.
 
 [attest](https://github.com/fredericrous/attest) — the CI end of the same
 story: CI skips the gates a signed pre-push note says really ran. All three

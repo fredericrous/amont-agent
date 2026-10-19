@@ -28,7 +28,7 @@ unit test classifies too, and exits 0 when every sample agrees with its tag.
 Exit codes: 0 done (also when stdout is closed early, as by `| head`);
 1 no transcripts under --root, or a failed self-test; 2 usage error.
 
-Keep in step with src/rules/lint_suppression_added.rs.
+Keep in step with crates/amont-agent-guard/src/rules/lint_suppression_added.rs.
 """
 
 import argparse

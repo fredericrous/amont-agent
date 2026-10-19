@@ -257,7 +257,7 @@ pub fn analyze(bin: &Path, dialect: &str, src: &str) -> Analysis {
 
 // ── corpora ─────────────────────────────────────────────────────────────────
 
-/// `src/corpus.rs::unescape`, byte for byte in behaviour: `\n`, `\r`, `\t`,
+/// `crates/amont-agent-guard/src/corpus.rs::unescape`, byte for byte in behaviour: `\n`, `\r`, `\t`,
 /// `\\` are escapes; any other backslash is kept verbatim.
 pub fn unescape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -289,10 +289,10 @@ pub struct Sample {
     pub command: String,
 }
 
-/// Every case in `tests/corpus/*.cases` (`label\tcommand`, `#` comments),
-/// parsed the way `src/corpus.rs::parse` does.
+/// Every case in `crates/amont-agent-guard/tests/corpus/*.cases` (`label\tcommand`, `#` comments),
+/// parsed the way `crates/amont-agent-guard/src/corpus.rs::parse` does.
 pub fn corpus_cases() -> Vec<Sample> {
-    let dir = repo_root().join("tests/corpus");
+    let dir = repo_root().join("crates/amont-agent-guard/tests/corpus");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -320,12 +320,12 @@ pub fn corpus_cases() -> Vec<Sample> {
     out
 }
 
-/// The string literals of `src/analysis/interp/tests.rs` (Appendix C) that
+/// The string literals of `crates/amont-agent-guard/src/analysis/interp/tests.rs` (Appendix C) that
 /// are commands: every `"…"` and `r#"…"#` literal that mentions a client,
 /// minus `format!` templates. Read from the source at test time, so a case
 /// added there is checked here without a copy to keep in step.
 pub fn appendix_c() -> Vec<Sample> {
-    let path = repo_root().join("src/analysis/interp/tests.rs");
+    let path = repo_root().join("crates/amont-agent-guard/src/analysis/interp/tests.rs");
     let src = std::fs::read_to_string(&path).expect("read interp tests");
     let mut out = Vec::new();
     for (line, lit) in rust_string_literals(&src) {

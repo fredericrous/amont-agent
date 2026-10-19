@@ -16,7 +16,7 @@ to the paths; it does not size the files.
 Exit codes: 0 done (also when stdout is closed early, as by `| head`);
 1 no transcripts under --root; 2 usage error.
 
-Keep in step with src/rules/agent_guidance_written.rs.
+Keep in step with crates/amont-agent-guard/src/rules/agent_guidance_written.rs.
 """
 
 import argparse

@@ -49,8 +49,8 @@ jobs:
       # The behavioural coverage lives in `tests/`; these two keep the source
       # honest. `make lint` runs EXACTLY these, so a contributor can reproduce
       # a red `rust` job without pushing.
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       # The release's tap bump, tested here rather than first exercised by a
       # tag: a publish-tap job that fails runs after the release is public.
       - run: python3 scripts/test_bump_tap.py
@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install "$MSRV" --profile minimal --no-self-update
-      - run: cargo "+$MSRV" check --locked --all-targets
+      - run: cargo "+$MSRV" check --workspace --locked --all-targets
 
   # NON-BLOCKING, deliberately: an advisory is information about a dependency,
   # not a defect in the change under review, and a scheduled run that goes red
@@ -192,4 +192,4 @@ jobs:
           git config --global user.name CI
           git config --global init.defaultBranch main
       - if: ${{ !contains(fromJSON(steps.attest.outputs.gates), 'pre-push-cargo-test') }}
-        run: cargo test --locked
+        run: cargo test --workspace --locked

@@ -7,7 +7,7 @@ INSTALL_BIN_DIR ?= $(HOME)/.local/bin
 help:
 	@echo "  make check      fmt + clippy + tests — what CI runs"
 	@echo "  make lint       fmt --check and clippy -D warnings"
-	@echo "  make test       cargo test --locked"
+	@echo "  make test       cargo test --workspace --locked"
 	@echo "  make msrv       build on the floor Cargo.toml claims"
 	@echo "  make install    build --release and copy to $(INSTALL_BIN_DIR)"
 	@echo "  make uninstall  remove it again"
@@ -16,20 +16,20 @@ help:
 # reproduce a red job without pushing. If you change a flag here, change it
 # there.
 lint:
-	@cargo fmt --check
-	@cargo clippy --all-targets -- -D warnings
-	@cargo clippy --all-targets --features test-hooks -- -D warnings
+	@cargo fmt --all --check
+	@cargo clippy --workspace --all-targets -- -D warnings
+	@cargo clippy --workspace --all-targets --features test-hooks -- -D warnings
 	@python3 scripts/test_bump_tap.py
 
 test:
-	@cargo test --locked
+	@cargo test --workspace --locked
 	@cargo test --locked --features test-hooks --test quiet
 
 check: lint test
 	@echo "  ✓ fmt, clippy and tests — the same three CI runs"
 
 fmt:
-	@cargo fmt
+	@cargo fmt --all
 
 # The floor `rust-version` claims, compiled against — the same check ci.yaml
 # runs. `--locked` is not optional: a fresh resolve would pick whatever the
@@ -38,7 +38,7 @@ MSRV := 1.85.0
 msrv:
 	@rustup toolchain list | grep -q '^$(MSRV)' \
 	  || rustup toolchain install $(MSRV) --profile minimal --no-self-update
-	@cargo +$(MSRV) check --locked --all-targets
+	@cargo +$(MSRV) check --workspace --locked --all-targets
 	@echo "  ✓ builds on $(MSRV), the floor Cargo.toml claims"
 
 build:

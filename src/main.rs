@@ -18,63 +18,49 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
-mod analysis;
-mod assertions;
-mod atomic;
-mod attestations;
-mod backtest;
-mod civil;
-mod compliance;
-mod content_id;
-mod corpus;
-mod decision;
-mod doctor;
-#[cfg(unix)]
-mod excerpt;
-mod git;
-mod gitconfig;
-mod graduate;
-mod guidance;
-mod guide;
+use amont_agent_guard::analysis;
+use amont_agent_guard::assertions;
+use amont_agent_guard::backtest;
+use amont_agent_guard::civil;
+use amont_agent_guard::compliance;
+use amont_agent_guard::corpus;
+use amont_agent_guard::decision;
+use amont_agent_guard::doctor;
+use amont_agent_guard::graduate;
+use amont_agent_guard::guidance;
+use amont_agent_process::attestations;
+use amont_agent_process::content_id;
 mod hook;
-mod implementation_review;
-mod implementation_review_rule;
-mod journal;
-mod json;
-mod land;
-mod lsp;
-mod mine;
-mod payload;
-mod plan_apply;
-mod plan_phases;
-mod plan_review;
-mod plan_text;
-mod plan_words;
-mod plans;
-mod preview;
-mod provenance;
-mod publish_cmd;
-mod push_preview;
-mod push_record;
-mod push_target;
+use amont_agent_guard::journal;
+use amont_agent_guard::json;
+use amont_agent_guard::lsp;
+use amont_agent_guard::mine;
+use amont_agent_guard::payload;
+use amont_agent_guard::push_target;
 #[cfg(unix)]
-mod quiet;
-mod review_outcomes;
+use amont_agent_guard::quiet;
+use amont_agent_process::implementation_review;
+use amont_agent_process::implementation_review_rule;
+use amont_agent_process::plan_apply;
+use amont_agent_process::plan_phases;
+use amont_agent_process::plan_review;
+use amont_agent_process::plan_text;
+use amont_agent_process::plans;
+use amont_agent_process::preview;
+use amont_agent_process::push_preview;
+use amont_agent_process::review_outcomes;
 mod rule_table;
-mod rules;
-mod session_state;
-mod settings;
-mod sha256;
-mod shape;
-mod shell;
-mod shim;
-mod shipped;
-mod skill_window;
-mod stale;
-mod stance;
-mod term;
-mod transcript;
-mod ui;
+use amont_agent_guard::rules;
+use amont_agent_guard::session_state;
+use amont_agent_guard::settings;
+use amont_agent_guard::shape;
+use amont_agent_guard::shell;
+use amont_agent_guard::shim;
+use amont_agent_guard::stale;
+use amont_agent_guard::stance;
+use amont_agent_guard::transcript;
+use amont_agent_guard::ui;
+use amont_agent_process::shipped;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -1743,7 +1729,7 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
             corpus::path_for(rule.id).display().to_string()
         } else {
             format!(
-                "tests/corpus/{}.cases   # in a checkout of amont-agent",
+                "crates/amont-agent-guard/tests/corpus/{}.cases   # in a checkout of amont-agent",
                 rule.id
             )
         };

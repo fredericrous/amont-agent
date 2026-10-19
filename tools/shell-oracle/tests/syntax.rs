@@ -2,8 +2,8 @@
 //! analyze --dialect bash` must then report `"parsed": true`, unless the
 //! command uses a construct the analyzer documents as outside its grammar.
 //!
-//! Inputs: every case of `tests/corpus/*.cases` (real commands) and every
-//! command literal in `src/analysis/interp/tests.rs` (Appendix C).
+//! Inputs: every case of `crates/amont-agent-guard/tests/corpus/*.cases` (real commands) and every
+//! command literal in `crates/amont-agent-guard/src/analysis/interp/tests.rs` (Appendix C).
 //!
 //! This validates BASH syntax only. brush-parser is not a zsh parser, and
 //! zsh-only commands in the corpus simply fail it and are skipped.
