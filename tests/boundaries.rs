@@ -57,8 +57,10 @@ fn module_of(src: &Path, file: &Path) -> String {
 }
 
 /// The code of a file: comments and the trailing `#[cfg(test)] mod tests`
-/// block removed.
+/// block removed. Line endings are normalised first: a Windows checkout has
+/// CRLF, and the test block would otherwise never be found.
 fn code(text: &str) -> String {
+    let text = text.replace("\r\n", "\n");
     let cut = text.find("#[cfg(test)]\nmod tests").unwrap_or(text.len());
     text[..cut]
         .lines()
@@ -115,10 +117,14 @@ fn violations(src: &Path) -> Vec<String> {
             let wrong =
                 ROOT.contains(&name.as_str()) || (!process && PROCESS.contains(&name.as_str()));
             if wrong {
-                out.push(format!(
-                    "{} -> {name}",
-                    f.strip_prefix(src).unwrap().display()
-                ));
+                // `/` on every platform, so a report reads the same.
+                let rel: Vec<String> = f
+                    .strip_prefix(src)
+                    .unwrap()
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                out.push(format!("{} -> {name}", rel.join("/")));
             }
         }
     }
