@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.45.0
+
+### Changed
+
+- **amont-agent is three crates**, so the compiler holds the line between
+  its two jobs (decisions ADR-0039). `amont-agent-guard` reads tool calls:
+  the shell analysis, the rules, stances, assertions and the journal.
+  `amont-agent-process` holds the work process: the plan-review panel, the
+  implementation review, preview approvals, provenance and `shipped`.
+  `amont-agent` is the CLI and the hook's dispatch, which wires both. The
+  guard cannot name the process, and neither library can name the binary.
+  Behaviour, state paths and the CLI are unchanged: `rules --json` and
+  `doctor` are byte-identical to 2.44.0. `cargo install amont-agent` now
+  fetches the two libraries at the same exact version.
+
 ## v2.44.0
 
 ### Changed
