@@ -87,7 +87,7 @@ pub fn private(path: &std::path::Path, mode: u32) {
 /// Windows has no mode bits to narrow; the file inherits the ACL of
 /// `%USERPROFILE%\.claude`, which is where its settings already live.
 #[cfg(not(unix))]
-pub(crate) fn private(_path: &std::path::Path, _mode: u32) {}
+pub fn private(_path: &std::path::Path, _mode: u32) {}
 
 pub fn path() -> Option<PathBuf> {
     Some(dir()?.join("journal.log"))
