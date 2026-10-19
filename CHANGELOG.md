@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.44.0
+
+### Changed
+
+- **The quiet-run active entry is written through `amont-quiet`**, the one
+  implementation of amont's contract (amont `docs/quiet-runs.md`, decisions
+  ADR-0039), in place of this crate's own copy. amont-agent and amont now
+  agree on every rule the copies disagreed on. On Windows the entry lives in
+  `%LOCALAPPDATA%\quiet\active`. A pid wider than an `i32` is no longer
+  treated as alive. The sweep also removes amont's stale `<id>.json.tmp`
+  files. The entry's keys come in amont's order.
+- **The entry ends as soon as the log is placed**, before the excerpt is
+  printed, so a slow reader of the output no longer keeps a finished run
+  looking live in relais's pane.
+
+### Fixed
+
+- **With a relative `CLAUDE_CONFIG_DIR`, the ended entry named a relative log
+  path**, which a watcher resolves from its own working directory. It is now
+  absolute, like the started entry's.
+
 ## v2.43.0
 
 ### Fixed
