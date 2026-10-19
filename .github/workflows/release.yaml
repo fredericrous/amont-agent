@@ -41,7 +41,27 @@ jobs:
       - id: v
         run: |
           set -euo pipefail
-          manifest=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          # Three crates, one version: the binary and its two libraries
+          # (amont-agent-guard, amont-agent-process). `cargo install` resolves
+          # the libraries by version, so a release where they differ is one
+          # nobody can install; read all three, and the exact pins between
+          # them, and refuse any disagreement.
+          versions=$(cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, sys
+          m = json.load(sys.stdin)
+          names = {"amont-agent", "amont-agent-guard", "amont-agent-process"}
+          pkgs = {p["name"]: p for p in m["packages"] if p["name"] in names}
+          assert set(pkgs) == names, sorted(pkgs)
+          vs = {p["version"] for p in pkgs.values()}
+          pins = {d["req"] for p in pkgs.values() for d in p["dependencies"] if d["name"] in names}
+          print(" ".join(sorted(vs)), "|", " ".join(sorted(pins)))')
+          echo "crate versions | inter-crate pins: $versions"
+          manifest=${versions%% |*}
+          case "$manifest" in *" "*) echo "::error::the three crates disagree on their version: $manifest"; exit 1;; esac
+          if [ "${versions#*| }" != "=$manifest" ]; then
+            echo "::error::the inter-crate pins (${versions#*| }) are not =$manifest; bump [workspace.dependencies] with the version."
+            exit 1
+          fi
           if [ "${{ github.ref_type }}" = "tag" ]; then
             tag="${GITHUB_REF_NAME#v}"
             dry=false
@@ -68,6 +88,12 @@ jobs:
           fi
           echo "version=$manifest" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry" >> "$GITHUB_OUTPUT"
+      # Before anything is published anywhere: every crate packages and builds
+      # from its own tarball. A file a crate embeds from outside its directory,
+      # or a library the next one cannot resolve, fails here, while nothing is
+      # out yet; inside publish-crates it would fail after the GitHub release.
+      - name: every crate packages (dry run)
+        run: cargo publish --workspace --dry-run --locked
 
   build:
     name: ${{ matrix.target }}
@@ -129,7 +155,7 @@ jobs:
           target_upper=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
           echo "CARGO_TARGET_${target_upper}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
 
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cargo build -p amont-agent --release --locked --target ${{ matrix.target }}
 
       - name: Archive
         id: archive
@@ -330,18 +356,24 @@ jobs:
           # Idempotency comes from cargo's own answer instead: re-running a
           # release must not fail on a crate that is already up, and "already
           # uploaded" is exactly that answer — anything else is a real failure.
-          echo "→ publishing amont-agent $VERSION"
-          if out=$(cargo publish --locked 2>&1); then
-            printf '%s\n' "$out"
-          else
-            printf '%s\n' "$out"
-            if printf '%s' "$out" | grep -qiE "already (been )?uploaded|already exists"; then
-              echo "  amont-agent $VERSION was already published — continuing"
+          #
+          # The libraries first, in dependency order: `amont-agent` resolves
+          # them from crates.io by version. A rerun resumes a partial publish,
+          # because each crate already up is "already uploaded".
+          for crate in amont-agent-guard amont-agent-process amont-agent; do
+            echo "→ publishing $crate $VERSION"
+            if out=$(cargo publish -p "$crate" --locked 2>&1); then
+              printf '%s\n' "$out"
             else
-              echo "::error::publishing amont-agent failed"
-              exit 1
+              printf '%s\n' "$out"
+              if printf '%s' "$out" | grep -qiE "already (been )?uploaded|already exists"; then
+                echo "  $crate $VERSION was already published — continuing"
+              else
+                echo "::error::publishing $crate failed"
+                exit 1
+              fi
             fi
-          fi
+          done
           echo "### Published to crates.io" >> "$GITHUB_STEP_SUMMARY"
           echo "\`cargo install amont-agent\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
@@ -355,7 +387,8 @@ jobs:
   # anything is pushed.
   publish-tap:
     name: publish to the homebrew tap
-    needs: [guard, publish]
+    # After crates.io too: brew never offers a version `cargo install` lacks.
+    needs: [guard, publish, publish-crates]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 10

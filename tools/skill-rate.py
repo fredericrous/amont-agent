@@ -26,7 +26,7 @@ by its parent is counted as not covered here. The hook reads both.
 `--root` defaults to `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
 `--list` prints each uncovered publish (session, verdict, command).
 
-Keep in step with src/publish_cmd.rs and src/skill_window.rs. The matching
+Keep in step with crates/amont-agent-guard/src/publish_cmd.rs and crates/amont-agent-guard/src/skill_window.rs. The matching
 here is by regular expression over the command text, which the Rust lexer
 does more carefully (quoted words, dry runs, clauses); the counts are a
 measurement, not a replay.

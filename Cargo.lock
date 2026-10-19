@@ -6,9 +6,26 @@ version = 4
 name = "amont-agent"
 version = "2.44.0"
 dependencies = [
+ "amont-agent-guard",
+ "amont-agent-process",
+ "serde_json",
+]
+
+[[package]]
+name = "amont-agent-guard"
+version = "2.44.0"
+dependencies = [
  "amont-quiet",
- "pulldown-cmark",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "amont-agent-process"
+version = "2.44.0"
+dependencies = [
+ "amont-agent-guard",
+ "pulldown-cmark",
  "serde_json",
 ]
 

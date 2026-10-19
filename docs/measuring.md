@@ -15,7 +15,7 @@ shapes that went wrong.
 ```sh
 amont-agent mine --since 2026-08-15
 amont-agent mine --min-support 10 --min-rate 0.4
-amont-agent mine --format cases >> tests/corpus/<new-rule>.cases
+amont-agent mine --format cases >> crates/amont-agent-guard/tests/corpus/<new-rule>.cases
 ```
 
 A **shape** is the parsed command with its literals masked — the branch, the
@@ -88,7 +88,7 @@ amont-agent explain pipe-to-tail --sample 20 --rank novelty
 walk met — the oldest project, the oldest session, and, because a habit
 repeats, very often twenty spellings of one command. Novelty picks the
 twenty least like each other and least like the cases already in
-`tests/corpus/<rule>.cases`, by greedy max-min over the shape distance, so
+`crates/amont-agent-guard/tests/corpus/<rule>.cases`, by greedy max-min over the shape distance, so
 an hour of labelling buys as much of the precision estimate as an hour can.
 It is deterministic: the same transcripts and the same corpus pick the same
 cases, and a second pass does not hand back the first pass's.
@@ -99,8 +99,8 @@ Precision is kept as a **corpus of judgements**, not as a metric, because a
 metric charts a regression and a test prevents one.
 
 ```sh
-amont-agent explain pipe-to-tail --format cases >> tests/corpus/pipe-to-tail.cases
-$EDITOR tests/corpus/pipe-to-tail.cases    # each `?` becomes match or nomatch
+amont-agent explain pipe-to-tail --format cases >> crates/amont-agent-guard/tests/corpus/pipe-to-tail.cases
+$EDITOR crates/amont-agent-guard/tests/corpus/pipe-to-tail.cases    # each `?` becomes match or nomatch
 amont-agent corpus check                   # and this runs in the test suite
 ```
 

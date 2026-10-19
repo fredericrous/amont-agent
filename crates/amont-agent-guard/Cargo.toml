@@ -1,0 +1,47 @@
+[package]
+name = "amont-agent-guard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "amont-agent's guard: shell analysis, rules and stances for an agent's tool calls"
+readme = "../../README.md"
+keywords = ["claude", "hooks", "guard", "shell"]
+categories = ["development-tools"]
+
+[dependencies]
+# For READING, not writing. Three things need a real parser and none is
+# ours: Claude Code's hook payload, the user's `settings.json`, and the
+# Markdown of a plan (below).
+#
+# Deliberately no `serde` derive. The payload's shape is defined by somebody
+# else and grows between releases; `Value` plus hand-written accessors turns
+# a missing or retyped field into "no opinion", which is this crate's whole
+# posture. A `#[derive(Deserialize)]` struct turns the same field into a hard
+# parse error, and the temptation is then to treat that error as an opinion.
+#
+# `preserve_order` is load-bearing, not cosmetic: without it, rewriting a
+# user's hand-edited `settings.json` reorders their keys alphabetically and
+# produces a diff that looks like we rewrote the file. We did.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Only for `Value::serialize` with a custom PrettyFormatter, which is how
+# `settings.json` keeps the indentation the user chose instead of being
+# reformatted to serde_json's default.
+serde = "1"
+
+# The quiet-run active entry (`quiet.rs`): the file relais's pane tails while
+# `amont-agent quiet` runs. amont owns that contract and `amont-quiet` is its
+# one implementation (decisions ADR-0039, `harness.shared-code`); this crate
+# carried a copy, which disagreed with amont's in five ways. What this owns:
+# one std-only crate with no dependencies and no build script, released with
+# amont (MSRV 1.74, under ours). If it were abandoned, the copy it replaced is
+# in this repository's history.
+amont-quiet = "1.60"
+
+[features]
+# Failure injection for the binary's integration tests (see the root
+# manifest). Never on in a build that ships.
+test-hooks = []

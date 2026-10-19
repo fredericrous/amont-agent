@@ -1,0 +1,2082 @@
+//! Preview approval (ADR-0028, which replaced ADR-0023): a UI-changing
+//! commit is published only after the person approves that exact commit,
+//! seen on localhost — unless the plan the person approved declares, in a
+//! `## Preview` section, that the evidence is enough ([`on_plan_answered`],
+//! `evidence_of`).
+//!
+//! ## The flow this module keeps honest
+//!
+//! 1. The agent verifies the final commit itself, then runs
+//!    `amont-agent preview register --url … --guide …` as the last command
+//!    of its line, in the foreground. That command VALIDATES (clean tree,
+//!    real commit, a complete guide outside the worktree), renders the guide
+//!    to `index.html` beside it ([`crate::guide`]) and prints JSON on one
+//!    line; the PostToolUse hook binds that output to the session and the
+//!    person's prompt ([`bind`]), once it has shown the line is this call's
+//!    own ([`stamp_register`]).
+//! 2. In the same turn the agent asks a *marked* question, starting with the
+//!    register's `question_prefix` — `[preview <id>] <label>`, each id
+//!    beginning with its commit's sha7 — options exactly `Approve` /
+//!    `Request changes` / `Hold`.
+//! 3. The person answers. Only their selection, read from `tool_response`
+//!    ([`on_post_ask`]), or a typed `approve|ship|lgtm|looks good` in the very
+//!    next prompt ([`on_prompt`]), approves — and only the commits the
+//!    question listed.
+//!
+//! What this is NOT: proof. A registration is the agent's attestation of
+//! worktree, commit and URL; nothing here can show the browser served that
+//! commit or that the person looked. It is a workflow aid over Claude Code's
+//! hooks, not a Git enforcement boundary.
+//!
+//! ## Why the answer has to be checked twice
+//!
+//! `AskUserQuestion`'s input schema accepts `answers`. A model could
+//! pre-answer its own question, and the PostToolUse payload would then carry
+//! an "Approve" nobody chose. [`on_pre_ask`] records, per `tool_use_id`,
+//! whether the call arrived pre-answered; a pre-answered marked question never
+//! approves, and under `deny` it is refused before it runs.
+
+use std::path::{Path, PathBuf};
+
+use amont_agent_guard::journal;
+use amont_agent_guard::push_target::{self, Kind, Push, Target};
+use amont_agent_guard::rules::Stance;
+
+/// A registration nobody answered lapses after a day: the commit pins the
+/// content, and any other prompt drops it long before this.
+const REGISTRATION_TTL: u64 = 24 * 3600;
+/// An approval unused for a day lapses too.
+const APPROVAL_TTL: u64 = 24 * 3600;
+/// Per-call scratch (`pushes/`, `asks/`, `registers/`) older than this is
+/// nobody's call.
+const SCRATCH_TTL: u64 = 24 * 3600;
+
+pub const RULE_ID: &str = "push-preview";
+
+/// The labels of a marked question. Exact, with no "(Recommended)" suffix.
+pub const APPROVE: &str = "Approve";
+pub const REQUEST_CHANGES: &str = "Request changes";
+pub const HOLD: &str = "Hold";
+
+fn now() -> u64 {
+    now_ms() / 1000
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// How long the person took to answer, as the journal spells it:
+/// `<secs>s,dur=<duration_ms>ms`. The seconds are ours — PostToolUse time
+/// minus the PreToolUse time recorded in `asks/<tool_use_id>` — because the
+/// payload's `duration_ms` is not the person's answer time (a minutes-long
+/// approval arrived as 0). The raw `duration_ms` rides along for comparison.
+fn latency(asked_ms: Option<u64>, answered_ms: u64, duration_ms: Option<u64>) -> String {
+    let secs = asked_ms
+        .filter(|&a| a > 0 && a <= answered_ms)
+        .map(|a| format!("{}s", (answered_ms - a) / 1000))
+        .unwrap_or_else(|| "-".to_string());
+    let dur = duration_ms
+        .map(|d| format!("{d}ms"))
+        .unwrap_or_else(|| "-".to_string());
+    format!("{secs},dur={dur}")
+}
+
+use amont_agent_guard::push_record::{dir, ensure, Before};
+
+// --- gating ---------------------------------------------------------------
+
+/// Whether a repository has a user interface a person can preview.
+///
+/// `git config amont.agent.push-preview.ui true|false` decides when set (the
+/// repository's own config, which a clone never carries). Otherwise: a `dev`
+/// script in `package.json` at the root or in `web/`.
+pub fn gated(repo: &Path) -> bool {
+    match amont_agent_guard::git::stdout_in(
+        repo,
+        &["config", "--get", "amont.agent.push-preview.ui"],
+    )
+    .as_deref()
+    {
+        Some("true") => return true,
+        Some("false") => return false,
+        _ => {}
+    }
+    ["package.json", "web/package.json"]
+        .iter()
+        .any(|p| has_dev_script(&repo.join(p)))
+}
+
+fn has_dev_script(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("scripts")?.get("dev").cloned())
+        .is_some_and(|d| d.as_str().is_some_and(|s| !s.trim().is_empty()))
+}
+
+/// The extensions of files a person sees rendered.
+const UI_EXTENSIONS: [&str; 4] = [".tsx", ".jsx", ".css", ".html"];
+
+/// A path whose change a person could see. Test files and test-tooling
+/// configs are never UI.
+pub fn is_ui_path(path: &str) -> bool {
+    if is_test_path(path) {
+        return false;
+    }
+    let top = ["app/", "src/", "web/"];
+    top.iter()
+        .any(|t| path.starts_with(t) || path.contains(&format!("/{t}")))
+        || UI_EXTENSIONS.iter().any(|e| path.ends_with(e))
+}
+
+/// A test, or a test tool's config. `*.test.*`, `*.spec.*` and anything
+/// under `__tests__/` always are. Under a `test/`, `tests/` or `e2e/`
+/// directory, and named `vitest.*`, `jest.*`, `playwright.*` or `cypress.*`,
+/// only a file that is not rendered is: `app/routes/test/index.tsx` is a
+/// route a person can open. A component named `*.spec.tsx` is misread as a
+/// test; no repository here names one so.
+fn is_test_path(path: &str) -> bool {
+    let mut segments: Vec<&str> = path.split('/').collect();
+    let base = segments.pop().unwrap_or("");
+    if segments.contains(&"__tests__") || base.contains(".test.") || base.contains(".spec.") {
+        return true;
+    }
+    if UI_EXTENSIONS.iter().any(|e| base.ends_with(e)) {
+        return false;
+    }
+    segments
+        .iter()
+        .any(|s| matches!(*s, "e2e" | "tests" | "test"))
+        || ["vitest", "jest", "playwright", "cypress"]
+            .iter()
+            .any(|t| base.strip_prefix(t).is_some_and(|r| r.starts_with('.')))
+}
+
+/// What a branch push would publish: the files, and the base they were
+/// diffed against (`None` when they were listed from `git log` instead).
+struct Published {
+    base: Option<String>,
+    files: Vec<String>,
+}
+
+/// The files a branch push would publish, or `None` when that cannot be
+/// established without guessing.
+fn published(repo: &Path, t: &Target) -> Option<Published> {
+    let short = t.dst.strip_prefix("refs/heads/")?;
+    // Every commit already on some remote: nothing here is new to preview.
+    // Those commits were either previewed when they were pushed there, or
+    // were never this session's (seeding a fork from an upstream clone).
+    if amont_agent_guard::git::nothing_new(repo, &t.src) {
+        return Some(Published {
+            base: None,
+            files: Vec::new(),
+        });
+    }
+    let tracking = format!("refs/remotes/{}/{}", t.remote, short);
+    let base = if git(repo, &["rev-parse", "--verify", "--quiet", &tracking]).is_some() {
+        Some(tracking)
+    } else {
+        git(
+            repo,
+            &[
+                "merge-base",
+                &t.src,
+                &format!("refs/remotes/{}/HEAD", t.remote),
+            ],
+        )
+    };
+    let out = match &base {
+        Some(b) => amont_agent_guard::git::stdout_in(
+            repo,
+            &["diff", "--name-only", &format!("{b}..{}", t.src)],
+        )?,
+        None => amont_agent_guard::git::stdout_in(
+            repo,
+            &[
+                "log",
+                "--format=",
+                "--name-only",
+                &t.src,
+                "--not",
+                &format!("--remotes={}", t.remote),
+            ],
+        )?,
+    };
+    Some(Published {
+        base,
+        files: out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+    })
+}
+
+/// Whether a branch push carries an interface change, or `None` when its
+/// files cannot be listed. Stops at the first file that counts.
+fn carries_ui(repo: &Path, t: &Target) -> Option<bool> {
+    let p = published(repo, t)?;
+    let mut packages = std::collections::HashMap::new();
+    Some(
+        p.files
+            .iter()
+            .any(|f| counts_as_ui(repo, p.base.as_deref(), t, f, &mut packages)),
+    )
+}
+
+// --- what counts as an interface change -----------------------------------
+
+/// One changed file counts when all hold: its path looks like an interface
+/// ([`is_ui_path`]); its nearest `package.json` in the pushed commit looks
+/// like one ([`package_is_ui`]); and its diff is not comments only
+/// ([`comment_only`]). Every doubt — an unreadable manifest, a diff that
+/// cannot be taken — counts.
+fn counts_as_ui(
+    repo: &Path,
+    base: Option<&str>,
+    t: &Target,
+    file: &str,
+    packages: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    let commit = t.src.as_str();
+    if !is_ui_path(file) {
+        return false;
+    }
+    if !nearest_package_is_ui(repo, commit, file, packages) {
+        return false;
+    }
+    let commentable = [".ts", ".tsx", ".js", ".jsx", ".css"]
+        .iter()
+        .any(|e| file.ends_with(e));
+    if !commentable {
+        return true;
+    }
+    let range = base.map(|b| format!("{b}..{commit}"));
+    let not_remote = format!("--remotes={}", t.remote);
+    let args: Vec<&str> = match &range {
+        Some(r) => vec!["diff", "--no-ext-diff", "--no-color", "-U0", r, "--", file],
+        // No single base: every commit the remote lacks, each against its
+        // first parent. Comments-only in each is comments-only in all.
+        None => vec![
+            "log",
+            "-p",
+            "-U0",
+            "--format=",
+            "--no-ext-diff",
+            "--no-color",
+            "--first-parent",
+            "--diff-merges=first-parent",
+            commit,
+            "--not",
+            &not_remote,
+            "--",
+            file,
+        ],
+    };
+    match amont_agent_guard::git::stdout_in(repo, &args) {
+        Some(diff) => !comment_only(&diff),
+        None => true,
+    }
+}
+
+/// Walk up from the file to the repository root, in the pushed commit, and
+/// judge the first `package.json` met. None at all: the path decides.
+fn nearest_package_is_ui(
+    repo: &Path,
+    commit: &str,
+    file: &str,
+    cache: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    let mut dir = Path::new(file).parent();
+    loop {
+        let d = dir
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some(&known) = cache.get(&d) {
+            return known;
+        }
+        let manifest = if d.is_empty() {
+            "package.json".to_string()
+        } else {
+            format!("{d}/package.json")
+        };
+        if let Some(text) =
+            amont_agent_guard::git::stdout_in(repo, &["show", &format!("{commit}:{manifest}")])
+        {
+            let ui = crate::plan_text::package_is_ui(&text);
+            cache.insert(d, ui);
+            return ui;
+        }
+        if d.is_empty() {
+            cache.insert(d, true);
+            return true;
+        }
+        dir = dir.and_then(Path::parent);
+    }
+}
+
+/// Whether a `git diff -U0` of one file changes comments and nothing else:
+/// at least one hunk, and every added or removed line that is not blank is
+/// a comment line ([`is_comment_line`]). No hunk at all (a binary file, a
+/// mode change) is not "comments only".
+pub fn comment_only(diff: &str) -> bool {
+    let mut hunks = false;
+    let mut header = true;
+    for line in diff.lines() {
+        if line.starts_with("diff ") {
+            // A file's header — `index`, `---`, `+++` — until its first hunk.
+            header = true;
+            continue;
+        }
+        if line.starts_with("@@") {
+            hunks = true;
+            header = false;
+            continue;
+        }
+        if header {
+            continue;
+        }
+        let body = match line.as_bytes().first() {
+            Some(b'+') | Some(b'-') => &line[1..],
+            _ => continue,
+        };
+        if body.trim().is_empty() {
+            continue;
+        }
+        if !is_comment_line(body) {
+            return false;
+        }
+    }
+    hunks
+}
+
+/// A line that, on its own, is nothing but a comment. Conservative: a line
+/// that also carries code — `/* x */ foo()`, `*/ bar` — is not, and neither
+/// is a `*` line that reads like code (a CSS `* {` rule, a continued
+/// multiplication ending in `;`).
+pub fn is_comment_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with("//") {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix("{/*") {
+        // A JSX comment: closed on this line with `*/}`, or not closed yet.
+        return match rest.find("*/") {
+            None => !rest.contains('}'),
+            Some(i) => rest[i..] == *"*/}",
+        };
+    }
+    if let Some(rest) = t.strip_prefix("/*") {
+        return match rest.find("*/") {
+            None => true,
+            Some(i) => rest[i..] == *"*/",
+        };
+    }
+    if let Some(rest) = t.strip_prefix("*/") {
+        // The end of a block comment — `*/`, or a JSX comment's `*/}`.
+        return rest.is_empty() || rest == "}";
+    }
+    if let Some(rest) = t.strip_prefix('*') {
+        // Inside a block comment: `*`, `* text`, `* text */`.
+        if !(rest.is_empty() || rest.starts_with([' ', '\t']) || rest.starts_with("*/")) {
+            return false;
+        }
+        let body = rest.trim();
+        if let Some(i) = body.find("*/") {
+            return &body[i..] == "*/" && !body.contains("/*");
+        }
+        if body.starts_with('@') {
+            // A JSDoc tag: `* @param {string} name`.
+            return true;
+        }
+        // What reads like code: a CSS `* {` rule, a statement's end.
+        return !body.ends_with(['{', '}', ';']) && !body.contains('{');
+    }
+    false
+}
+
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    amont_agent_guard::git::stdout_in(dir, args).filter(|s| !s.is_empty())
+}
+
+/// Why a push needs a preview it does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Needs {
+    /// An unapproved interface change; `mockup` when the commit carries a
+    /// picked mockup (or cannot be told apart from one), held at deny.
+    Unapproved { mockup: bool },
+    /// Under deny, a push whose shape cannot be read, held so that `--all`
+    /// is not the way around the gate. Not a missing approval: saying so
+    /// sent a session looking for one it did not need (2026-10-08).
+    Unreadable(&'static str),
+}
+
+/// The rule's question: would this push publish an interface change that no
+/// approved preview covers? `Ok` fires the rule and says why; `Err` names
+/// why it did not.
+pub fn needs_preview(
+    ctx: &amont_agent_guard::rules::Context,
+    cmd: &amont_agent_guard::shell::Simple,
+    stance: Stance,
+) -> Result<Needs, &'static str> {
+    match push_target::resolve_for(ctx, cmd) {
+        Push::DryRun => Err("a dry run publishes nothing"),
+        Push::DeleteOnly => Err("a delete publishes nothing"),
+        Push::Refused(_) => Err("amont refuses this land, so it publishes nothing"),
+        Push::Unresolvable { repo, shape } => {
+            if repo.as_deref().is_some_and(gated) && stance == Stance::Deny {
+                // Under deny a shape nobody can read is held: `--all` must
+                // not be the way around the gate.
+                Ok(Needs::Unreadable(shape))
+            } else {
+                Err(shape)
+            }
+        }
+        Push::Resolved { repo, targets } => {
+            if !gated(&repo) {
+                return Err("not a repository with a user interface");
+            }
+            let mut any_ui = false;
+            let mut evidenced = false;
+            for t in targets.iter().filter(|t| t.kind == Kind::Branch) {
+                let Some(stands) = standing(&repo, t) else {
+                    return if stance == Stance::Deny {
+                        Ok(Needs::Unreadable("the published files cannot be listed"))
+                    } else {
+                        Err("the published files cannot be listed")
+                    };
+                };
+                match stands {
+                    Standing::NoUi => {}
+                    Standing::Evidence(detail) => {
+                        any_ui = true;
+                        note("evidence", "-", &repo.to_string_lossy(), &detail);
+                        evidenced = true;
+                    }
+                    Standing::Approval { mockup } => {
+                        any_ui = true;
+                        if !approved(&repo, &t.src) {
+                            return Ok(Needs::Unapproved { mockup });
+                        }
+                    }
+                }
+            }
+            if evidenced {
+                Err("the plan the person approved declares the preview's evidence")
+            } else if any_ui {
+                Err("every interface change is approved")
+            } else {
+                Err("no interface change")
+            }
+        }
+    }
+}
+
+/// What stands for one branch target's preview, decided without a journal
+/// line: the gate and the provenance record both read it.
+enum Standing {
+    /// No interface change: nothing to preview.
+    NoUi,
+    /// The approved plan declares the evidence (the journal detail).
+    Evidence(String),
+    /// An interface change that needs the person's approval; `mockup` when
+    /// a picked mockup's screens are listed or cannot be listed.
+    Approval { mockup: bool },
+}
+
+/// The standing of a branch target, or `None` when its files cannot be
+/// listed. Evidence never stands for a picked mockup's preview, nor when the
+/// screens cannot be listed.
+fn standing(repo: &Path, t: &Target) -> Option<Standing> {
+    if !carries_ui(repo, t)? {
+        return Some(Standing::NoUi);
+    }
+    let screens = mockup_screens(repo, &t.src);
+    if matches!(&screens, Ok(s) if s.is_empty()) {
+        if let Some(detail) = evidence_of(repo, &t.src) {
+            return Some(Standing::Evidence(detail));
+        }
+    }
+    Some(Standing::Approval {
+        mockup: screens.map_or(true, |s| !s.is_empty()),
+    })
+}
+
+/// What the preview rule says of a pushed branch target, for the provenance
+/// record: `Evidence` when the gate passes on the plan's evidence, `Approved`
+/// when it passes on the person's approval, `NotRequired` for no interface
+/// change (or a repository without one). `None` when nothing has stood yet: a
+/// push the gate would hold, or whose files cannot be listed. The record is
+/// written once per commit, so it waits for the push that passes.
+/// What the preview rule knew about the push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Approved,
+    Evidence,
+    NotRequired,
+}
+
+impl Outcome {
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Outcome::Approved => "approved",
+            Outcome::Evidence => "evidence",
+            Outcome::NotRequired => "not-required",
+        }
+    }
+}
+
+pub(crate) fn outcome(repo: &Path, t: &Target) -> Option<Outcome> {
+    if !gated(repo) {
+        return Some(Outcome::NotRequired);
+    }
+    match standing(repo, t)? {
+        Standing::NoUi => Some(Outcome::NotRequired),
+        Standing::Evidence(_) => Some(Outcome::Evidence),
+        Standing::Approval { .. } => approval_of(repo, &t.src).map(|_| Outcome::Approved),
+    }
+}
+
+// --- mockup mode -----------------------------------------------------------
+
+/// Where a repository keeps its picked mockups: `git config
+/// amont.agent.preview.mockups`, else `docs/mockups` — the same key the
+/// application-landscape `ui-handoff` check reads.
+fn mockups_dir(repo: &Path) -> String {
+    git(repo, &["config", "--get", "amont.agent.preview.mockups"])
+        .filter(|d| !d.trim().is_empty())
+        .map(|d| d.trim().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "docs/mockups".to_string())
+}
+
+/// The screens a commit's branch carries picked mockups for: folders under
+/// the mockups directory that `merge-base(<default branch>, commit)..commit`
+/// changes and that hold a `*.dc.html` artboard at `commit`.
+///
+/// Always from the merge base, never from the upstream ref: after the first
+/// push the upstream already holds the artboards, and a range that starts
+/// there would find no screen and switch the check off (the PR #302 case).
+/// `Err` when the range cannot be established while the commit does carry
+/// artboards: a check that cannot look must not pass.
+pub fn mockup_screens(repo: &Path, commit: &str) -> Result<Vec<String>, String> {
+    let dir = mockups_dir(repo);
+    let has_artboards = |tree_path: &str| {
+        git(
+            repo,
+            &["ls-tree", "-r", "--name-only", commit, "--", tree_path],
+        )
+        .is_some_and(|l| l.lines().any(|f| f.ends_with(".dc.html")))
+    };
+    if !has_artboards(&dir) {
+        return Ok(Vec::new());
+    }
+    let base = amont_agent_guard::stale::remote_of(repo)
+        .and_then(|r| amont_agent_guard::stale::default_base(repo, &r))
+        .ok_or_else(|| {
+            format!(
+                "{dir} holds artboards, and the commits this preview adds cannot be told apart from the default branch's: no default remote branch (set `checkout.defaultRemote`, or fetch `origin`)"
+            )
+        })?;
+    let from = git(repo, &["merge-base", &base, commit]).ok_or_else(|| {
+        format!(
+            "{dir} holds artboards, and {base} shares no history with {}",
+            short(commit)
+        )
+    })?;
+    // Not `git()`: an empty diff (the commit IS its merge base, as when the
+    // default branch itself is tagged) is no screen, not a failure.
+    let changed = amont_agent_guard::git::stdout_in(
+        repo,
+        &["diff", "--name-only", &format!("{from}..{commit}")],
+    )
+    .ok_or_else(|| format!("`git diff {}..{}` failed", short(&from), short(commit)))?;
+    let prefix = format!("{dir}/");
+    let mut screens: Vec<String> = Vec::new();
+    for f in changed.lines() {
+        let Some(rest) = f.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some((name, _)) = rest.split_once('/') else {
+            continue;
+        };
+        let screen = format!("{dir}/{name}");
+        if !screens.contains(&screen) && has_artboards(&screen) {
+            screens.push(screen);
+        }
+    }
+    Ok(screens)
+}
+
+// --- the store ------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Registration {
+    id: String,
+    session: String,
+    prompt: String,
+    repo: String,
+    commit: String,
+    url: String,
+    /// The guide's path (the attestation's, before 2.21.0).
+    guide: String,
+    at: u64,
+    /// The `tool_use_id` of the marked question that listed it, or `-`.
+    asked: String,
+}
+
+impl Registration {
+    fn line(&self) -> String {
+        [
+            self.id.as_str(),
+            &self.session,
+            &self.prompt,
+            &self.repo,
+            &self.commit,
+            &self.url,
+            &self.guide,
+            &self.at.to_string(),
+            &self.asked,
+        ]
+        .map(clean)
+        .join("\t")
+    }
+    fn parse(line: &str) -> Option<Registration> {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() != 9 {
+            return None;
+        }
+        Some(Registration {
+            id: f[0].into(),
+            session: f[1].into(),
+            prompt: f[2].into(),
+            repo: f[3].into(),
+            commit: f[4].into(),
+            url: f[5].into(),
+            guide: f[6].into(),
+            at: f[7].parse().ok()?,
+            asked: f[8].into(),
+        })
+    }
+    fn label(&self) -> String {
+        let name = Path::new(&self.repo)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("{name}@{}", short(&self.commit))
+    }
+}
+
+/// The names a person knows a checkout by, most specific first: its
+/// directory, the main worktree's directory (a task worktree is
+/// `app-wt-x`; the person calls it `app`), and the origin repository's name.
+fn checkout_names(repo: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: &str| {
+        let s = s.trim();
+        if !s.is_empty() && !out.iter().any(|o| o == s) {
+            out.push(s.to_string());
+        }
+    };
+    if let Some(n) = repo.file_name() {
+        push(&n.to_string_lossy());
+    }
+    if let Some(common) = git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) {
+        let common = PathBuf::from(common);
+        if common.file_name().is_some_and(|n| n == ".git") {
+            if let Some(n) = common.parent().and_then(Path::file_name) {
+                push(&n.to_string_lossy());
+            }
+        }
+    }
+    if let Some(url) = git(repo, &["remote", "get-url", "origin"]) {
+        let last = url
+            .trim_end_matches('/')
+            .rsplit(['/', ':'])
+            .next()
+            .unwrap_or("");
+        push(last.trim_end_matches(".git"));
+    }
+    out
+}
+
+fn clean(s: &str) -> String {
+    s.replace(['\t', '\n', '\r'], " ")
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
+}
+
+/// Live registrations; lapsed ones are journalled and dropped here, on read,
+/// so expiry holds in a session that never restarts.
+fn registrations() -> Vec<Registration> {
+    let Some(path) = dir().map(|d| d.join("registrations")) else {
+        return Vec::new();
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let all: Vec<Registration> = text.lines().filter_map(Registration::parse).collect();
+    let cutoff = now().saturating_sub(REGISTRATION_TTL);
+    let (live, lapsed): (Vec<_>, Vec<_>) = all.into_iter().partition(|r| r.at >= cutoff);
+    if !lapsed.is_empty() {
+        for r in &lapsed {
+            note(
+                "expired",
+                &r.session,
+                &r.repo,
+                &format!("registration {} {}", r.id, r.label()),
+            );
+        }
+        save_registrations(&live);
+    }
+    live
+}
+
+fn save_registrations(regs: &[Registration]) {
+    let Some(d) = dir() else { return };
+    if ensure(&d).is_none() {
+        return;
+    }
+    let mut body: String = regs.iter().map(|r| r.line() + "\n").collect();
+    if body.is_empty() {
+        body.push('\n');
+    }
+    let path = d.join("registrations");
+    let _ = amont_agent_guard::atomic::write_atomic(&path, &body);
+    journal::private(&path, 0o600);
+}
+
+/// One stored approval: repository, commit, when, channel, and the
+/// content id of the commit (`None` on a line written before trees were
+/// recorded, which then matches by commit only).
+type Approval = (String, String, u64, String, Option<String>);
+
+fn approvals() -> Vec<Approval> {
+    let Some(path) = dir().map(|d| d.join("approvals")) else {
+        return Vec::new();
+    };
+    let cutoff = now().saturating_sub(APPROVAL_TTL);
+    std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let at: u64 = f.get(2)?.parse().ok()?;
+            Some((
+                f.first()?.to_string(),
+                f.get(1)?.to_string(),
+                at,
+                f.get(3).unwrap_or(&"-").to_string(),
+                f.get(4)
+                    .filter(|t| !t.is_empty() && **t != "-")
+                    .map(|t| t.to_string()),
+            ))
+        })
+        .filter(|(_, _, at, _, _)| *at >= cutoff)
+        .collect()
+}
+
+/// Whether the person approved this commit of this repository: exactly, or
+/// by content — a stored content id ([`crate::content_id::content_id`],
+/// which skips `docs/plans/`) equal to this commit's. A reword, an amend or
+/// a plan-only change keeps the tree, so the approval still stands.
+pub fn approved(repo: &Path, commit: &str) -> bool {
+    match approval_of(repo, commit) {
+        None => false,
+        Some(ApprovedBy::Exact) => true,
+        Some(ApprovedBy::ByTree(from)) => {
+            note(
+                "approved-by-tree",
+                "-",
+                &repo.to_string_lossy(),
+                &format!("{}\u{2192}{}", short(&from), short(commit)),
+            );
+            true
+        }
+    }
+}
+
+/// How an approved commit is approved.
+enum ApprovedBy {
+    /// The commit itself.
+    Exact,
+    /// A commit with the same content id: the approved commit's sha.
+    ByTree(String),
+}
+
+/// How the commit is approved, or `None` when it is not.
+fn approval_of(repo: &Path, commit: &str) -> Option<ApprovedBy> {
+    let repo_s = repo.to_string_lossy();
+    let mine: Vec<Approval> = approvals()
+        .into_iter()
+        .filter(|a| *a.0 == *repo_s)
+        .collect();
+    if mine.iter().any(|a| a.1 == commit) {
+        return Some(ApprovedBy::Exact);
+    }
+    if !mine.iter().any(|a| a.4.is_some()) {
+        return None;
+    }
+    let tree = crate::content_id::content_id(repo, commit).ok()?;
+    mine.iter()
+        .find(|a| a.4.as_deref() == Some(tree.as_str()))
+        .map(|a| ApprovedBy::ByTree(a.1.clone()))
+}
+
+fn approve(regs: &[Registration], channel: &str) {
+    let Some(d) = dir() else { return };
+    if ensure(&d).is_none() {
+        return;
+    }
+    let mut kept = approvals();
+    for r in regs {
+        kept.retain(|(repo, c, _, _, _)| !(repo == &r.repo && c == &r.commit));
+        let tree = crate::content_id::content_id(Path::new(&r.repo), &r.commit).ok();
+        kept.push((
+            r.repo.clone(),
+            r.commit.clone(),
+            now(),
+            channel.to_string(),
+            tree,
+        ));
+        note(
+            "approved",
+            &r.session,
+            &r.repo,
+            &format!("{} by {channel}", r.label()),
+        );
+    }
+    let body: String = kept
+        .iter()
+        .map(|(r, c, at, ch, tree)| {
+            let mut line = format!("{}\t{}\t{at}\t{}", clean(r), clean(c), clean(ch));
+            if let Some(t) = tree {
+                line.push('\t');
+                line.push_str(&clean(t));
+            }
+            line + "\n"
+        })
+        .collect();
+    let path = d.join("approvals");
+    let _ = amont_agent_guard::atomic::write_atomic(&path, &body);
+    journal::private(&path, 0o600);
+}
+
+/// One journal line under the rule's id. The soak reads these back.
+fn note(outcome: &str, session: &str, repo: &str, excerpt: &str) {
+    let name = Path::new(repo)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "-".to_string());
+    journal::record(&journal::Entry {
+        rule: RULE_ID,
+        stance: "-",
+        outcome,
+        session,
+        repo: &name,
+        mode: "-",
+        excerpt,
+    });
+}
+
+// --- registration ---------------------------------------------------------
+
+/// What `preview register` validated and printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Registered {
+    pub id: String,
+    pub repo: String,
+    pub commit: String,
+    pub url: String,
+    /// The guide, absolute.
+    pub guide: String,
+    /// `index.html` beside the guide, absolute; empty when read from a
+    /// release that rendered none.
+    pub page: String,
+    /// The page as a `file://` URL.
+    pub page_url: String,
+    /// What the marked question must show: `<checkout>@<sha7>`.
+    pub label: String,
+    /// Other labels that name the same commit: the main worktree's
+    /// directory and the origin repository's name, each `@<sha7>`.
+    pub aliases: Vec<String>,
+    /// What the marked question starts with, verbatim:
+    /// `[preview <id>] <label>`. Empty when read from a release that printed
+    /// none.
+    pub question_prefix: String,
+}
+
+impl Registered {
+    /// `attestation` repeats `guide` for one release, so a hook older than
+    /// the CLI that printed this still binds it.
+    pub fn to_json(&self) -> String {
+        amont_agent_guard::json::object(&[
+            amont_agent_guard::json::string_field("id", &self.id),
+            amont_agent_guard::json::string_field("repo", &self.repo),
+            amont_agent_guard::json::string_field("commit", &self.commit),
+            amont_agent_guard::json::string_field("url", &self.url),
+            amont_agent_guard::json::string_field("guide", &self.guide),
+            amont_agent_guard::json::string_field("page", &self.page),
+            amont_agent_guard::json::string_field("page_url", &self.page_url),
+            amont_agent_guard::json::string_field("label", &self.label),
+            amont_agent_guard::json::string_array_field("aliases", &self.aliases),
+            amont_agent_guard::json::string_field("question_prefix", &self.question_prefix),
+            amont_agent_guard::json::string_field("attestation", &self.guide),
+        ])
+    }
+    /// Reads 2.21.0's shape, and the older one that carried only
+    /// `attestation`.
+    fn from_json(text: &str) -> Option<Registered> {
+        let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+        let s = |k: &str| v.get(k)?.as_str().map(str::to_string);
+        Some(Registered {
+            id: s("id")?,
+            repo: s("repo")?,
+            commit: s("commit")?,
+            url: s("url")?,
+            guide: s("guide").or_else(|| s("attestation"))?,
+            page: s("page").unwrap_or_default(),
+            page_url: s("page_url").unwrap_or_default(),
+            label: s("label").unwrap_or_default(),
+            aliases: v
+                .get("aliases")
+                .and_then(|a| a.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            question_prefix: s("question_prefix").unwrap_or_default(),
+        })
+    }
+}
+
+/// Validate a preview for registration and render its guide to `index.html`
+/// beside it. Touches no store: the hook binds.
+pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("`{url}` is not an http(s) URL"));
+    }
+    let repo = push_target::toplevel(repo_dir)
+        .ok_or_else(|| format!("{} is not inside a git repository", repo_dir.display()))?;
+    let commit = git(
+        &repo,
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    )
+    .ok_or_else(|| "HEAD is not a commit".to_string())?;
+    let status = amont_agent_guard::git::stdout_in(&repo, &["status", "--porcelain"])
+        .ok_or_else(|| "`git status` failed".to_string())?;
+    if !status.trim().is_empty() {
+        return Err(format!(
+            "the worktree is not clean, so the preview is not of commit {}:\n{status}",
+            short(&commit)
+        ));
+    }
+    let record = std::fs::canonicalize(guide)
+        .map_err(|_| format!("the guide {} does not exist", guide.display()))?;
+    let size = std::fs::metadata(&record).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return Err(format!("the guide {} is empty", record.display()));
+    }
+    if size > crate::guide::MAX_BYTES {
+        return Err(format!(
+            "the guide {} is {size} bytes; a guide is a page, not a log",
+            record.display()
+        ));
+    }
+    let canon_repo = std::fs::canonicalize(&repo).unwrap_or_else(|_| repo.clone());
+    if record.starts_with(&canon_repo) {
+        return Err(format!(
+            "the guide {} is inside the worktree; writing it there (and its page beside it) dirties the commit it describes. Keep it under {}",
+            record.display(),
+            dir()
+                .and_then(|d| d.parent().map(|p| p.join("attestations")))
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "the amont-agent state directory".to_string())
+        ));
+    }
+    let text = std::fs::read_to_string(&record)
+        .map_err(|_| format!("the guide {} is not UTF-8 text", record.display()))?;
+    let folder = record.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let screens = mockup_screens(&repo, &commit)?;
+    let mut missing = crate::guide::check(&text);
+    if !screens.is_empty() {
+        missing.extend(crate::guide::check_mockup(&text, &screens, &folder));
+    }
+    if !missing.is_empty() {
+        let mut sections: Vec<String> = crate::guide::SECTIONS
+            .iter()
+            .map(|s| format!("`## {s}`"))
+            .collect();
+        let mut mode = String::new();
+        if !screens.is_empty() {
+            sections.push(format!("`## {}`", crate::guide::DIFFERENCES));
+            let screen = &screens[0];
+            mode = format!(
+                "mockup mode: this branch commits the picked artboards of {} (handoff.prove-fidelity), so the guide shows the artboard beside the built screen, at one viewport, and says how they differ.\n",
+                screens.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ")
+            );
+            let paste = format!(
+                "\nPaste and fill, with artboard.png and after.png copied beside the guide first (its own step):\n\n## Reference\nArtboards: {screen}\nViewport: 1120px · light\n\n![Mockup, direction B](artboard.png)\n![Built screen](after.png)\n\n## {}\n- fixed: <a difference found and removed>\n- deliberate: <a difference kept, and why>\n",
+                crate::guide::DIFFERENCES
+            );
+            missing.push(paste.trim_end().to_string());
+        }
+        let (paste, items): (Vec<&String>, Vec<&String>) =
+            missing.iter().partition(|m| m.starts_with("\nPaste"));
+        return Err(format!(
+            "the guide {} lacks what the person needs to decide with (work.preview-is-guided):\n{mode}{}\nRequired H2 sections, in order: {}.{}",
+            record.display(),
+            items
+                .iter()
+                .map(|m| format!("  - {m}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            sections.join(", "),
+            paste.first().map(|s| s.as_str()).unwrap_or("")
+        ));
+    }
+    if !screens.is_empty() {
+        for w in crate::guide::width_warnings(&text, &folder) {
+            eprintln!("amont-agent: warning: {w}");
+        }
+    }
+    let names = checkout_names(&repo);
+    let label = format!(
+        "{}@{}",
+        names.first().map(String::as_str).unwrap_or_default(),
+        short(&commit)
+    );
+    let aliases: Vec<String> = names
+        .iter()
+        .skip(1)
+        .map(|n| format!("{n}@{}", short(&commit)))
+        .collect();
+    let html = crate::guide::render(
+        &text,
+        &crate::guide::Page {
+            label: &label,
+            commit: &commit,
+            url,
+        },
+    );
+    for img in crate::guide::missing_images(&text, &folder) {
+        eprintln!(
+            "amont-agent: warning: the guide references {img}, which is not beside it in {}",
+            folder.display()
+        );
+    }
+    let page = folder.join("index.html");
+    amont_agent_guard::atomic::write_atomic(&page, &html)
+        .map_err(|e| format!("the page {} could not be written: {e}", page.display()))?;
+    let id = format!("{}{:x}", short(&commit), now() & 0xfff_ffff);
+    Ok(Registered {
+        question_prefix: question_prefix(&id, &label),
+        id,
+        repo: repo.to_string_lossy().into_owned(),
+        commit,
+        url: url.to_string(),
+        guide: record.to_string_lossy().into_owned(),
+        page_url: crate::guide::file_url(&page),
+        page: page.to_string_lossy().into_owned(),
+        label,
+        aliases,
+    })
+}
+
+/// The text a marked question starts with: the marker, then the label the
+/// person knows the commit by.
+pub fn question_prefix(id: &str, label: &str) -> String {
+    format!("[preview {id}] {label}")
+}
+
+/// Before a Bash call that runs `preview register`: record, per
+/// `tool_use_id`, when the call started. [`bind`] reads it back, so a line an
+/// earlier clause printed — or a page an earlier call rendered — cannot be
+/// passed off as this call's.
+pub fn stamp_register(
+    bash: &amont_agent_guard::payload::Bash,
+    parsed: &amont_agent_guard::shell::Parsed,
+) {
+    if bash.tool_use_id.is_empty() || bash.tool_use_id.contains('/') {
+        return;
+    }
+    if !parsed.clauses().iter().any(is_register) {
+        return;
+    }
+    if let Some(d) = dir().map(|d| d.join("registers")) {
+        if ensure(&d).is_some() {
+            let _ = amont_agent_guard::atomic::write_atomic(
+                &d.join(&bash.tool_use_id),
+                &format!("{}\t{}\n", clean(&bash.session), now_ms()),
+            );
+        }
+    }
+}
+
+/// Take (read and remove) the start [`stamp_register`] recorded for this
+/// call, in milliseconds; `None` when there is none for this session.
+fn take_stamp(session: &str, tool_use_id: &str) -> Option<u64> {
+    if tool_use_id.is_empty() || tool_use_id.contains('/') {
+        return None;
+    }
+    let path = dir()?.join("registers").join(tool_use_id);
+    let text = std::fs::read_to_string(&path).ok();
+    let _ = std::fs::remove_file(&path);
+    let text = text?;
+    let (who, at) = text.trim_end().split_once('\t')?;
+    (who == clean(session)).then(|| at.parse().ok()).flatten()
+}
+
+/// The JSON `preview register` printed: the last non-empty line of stdout,
+/// where it prints itself compact on one line after anything an earlier
+/// clause printed.
+fn printed_json(stdout: &str) -> Option<Registered> {
+    let line = stdout.lines().rev().find(|l| !l.trim().is_empty())?;
+    Registered::from_json(line)
+}
+
+/// Whether the printed registration is this call's own, and not a line an
+/// earlier clause printed: its id starts with the commit's sha7, and its
+/// page exists, names the full commit, and was written after the call began.
+fn printed_by_this_call(printed: &Registered, started_ms: u64) -> Result<(), &'static str> {
+    if !printed.id.starts_with(short(&printed.commit)) {
+        return Err("its id does not start with the commit it names");
+    }
+    if printed.page.is_empty() {
+        return Err("its output names no page");
+    }
+    let page = Path::new(&printed.page);
+    let Ok(html) = std::fs::read_to_string(page) else {
+        return Err("the page it names does not exist");
+    };
+    if !html.contains(&printed.commit) {
+        return Err("the page it names is not of that commit");
+    }
+    let written_ms = std::fs::metadata(page)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    // A filesystem that keeps whole-second mtimes is compared in seconds;
+    // a finer one in milliseconds, so a page from earlier that second fails.
+    let before = |w: u64| match w % 1000 {
+        0 => w / 1000 < started_ms / 1000,
+        _ => w < started_ms,
+    };
+    if written_ms.is_none_or(before) {
+        return Err("the page it names was not written by this call");
+    }
+    Ok(())
+}
+
+/// After a Bash call: bind a `preview register` that ran as the last
+/// command of the line, in the foreground, to this session and prompt.
+///
+/// Returns what the session must hear: a register that did not bind cannot
+/// be approved by any answer, and in PR #302 that failure was silent — the
+/// journal knew, the agent asked anyway, and the approval bound nothing.
+pub fn bind(
+    bash: &amont_agent_guard::payload::Bash,
+    parsed: &amont_agent_guard::shell::Parsed,
+) -> Option<String> {
+    let clauses = parsed.clauses();
+    let cmd = clauses.iter().find(|c| is_register(c))?;
+    // Where the leading `cd`s left the shell, with `cwd_at`'s semantics.
+    let ctx = amont_agent_guard::rules::Context {
+        platform: Some(amont_agent_guard::rules::Platform::host()),
+        cwd: &bash.cwd,
+        parsed,
+        background: bash.background,
+        timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
+        transcript: bash.transcript.as_deref(),
+        agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
+    };
+    let here = ctx.cwd_at(cmd.at);
+    let dir = match cmd.flag_value("--repo") {
+        Some(d) if d.starts_with('/') => PathBuf::from(d),
+        Some(d) => here.join(d),
+        None => here.clone(),
+    };
+    let named = push_target::toplevel(&dir);
+    // Even a refusal is journalled under the repository the command named.
+    let shown = named.clone().unwrap_or_else(|| dir.clone());
+    let excerpt = "preview register";
+    let printed = bash.stdout.as_deref().and_then(printed_json);
+    // Taken now, whatever the outcome, so no stamp outlives its call.
+    let started = take_stamp(&bash.session, &bash.tool_use_id);
+    // The same command, alone: what the session runs to bind it.
+    let again = format!(
+        "cd {} && {}",
+        shell_word(&here.to_string_lossy()),
+        cmd.words
+            .iter()
+            .map(|w| shell_word(&w.text))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let speaks = amont_agent_guard::stance::resolve(&crate::push_preview::RULE) != Stance::Observe;
+    let refuse = |why: &str| -> Option<String> {
+        note(
+            "unbound",
+            &bash.session,
+            &shown.to_string_lossy(),
+            &format!("{excerpt}: {why}"),
+        );
+        speaks.then(|| {
+            let ask = printed
+                .as_ref()
+                .map(|p| {
+                    if p.question_prefix.is_empty() {
+                        question_prefix(&p.id, &p.label)
+                    } else {
+                        p.question_prefix.clone()
+                    }
+                })
+                .map(|q| format!("a question starting `{}`", q.trim_end()))
+                .unwrap_or_else(|| "the `question_prefix` from its output".to_string());
+            format!(
+                "`preview register` ran, but the preview is NOT bound to this session ({why}), so no answer to a marked question can approve it. Run it again in the foreground as the LAST command of the line: commands joined by `&&` or `;` may come before it, nothing after it, no pipe, no redirect and no `$(…)` around it:\n  {again}\nthen ask the marked question: {ask}."
+            )
+        })
+    };
+    if bash.background {
+        return refuse("it ran in the background");
+    }
+    if !parsed.fully_read() || !register_is_last(clauses, cmd.at) {
+        return refuse("it was not the last command of the line");
+    }
+    let Some(started) = started else {
+        return refuse("no record of the call starting: the hook did not see it before it ran");
+    };
+    let Some(printed) = printed.clone() else {
+        return refuse("its output's last line is not the expected JSON");
+    };
+    let Some(repo) = named else {
+        return refuse("the repository it names is gone");
+    };
+    let head = git(
+        &repo,
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    );
+    if printed.repo != repo.to_string_lossy() || head.as_deref() != Some(printed.commit.as_str()) {
+        return refuse("its output does not match the repository's HEAD");
+    }
+    if let Err(why) = printed_by_this_call(&printed, started) {
+        return refuse(why);
+    }
+    let mut regs = registrations();
+    let before = regs.len();
+    regs.retain(|r| !(r.session == bash.session && r.repo == printed.repo));
+    let outcome = if regs.len() < before {
+        "replaced"
+    } else {
+        "registered"
+    };
+    let reg = Registration {
+        id: printed.id.clone(),
+        session: bash.session.clone(),
+        prompt: bash.prompt_id.clone(),
+        repo: printed.repo.clone(),
+        commit: printed.commit.clone(),
+        url: printed.url.clone(),
+        guide: printed.guide.clone(),
+        at: now(),
+        asked: "-".to_string(),
+    };
+    note(
+        outcome,
+        &bash.session,
+        &reg.repo,
+        &format!(
+            "{} {} {} page={}",
+            reg.id,
+            reg.label(),
+            reg.url,
+            if printed.page.is_empty() {
+                "-"
+            } else {
+                &printed.page
+            }
+        ),
+    );
+    regs.push(reg);
+    save_registrations(&regs);
+    None
+}
+
+/// A word as a shell reads it back: bare when it is plain, single-quoted
+/// otherwise.
+fn shell_word(w: &str) -> String {
+    if !w.is_empty()
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        w.to_string()
+    } else {
+        format!("'{}'", w.replace('\'', "'\\''"))
+    }
+}
+
+/// The register clause at `at` is the last clause of the line: not piped,
+/// redirected, backgrounded or inside a substitution, and every clause of
+/// the line before it is joined to the next by `&&` or `;`. What those
+/// clauses are does not matter: the printed JSON is checked against the
+/// repository's HEAD and against this call ([`printed_by_this_call`]).
+fn register_is_last(clauses: &[amont_agent_guard::shell::Simple], at: usize) -> bool {
+    use amont_agent_guard::shell::Connector;
+    // A substitution's clauses sit after every clause of the line itself.
+    let line: Vec<&amont_agent_guard::shell::Simple> =
+        clauses.iter().filter(|c| c.nested.is_none()).collect();
+    let Some(last) = line.last() else {
+        return false;
+    };
+    if last.at != at || last.next.is_some() || !last.redirects.is_empty() || last.heredoc {
+        return false;
+    }
+    let joined = |c: Option<Connector>| matches!(c, Some(Connector::AndAnd | Connector::Semi));
+    (last.prev.is_none() || joined(last.prev))
+        && line[..line.len() - 1].iter().all(|c| joined(c.next))
+}
+
+fn is_register(cmd: &amont_agent_guard::shell::Simple) -> bool {
+    let is_us = cmd
+        .program()
+        .is_some_and(|p| p == "amont-agent" || p.ends_with("/amont-agent"));
+    let ops: Vec<&str> = cmd.operands().iter().map(|w| w.text.as_str()).collect();
+    // `--help` prints usage and registers nothing: telling the session it
+    // "did not bind" was a false alarm (seen 2026-09-29, the first session
+    // on 2.23.0).
+    let help = cmd
+        .words
+        .iter()
+        .any(|w| w.text == "--help" || w.text == "-h");
+    is_us && !help && ops.first() == Some(&"preview") && ops.get(1) == Some(&"register")
+}
+
+// --- marked questions and approval ----------------------------------------
+
+/// The ids in a `[preview a,b]` marker, if the question carries one.
+pub fn marker(question: &str) -> Option<Vec<String>> {
+    let start = question.find("[preview ")? + "[preview ".len();
+    let end = start + question[start..].find(']')?;
+    let ids: Vec<String> = question[start..end]
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
+/// Before an `AskUserQuestion` runs. Returns the refusal text when a marked
+/// question arrives pre-answered and the rule is denying.
+pub fn on_pre_ask(ask: &amont_agent_guard::payload::Ask, stance: Stance) -> Option<String> {
+    let marked: Vec<Vec<String>> = ask.questions.iter().filter_map(|q| marker(q)).collect();
+    if marked.is_empty() {
+        return None;
+    }
+    let ids: Vec<String> = marked.concat();
+    if let Some(d) = dir().map(|d| d.join("asks")) {
+        if ensure(&d).is_some() && !ask.tool_use_id.is_empty() && !ask.tool_use_id.contains('/') {
+            let _ = amont_agent_guard::atomic::write_atomic(
+                &d.join(&ask.tool_use_id),
+                &format!(
+                    "{}\t{}\t{}\t{}\t{}\n",
+                    clean(&ask.session),
+                    clean(&ask.prompt_id),
+                    ask.prefilled,
+                    ids.join(","),
+                    now_ms()
+                ),
+            );
+        }
+    }
+    if ask.prefilled {
+        note(
+            "prefilled",
+            &ask.session,
+            &repo_of(&ask.session, &ids),
+            &format!("marked question {}", ids.join(",")),
+        );
+        if stance == Stance::Deny {
+            return Some(
+                "A preview question may not arrive with `answers` already filled in: only the person's own selection approves a preview. Ask it again without `answers`."
+                    .to_string(),
+            );
+        }
+        return None;
+    }
+    // Mark the listed registrations as asked in this turn.
+    let mut regs = registrations();
+    let mut changed = false;
+    for r in regs.iter_mut() {
+        if r.session == ask.session && r.prompt == ask.prompt_id && ids.contains(&r.id) {
+            r.asked = ask.tool_use_id.clone();
+            changed = true;
+        }
+    }
+    if changed {
+        save_registrations(&regs);
+    }
+    None
+}
+
+/// After an `AskUserQuestion`: an answer to a marked question approves,
+/// drops, or — unanswered — leaves its registrations pending. Approve takes
+/// every pending registration whose id the marker lists; no label is needed.
+pub fn on_post_ask(ask: &amont_agent_guard::payload::Ask) {
+    let recorded = dir()
+        .map(|d| d.join("asks").join(&ask.tool_use_id))
+        .filter(|_| !ask.tool_use_id.is_empty() && !ask.tool_use_id.contains('/'))
+        .and_then(|p| {
+            let t = std::fs::read_to_string(&p).ok();
+            let _ = std::fs::remove_file(&p);
+            t
+        });
+    let Some(recorded) = recorded else {
+        // No PreToolUse record: the question was never seen before it ran,
+        // so nothing proves its answers were not pre-filled.
+        if ask.questions.iter().any(|q| marker(q).is_some()) {
+            let ids: Vec<String> = ask
+                .questions
+                .iter()
+                .filter_map(|q| marker(q))
+                .flatten()
+                .collect();
+            note(
+                "unrecorded",
+                &ask.session,
+                &repo_of(&ask.session, &ids),
+                "marked question with no PreToolUse record",
+            );
+        }
+        return;
+    };
+    let answered_ms = now_ms();
+    let f: Vec<&str> = recorded.trim_end().split('\t').collect();
+    // Four fields: written by a release that did not yet time the ask.
+    if !(f.len() == 4 || f.len() == 5) || f[0] != ask.session || f[2] != "false" {
+        return;
+    }
+    let asked_ms = f.get(4).and_then(|t| t.parse::<u64>().ok());
+    for question in &ask.questions {
+        let Some(ids) = marker(question) else {
+            continue;
+        };
+        let label = ask
+            .answers
+            .iter()
+            .find(|(q, _)| q == question)
+            .map(|(_, l)| l.as_str())
+            .unwrap_or("");
+        let latency = latency(asked_ms, answered_ms, ask.duration_ms);
+        let mut regs = registrations();
+        let (mine, rest): (Vec<Registration>, Vec<Registration>) = regs.drain(..).partition(|r| {
+            r.session == ask.session && r.asked == ask.tool_use_id && ids.contains(&r.id)
+        });
+        if mine.is_empty() {
+            continue;
+        }
+        match label {
+            APPROVE => {
+                // The id in the marker is enough: it begins with the commit's
+                // sha7, which the person sees, and the registration it names is
+                // bound to this session, this prompt and this question already.
+                approve(&mine, &format!("option,{latency}"));
+                save_registrations(&rest);
+            }
+            REQUEST_CHANGES | HOLD => {
+                for r in &mine {
+                    note(
+                        "dropped",
+                        &r.session,
+                        &r.repo,
+                        &format!("{} {label} after {latency}", r.label()),
+                    );
+                }
+                save_registrations(&rest);
+            }
+            _ => {
+                // Unanswered — a timeout, or an empty answer. Still pending, so
+                // the typed fallback works for a person who was not watching.
+                for r in &mine {
+                    note(
+                        "unanswered",
+                        &r.session,
+                        &r.repo,
+                        &format!("{} after {latency}", r.label()),
+                    );
+                }
+                let mut back = rest;
+                back.extend(mine);
+                save_registrations(&back);
+            }
+        }
+    }
+}
+
+/// The repository of this session's registrations a marked question names,
+/// for the journal; `-` when it names none (or several repositories).
+fn repo_of(session: &str, ids: &[String]) -> String {
+    let mut repos: Vec<String> = registrations()
+        .into_iter()
+        .filter(|r| r.session == session && ids.contains(&r.id))
+        .map(|r| r.repo)
+        .collect();
+    repos.sort();
+    repos.dedup();
+    match repos.as_slice() {
+        [one] => one.clone(),
+        _ => "-".to_string(),
+    }
+}
+
+/// A typed approval: the whole prompt, trimmed, is one of these words.
+pub fn is_typed_approval(text: &str) -> bool {
+    let t = text
+        .trim()
+        .trim_end_matches(['.', '!', ' '])
+        .to_ascii_lowercase();
+    let t = t.strip_suffix(" it").unwrap_or(&t);
+    matches!(t, "approve" | "approved" | "ship" | "lgtm" | "looks good")
+}
+
+/// A new prompt: previews shown in an earlier turn either get the typed
+/// approval right now, or lapse.
+pub fn on_prompt(prompt: &amont_agent_guard::payload::Prompt) {
+    let regs = registrations();
+    let (older, rest): (Vec<Registration>, Vec<Registration>) = regs
+        .into_iter()
+        .partition(|r| r.session == prompt.session && r.prompt != prompt.prompt_id);
+    if older.is_empty() {
+        return;
+    }
+    let typed = is_typed_approval(&prompt.text);
+    let (asked, never): (Vec<_>, Vec<_>) = older.into_iter().partition(|r| r.asked != "-");
+    for r in &never {
+        note(
+            "dropped",
+            &r.session,
+            &r.repo,
+            &format!("{} was never asked about", r.label()),
+        );
+    }
+    if typed {
+        approve(&asked, "typed");
+    } else {
+        for r in &asked {
+            note(
+                "dropped",
+                &r.session,
+                &r.repo,
+                &format!("{} the next prompt was not an approval", r.label()),
+            );
+        }
+    }
+    save_registrations(&rest);
+}
+
+// --- planned evidence (ADR-0028) ------------------------------------------
+
+/// Where approved plan bodies are recorded: `<state>/plan-approved/<sha>`.
+fn plans_approved_dir() -> Option<PathBuf> {
+    Some(journal::dir()?.join("plan-approved"))
+}
+
+/// After an `ExitPlanMode`: when the person approved the plan, record its
+/// canonical body sha ([`crate::plan_text::body_sha`]), hashed from the
+/// file as it is now.
+///
+/// Like the `approvals` file, this is a workflow aid an agent could write
+/// to, not proof: every pass it grants is journalled `evidence`.
+pub fn on_plan_answered(ev: &amont_agent_guard::payload::PlanAnswered) {
+    if !ev.approved {
+        return;
+    }
+    let Some(file) = &ev.plan_file else { return };
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return;
+    };
+    let Ok(shas) = crate::plan_text::shas(&text) else {
+        return;
+    };
+    let Some(d) = plans_approved_dir() else {
+        return;
+    };
+    if ensure(&d).is_none() {
+        return;
+    }
+    let path = d.join(&shas.sha);
+    let _ = amont_agent_guard::atomic::write_atomic(
+        &path,
+        &format!(
+            "{}\t{}\t{}\n",
+            clean(&ev.session),
+            clean(&file.to_string_lossy()),
+            now()
+        ),
+    );
+    journal::private(&path, 0o600);
+    note(
+        "plan-approved",
+        &ev.session,
+        "-",
+        &format!("{} {}", &shas.sha[..12], file.display()),
+    );
+}
+
+/// Whether the person approved a plan whose canonical body has this sha.
+fn plan_approved(sha: &str) -> bool {
+    sha.len() == 64
+        && sha.bytes().all(|b| b.is_ascii_hexdigit())
+        && plans_approved_dir().is_some_and(|d| d.join(sha).is_file())
+}
+
+/// The reason a plan's `## Preview` section declares: the section's first
+/// non-empty line, when it starts with `evidence:` and gives one that is not
+/// the template's `<…>` placeholder, left unedited. Read from
+/// the canonical body, the part the person approved; a heading inside a
+/// code fence is text.
+pub fn preview_evidence(text: &str) -> Option<String> {
+    let body = crate::plan_text::canonical(text);
+    let mut fence = crate::plan_text::Fence::default();
+    let mut lines = body.lines();
+    lines
+        .by_ref()
+        .find(|l| fence.h2(l).is_some_and(|t| t == "Preview"))?;
+    let first = lines.find(|l| !l.trim().is_empty())?;
+    let reason = first.trim().strip_prefix("evidence:")?.trim();
+    (!reason.is_empty() && !reason.starts_with('<')).then(|| reason.to_string())
+}
+
+/// The first plan the branch adds: `(commit, path)` of the earliest
+/// `docs/plans/<name>` added in `from..commit`.
+fn first_plan(repo: &Path, from: &str, commit: &str) -> Option<(String, String)> {
+    let log = git(
+        repo,
+        &[
+            "log",
+            "--reverse",
+            "--diff-filter=A",
+            "--format=%H",
+            "--name-only",
+            &format!("{from}..{commit}"),
+            "--",
+            "docs/plans/",
+        ],
+    )?;
+    let mut at: Option<&str> = None;
+    for line in log.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(name) = line.strip_prefix("docs/plans/") {
+            if let Some(c) = at.filter(|_| crate::plan_phases::is_plan_name(name)) {
+                return Some((c.to_string(), line.to_string()));
+            }
+        } else if line.len() >= 40 && line.bytes().all(|b| b.is_ascii_hexdigit()) {
+            at = Some(line);
+        }
+    }
+    None
+}
+
+/// Whether the plan this branch landed, as the person approved it, says
+/// the evidence is enough (ADR-0028, `work.preview-unless-planned-evidence`).
+///
+/// All must hold: the default branch is known (`stale::remote_of` +
+/// `stale::default_base`) and shares history with `commit`; the branch adds
+/// a plan under `docs/plans/` since that merge base, and it is not a
+/// pointer (`canonical:`); that plan, read at the commit that added it, has
+/// a canonical body sha in `plan-approved/`; and its `## Preview` section
+/// starts with `evidence: <reason>`. The result is the journal detail of a
+/// pass (the plan, the commit and the sha), and the gate journals it as
+/// `evidence`. Any miss is `None`, silent: the approval path
+/// decides, as before.
+fn evidence_of(repo: &Path, commit: &str) -> Option<String> {
+    let base = amont_agent_guard::stale::remote_of(repo)
+        .and_then(|r| amont_agent_guard::stale::default_base(repo, &r))?;
+    let from = git(repo, &["merge-base", &base, commit])?;
+    let (added, path) = first_plan(repo, &from, commit)?;
+    let text = amont_agent_guard::git::stdout_in(repo, &["show", &format!("{added}:{path}")])?;
+    let (front, _) = crate::plans::split_front_matter(&text);
+    if crate::plans::field(front, "canonical").is_some_and(|c| !c.is_empty()) {
+        return None;
+    }
+    let Ok(shas) = crate::plan_text::shas(&text) else {
+        return None;
+    };
+    if !plan_approved(&shas.sha) {
+        return None;
+    }
+    let reason = preview_evidence(&text)?;
+    Some(format!(
+        "{path} commit={} sha={} evidence: {reason}",
+        short(commit),
+        &shas.sha[..12]
+    ))
+}
+
+// --- publication ----------------------------------------------------------
+
+/// Before a push runs: remember, per `tool_use_id`, where each branch
+/// destination stood, and whether the commit was an approved UI change
+/// (this module's policy), through [`amont_agent_guard::push_record`]. `push-published`
+/// reads it back after the push.
+pub fn record_before(
+    bash: &amont_agent_guard::payload::Bash,
+    parsed: &amont_agent_guard::shell::Parsed,
+) {
+    if bash.tool_use_id.is_empty() || bash.tool_use_id.contains('/') {
+        return;
+    }
+    let Some(cmd) = push_target::find(parsed) else {
+        return;
+    };
+    let ctx = amont_agent_guard::rules::Context {
+        platform: Some(amont_agent_guard::rules::Platform::host()),
+        cwd: &bash.cwd,
+        parsed,
+        background: bash.background,
+        timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
+        transcript: bash.transcript.as_deref(),
+        agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
+    };
+    let Push::Resolved { repo, targets } = push_target::resolve_for(&ctx, cmd) else {
+        return;
+    };
+    // A land's judged sha is kept for every repository, gated or not: the
+    // retry check (`land-retry`) compares it with what the land's receipt
+    // says it pushed, and the implementation review covers more repositories
+    // than the preview does.
+    if amont_agent_guard::land::is_land(cmd) {
+        if let (Some(t), amont_agent_guard::land::Answer::Would(l)) = (
+            targets.first(),
+            amont_agent_guard::land::dry_run(&ctx.cwd_at(cmd.at)),
+        ) {
+            amont_agent_guard::push_record::record_land(&bash.tool_use_id, &t.src, &l);
+        }
+    }
+    if !gated(&repo) {
+        return;
+    }
+    let rows: Vec<Before> = targets
+        .iter()
+        .filter(|t| t.kind == Kind::Branch)
+        .map(|t| {
+            let short = t.dst.trim_start_matches("refs/heads/");
+            Before {
+                repo: repo.clone(),
+                remote: t.remote.clone(),
+                dst: t.dst.clone(),
+                before: git(
+                    &repo,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/remotes/{}/{short}", t.remote),
+                    ],
+                ),
+                src: t.src.clone(),
+                ui: carries_ui(&repo, t).unwrap_or(false),
+                approved: approved(&repo, &t.src),
+            }
+        })
+        .collect();
+    amont_agent_guard::push_record::write_before(&bash.tool_use_id, &rows);
+}
+
+/// Delete per-call scratch nobody came back for.
+pub fn sweep() {
+    let Some(d) = dir() else { return };
+    for sub in ["pushes", "asks", "registers"] {
+        let Ok(entries) = std::fs::read_dir(d.join(sub)) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let old = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > SCRATCH_TTL);
+            if old {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    // Reading prunes lapsed registrations and journals them.
+    let _ = registrations();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan_text::package_is_ui;
+
+    #[test]
+    fn a_preview_section_declares_evidence_on_its_first_line() {
+        let plan =
+            |section: &str| format!("# P\n\n## Context\n\nx\n\n{section}\n## Phases\n\n1. y\n");
+        assert_eq!(
+            preview_evidence(&plan("## Preview\n\nevidence: decided at 28px\n")).as_deref(),
+            Some("decided at 28px")
+        );
+        for held in [
+            // No reason.
+            "## Preview\n\nevidence:\n",
+            // The template's placeholder, left as it was.
+            "## Preview\n\nevidence: <why the person will have nothing left to judge: the visible change\nis one this plan decides>\n",
+            // Not the first non-empty line.
+            "## Preview\n\nThe screenshots.\nevidence: decided\n",
+            // Inside a code fence.
+            "```md\n## Preview\n\nevidence: an example\n```\n",
+            // Another heading.
+            "## Previews\n\nevidence: decided\n",
+            "",
+        ] {
+            assert_eq!(preview_evidence(&plan(held)), None, "{held}");
+        }
+        // Front matter is not the body the person approved.
+        assert_eq!(preview_evidence("---\nstatus: active\n---\n# P\n"), None);
+    }
+
+    #[test]
+    fn a_marker_lists_its_ids() {
+        assert_eq!(
+            marker("[preview a1b2, c3] Ship duro-app@abc1234?"),
+            Some(vec!["a1b2".to_string(), "c3".to_string()])
+        );
+        assert_eq!(marker("Ship it?"), None);
+        assert_eq!(marker("[preview ] empty"), None);
+        assert_eq!(marker("[preview unterminated"), None);
+    }
+
+    #[test]
+    fn only_explicit_words_are_a_typed_approval() {
+        for yes in [
+            "approve",
+            "Approve.",
+            "ship it",
+            "Ship it!",
+            "lgtm",
+            "looks good",
+            "  LGTM  ",
+        ] {
+            assert!(is_typed_approval(yes), "{yes}");
+        }
+        for no in [
+            "yes",
+            "go",
+            "ok",
+            "continue",
+            "approve but fix the header",
+            "ship it later",
+            "",
+        ] {
+            assert!(!is_typed_approval(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn ui_paths_are_recognised_and_docs_are_not() {
+        for ui in [
+            "app/routes/home.tsx",
+            "src/main.ts",
+            "web/src/x.ts",
+            "packages/ui/src/a.ts",
+            "styles/site.css",
+            "public/index.html",
+            "apps/web/vite.config.ts",
+            // Rendered files under a test-named directory are routes.
+            "app/routes/test/index.tsx",
+            "app/tests/page.tsx",
+            "src/e2e/Editor.tsx",
+            "src/vitest.tsx",
+            // Near misses of the test names.
+            "src/testimonials/a.tsx",
+            "src/latest.ts",
+            "src/features/e2e-banner.tsx",
+        ] {
+            assert!(is_ui_path(ui), "{ui}");
+        }
+        for not in [
+            "docs/plans/x.md",
+            ".github/workflows/ci.yaml",
+            "README.md",
+            "Cargo.toml",
+            "package.json",
+            "apps/web/vitest.core.config.ts",
+            "app/routes/home.test.tsx",
+            "src/a.spec.ts",
+            "web/e2e/login.ts",
+            "src/__tests__/x.tsx",
+        ] {
+            assert!(!is_ui_path(not), "{not}");
+        }
+    }
+
+    /// application-landscape #301 (2026-09-28), which was advised although
+    /// it changed only comments under app/.
+    const PR_301: &str = "\
+diff --git a/app/.server/observedPipeline.integration.test.ts b/app/.server/observedPipeline.integration.test.ts
+index 15750da..2770014 100644
+--- a/app/.server/observedPipeline.integration.test.ts
++++ b/app/.server/observedPipeline.integration.test.ts
+@@ -8 +8 @@
+- * docs/plan-e4-e5-cluster-connector.md; it needs an authed Pro-org Playwright
++ * docs/plans/2026-07-07-e4-e5-cluster-connector.md; it needs an authed Pro-org Playwright
+";
+
+    #[test]
+    fn comment_only_diffs_from_real_pushes_are_recognised() {
+        assert!(comment_only(PR_301));
+        // Two commits' diffs back to back, as `git log -p` prints them: the
+        // second header is not a changed line.
+        assert!(comment_only(&format!("{PR_301}{PR_301}")));
+        for diff in [
+            "--- a/app/components/board/BoardToolbar.tsx\n+++ b/app/components/board/BoardToolbar.tsx\n\
+             @@ -88 +88 @@ export interface BoardToolbarProps {\n\
+             -  /** Photo mode (plan-90d A): when set, a camera button joins the controls\n\
+             +  /** Photo mode (90-day-table-stakes-plan A): when set, a camera button joins the controls\n",
+            "--- a/app/styles/board.css\n+++ b/app/styles/board.css\n@@ -40 +40 @@\n\
+             -/* ---- PHOTO MODE (plan-90d A) ---- */\n+/* ---- PHOTO MODE (90-day-table-stakes-plan A) ---- */\n",
+            "--- a/app/routes/import.tsx\n+++ b/app/routes/import.tsx\n@@ -3 +3 @@\n\
+             -// Import from a spreadsheet (plan-90d D): an onboarding path\n\
+             +// Import from a spreadsheet (90-day-table-stakes-plan D): an onboarding path\n",
+            "@@ -12,0 +13,2 @@\n+        {/* the header row */}\n+\n",
+            "@@ -5,3 +5,3 @@\n- * Old text.\n- * @param {string} name the name\n-*/\n+ * New text.\n+ * @returns {JSX.Element}\n+ */\n",
+        ] {
+            assert!(comment_only(diff), "{diff}");
+        }
+    }
+
+    #[test]
+    fn any_code_in_the_diff_counts_as_an_interface_change() {
+        for diff in [
+            // A real JSX change.
+            "@@ -20 +20 @@ export function Toolbar() {\n-      <Button>Save</Button>\n+      <Button>Save all</Button>\n",
+            // A comment and a line of code together.
+            "@@ -1,2 +1,2 @@\n-// old\n+// new\n-const gap = 4\n+const gap = 8\n",
+            // Code after a closed block comment, on the same line.
+            "@@ -1 +1 @@\n-/* a */ foo()\n+/* b */ foo()\n",
+            "@@ -3 +3 @@\n- */ export const x = 1\n+ */ export const x = 2\n",
+            // CSS's universal selector starts with `*` and is not a comment.
+            "@@ -1 +1 @@\n-* { margin: 0 }\n+* { margin: 4px }\n",
+            "@@ -1,0 +1 @@\n+* {\n",
+            // No hunk: a binary file or a mode change.
+            "diff --git a/app/logo.png b/app/logo.png\nBinary files a/app/logo.png and b/app/logo.png differ\n",
+            "",
+        ] {
+            assert!(!comment_only(diff), "{diff}");
+        }
+    }
+
+    #[test]
+    fn a_package_json_looks_like_an_interface_by_dev_script_or_ui_dependency() {
+        // duro-design-system/packages/cli: `@duro-app/ui` only as a dev and
+        // an optional peer dependency. A CLI; renders nothing.
+        let cli = r#"{"name":"@duro-app/cli","bin":{"duro":"./dist/bin.js"},
+            "scripts":{"build":"tsc -p tsconfig.build.json"},
+            "peerDependencies":{"@duro-app/ui":"workspace:^"},
+            "peerDependenciesMeta":{"@duro-app/ui":{"optional":true}},
+            "devDependencies":{"@duro-app/ui":"workspace:^","typescript":"^5.7.0"}}"#;
+        assert!(!package_is_ui(cli));
+        // duro-design-system/packages/ui: a required react peer.
+        assert!(package_is_ui(
+            r#"{"peerDependencies":{"react":"^19","react-strict-dom":"*"}}"#
+        ));
+        // An app: react in dependencies.
+        assert!(package_is_ui(r#"{"dependencies":{"react-dom":"^19"}}"#));
+        assert!(package_is_ui(r#"{"dependencies":{"@duro-app/ui":"^3"}}"#));
+        assert!(package_is_ui(r#"{"scripts":{"dev":"vite"}}"#));
+        assert!(!package_is_ui(r#"{"scripts":{"dev":"  "}}"#));
+        assert!(!package_is_ui(r#"{"name":"eslint-plugin"}"#));
+        // Unreadable: doubt counts.
+        assert!(package_is_ui("{not json"));
+    }
+
+    #[test]
+    fn latency_is_measured_by_the_hook_and_duration_ms_rides_along() {
+        assert_eq!(latency(Some(1_000), 185_400, Some(0)), "184s,dur=0ms");
+        assert_eq!(latency(None, 185_400, Some(30_997)), "-,dur=30997ms");
+        assert_eq!(latency(Some(9_000), 5_000, None), "-,dur=-");
+    }
+
+    #[test]
+    fn a_registration_round_trips_through_its_line() {
+        let r = Registration {
+            id: "abc123".into(),
+            session: "s".into(),
+            prompt: "p".into(),
+            repo: "/w/duro-app".into(),
+            commit: "abcdef0123".into(),
+            url: "http://localhost:5173/x".into(),
+            guide: "/h/a.md".into(),
+            at: 42,
+            asked: "-".into(),
+        };
+        assert_eq!(Registration::parse(&r.line()), Some(r.clone()));
+        assert_eq!(r.label(), "duro-app@abcdef0");
+    }
+
+    #[test]
+    fn registered_json_round_trips() {
+        let r = Registered {
+            id: "i".into(),
+            repo: "/r".into(),
+            commit: "c".into(),
+            url: "http://localhost:1".into(),
+            guide: "/g/guide.md".into(),
+            page: "/g/index.html".into(),
+            page_url: "file:///g/index.html".into(),
+            label: "r-wt-x@c".into(),
+            aliases: vec!["r@c".into(), "repo@c".into()],
+            question_prefix: "[preview i] r-wt-x@c".into(),
+        };
+        assert!(r
+            .to_json()
+            .contains(r#""question_prefix":"[preview i] r-wt-x@c""#));
+        assert_eq!(Registered::from_json(&r.to_json()), Some(r));
+    }
+
+    #[test]
+    fn a_registration_printed_before_labels_still_reads() {
+        let old = r#"{"id":"i","repo":"/r","commit":"c","url":"http://l/","guide":"/g.md","page":"","page_url":""}"#;
+        let r = Registered::from_json(old).expect("the 2.22 shape");
+        assert_eq!(r.label, "");
+        assert!(r.aliases.is_empty());
+        assert_eq!(r.question_prefix, "");
+    }
+
+    #[test]
+    fn a_word_is_quoted_only_when_it_must_be() {
+        assert_eq!(shell_word("/tmp/g.md"), "/tmp/g.md");
+        assert_eq!(
+            shell_word("http://localhost:5173/"),
+            "http://localhost:5173/"
+        );
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn a_registration_printed_before_guides_still_reads() {
+        let old = r#"{"id":"i","repo":"/r","commit":"c","url":"http://l/","attestation":"/a.md"}"#;
+        let r = Registered::from_json(old).expect("the 2.20.0 shape");
+        assert_eq!(r.guide, "/a.md");
+        assert_eq!(r.page, "");
+    }
+}
