@@ -1,6 +1,6 @@
 //! The rules, and the contract every rule obeys.
 //!
-//! A rule is one module plus one line in [`RULES`] — the same shape
+//! A rule is one module plus one line in [`crate::rule_table::RULES`] — the same shape
 //! amont's `registry::CHECKS` uses, and for the same reason: a rule's
 //! name, its default stance and its function are declared together, so adding
 //! one cannot half-happen.
@@ -44,7 +44,6 @@ pub mod git_add_broad;
 pub mod glob_in_flag_value;
 pub mod glob_no_match;
 pub mod gui_open_unbounded;
-pub mod implementation_review;
 pub mod kubectl_gitops;
 pub mod lint_suppression_added;
 pub mod no_verify;
@@ -56,7 +55,6 @@ pub mod plan_review_panel;
 pub mod poll_blank_verdict;
 pub mod publish_without_skill;
 pub mod push_preflight;
-pub mod push_preview;
 pub mod read_unbounded_large;
 pub mod release_tag_push;
 pub mod request_fanout;
@@ -470,54 +468,6 @@ impl Context<'_> {
     }
 }
 
-pub const RULES: &[Rule] = &[
-    pipe_to_tail::RULE,
-    bare_stash_pop::RULE,
-    gh_pr_merge_auto::RULE,
-    publish_without_skill::RULE,
-    forge_merge_by_hand::RULE,
-    forge_status_stale_row::RULE,
-    no_verify::RULE,
-    git_add_broad::RULE,
-    stale_base::RULE,
-    push_preflight::RULE,
-    push_preview::RULE,
-    plan_review_panel::RULE,
-    plan_phases_open::RULE,
-    implementation_review::RULE,
-    foreground_poll::RULE,
-    unbounded_background_push::RULE,
-    gui_open_unbounded::RULE,
-    sed_in_place::RULE,
-    kubectl_gitops::RULE,
-    tag_after_commit::RULE,
-    release_tag_push::RULE,
-    worktree_remove_force::RULE,
-    amend_pushed::RULE,
-    branch_force_delete::RULE,
-    poll_blank_verdict::RULE,
-    worktree_isolation::RULE,
-    stdin_hang::RULE,
-    glob_in_flag_value::RULE,
-    glob_no_match::RULE,
-    equals_separator::RULE,
-    unsplit_expansion::RULE,
-    path_operand_missing::RULE,
-    stat_bsd_format::RULE,
-    whole_file_dump::RULE,
-    persisted_output_dump::RULE,
-    file_reread::RULE,
-    read_unbounded_large::RULE,
-    code_read_not_lsp::RULE,
-    symbol_grep_not_lsp::RULE,
-    lint_suppression_added::RULE,
-    agent_guidance_written::RULE,
-    agent_guidance_shape::RULE,
-    request_fanout::RULE,
-    test_output_trimmed::RULE,
-    workspace_root_write::RULE,
-];
-
 /// `text` against `cwd`: absolute stays as written, anything else is under
 /// `cwd`.
 pub(crate) fn resolve(cwd: &std::path::Path, text: &str) -> std::path::PathBuf {
@@ -528,8 +478,8 @@ pub(crate) fn resolve(cwd: &std::path::Path, text: &str) -> std::path::PathBuf {
     }
 }
 
-pub fn by_id(id: &str) -> Option<&'static Rule> {
-    RULES.iter().find(|r| r.id == id)
+pub fn by_id(rules: &'static [Rule], id: &str) -> Option<&'static Rule> {
+    rules.iter().find(|r| r.id == id)
 }
 
 /// Every rule's verdict on one command — the single dispatch the hook,
@@ -540,9 +490,9 @@ pub fn by_id(id: &str) -> Option<&'static Rule> {
 /// `dispatch::run_concurrently`. That isolation only exists because the
 /// workspace release profile refuses `panic = "abort"` — see the root
 /// `Cargo.toml`.
-pub fn evaluate(input: &Input) -> Vec<(&'static Rule, Finding)> {
+pub fn evaluate(rules: &'static [Rule], input: &Input) -> Vec<(&'static Rule, Finding)> {
     let mut out = Vec::new();
-    for rule in RULES {
+    for rule in rules {
         let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rule.judge(input)));
         match found {
             Ok(Some(f)) => out.push((rule, f)),
@@ -556,6 +506,7 @@ pub fn evaluate(input: &Input) -> Vec<(&'static Rule, Finding)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rule_table::RULES;
     use crate::shell::lex;
 
     /// `rules --json` writes every rate as a JSON number, and JSON has no

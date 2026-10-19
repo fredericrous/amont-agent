@@ -26,8 +26,8 @@ use std::sync::OnceLock;
 /// position, so a glued line hands back the wrong field.
 ///
 /// `+ 2` keeps at least one space after the longest id.
-pub fn id_column() -> usize {
-    crate::rules::RULES
+pub fn id_column(rules: &[crate::rules::Rule]) -> usize {
+    rules
         .iter()
         .map(|r| r.id.len())
         .chain(crate::assertions::ASSERTIONS.iter().map(|a| a.id.len()))

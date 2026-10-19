@@ -462,7 +462,7 @@ mod tests {
     /// end — while passing the test suite, which reads the files.
     #[test]
     fn every_rule_has_an_embedded_corpus() {
-        for rule in crate::rules::RULES {
+        for rule in crate::rule_table::RULES {
             let text = super::embedded(rule.id)
                 .unwrap_or_else(|| panic!("rule `{}` has no entry in EMBEDDED", rule.id));
             assert!(
@@ -476,7 +476,7 @@ mod tests {
     /// The compiled-in copy is the file: same cases, same verdicts.
     #[test]
     fn the_embedded_corpus_is_the_file() {
-        for rule in crate::rules::RULES {
+        for rule in crate::rule_table::RULES {
             let from_file = super::read_at(&super::path_for(rule.id));
             let from_binary = super::parse(super::embedded(rule.id).unwrap());
             assert_eq!(from_file.len(), from_binary.len(), "{}", rule.id);
@@ -516,7 +516,7 @@ mod tests {
     /// a dump from `explain` masquerade as a review nobody did.
     #[test]
     fn an_unreviewed_case_counts_as_no_evidence() {
-        let rule = crate::rules::by_id("pipe-to-tail").unwrap();
+        let rule = crate::rules::by_id(crate::rule_table::RULES, "pipe-to-tail").unwrap();
         let cases = parse("?\tgit push | tail -1\n?\tgit status\n");
         let s = score_cases(rule, &cases);
         assert_eq!(s.reviewed, 0);
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn a_disagreement_names_the_line_and_the_command() {
-        let rule = crate::rules::by_id("pipe-to-tail").unwrap();
+        let rule = crate::rules::by_id(crate::rule_table::RULES, "pipe-to-tail").unwrap();
         // A human says this must stay silent; the rule fires. That is the
         // shape of every false positive worth catching.
         let cases = parse("nomatch\tgit push origin main | tail -1\n");

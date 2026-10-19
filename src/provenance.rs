@@ -33,24 +33,6 @@ impl Review {
     }
 }
 
-/// What the preview rule knew about the push.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Preview {
-    Approved,
-    Evidence,
-    NotRequired,
-}
-
-impl Preview {
-    fn word(self) -> &'static str {
-        match self {
-            Preview::Approved => "approved",
-            Preview::Evidence => "evidence",
-            Preview::NotRequired => "not-required",
-        }
-    }
-}
-
 /// Everything a record states.
 pub struct Record<'a> {
     pub commit: &'a str,
@@ -61,7 +43,7 @@ pub struct Record<'a> {
     pub review: Review,
     /// The content id the review read (attest SPEC, "Content id").
     pub review_content: &'a str,
-    pub preview: Preview,
+    pub preview: crate::preview::Outcome,
     pub version: &'a str,
 }
 
@@ -132,7 +114,7 @@ pub fn plan_of(repo: &Path, commit: &str, plans: &[String]) -> Result<(String, S
         .or_else(|| found.first())
         .ok_or("no plan file under docs/plans/ exists in the pushed tree")?;
     let shas =
-        crate::plan_review::shas(text).map_err(|e| format!("the plan has no body sha: {e}"))?;
+        crate::plan_text::shas(text).map_err(|e| format!("the plan has no body sha: {e}"))?;
     Ok((path.to_string(), shas.sha))
 }
 
@@ -163,7 +145,7 @@ pub fn write(
     p: &Push,
     review: Review,
     review_content: &str,
-    preview: Preview,
+    preview: crate::preview::Outcome,
 ) -> Result<Filed, String> {
     let commit = git::stdout_in(
         p.repo,
@@ -211,6 +193,29 @@ pub fn write(
     Ok(Filed::Written(file))
 }
 
+/// What filing a pass's record came to.
+pub enum Filing {
+    /// The preview has not stood yet; the next pass files it.
+    Deferred,
+    Written(PathBuf),
+    Kept(PathBuf),
+    Failed(String),
+}
+
+/// Files the provenance record of a pass, asking the preview rule what it
+/// knew about the push. The caller journals the result; a failure never
+/// changes its judgment.
+pub fn file(push: &Push, review: Review, review_content: &str) -> Filing {
+    let Some(preview) = crate::preview::outcome(push.repo, push.target) else {
+        return Filing::Deferred;
+    };
+    match write(push, review, review_content, preview) {
+        Ok(Filed::Written(f)) => Filing::Written(f),
+        Ok(Filed::Kept(f)) => Filing::Kept(f),
+        Err(why) => Filing::Failed(why),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,7 +229,7 @@ mod tests {
             plan_sha: "s0",
             review: Review::ByPatch,
             review_content: "k1",
-            preview: Preview::NotRequired,
+            preview: crate::preview::Outcome::NotRequired,
             version: "1.2.3",
         }
     }

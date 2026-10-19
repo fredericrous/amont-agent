@@ -82,10 +82,10 @@ fn decide(raw: &str) -> Decision {
         }
         Event::PreAsk(ask) => {
             crate::implementation_review::on_pre_ask(&ask);
-            let stance = crate::stance::resolve(&rules::push_preview::RULE);
+            let stance = crate::stance::resolve(&crate::push_preview::RULE);
             match crate::preview::on_pre_ask(&ask, stance) {
                 Some(why) => {
-                    Decision::Deny(decision::phrase(rules::push_preview::RULE.id, &why, ""))
+                    Decision::Deny(decision::phrase(crate::push_preview::RULE.id, &why, ""))
                 }
                 None => Decision::Silent,
             }
@@ -102,9 +102,11 @@ fn decide(raw: &str) -> Decision {
             let mut said: Vec<String> = Vec::new();
             crate::preview::on_post_ask(&ask);
             if let Some(text) = crate::implementation_review::on_post_ask(&ask) {
-                if crate::stance::resolve(&rules::implementation_review::RULE) != Stance::Observe {
+                if crate::stance::resolve(&crate::implementation_review_rule::RULE)
+                    != Stance::Observe
+                {
                     said.push(decision::phrase(
-                        rules::implementation_review::RULE.id,
+                        crate::implementation_review_rule::RULE.id,
                         &text,
                         "",
                     ));
@@ -198,7 +200,7 @@ fn on_bash(bash: &Bash) -> Decision {
     // is consulted: there is no legitimate writer to advise, and `observe`
     // turns a rule off, not a boundary. A read of the record passes.
     if let Some(span) = crate::implementation_review::store_clause(&parsed) {
-        let rule = &rules::implementation_review::RULE;
+        let rule = &crate::implementation_review_rule::RULE;
         journal::record(&journal::Entry {
             rule: rule.id,
             stance: "deny",
@@ -223,7 +225,7 @@ fn on_bash(bash: &Bash) -> Decision {
     // were; a rule built on the shell analysis judges it with its own account
     // of what it could not read.
     let input = rules::Input::new(&bash.command, rules::tool_shell::dialect(), &parsed);
-    let fired = rules::evaluate(&input);
+    let fired = rules::evaluate(crate::rule_table::RULES, &input);
     let dumped = rules::dump::dumps(&parsed);
     if fired.is_empty() && dumped.is_empty() {
         // The whole no-fire path: one lex, no processes, no files.
@@ -395,7 +397,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
     // prompt here, from its printed output. One that did not bind says so —
     // even run in the background, which is one of the reasons it cannot.
     let unbound = crate::preview::bind(bash, &parsed)
-        .map(|t| decision::phrase(rules::push_preview::RULE.id, &t, ""));
+        .map(|t| decision::phrase(crate::push_preview::RULE.id, &t, ""));
     if bash.background {
         // Detached: the tool call returned a task id, not a result. Whatever it
         // claimed has not finished happening.
@@ -541,7 +543,7 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
         // alone; a Write or Edit there is refused whatever the rule's
         // stance, since there is no legitimate writer to advise.
         if crate::implementation_review::guards_path(&op.path) {
-            let rule = &rules::implementation_review::RULE;
+            let rule = &crate::implementation_review_rule::RULE;
             journal::record(&journal::Entry {
                 rule: rule.id,
                 stance: "deny",
@@ -1253,8 +1255,8 @@ fn unknown_directory(
 ) -> Result<Confirmation, &'static str> {
     const WHY: &str = "the working directory does not exist";
     let gates = [
-        rules::push_preview::RULE.id,
-        rules::implementation_review::RULE.id,
+        crate::push_preview::RULE.id,
+        crate::implementation_review_rule::RULE.id,
     ];
     if stance != Stance::Deny || !gates.contains(&rule.id) {
         return Err(WHY);
@@ -1322,8 +1324,8 @@ fn note_with(
 /// the push under the first one's name.
 fn attributed_repo(id: &str, bash: &Bash) -> String {
     let pushes = [
-        rules::push_preview::RULE.id,
-        rules::implementation_review::RULE.id,
+        crate::push_preview::RULE.id,
+        crate::implementation_review_rule::RULE.id,
         crate::assertions::push_published::ASSERTION.id,
         crate::assertions::land_retry::ASSERTION.id,
     ];

@@ -111,7 +111,7 @@ pub fn resolve_assertion(assertion: &crate::assertions::Assertion) -> Stance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::RULES;
+    use crate::rule_table::RULES;
 
     /// The config key is derived from the id, and git subsections are
     /// case-sensitive. An id with a capital in it would produce a key nobody

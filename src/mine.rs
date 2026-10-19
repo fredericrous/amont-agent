@@ -127,7 +127,11 @@ struct Tally {
     last: Day,
 }
 
-pub fn run(scan: &Scan, options: Options) -> Result<Report, ScanError> {
+pub fn run(
+    scan: &Scan,
+    options: Options,
+    table: &'static [rules::Rule],
+) -> Result<Report, ScanError> {
     let mut groups: BTreeMap<String, Tally> = BTreeMap::new();
     let mut opaque = 0u64;
 
@@ -192,7 +196,7 @@ pub fn run(scan: &Scan, options: Options) -> Result<Report, ScanError> {
                 }
             }
             let parsed = shell::lex(&record.command);
-            for rule in rules::RULES {
+            for rule in table {
                 if fires(rule, &record.command, &parsed) {
                     *entry.rules.entry(rule.id).or_default() += 1;
                 }
@@ -220,7 +224,7 @@ pub fn run(scan: &Scan, options: Options) -> Result<Report, ScanError> {
                 .rules
                 .iter()
                 .max_by_key(|(id, n)| {
-                    let stance = rules::by_id(id).map(|r| r.default_stance);
+                    let stance = rules::by_id(table, id).map(|r| r.default_stance);
                     (**n, stance, std::cmp::Reverse(**id))
                 })
                 .filter(|(_, n)| **n * 2 >= t.calls)

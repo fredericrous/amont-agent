@@ -48,7 +48,7 @@ fn examine(parsed: &Parsed) -> Option<Claim> {
 }
 
 fn verify(ctx: &Context, _claim: &Claim) -> Verdict {
-    let Some(rec) = crate::preview::land_judged(ctx.tool_use_id) else {
+    let Some(rec) = crate::push_record::land_judged(ctx.tool_use_id) else {
         return Verdict::Unknown("retry-check skipped: no judgement was recorded before the land");
     };
     let found = crate::land::receipts_since(&rec.receipt_dir, &rec.branch, rec.since);

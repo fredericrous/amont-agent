@@ -172,7 +172,7 @@ mod tests {
     /// however good its numbers look.
     #[test]
     fn an_unreviewed_rule_cannot_be_promoted() {
-        let rule = crate::rules::by_id("bare-stash-pop").unwrap();
+        let rule = crate::rules::by_id(crate::rule_table::RULES, "bare-stash-pop").unwrap();
         let score = corpus::score_cases(rule, &corpus::parse(""));
         assert_eq!(score.reviewed, 0);
         let v = assess_score(rule, Stance::Deny, &score);
@@ -182,7 +182,7 @@ mod tests {
     /// Positives alone are not evidence: they measure recall, not precision.
     #[test]
     fn positives_without_negatives_are_not_enough() {
-        let rule = crate::rules::by_id("pipe-to-tail").unwrap();
+        let rule = crate::rules::by_id(crate::rule_table::RULES, "pipe-to-tail").unwrap();
         let v = assess_score(rule, Stance::Deny, &score_of(rule, &cases(20, 0)));
         assert!(!v.allowed, "twenty positives and no negatives passed");
         assert!(v.lines.iter().any(|(ok, t)| !ok && t.contains("negatives")));
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn a_reviewed_rule_that_still_agrees_may_be_promoted() {
-        let rule = crate::rules::by_id("pipe-to-tail").unwrap();
+        let rule = crate::rules::by_id(crate::rule_table::RULES, "pipe-to-tail").unwrap();
         let v = assess_score(rule, Stance::Deny, &score_of(rule, &cases(12, 4)));
         assert!(
             v.allowed,
@@ -203,7 +203,7 @@ mod tests {
     /// counts are satisfied — that is the regression the corpus exists to stop.
     #[test]
     fn a_disagreement_blocks_promotion() {
-        let rule = crate::rules::by_id("pipe-to-tail").unwrap();
+        let rule = crate::rules::by_id(crate::rule_table::RULES, "pipe-to-tail").unwrap();
         let mut text = cases(12, 4);
         text.push_str(&corpus::line_for(
             CaseVerdict::NoMatch,
@@ -217,7 +217,7 @@ mod tests {
     /// Demotion is never gated. See the module note.
     #[test]
     fn demotion_needs_no_evidence() {
-        let rule = crate::rules::by_id("pipe-to-tail").unwrap();
+        let rule = crate::rules::by_id(crate::rule_table::RULES, "pipe-to-tail").unwrap();
         let v = assess_score(rule, Stance::Observe, &score_of(rule, ""));
         assert!(v.allowed);
     }
@@ -225,7 +225,7 @@ mod tests {
     /// Evidence cannot buy a stance above the rule's ceiling.
     #[test]
     fn promotion_past_the_ceiling_is_refused() {
-        let base = crate::rules::by_id("pipe-to-tail").unwrap();
+        let base = crate::rules::by_id(crate::rule_table::RULES, "pipe-to-tail").unwrap();
         let capped = Rule {
             id: "capped",
             default_stance: Stance::Observe,

@@ -380,7 +380,7 @@ fn record(
         .map_err(|e| format!("cannot read {}: {e}", plan.display()))?;
     let real = plan_review::real(plan);
     let real = real.to_string_lossy().into_owned();
-    let plan_sha = plan_review::body_sha(&text);
+    let plan_sha = crate::plan_text::body_sha(&text);
     let (transcript, found) = match transcript {
         Some(t) => {
             let l = launches(&t, &real)
@@ -456,7 +456,7 @@ fn record(
         serde_json::json!({
             "areas": meta.as_ref().ok().and_then(plan_review::areas_of).map(|a| json_list(&a)).unwrap_or_else(|| serde_json::json!([])),
             "repos": meta.as_ref().map(|m| json_list(&m.repos)).unwrap_or_else(|_| serde_json::json!([])),
-            "body_lines": plan_review::canonical(body).lines().count(),
+            "body_lines": crate::plan_text::canonical(body).lines().count(),
         })
     };
 

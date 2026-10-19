@@ -25,6 +25,7 @@ mod attestations;
 mod backtest;
 mod civil;
 mod compliance;
+mod content_id;
 mod corpus;
 mod decision;
 mod doctor;
@@ -37,6 +38,7 @@ mod guidance;
 mod guide;
 mod hook;
 mod implementation_review;
+mod implementation_review_rule;
 mod journal;
 mod json;
 mod land;
@@ -46,18 +48,23 @@ mod payload;
 mod plan_apply;
 mod plan_phases;
 mod plan_review;
+mod plan_text;
 mod plan_words;
 mod plans;
 mod preview;
 mod provenance;
 mod publish_cmd;
+mod push_preview;
+mod push_record;
 mod push_target;
 #[cfg(unix)]
 mod quiet;
 mod review_outcomes;
+mod rule_table;
 mod rules;
 mod session_state;
 mod settings;
+mod sha256;
 mod shape;
 mod shell;
 mod shim;
@@ -330,7 +337,10 @@ fn main() -> ExitCode {
                 // Non-zero when the guard is not doing anything, so this is
                 // usable from a cron job or a SessionStart check without
                 // anybody having to read the text.
-                if doctor::report(&doctor::run()) {
+                if doctor::report(&doctor::run(
+                    rule_table::RULES,
+                    attestations::doctor_finding(),
+                )) {
                     ExitCode::SUCCESS
                 } else {
                     ExitCode::FAILURE
@@ -476,7 +486,7 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
 /// fired" does not care which list it came from.
 fn selected(only: &[String]) -> Result<Vec<backtest::Subject>, String> {
     let everything = || {
-        rules::RULES
+        rule_table::RULES
             .iter()
             .map(backtest::Subject::Rule)
             .chain(
@@ -491,7 +501,7 @@ fn selected(only: &[String]) -> Result<Vec<backtest::Subject>, String> {
     }
     only.iter()
         .map(|id| {
-            rules::by_id(id)
+            rules::by_id(rule_table::RULES, id)
                 .map(backtest::Subject::Rule)
                 .or_else(|| assertions::by_id(id).map(backtest::Subject::Assertion))
                 .ok_or_else(|| {
@@ -717,7 +727,7 @@ fn run_mine(args: &[OsString]) -> ExitCode {
         min_rate: f.min_rate.unwrap_or(default.min_rate),
         samples: f.sample.unwrap_or(default.samples),
     };
-    match mine::run(&scan, options) {
+    match mine::run(&scan, options, rule_table::RULES) {
         Ok(report) => {
             if as_cases {
                 // The same file `explain --format cases` writes, and the same
@@ -914,9 +924,9 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
     };
     let sha = if legacy {
         eprintln!("amont-agent: --legacy is removed after the transition");
-        plan_review::legacy_sha(&text)
+        plan_text::legacy_sha(&text)
     } else {
-        match plan_review::shas(&text) {
+        match plan_text::shas(&text) {
             Ok(s) => s.sha,
             Err(why) => {
                 eprintln!("amont-agent: {why}");
@@ -1008,7 +1018,7 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
         return ExitCode::from(1);
     };
     let rev = rev.as_deref().unwrap_or("HEAD");
-    let sha = match implementation_review::content_id(&repo, rev) {
+    let sha = match content_id::content_id(&repo, rev) {
         Ok(s) => s,
         Err(why) => {
             eprintln!("amont-agent: {why}");
@@ -1295,7 +1305,7 @@ fn run_check(args: &[OsString]) -> ExitCode {
     // payload and no business guessing from its own `SHELL`, so it is told,
     // or it says `unknown` — the same answer the backtester has to give.
     let input = rules::Input::new(src, f.dialect.unwrap_or(rules::Dialect::Unknown), &parsed);
-    let found = rules::evaluate(&input);
+    let found = rules::evaluate(rule_table::RULES, &input);
     if found.is_empty() {
         match &parsed {
             shell::Parsed::Opaque(why) => println!("no opinion: {}", why.why()),
@@ -1421,7 +1431,7 @@ fn print_rules_json() -> ExitCode {
             json::string_field("measured", e.measured),
         ])
     };
-    let mut items: Vec<String> = rules::RULES
+    let mut items: Vec<String> = rule_table::RULES
         .iter()
         .map(|r| {
             entry(
@@ -1450,8 +1460,8 @@ fn print_rules_json() -> ExitCode {
 }
 
 fn print_rules_text() -> ExitCode {
-    let w = ui::id_column();
-    let rule_stances: Vec<String> = rules::RULES
+    let w = ui::id_column(rule_table::RULES);
+    let rule_stances: Vec<String> = rule_table::RULES
         .iter()
         .map(|r| stance_shown(stance::resolve(r), r.default_stance))
         .collect();
@@ -1468,7 +1478,7 @@ fn print_rules_text() -> ExitCode {
         .max()
         .unwrap_or(0)
         .max(8);
-    for (r, shown) in rules::RULES.iter().zip(&rule_stances) {
+    for (r, shown) in rule_table::RULES.iter().zip(&rule_stances) {
         // Named only when it bites: a rule capped below `deny` can never be
         // configured past it, and that is worth seeing next to its stance.
         let ceiling = if r.max_stance < rules::Stance::Deny {
@@ -1569,13 +1579,13 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
 const SEEN_WINDOW: u64 = 30 * 24 * 60 * 60;
 
 fn run_status() -> ExitCode {
-    let w = ui::id_column();
+    let w = ui::id_column(rule_table::RULES);
     let seen = journal::tally(SEEN_WINDOW);
     println!(
         "{:<w$}{:<10}{:<10}  {:<31}  seen, last 30 days",
         "rule", "ships as", "now", "evidence"
     );
-    for r in rules::RULES {
+    for r in rule_table::RULES {
         let now = stance::resolve(r);
         println!(
             "{:<w$}{:<10}{:<10}  {:<31}  {}",
@@ -1646,8 +1656,8 @@ fn run_corpus(args: &[OsString]) -> ExitCode {
         }
     }
     let mut healthy = true;
-    let w = ui::id_column();
-    for rule in rules::RULES {
+    let w = ui::id_column(rule_table::RULES);
+    for rule in rule_table::RULES {
         let score = corpus::score(rule);
         if score.reviewed == 0 && score.unreviewed == 0 {
             println!("{:<w$}no cases yet", rule.id);
@@ -1699,8 +1709,8 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
         eprintln!("amont-agent: name a rule");
         return ExitCode::from(2);
     };
-    let Some(rule) = rules::by_id(id) else {
-        let known: Vec<&str> = rules::RULES.iter().map(|r| r.id).collect();
+    let Some(rule) = rules::by_id(rule_table::RULES, id) else {
+        let known: Vec<&str> = rule_table::RULES.iter().map(|r| r.id).collect();
         eprintln!("amont-agent: no rule `{id}` — known: {}", known.join(", "));
         return ExitCode::from(2);
     };
