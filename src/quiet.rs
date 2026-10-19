@@ -306,10 +306,12 @@ impl ActiveEntry {
             final_log: None,
         }
     }
-}
 
-impl Drop for ActiveEntry {
-    fn drop(&mut self) {
+    /// End the entry now, with the exit and final log recorded so far:
+    /// called once the log's fate is known, so the entry stops looking live
+    /// before the excerpt is printed (a slow reader can hold that up).
+    /// Ending is once only; `Drop` covers the early returns and unwinding.
+    fn finish(&mut self) {
         if let Some(entry) = self.entry.as_mut() {
             // Absolute like the started entry's: a relative CLAUDE_CONFIG_DIR
             // makes `log.done` relative, and a watcher's cwd is not ours.
@@ -319,6 +321,12 @@ impl Drop for ActiveEntry {
                 .and_then(|p| std::path::absolute(p).ok());
             entry.end(self.exit, final_log.as_deref());
         }
+    }
+}
+
+impl Drop for ActiveEntry {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -613,6 +621,7 @@ fn execute(parsed: Parsed) -> ExitCode {
             }
         }
     };
+    active.finish();
 
     #[cfg(feature = "test-hooks")]
     if std::env::var_os("AMONT_AGENT_TEST_REPORT_PEAK").is_some() {

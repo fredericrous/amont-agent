@@ -689,7 +689,7 @@ fn a_log_that_cannot_be_created_writes_no_entry_and_keeps_the_exit() {
 #[test]
 fn a_relative_config_dir_still_names_absolute_logs() {
     let home = scratch("relative-cfg");
-    let mut child = quiet_cmd(&home, &["--", "sleep", "1"])
+    let mut child = quiet_cmd(&home, &["--", "sh", "-c", "sleep 1; echo last-line"])
         .current_dir(&home)
         .env("CLAUDE_CONFIG_DIR", "cfg")
         .stdout(Stdio::null())
@@ -705,4 +705,7 @@ fn a_relative_config_dir_still_names_absolute_logs() {
         "{ended}"
     );
     assert!(Path::new(&ended).exists());
+    // The ended entry names a log that holds the run's last line.
+    let body = std::fs::read_to_string(&ended).unwrap();
+    assert!(body.contains("last-line"), "{body}");
 }
