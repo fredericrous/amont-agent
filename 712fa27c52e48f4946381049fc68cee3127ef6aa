@@ -1,0 +1,16 @@
+amont-provenance-v1
+commit 94b802b278ece8c93ccced60a5b0d94fa31d8e58
+tree 712fa27c52e48f4946381049fc68cee3127ef6aa
+canon a3fd68b84330db727776b227f7ddc5021286e30a
+patch f27027f6bd58088c1363dab30b10baed6ca5a1e7
+plan docs/plans/2026-10-19-guard-and-work-process-components.md 6a15b430c7399a7bc1b36c6636763948af15fac59393f6bcc04c16a7c80c2a33
+review reviewed dcf46338b4cee615a49a4f6dfd2c1f32d9f58a505f362b1520f528130917f170
+preview not-required
+producer amont-agent 2.44.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEDaf/oW41g7oeBYM++JoXi1Zb3umpmLrifwGNewMg3+e/9kLU
+c1JcjkuwTwiGr4lZ4LIsdgeNzev06aCa3kvXoG
+-----END SSH SIGNATURE-----
