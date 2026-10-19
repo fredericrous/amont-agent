@@ -644,3 +644,65 @@ fn a_command_that_cannot_start_records_its_exit() {
     assert_eq!(v["exit"], 127);
     assert!(v["ended"].as_u64().is_some());
 }
+
+#[test]
+fn an_empty_home_writes_no_entry_and_nothing_under_the_working_dir() {
+    // amont-quiet's rule (amont docs/quiet-runs.md): an empty HOME names no
+    // directory, never a relative `.local/state` under the working directory.
+    let home = scratch("empty-home");
+    let cwd = scratch("empty-home-cwd");
+    let out = quiet_cmd(&home, &["--", "true"])
+        .current_dir(&cwd)
+        .env("HOME", "")
+        .env("QUIET_ACTIVE_DIR", "")
+        .env_remove("XDG_STATE_HOME")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        !cwd.join(".local").exists(),
+        "nothing under the working dir"
+    );
+}
+
+#[test]
+fn a_log_that_cannot_be_created_writes_no_entry_and_keeps_the_exit() {
+    let home = scratch("no-log");
+    let blocker = home.join("config-is-a-file");
+    std::fs::write(&blocker, "x").unwrap();
+    let out = quiet_cmd(&home, &["--", "sh", "-c", "exit 3"])
+        .env("CLAUDE_CONFIG_DIR", &blocker)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(
+        text(&out.stdout).contains("log not written"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert!(
+        entries(&active(&home)).is_empty(),
+        "nothing for a watcher to tail"
+    );
+}
+
+#[test]
+fn a_relative_config_dir_still_names_absolute_logs() {
+    let home = scratch("relative-cfg");
+    let mut child = quiet_cmd(&home, &["--", "sleep", "1"])
+        .current_dir(&home)
+        .env("CLAUDE_CONFIG_DIR", "cfg")
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let path = wait_for_entry(&active(&home));
+    let started = read_entry(&path)["log"].as_str().unwrap().to_string();
+    assert!(Path::new(&started).is_absolute(), "{started}");
+    assert!(child.wait().unwrap().success());
+    let ended = read_entry(&path)["log"].as_str().unwrap().to_string();
+    assert!(
+        Path::new(&ended).is_absolute() && ended.ends_with(".log"),
+        "{ended}"
+    );
+    assert!(Path::new(&ended).exists());
+}

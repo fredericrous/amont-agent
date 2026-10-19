@@ -6,10 +6,17 @@ version = 4
 name = "amont-agent"
 version = "2.43.0"
 dependencies = [
+ "amont-quiet",
  "pulldown-cmark",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "amont-quiet"
+version = "1.60.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fcf90692b077eebd4afd0e44e3bf48a66a67c76ccbf7450b851642b5855834f"
 
 [[package]]
 name = "bitflags"
