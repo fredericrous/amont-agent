@@ -147,6 +147,7 @@ Phase 2, as observed before the push:
 - 2026-10-19: `Count::mul`/`add` and `Tri::not` became public with the move, and clippy's `should_implement_trait` fired on them. They now implement `std::ops::{Mul, Add, Not}`. The bodies are unchanged and the lint stays on.
 - 2026-10-19: lib crates run doctests. Two indented blocks in `guidance.rs` and `gitconfig.rs` were shell and config text, not Rust, so they are now fenced as `text`.
 - 2026-10-19: `doctor` on this machine read "attestations: 138 → 139 directories" between two runs an hour apart. That is a new attestation directory, not a difference in output: the back-to-back run above is identical.
+- 2026-10-19: #127's `tests (windows-latest)` job failed with E0603 at 13 call sites in the process crate. The split made the unix `journal::private` `pub` but left its `#[cfg(not(unix))]` stub `pub(crate)`, and macOS and Linux never compile the stub. Fixed in 39a5a0a. Afterwards, `cargo check --workspace --all-targets --features test-hooks --locked --target x86_64-pc-windows-msvc` passed. The only other non-unix `pub(crate)` twin, `review_outcomes::lock`, is used only inside its own crate.
 - 2026-10-19: `amont-agent-guard` and `amont-agent-process` both return 404 on the crates.io API, so they are unclaimed.
 
 ## Implementation review
@@ -160,6 +161,7 @@ approve-with-changes, then approve-with-changes on the Delta.
 
 Phase 2: approve-with-changes, 33k tokens, 24 s.
 - Fixed in this record: the `cargo tree` check, the planted import and the planted stdout write in each library were run and recorded. So were the dry run and the identity checks, both re-run on the final commit. The layout, the trait impls, the `text` fences and the removed test each have a Decision-log line.
-- Deliberate: the state-directory and plan-cycle checks run on the released binary, as the Outcome says. Confirming the token scope (step 7) is a question for the person, asked before the tag.
+- Deliberate: the state-directory and plan-cycle checks run on the released binary, as the Outcome says. The person confirmed on 2026-10-19 that the token can create new crates (step 7).
+- Delta, after the Windows fix: approve-with-changes, 40k tokens, 25 s. All five round-1 findings are resolved; its two low findings (this token record, the Windows log line) are applied here.
 
 <!-- panel: repos=amont-agent adds=ops reviewers=backend,platform,codex body-sha=25225b5a758c -->
