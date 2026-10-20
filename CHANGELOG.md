@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.45.1
+
+### Fixed
+
+- **`file-reread` no longer refuses a command that writes or waits.** A dump
+  of a file is excused when the same command writes it (a redirect onto it,
+  or a python/perl/node/ruby heredoc whose body writes it) or waits on it in
+  a `sleep` loop. Each exception is bound to the dumped path: the word
+  `sleep`, a `'w'` or a `sed -i` elsewhere excuses nothing. 18 of 44 denials
+  in the 2026-10-12..20 soak were these shapes.
+- **`workspace-root-write` no longer denies a relative write after a `cd` it
+  cannot resolve** (`cd $r-wt-x`, `cd a*`): the target's directory is
+  unknown, so the write is unconfirmed. A literal `cd` still resolves.
+
 ## v2.45.0
 
 ### Changed
