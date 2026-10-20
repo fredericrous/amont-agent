@@ -241,6 +241,117 @@ pub fn runs_unconditionally(src: &str, at: usize) -> bool {
     }
 }
 
+/// A heredoc attached to a simple command: the command's start, its program
+/// word (when literal) and the body exactly as the IR carries it.
+#[derive(Debug, Clone)]
+pub struct HeredocBody {
+    pub start: usize,
+    pub program: Option<String>,
+    pub body: String,
+}
+
+/// Every heredoc body in `src`, from the IR's redirects, however deeply the
+/// command is nested. A command that does not parse has none.
+pub fn heredoc_bodies(src: &str) -> Vec<HeredocBody> {
+    use crate::analysis::ir::Cmd;
+    fn walk(cmd: &Cmd, out: &mut Vec<HeredocBody>) {
+        match cmd {
+            Cmd::Simple(s) => {
+                for r in &s.redirects {
+                    if let Some(body) = &r.heredoc {
+                        out.push(HeredocBody {
+                            start: s.span.start,
+                            program: s.words.first().and_then(|w| w.literal()),
+                            body: body.clone(),
+                        });
+                    }
+                }
+            }
+            Cmd::Seq { items, .. } => items.iter().for_each(|i| walk(&i.cmd, out)),
+            Cmd::AndOr { first, rest, .. } => {
+                walk(first, out);
+                rest.iter().for_each(|(_, c)| walk(c, out));
+            }
+            Cmd::Pipeline { cmds, .. } => cmds.iter().for_each(|c| walk(c, out)),
+            Cmd::If {
+                arms, otherwise, ..
+            } => {
+                for (c, b) in arms {
+                    walk(c, out);
+                    walk(b, out);
+                }
+                if let Some(o) = otherwise {
+                    walk(o, out);
+                }
+            }
+            Cmd::Case { arms, .. } => arms.iter().for_each(|a| walk(&a.body, out)),
+            Cmd::For { body, .. }
+            | Cmd::ArithFor { body, .. }
+            | Cmd::Group { body, .. }
+            | Cmd::Subshell { body, .. }
+            | Cmd::FuncDef { body, .. }
+            | Cmd::Redirected { body, .. } => walk(body, out),
+            Cmd::Loop { cond, body, .. } => {
+                walk(cond, out);
+                walk(body, out);
+            }
+            Cmd::Arith { .. } | Cmd::Cond { .. } | Cmd::Unsupported { .. } => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(cmd) = crate::analysis::frontend::parse(src) {
+        walk(&cmd, &mut out);
+    }
+    out
+}
+
+/// The byte spans of every `while` and `until` loop in `src`, however deeply
+/// nested. A command that does not parse has none.
+pub fn wait_loops(src: &str) -> Vec<std::ops::Range<usize>> {
+    use crate::analysis::ir::Cmd;
+    fn walk(cmd: &Cmd, out: &mut Vec<std::ops::Range<usize>>) {
+        match cmd {
+            Cmd::Seq { items, .. } => items.iter().for_each(|i| walk(&i.cmd, out)),
+            Cmd::AndOr { first, rest, .. } => {
+                walk(first, out);
+                rest.iter().for_each(|(_, c)| walk(c, out));
+            }
+            Cmd::Pipeline { cmds, .. } => cmds.iter().for_each(|c| walk(c, out)),
+            Cmd::If {
+                arms, otherwise, ..
+            } => {
+                for (c, b) in arms {
+                    walk(c, out);
+                    walk(b, out);
+                }
+                if let Some(o) = otherwise {
+                    walk(o, out);
+                }
+            }
+            Cmd::Case { arms, .. } => arms.iter().for_each(|a| walk(&a.body, out)),
+            Cmd::For { body, .. }
+            | Cmd::ArithFor { body, .. }
+            | Cmd::Group { body, .. }
+            | Cmd::Subshell { body, .. }
+            | Cmd::FuncDef { body, .. }
+            | Cmd::Redirected { body, .. } => walk(body, out),
+            Cmd::Loop {
+                cond, body, span, ..
+            } => {
+                out.push(span.clone());
+                walk(cond, out);
+                walk(body, out);
+            }
+            Cmd::Simple(_) | Cmd::Arith { .. } | Cmd::Cond { .. } | Cmd::Unsupported { .. } => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(cmd) = crate::analysis::frontend::parse(src) {
+        walk(&cmd, &mut out);
+    }
+    out
+}
+
 /// Every dump in the command, in order.
 pub fn dumps(parsed: &Parsed) -> Vec<Dump> {
     let mut out = Vec::new();
