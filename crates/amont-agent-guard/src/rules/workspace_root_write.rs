@@ -914,10 +914,9 @@ mod tests {
         assert!(!fires_in("cd $D && make > x.log", &root));
         assert!(!fires_in("cd a* && make > x.log", &root));
         assert!(fires_in("make > x.log", &root));
-        assert!(fires_in(
-            &format!("cd {} && make > x.log", root.display()),
-            &root
-        ));
+        // A literal cd still resolves (`.`, not the root's path: a Windows
+        // path is no shell word).
+        assert!(fires_in("cd . && make > x.log", &root));
     }
 
     #[test]
