@@ -2495,3 +2495,133 @@ fn guidance_a_denying_lint_rule_still_denies() {
         said.stdout
     );
 }
+
+// --- file-reread: a command that writes or waits is not a certain read ---
+
+/// After a whole Read of `f.txt`, run `cmd` under the deny stance.
+fn bash_after_whole_read(cmd: &str) -> Reply {
+    let mut h = 0u64;
+    for b in cmd.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(u64::from(b));
+    }
+    let f = Rr::new(&format!("rr-excuse-{h}"), 50);
+    f.post_read("", "", "");
+    f.bash("", cmd)
+}
+
+fn assert_allowed(cmd: &str) {
+    let r = bash_after_whole_read(cmd);
+    assert!(!said_reread(&r), "{cmd}: {}", r.stdout);
+    assert_eq!(r.decision(), None, "{cmd}");
+}
+
+fn assert_refused(cmd: &str) {
+    let r = bash_after_whole_read(cmd);
+    assert!(said_reread(&r), "{cmd}: {}", r.stdout);
+    assert_eq!(r.decision().as_deref(), Some("deny"), "{cmd}");
+}
+
+/// Guards the redirect branch of `writes_or_waits`: a write onto the dumped
+/// path, compared after resolving both sides.
+#[test]
+fn a_redirect_onto_the_dumped_file_is_not_a_reread() {
+    assert_allowed("printf x >> ./f.txt && tail -1 f.txt");
+    assert_allowed("printf x > f.txt; cat ./f.txt");
+}
+
+/// The redirect names another file, or comes after the dump: still a re-read.
+#[test]
+fn a_redirect_elsewhere_is_still_a_reread() {
+    assert_refused("printf x >> other.txt && tail -1 f.txt");
+    assert_refused("cat f.txt; printf x >> f.txt");
+}
+
+/// Guards the wait branch: a `sleep` loop naming the file, dump after or in it.
+#[test]
+fn a_sleep_loop_on_the_dumped_file_is_a_wait() {
+    assert_allowed("until test -s f.txt; do sleep 1; done; cat f.txt");
+    assert_allowed("while ! grep -q done f.txt; do sleep 1; cat f.txt; done");
+}
+
+/// The word `sleep` outside a loop that names the file changes nothing.
+#[test]
+fn the_word_sleep_elsewhere_changes_nothing() {
+    assert_refused("cat f.txt # sleep");
+    assert_refused("echo sleep; cat f.txt");
+    assert_refused("cat sleep.log f.txt");
+    assert_refused("until test -s other.txt; do sleep 1; done; cat f.txt");
+    assert_refused("sleep 1; cat f.txt");
+}
+
+/// `sed -i` on another file excuses nothing.
+#[test]
+fn sed_in_place_elsewhere_is_still_a_reread() {
+    assert_refused("sed -i s/a/b/ other.txt; cat f.txt");
+}
+
+/// Guards the interpreter-heredoc branch. Shapes of real denied commands of
+/// 2026-10-12..10-20 (journal.log rows, full commands from the session
+/// transcripts), paths anonymised: a python heredoc rewrote the file, then a
+/// `sed -n`/`tail` showed the result.
+#[test]
+fn a_python_heredoc_edit_then_a_dump_is_not_a_reread() {
+    let fixtures = [
+        // A changelog edit, then `sed -n 3,36p CHANGELOG.md`.
+        "python3 - <<'EOF'\np=\"f.txt\"; s=open(p).read()\ns=s.replace(\"line\",\"LINE\")\nopen(p,\"w\").write(s)\nEOF\nsed -n 3,36p f.txt; awk 'length>78' f.txt | head -3",
+        // A screen file rewrite, then `tail -5`.
+        "python3 -I - <<'EOF'\np=\"f.txt\"; t=open(p).read()\nt=t[:9].rstrip()+\"\\n\"\nopen(p,\"w\").write(t)\nEOF\ntail -5 f.txt; echo tc=$?",
+        // A `rep(p, a, b)` helper with single quotes, then `sed -n 44,56p`.
+        "python3 - <<'EOF'\ndef rep(p,a,b):\n    s=open(p).read(); assert s.count(a)==1,(p,a); open(p,'w').write(s.replace(a,b))\nrep('f.txt','line','LINE')\nEOF\nsed -n 44,56p f.txt; grep -n LINE f.txt | head -3",
+        // `sed -i` on another file, then a python edit of the dumped one.
+        "sed -i 's/x/y/' other.rs\npython3 - <<'EOF'\np='f.txt'\ns=open(p).read()\nassert s.count('line')>0\nopen(p,'w').write(s.replace('line','LINE'))\nEOF\nsed -n 2020,2030p f.txt",
+    ];
+    for cmd in fixtures {
+        assert_allowed(cmd);
+    }
+}
+
+/// A python heredoc that only reads the file, or writes another, excuses nothing.
+#[test]
+fn a_python_heredoc_that_does_not_write_the_file_is_a_reread() {
+    assert_refused("python3 - <<'EOF'\np='f.txt'\nprint(open(p).read())\nEOF\ncat f.txt");
+    assert_refused("python3 - <<'EOF'\nopen('g.txt','w').write('x')\nEOF\ncat f.txt");
+    // A write of another file beside a read of the dumped one.
+    assert_refused(
+        "python3 - <<'EOF'\nopen('g.txt','w').write(open('f.txt').read())\nEOF\ncat f.txt",
+    );
+    // A write mode outside the heredoc body.
+    assert_refused("python3 - <<'EOF'\nprint(open('f.txt').read())\nEOF\necho 'w'; cat f.txt");
+}
+
+/// A dump the PreToolUse side excuses leaves no certain read behind: the
+/// record of a dump beside a write, a loop or a heredoc is `uncertain`, so the
+/// next `cat` of the unchanged file is not refused. No PostToolUse skip is
+/// needed for that (measured 2026-10-21: removing one changed no record).
+#[test]
+fn an_excused_dump_is_not_recorded_as_a_read() {
+    for (name, cmd) in [
+        (
+            "rr-post-wait",
+            "until test -s f.txt; do sleep 1; done; cat f.txt",
+        ),
+        (
+            "rr-post-heredoc",
+            "python3 - <<'EOF'\np='f.txt'\ns=open(p).read()\nopen(p,'w').write(s)\nEOF\ncat f.txt",
+        ),
+    ] {
+        let f = Rr::new(name, 50);
+        f.post_bash("", cmd, r#""ok""#);
+        let r = f.pre_bash("", "cat f.txt");
+        assert!(!said_reread(&r), "{cmd}: {}", r.stdout);
+    }
+}
+
+/// The control: a second whole Read of an unchanged file is still refused.
+#[test]
+fn a_second_whole_read_is_still_denied_at_deny() {
+    let f = Rr::new("rr-control", 50);
+    f.post_read("", "", "");
+    let r = f.pre_read("", "");
+    assert!(said_reread(&r), "{}", r.stdout);
+    assert_eq!(r.decision().as_deref(), Some("deny"));
+}

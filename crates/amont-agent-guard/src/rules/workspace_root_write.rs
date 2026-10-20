@@ -311,7 +311,52 @@ fn target_path(ctx: &Context, t: &Target) -> Option<PathBuf> {
             PathBuf::from(home).join(rest)
         });
     }
-    Some(resolve(&ctx.cwd_at(clause_start(ctx, &t.span)), &t.text))
+    let at = clause_start(ctx, &t.span);
+    if is_relative(t) && cd_unresolved(ctx, at) {
+        return None;
+    }
+    Some(resolve(&ctx.cwd_at(at), &t.text))
+}
+
+fn is_relative(t: &Target) -> bool {
+    !t.text.starts_with('/')
+}
+
+/// Does the last `cd` before `at` (in the same substitution scope) have a
+/// destination that cannot be known statically: a variable, a substitution, a
+/// glob, `-`? Then a relative target lands somewhere unknown.
+fn cd_unresolved(ctx: &Context, at: usize) -> bool {
+    let clauses = ctx.parsed.clauses();
+    let asking = clauses.iter().find(|c| c.at == at).and_then(|c| c.nested);
+    let mut unknown = false;
+    for cmd in clauses {
+        if cmd.at >= at {
+            continue;
+        }
+        // A clause inside a loop or block may open with its keyword.
+        let mut words = cmd.words.iter().skip_while(|w| {
+            matches!(
+                w.text.as_str(),
+                "do" | "then" | "else" | "elif" | "if" | "while" | "until" | "{" | "(" | "!"
+            )
+        });
+        if words.next().map(|w| w.text.as_str()) != Some("cd") {
+            continue;
+        }
+        if cmd.nested.is_some() && cmd.nested != asking {
+            continue;
+        }
+        unknown = match words.next() {
+            None => false,
+            Some(w) => {
+                w.expanded
+                    || w.text.trim().is_empty()
+                    || w.text == "-"
+                    || w.text.contains(['$', '`', '*', '?', '[', '{'])
+            }
+        };
+    }
+    unknown
 }
 
 /// The start of the legacy clause containing the span, which is what
@@ -857,6 +902,21 @@ mod tests {
         assert!(!fires_in("cd a && (make > x.log)", &root));
         // A `cd` back out lands in the root again.
         assert!(fires_in("cd a && cd .. && make > x.log", &root));
+    }
+
+    #[test]
+    fn a_relative_write_after_an_unresolvable_cd_is_unconfirmed() {
+        let root = root("unresolved");
+        assert!(!fires_in(
+            "for r in a b; do cd /ws/$r-wt-x && printf x >> .prettierignore; done",
+            &root
+        ));
+        assert!(!fires_in("cd $D && make > x.log", &root));
+        assert!(!fires_in("cd a* && make > x.log", &root));
+        assert!(fires_in("make > x.log", &root));
+        // A literal cd still resolves (`.`, not the root's path: a Windows
+        // path is no shell word).
+        assert!(fires_in("cd . && make > x.log", &root));
     }
 
     #[test]

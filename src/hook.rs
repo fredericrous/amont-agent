@@ -28,7 +28,7 @@ use crate::decision::{self, Decision};
 use crate::journal;
 use crate::payload::{self, Bash, Event, Session};
 use crate::rules::{self, Confirmed, Context, Finding, Rule, Stance};
-use crate::shell::{self, Parsed};
+use crate::shell::{self, Parsed, Simple};
 
 pub fn run() -> ExitCode {
     // A person typing `amont-agent hook` with no payload would otherwise block
@@ -269,6 +269,9 @@ fn on_bash(bash: &Bash) -> Decision {
                 agent_transcript: bash.agent_transcript.as_deref(),
                 command: &bash.command,
             };
+            if writes_or_waits(&ctx, d) {
+                continue;
+            }
             let path = resolve_path(&ctx.cwd_at(d.at), &d.path);
             let verdict = reread_verdict(
                 &bash.session,
@@ -1062,6 +1065,189 @@ fn bash_delivered_whole(bash: &Bash) -> bool {
         .and_then(|v| v.trim().parse::<usize>().ok())
         .unwrap_or(30_000);
     out.chars().count() < cap && !crate::payload::has_persisted_marker(out)
+}
+
+/// Lexical clean-up of an absolute path: `.` components dropped, `..` folded.
+/// No file is touched, so a path that is not there compares like any other.
+fn normalized(path: std::path::PathBuf) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The path a word names when the clause at `at` runs, so that a write and a
+/// dump are compared where each one acts, not as spelled.
+fn named_path(ctx: &Context, at: usize, text: &str) -> std::path::PathBuf {
+    normalized(resolve_path(&ctx.cwd_at(at), text))
+}
+
+/// Whether the command also changes the dumped file under the dump, or waits
+/// for it to change. Each exception is bound to the dumped path:
+/// - an earlier clause redirects (`>`/`>>`) onto the same file;
+/// - an earlier interpreter heredoc names the file as a quoted literal and
+///   writes (`open(p, 'w')`, `write_text`, ...);
+/// - a `while`/`until` loop that runs `sleep` and names the file starts at or
+///   before the dump (the dump may sit in the loop or follow it).
+///
+/// Such a dump shows a file that changes under it, so it is neither a certain
+/// read to remember nor a repeat to refuse.
+fn writes_or_waits(ctx: &Context, d: &rules::dump::Dump) -> bool {
+    let target = named_path(ctx, d.at, &d.path);
+    let clauses = || ctx.parsed.judgeable();
+    let redirected = clauses().any(|c| {
+        c.at < d.at
+            && c.redirects
+                .iter()
+                .any(|(op, w)| op.contains('>') && named_path(ctx, c.at, &w.text) == target)
+    });
+    if redirected {
+        return true;
+    }
+    // holds-until: the heredoc exception holds for a python, perl, node or
+    // ruby heredoc whose body names the dumped path as a quoted literal (or
+    // as a variable or first parameter bound to it in the body) and opens
+    // that name in a write mode or calls write_text/write_bytes/writeFileSync
+    // on it; it ends when the interpreter's write is read from the shell
+    // analysis's effects instead of matched in the body text.
+    let scripted = rules::dump::heredoc_bodies(ctx.command).iter().any(|h| {
+        h.start < d.at
+            && h.program
+                .as_deref()
+                .is_some_and(|p| p.starts_with("python") || matches!(p, "perl" | "node" | "ruby"))
+            && body_writes_path(&h.body, &d.path)
+    });
+    if scripted {
+        return true;
+    }
+    rules::dump::wait_loops(ctx.command)
+        .into_iter()
+        .filter(|l| l.start <= d.at)
+        .any(|l| {
+            let inside = || clauses().filter(|c| l.start <= c.at && c.at < l.end);
+            inside().any(runs_sleep)
+                && inside().any(|c| {
+                    c.words
+                        .iter()
+                        .map(|w| w.text.as_str())
+                        .chain(c.redirects.iter().map(|(_, w)| w.text.as_str()))
+                        .any(|t| path_like_word(t) && named_path(ctx, c.at, t) == target)
+                })
+        })
+}
+
+/// Whether an interpreter body writes `path`: the quoted literal, or a name
+/// the body binds to it, opened in a write mode or given to a path writer.
+fn body_writes_path(body: &str, path: &str) -> bool {
+    let lits = [format!("'{path}'"), format!("\"{path}\"")];
+    let is_ident = |t: &str| {
+        !t.is_empty()
+            && t.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !t.starts_with(|c: char| c.is_ascii_digit())
+    };
+    let mut names: Vec<String> = Vec::new();
+    for lit in &lits {
+        for (i, _) in body.match_indices(lit.as_str()) {
+            let before = body[..i].trim_end();
+            if let Some(lhs) = before
+                .strip_suffix('=')
+                .filter(|l| !l.ends_with(['=', '!', '<', '>']))
+            {
+                let lhs = lhs.trim_end();
+                let start = lhs
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .map_or(0, |k| k + 1);
+                if is_ident(&lhs[start..]) {
+                    names.push(lhs[start..].to_string());
+                }
+            } else if let Some(call) = before.strip_suffix('(') {
+                // The literal is the first argument of `name(`: the name's
+                // `def name(first, ...)` binds it.
+                let start = call
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .map_or(0, |k| k + 1);
+                let name = &call[start..];
+                if is_ident(name) {
+                    let def = format!("def {name}(");
+                    if let Some(k) = body.find(&def) {
+                        let rest = &body[k + def.len()..];
+                        let first = rest.split([',', ')']).next().unwrap_or("").trim();
+                        if is_ident(first) {
+                            names.push(first.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let names_path = |arg: &str| {
+        let arg = arg.trim();
+        lits.iter().any(|l| l == arg) || names.iter().any(|n| n == arg)
+    };
+    let write_mode = |m: &str| m.contains(['w', 'a', 'x', '+']);
+    let opens = body.match_indices("open(").any(|(i, _)| {
+        let rest = &body[i + "open(".len()..];
+        let end = rest.find(')').unwrap_or(rest.len());
+        let mut args = rest[..end].split(',');
+        let target = args.next().unwrap_or("");
+        names_path(target)
+            && args.any(|a| {
+                let a = a.trim();
+                let a = a
+                    .strip_prefix("mode")
+                    .map_or(a, |m| m.trim_start().trim_start_matches('=').trim());
+                ["'", "\""].iter().any(|q| {
+                    a.strip_prefix(q)
+                        .and_then(|m| m.strip_suffix(q))
+                        .is_some_and(write_mode)
+                })
+            })
+    });
+    if opens {
+        return true;
+    }
+    let writers = [".write_text(", ".write_bytes("].iter().any(|w| {
+        body.match_indices(w).any(|(i, _)| {
+            let recv = &body[..i];
+            match recv.strip_suffix(')') {
+                Some(inner) => inner
+                    .rfind('(')
+                    .is_some_and(|k| names_path(&inner[k + 1..])),
+                None => {
+                    let start = recv
+                        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .map_or(0, |k| k + 1);
+                    names_path(&recv[start..])
+                }
+            }
+        })
+    });
+    writers
+        || body.match_indices("writeFileSync(").any(|(i, _)| {
+            let rest = &body[i + "writeFileSync(".len()..];
+            names_path(rest.split([',', ')']).next().unwrap_or(""))
+        })
+}
+
+/// Whether the clause runs `sleep`, past the loop keywords the lexer leaves at
+/// the front of a clause (`do sleep 1`).
+fn runs_sleep(c: &Simple) -> bool {
+    c.words
+        .iter()
+        .find(|w| w.quoted || !matches!(w.text.as_str(), "until" | "while" | "do" | "then" | "!"))
+        .is_some_and(|w| !w.quoted && w.text == "sleep")
+}
+
+fn path_like_word(text: &str) -> bool {
+    !text.is_empty() && !text.starts_with('-')
 }
 
 /// The answer to the `file-reread` question.
