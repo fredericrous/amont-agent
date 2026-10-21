@@ -662,7 +662,8 @@ mod tests {
         // aaaaaaaa ignored the advice; here it is the session in the shadow arm.
         std::fs::write(
             &f.journal,
-            "F 1790848800 sed-in-place watched watched aaaaaaaa repo default arm=shadow x\n",
+            "F 1790848800 sed-in-place watched watched aaaaaaaa repo default arm=shadow x\n\
+             F 1790935200 sed-in-place denied denied bbbbbbbb repo default arm=live x\n",
         )
         .unwrap();
         let scan = Scan {
