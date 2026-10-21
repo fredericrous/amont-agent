@@ -73,7 +73,7 @@ exclude = ["tools/shell-oracle"]
 # libraries by version, so a release where they differ is one nobody can
 # install.
 [workspace.package]
-version = "2.45.1"
+version = "2.46.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/fredericrous/amont-agent"
@@ -83,5 +83,5 @@ rust-version = "1.85.0"
 # The one place the inter-crate version is written: `path` for a checkout,
 # `version` for crates.io, exact because they are released together.
 [workspace.dependencies]
-amont-agent-guard = { path = "crates/amont-agent-guard", version = "=2.45.1" }
-amont-agent-process = { path = "crates/amont-agent-process", version = "=2.45.1" }
+amont-agent-guard = { path = "crates/amont-agent-guard", version = "=2.46.0" }
+amont-agent-process = { path = "crates/amont-agent-process", version = "=2.46.0" }
