@@ -119,10 +119,10 @@ pub fn paths() -> Vec<PathBuf> {
 /// Timestamp of the oldest record in the journal, if any.
 pub fn oldest_record() -> Option<u64> {
     paths().iter().find_map(|p| {
-        fs::read_to_string(p).ok()?.lines().find_map(|l| {
-            let mut f = l.strip_prefix("F ")?.split_whitespace();
-            f.next()?.parse::<u64>().ok()
-        })
+        fs::read_to_string(p)
+            .ok()?
+            .lines()
+            .find_map(|l| fixed_fields(l).map(|r| r.ts))
     })
 }
 
@@ -203,27 +203,19 @@ fn tally_into(
     };
     let floor = now.saturating_sub(since);
     for line in text.lines() {
-        if !line.starts_with("F ") {
-            continue;
-        }
-        let mut f = line.split_whitespace();
-        let (Some(_), Some(ts), Some(rule), Some(stance), Some(outcome)) =
-            (f.next(), f.next(), f.next(), f.next(), f.next())
-        else {
+        let Some(row) = fixed_fields(line) else {
             continue;
         };
-        let Ok(ts) = ts.parse::<u64>() else {
-            continue;
-        };
-        if ts < floor {
+        if row.ts < floor {
             continue;
         }
         // Shadow rows are the part dropped to observe on purpose: counting
         // them would read the experiment as the part's own behaviour.
-        if arm_of_line(line) == Arm::Shadow {
+        if row.arm == Arm::Shadow {
             continue;
         }
-        let seen = out.entry(rule.to_string()).or_default();
+        let (stance, outcome) = (row.stance.as_str(), row.outcome.as_str());
+        let seen = out.entry(row.rule.clone()).or_default();
         match (stance, outcome) {
             // A `confirm` that declined, or an assertion that could not check
             // its claim. The outcome field carries the reason; older records
@@ -282,6 +274,53 @@ impl Arm {
 pub fn arm_of_line(line: &str) -> Arm {
     // F ts rule stance outcome session repo mode [arm=..] excerpt
     Arm::parse(line.split_whitespace().nth(8))
+}
+
+/// One journal record, fixed fields only: what `harness-review` reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub ts: u64,
+    pub rule: String,
+    pub stance: String,
+    pub outcome: String,
+    /// The first eight characters of the session id, as written.
+    pub session: String,
+    pub arm: Arm,
+}
+
+/// The fixed fields of one `F ` record line, or `None` for any other line and
+/// for a torn write that lacks them. The session may be absent (a record
+/// cut after the outcome still counts); the excerpt is not parsed.
+pub fn fixed_fields(line: &str) -> Option<Row> {
+    // F ts rule stance outcome session repo mode [arm=..] excerpt
+    let mut f = line.strip_prefix("F ")?.split_whitespace();
+    let ts = f.next()?.parse::<u64>().ok()?;
+    let rule = f.next()?;
+    let stance = f.next()?;
+    let outcome = f.next()?;
+    let session = f.next().unwrap_or_default();
+    let arm = Arm::parse(f.nth(2));
+    Some(Row {
+        ts,
+        rule: rule.to_string(),
+        stance: stance.to_string(),
+        outcome: outcome.to_string(),
+        session: session.to_string(),
+        arm,
+    })
+}
+
+/// Every `F ` record in `paths`, in file order, torn lines dropped. Unlike
+/// [`tally`] it keeps shadow rows and says which arm each belongs to.
+pub fn rows_in(paths: &[std::path::PathBuf]) -> Vec<Row> {
+    let mut out = Vec::new();
+    for p in paths {
+        let Ok(text) = fs::read_to_string(p) else {
+            continue;
+        };
+        out.extend(text.lines().filter_map(fixed_fields));
+    }
+    out
 }
 
 /// One thing that happened.

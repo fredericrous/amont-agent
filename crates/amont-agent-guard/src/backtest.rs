@@ -79,6 +79,14 @@ impl Subject {
         }
     }
 
+    /// Whether `examine` matches this command, through the same dispatch as
+    /// [`run`]: the command is lexed here, a transcript's shell being unknown.
+    pub fn fires_on(&self, command: &str) -> bool {
+        let parsed = shell::lex(command);
+        let input = crate::rules::Input::new(command, crate::rules::Dialect::Unknown, &parsed);
+        self.span(&input).is_some()
+    }
+
     /// The same dispatch as the hook's: a rule through [`Rule::judge`], and an
     /// assertion — which reads only the legacy lexer — never on a command
     /// that lexer could not read.
