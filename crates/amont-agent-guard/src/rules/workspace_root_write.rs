@@ -832,6 +832,9 @@ mod tests {
             transcript,
             agent_transcript: None,
             command,
+            output: None,
+            session: "",
+            failed: false,
         };
         confirm(&ctx, &finding)
     }
@@ -942,6 +945,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         let at = |text: &str| {
             target_path(
@@ -1008,6 +1014,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         assert!(matches!(confirm(&ctx, &finding), Confirmed::No(_)));
         assert!(!fires_in("make > x.log", &root.join("gone")));

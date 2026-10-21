@@ -266,6 +266,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         assert!(matches!(confirm(&ctx, &f), Confirmed::No(_)));
         let ctx = Context {
@@ -293,6 +296,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         assert!(matches!(confirm(&ctx, &f), Confirmed::No(_)));
         // Thirty-six rounds of fifteen seconds is nine minutes: over the

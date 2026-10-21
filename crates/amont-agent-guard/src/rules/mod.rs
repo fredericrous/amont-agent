@@ -390,6 +390,13 @@ pub struct Context<'a> {
     /// The machine the command runs on: `Some(Platform::host())` in the hook.
     /// `None` where it is not known (a replay, a test that does not ask).
     pub platform: Option<Platform>,
+    /// The call's stdout and stderr joined by a newline, after the call;
+    /// `None` before it or where the payload carried neither.
+    pub output: Option<&'a str>,
+    /// The session id the hook was called for; `""` where there is none.
+    pub session: &'a str,
+    /// The call failed: true only on the `PostToolUseFailure` path.
+    pub failed: bool,
 }
 
 impl Context<'_> {
@@ -532,6 +539,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -558,6 +568,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "worktree")),
@@ -578,6 +591,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -598,6 +614,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         assert_eq!(
             ctx.cwd_at(at_of(&parsed, "stash")),
@@ -620,6 +639,9 @@ mod tests {
                 transcript: None,
                 agent_transcript: None,
                 command: "",
+                output: None,
+                session: "",
+                failed: false,
             };
             assert_eq!(
                 ctx.cwd_at(at_of(&parsed, "stash")),
@@ -642,6 +664,9 @@ mod tests {
             transcript: None,
             agent_transcript: None,
             command: "",
+            output: None,
+            session: "",
+            failed: false,
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));

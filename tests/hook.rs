@@ -2625,3 +2625,211 @@ fn a_second_whole_read_is_still_denied_at_deny() {
     assert!(said_reread(&r), "{}", r.stdout);
     assert_eq!(r.decision().as_deref(), Some("deny"));
 }
+
+// ---- bug-nudge: a red check run asks for the diagnosing-bugs skill once ----
+
+/// A Bash payload for a post-call event of a check run. `transcript` is the
+/// payload's `transcript_path`, absent when `None`.
+fn post_bash(
+    event: &str,
+    session: &str,
+    command: &str,
+    stdout: &str,
+    error: &str,
+    transcript: Option<&std::path::Path>,
+) -> String {
+    let mut v = serde_json::json!({
+        "hook_event_name": event,
+        "tool_name": "Bash",
+        "cwd": "/tmp",
+        "session_id": session,
+        "tool_use_id": "t1",
+        "permission_mode": "default",
+        "tool_input": {"command": command},
+    });
+    if event == "PostToolUseFailure" {
+        v["error"] = serde_json::Value::String(error.to_string());
+    } else {
+        v["tool_response"] =
+            serde_json::json!({"stdout": stdout, "stderr": "", "interrupted": false});
+    }
+    if let Some(t) = transcript {
+        v["transcript_path"] = serde_json::Value::String(t.display().to_string());
+    }
+    v.to_string()
+}
+
+/// A transcript of one human turn that never loaded the skill. The assertion
+/// stays silent when it has no transcript to read, so a firing needs one.
+fn unloaded_transcript(name: &str) -> PathBuf {
+    let t = home().join(name);
+    let human = serde_json::json!({"type":"user","message":{"role":"user","content":"go"},"origin":{"kind":"human"}});
+    std::fs::write(&t, human.to_string() + "\n").expect("write the transcript");
+    t
+}
+
+/// How many times the reply's reason text carries the bug-nudge advisory.
+fn advisory_count(r: &Reply) -> usize {
+    r.reason().matches("amont-agent/bug-nudge").count()
+}
+
+#[test]
+fn bug_nudge_fires_once_on_a_failed_cargo_test() {
+    let t = unloaded_transcript("bugnudge-fires.jsonl");
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-fires",
+        "cargo test",
+        "",
+        "Exit code 101",
+        Some(&t),
+    );
+    let first = send(&payload);
+    assert_eq!(first.code, 0);
+    assert_eq!(advisory_count(&first), 1, "{}", first.stdout);
+    assert_ne!(
+        first.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        first.stdout
+    );
+    let second = send(&payload);
+    assert_eq!(advisory_count(&second), 0, "{}", second.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_on_a_grep_that_prints_error() {
+    let t = unloaded_transcript("bugnudge-grep.jsonl");
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-grep",
+        "grep -n error src/main.rs",
+        "",
+        "Exit code 1\nsrc/main.rs:3: error",
+        Some(&t),
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_when_the_skill_was_loaded() {
+    let t = home().join("bugnudge-skill.jsonl");
+    let lines = [
+        serde_json::json!({"type":"user","message":{"role":"user","content":"go"},"origin":{"kind":"human"}}),
+        serde_json::json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"diagnosing-bugs"}}]}}),
+    ];
+    let body: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    std::fs::write(&t, body.join("\n") + "\n").expect("write the transcript");
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-loaded",
+        "cargo test",
+        "",
+        "Exit code 101\ntest result: FAILED",
+        Some(&t),
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_reads_a_pipeline_exit_0_with_failure_text() {
+    let t = unloaded_transcript("bugnudge-pipe.jsonl");
+    let payload = post_bash(
+        "PostToolUse",
+        "bugnudge-pipe",
+        "cargo test 2>&1 | tail -5",
+        "test result: FAILED. 0 passed; 1 failed",
+        "",
+        Some(&t),
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 1, "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_for_a_failed_pipeline_with_no_failure_text() {
+    let t = unloaded_transcript("bugnudge-nopipe.jsonl");
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-nopipe",
+        "cargo test 2>&1 | grep FAILED",
+        "",
+        "",
+        Some(&t),
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_reads_the_error_text_of_a_failed_pipeline() {
+    let t = unloaded_transcript("bugnudge-errtext.jsonl");
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-errtext",
+        "cargo test 2>&1 | grep FAILED",
+        "",
+        "Exit code 1\ntest result: FAILED",
+        Some(&t),
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 1, "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_when_a_subagent_loaded_the_skill() {
+    let parent = unloaded_transcript("bugnudge-sub-parent.jsonl");
+    let agent = home().join("bugnudge-sub-agent.jsonl");
+    let line = serde_json::json!({"type":"assistant","message":{"content":[
+        {"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"diagnosing-bugs"}}]}});
+    std::fs::write(&agent, line.to_string() + "\n").expect("write the agent transcript");
+    let mut v: serde_json::Value = serde_json::from_str(&post_bash(
+        "PostToolUseFailure",
+        "bugnudge-sub",
+        "cargo test",
+        "",
+        "Exit code 101\ntest result: FAILED",
+        Some(&parent),
+    ))
+    .expect("payload");
+    v["agent_id"] = "a1".into();
+    v["agent_type"] = "worker".into();
+    v["agent_transcript_path"] = agent.display().to_string().into();
+    let r = send(&v.to_string());
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_and_unknown_on_an_unreadable_transcript() {
+    let gone = home().join("bugnudge-gone.jsonl");
+    let _ = std::fs::remove_file(&gone);
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-gone",
+        "cargo test",
+        "",
+        "Exit code 101\ntest result: FAILED",
+        Some(&gone),
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+    assert_ne!(r.decision().as_deref(), Some("deny"), "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_without_a_transcript_path() {
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-nopath",
+        "cargo test",
+        "",
+        "Exit code 101\ntest result: FAILED",
+        None,
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+    assert_ne!(r.decision().as_deref(), Some("deny"), "{}", r.stdout);
+}
