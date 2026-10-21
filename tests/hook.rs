@@ -2681,7 +2681,7 @@ fn bug_nudge_fires_once_on_a_failed_cargo_test() {
         "bugnudge-fires",
         "cargo test",
         "",
-        "Exit code 101\ntest result: FAILED. 0 passed; 1 failed",
+        "Exit code 101",
         Some(&t),
     );
     let first = send(&payload);
