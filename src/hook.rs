@@ -268,6 +268,9 @@ fn on_bash(bash: &Bash) -> Decision {
                 transcript: bash.transcript.as_deref(),
                 agent_transcript: bash.agent_transcript.as_deref(),
                 command: &bash.command,
+                output: None,
+                session: &bash.session,
+                failed: false,
             };
             if writes_or_waits(&ctx, d) {
                 continue;
@@ -380,6 +383,16 @@ fn on_bash(bash: &Bash) -> Decision {
     }
 }
 
+/// The call's stdout and stderr joined by a newline, or `None` when it has neither.
+fn joined_output(bash: &Bash) -> Option<String> {
+    match (bash.stdout.as_deref(), bash.stderr.as_deref()) {
+        (None, None) => None,
+        (Some(o), None) => Some(o.to_string()),
+        (None, Some(e)) => Some(e.to_string()),
+        (Some(o), Some(e)) => Some(format!("{o}\n{e}")),
+    }
+}
+
 /// A call that has already run and reported success.
 ///
 /// The shape mirrors `on_bash` deliberately — lex, pure prefilter, and only
@@ -407,6 +420,7 @@ fn on_post_bash(bash: &Bash) -> Decision {
         return unbound.map_or(Decision::Silent, Decision::Assert);
     }
 
+    let output = joined_output(bash);
     let ctx = Context {
         platform: Some(crate::rules::Platform::host()),
         cwd: &bash.cwd,
@@ -417,6 +431,9 @@ fn on_post_bash(bash: &Bash) -> Decision {
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
         command: &bash.command,
+        output: output.as_deref(),
+        session: &bash.session,
+        failed: false,
     };
 
     // A `cat`-shaped dump that has now run is a read the session should
@@ -488,6 +505,7 @@ fn on_post_bash_failure(bash: &Bash) -> Decision {
     if claimed.is_empty() {
         return Decision::Silent;
     }
+    let output = joined_output(bash);
     let ctx = Context {
         platform: Some(crate::rules::Platform::host()),
         cwd: &bash.cwd,
@@ -498,6 +516,9 @@ fn on_post_bash_failure(bash: &Bash) -> Decision {
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
         command: &bash.command,
+        output: output.as_deref(),
+        session: &bash.session,
+        failed: true,
     };
     let mut spoken = Vec::new();
     for (assertion, claim) in &claimed {
@@ -1393,6 +1414,9 @@ fn confirmed(
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
         command: &bash.command,
+        output: None,
+        session: &bash.session,
+        failed: false,
     };
     // The directory that matters is the one the matched clause runs in,
     // `cd`s followed — not the session's. A session left in a removed
@@ -1530,6 +1554,9 @@ fn attributed_repo(id: &str, bash: &Bash) -> String {
             transcript: bash.transcript.as_deref(),
             agent_transcript: bash.agent_transcript.as_deref(),
             command: &bash.command,
+            output: None,
+            session: &bash.session,
+            failed: false,
         };
         crate::push_target::repository(&ctx.cwd_at(cmd.at), cmd)
     });

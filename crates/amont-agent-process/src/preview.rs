@@ -1203,6 +1203,9 @@ pub fn bind(
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
         command: &bash.command,
+        output: None,
+        session: &bash.session,
+        failed: false,
     };
     let here = ctx.cwd_at(cmd.at);
     let dir = match cmd.flag_value("--repo") {
@@ -1752,6 +1755,9 @@ pub fn record_before(
         transcript: bash.transcript.as_deref(),
         agent_transcript: bash.agent_transcript.as_deref(),
         command: &bash.command,
+        output: None,
+        session: &bash.session,
+        failed: false,
     };
     let Push::Resolved { repo, targets } = push_target::resolve_for(&ctx, cmd) else {
         return;

@@ -192,6 +192,9 @@ mod tests {
             agent_transcript: None,
             command: "open -a Simulator",
             platform,
+            output: None,
+            session: "",
+            failed: false,
         };
         let finding = Finding {
             reason: String::new(),
