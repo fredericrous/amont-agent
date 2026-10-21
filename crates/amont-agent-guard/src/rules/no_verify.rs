@@ -21,6 +21,9 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "no-verify",
+    prevents:
+        "Skipping the pre-commit and commit-msg gates wholesale, and with them every check they run",
+    irreversible: true,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

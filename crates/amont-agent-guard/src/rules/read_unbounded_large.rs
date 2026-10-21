@@ -17,6 +17,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "read-unbounded-large",
+    prevents: "A Read with no window over a large file, pouring most of it into context unread",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

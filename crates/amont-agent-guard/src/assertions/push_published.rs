@@ -22,6 +22,8 @@ use crate::shell::Parsed;
 
 pub const ASSERTION: Assertion = Assertion {
     id: "push-published",
+    prevents: "A push to an interface repository exiting 0 without publishing, or publishing an unapproved preview",
+    irreversible: false,
     default_stance: Stance::Observe,
     evidence: Evidence {
         per_1000: 0.0,

@@ -57,6 +57,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "release-tag-push",
+    prevents: "Pushing a version tag, which publishes, on a commit or a state nobody checked",
+    irreversible: true,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

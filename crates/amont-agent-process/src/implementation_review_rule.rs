@@ -34,6 +34,8 @@ use amont_agent_guard::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: crate::implementation_review::RULE_ID,
+    prevents: "A push of a planned branch whose diff no independent reviewer has read",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

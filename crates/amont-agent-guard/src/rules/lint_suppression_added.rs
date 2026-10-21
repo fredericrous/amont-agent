@@ -60,6 +60,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "lint-suppression-added",
+    prevents: "A lint suppression or a looser lint configuration added to silence a finding instead of fixing it",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

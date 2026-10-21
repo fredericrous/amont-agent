@@ -12,6 +12,9 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "persisted-output-dump",
+    prevents:
+        "Reading back a saved tool result that was too big once, paying for the same output twice",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

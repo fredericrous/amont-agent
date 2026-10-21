@@ -24,6 +24,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "sed-in-place",
+    prevents: "sed -i spelled for the other sed, which fails or edits the wrong file",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

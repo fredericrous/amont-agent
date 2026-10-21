@@ -38,6 +38,9 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "worktree-isolation",
+    prevents:
+        "Task work started in a shared checkout where a person or agent already works in parallel",
+    irreversible: false,
     // Observing, which is where a rule goes to earn its case. The harm is
     // real and silent, but the shape is common enough that its rate has to be
     // looked at before it is allowed to speak: `Advise` would put text in

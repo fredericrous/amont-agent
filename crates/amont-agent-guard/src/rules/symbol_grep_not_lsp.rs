@@ -28,6 +28,8 @@ use crate::shell::{Parsed, Simple, Word};
 
 pub const RULE: Rule = Rule {
     id: "symbol-grep-not-lsp",
+    prevents: "A text search for a symbol over code an LSP server can answer exactly",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

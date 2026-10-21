@@ -115,6 +115,8 @@ mod tests {
     fn capped(max: Stance) -> Rule {
         Rule {
             id: "capped",
+            prevents: "test",
+            irreversible: false,
             default_stance: Stance::Observe,
             max_stance: max,
             evidence: crate::rules::Evidence {

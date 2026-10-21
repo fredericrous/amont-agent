@@ -55,6 +55,9 @@ use crate::skill_window::{self, Window};
 
 pub const RULE: Rule = Rule {
     id: "publish-without-skill",
+    prevents:
+        "A release tag pushed or a pull request merged without the skill that carries the procedure",
+    irreversible: true,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

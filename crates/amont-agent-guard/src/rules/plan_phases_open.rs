@@ -15,6 +15,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "plan-phases-open",
+    prevents: "A turn ending while the plan its branch carries still has an open phase",
+    irreversible: false,
     default_stance: Stance::Deny,
     max_stance: Stance::Deny,
     evidence: Evidence {

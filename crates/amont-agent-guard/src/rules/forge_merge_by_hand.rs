@@ -72,6 +72,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "forge-merge-by-hand",
+    prevents: "Merging a pull request through the forge API, which answers 200 whether or not CI has passed",
+    irreversible: true,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

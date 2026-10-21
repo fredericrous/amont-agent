@@ -1406,7 +1406,9 @@ fn print_rules_json() -> ExitCode {
                  ships: rules::Stance,
                  now: rules::Stance,
                  max: rules::Stance,
-                 e: &rules::Evidence| {
+                 e: &rules::Evidence,
+                 prevents: &str,
+                 irreversible: bool| {
         json::object(&[
             json::string_field("id", id),
             json::string_field("kind", kind),
@@ -1415,6 +1417,8 @@ fn print_rules_json() -> ExitCode {
             json::string_field("max_stance", max.as_str()),
             json::float_field("per_1000", e.per_1000),
             json::string_field("measured", e.measured),
+            json::string_field("prevents", prevents),
+            json::bool_field("irreversible", irreversible),
         ])
     };
     let mut items: Vec<String> = rule_table::RULES
@@ -1427,6 +1431,8 @@ fn print_rules_json() -> ExitCode {
                 stance::resolve(r),
                 r.max_stance,
                 &r.evidence,
+                r.prevents,
+                r.irreversible,
             )
         })
         .collect();
@@ -1439,6 +1445,8 @@ fn print_rules_json() -> ExitCode {
             stance::resolve_assertion(a),
             rules::Stance::Deny,
             &a.evidence,
+            a.prevents,
+            a.irreversible,
         )
     }));
     println!("{}", json::array(&items));

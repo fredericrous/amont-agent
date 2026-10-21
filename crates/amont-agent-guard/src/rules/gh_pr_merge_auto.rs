@@ -19,6 +19,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "gh-pr-merge-auto",
+    prevents: "A pull request merging before CI has run, because --auto merges at once without branch protection",
+    irreversible: true,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

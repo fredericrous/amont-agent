@@ -39,6 +39,8 @@ use crate::rules::{Evidence, Examine, Finding, Input, Rule, Stance, Trend};
 
 pub const RULE: Rule = Rule {
     id: "request-fanout",
+    prevents: "One command that may make hundreds of network requests and trip a rate limit",
+    irreversible: false,
     // Ships observing, and `Advise` is as far as it may ever go. Replayed
     // over 30 days (57,361 calls) it fired twice, on the two forms of the
     // incident command and nothing else: rare, kept for the cost of a miss.

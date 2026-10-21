@@ -22,6 +22,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "branch-force-delete",
+    prevents: "Deleting a branch whose commits exist nowhere else, which git's own refusal would have caught",
+    irreversible: true,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

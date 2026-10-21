@@ -28,6 +28,9 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "unbounded-background-push",
+    prevents:
+        "A background push whose pre-push gate has no clock and nothing says it is still running",
+    irreversible: false,
     // Advises: it refuses nothing, and the push it names is legitimate — only
     // unbounded.
     default_stance: Stance::Advise,

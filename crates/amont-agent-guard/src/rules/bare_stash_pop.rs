@@ -13,6 +13,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "bare-stash-pop",
+    prevents: "Popping another worktree's stash entry, because a bare pop takes whichever entry was pushed last",
+    irreversible: true,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

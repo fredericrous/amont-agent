@@ -43,6 +43,9 @@ use crate::shell::{Connector, Parsed, Simple, Word};
 
 pub const RULE: Rule = Rule {
     id: "path-operand-missing",
+    prevents:
+        "A read of a path that is not there, which fails after the work of composing the command",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

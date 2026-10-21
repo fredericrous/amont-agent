@@ -25,6 +25,9 @@ use crate::shell::{Parsed, Simple};
 
 pub const ASSERTION: Assertion = Assertion {
     id: "push-landed",
+    prevents:
+        "A push that exited 0 without the ref reaching the remote being taken as a landed push",
+    irreversible: false,
     // Ships observing, and the number below is the cost of ASKING, not of
     // speaking: 1,007 pushes in 29,758 Bash calls across five weeks, so roughly
     // one call in twenty-six pays for a `git ls-remote`. How often the claim is

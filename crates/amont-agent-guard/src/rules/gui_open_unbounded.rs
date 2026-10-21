@@ -54,6 +54,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "gui-open-unbounded",
+    prevents: "A macOS app launch that never returns hanging a background call for an hour with no clock on it",
+    irreversible: false,
     // Advises: the launch is legitimate — only unbounded.
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,

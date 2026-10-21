@@ -18,6 +18,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "amend-pushed",
+    prevents: "Rewriting a commit the remote already has, so the next push is refused or force-pushed over it",
+    irreversible: true,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

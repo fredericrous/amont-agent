@@ -20,6 +20,9 @@ const SKILL: &str = "diagnosing-bugs";
 
 pub const ASSERTION: Assertion = Assertion {
     id: "bug-nudge",
+    prevents:
+        "Guessing at another command after a red run when the diagnosing-bugs skill was not loaded",
+    irreversible: false,
     default_stance: Stance::Advise,
     evidence: Evidence {
         per_1000: 0.0,

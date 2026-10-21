@@ -31,6 +31,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "stale-base",
+    prevents: "A new branch or worktree started from a checkout that origin has already moved past",
+    irreversible: false,
     // Ships advising rather than observing: it refuses nothing, it speaks only
     // when `confirm` has measured a real gap, and the failure it names is one
     // no correcting loop can see — nothing fails when you build on stale code.

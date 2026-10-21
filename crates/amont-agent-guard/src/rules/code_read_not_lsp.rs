@@ -23,6 +23,9 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "code-read-not-lsp",
+    prevents:
+        "Reading a whole code file into context where an LSP query would answer with a few lines",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

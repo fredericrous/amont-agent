@@ -35,6 +35,9 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "pipe-to-tail",
+    prevents:
+        "A mutating command whose failure is hidden because the pipe's exit status belongs to tail",
+    irreversible: false,
     // The only rule that ships blocking, and the only one with the evidence to
     // justify it: seven consecutive weeks with no downward trend, while every
     // other measured habit halved. The usual ladder — observe, then advise,

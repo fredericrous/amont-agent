@@ -42,6 +42,8 @@ use amont_agent_guard::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "push-preview",
+    prevents: "A push that publishes interface changes no approved preview covers",
+    irreversible: false,
     // Advises from the start, `confirm`-backed like `push-preflight`, and
     // under review: the soak decides between deny, advise, or retiring the
     // gate while keeping the verification loop (ADR-0023, carried forward

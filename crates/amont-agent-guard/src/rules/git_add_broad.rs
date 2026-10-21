@@ -19,6 +19,9 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "git-add-broad",
+    prevents:
+        "Staging work that is not this task's, because a broad git add takes whatever is dirty",
+    irreversible: false,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

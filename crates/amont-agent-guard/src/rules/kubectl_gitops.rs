@@ -28,6 +28,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "kubectl-gitops",
+    prevents: "A hand change to a cluster that git owns, which the reconciler reverts or which drifts unseen",
+    irreversible: true,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

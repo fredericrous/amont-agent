@@ -23,6 +23,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "file-reread",
+    prevents: "Paying again for a file this session already has in context",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

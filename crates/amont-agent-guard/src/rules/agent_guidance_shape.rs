@@ -25,6 +25,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "agent-guidance-shape",
+    prevents: "A guidance file written in a shape that costs every session or hides the skill from the model",
+    irreversible: false,
     default_stance: Stance::Advise,
     // Advise until the index-rewrite plan brings MEMORY.md and CLAUDE.md
     // under budget: auto-memory grows MEMORY.md on every save.

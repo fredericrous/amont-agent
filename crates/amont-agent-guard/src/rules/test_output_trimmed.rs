@@ -24,6 +24,9 @@ use crate::shell::{Parsed, Simple, Word};
 
 pub const RULE: Rule = Rule {
     id: "test-output-trimmed",
+    prevents:
+        "A failing test or lint run reported as success because a pipe replaced its exit status",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

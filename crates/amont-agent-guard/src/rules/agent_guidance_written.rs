@@ -20,6 +20,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "agent-guidance-written",
+    prevents: "Guidance an agent reads being edited without the guidance rules that govern it being checked",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Advise,
     evidence: Evidence {
