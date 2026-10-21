@@ -76,7 +76,12 @@ pub fn resolve(rule: &Rule) -> Stance {
     // failure this whole crate is about.
     let floor = config::enumerated_or(KEY_STANCE, ALLOWED, rule.default_stance.as_str());
     let mine = config::enumerated_or(&key_for(rule), ALLOWED, floor);
-    ladder(rule, Stance::parse(mine))
+    let st = ladder(rule, Stance::parse(mine));
+    // ADR-0042: a part in the shadow arm observes for this session.
+    if st != Stance::Observe && crate::shadow::drops(rule.id, rule.irreversible) {
+        return Stance::Observe;
+    }
+    st
 }
 
 /// The configured stance, or the rule's default, then the rule's ceiling.
@@ -105,7 +110,11 @@ pub fn resolve_assertion(assertion: &crate::assertions::Assertion) -> Stance {
     let floor = config::enumerated_or(KEY_STANCE, ALLOWED, assertion.default_stance.as_str());
     let key = format!("amont.agent.{}.stance", assertion.id);
     let mine = config::enumerated_or(&key, ALLOWED, floor);
-    Stance::parse(mine).unwrap_or(assertion.default_stance)
+    let st = Stance::parse(mine).unwrap_or(assertion.default_stance);
+    if st != Stance::Observe && crate::shadow::drops(assertion.id, assertion.irreversible) {
+        return Stance::Observe;
+    }
+    st
 }
 
 #[cfg(test)]
@@ -115,6 +124,8 @@ mod tests {
     fn capped(max: Stance) -> Rule {
         Rule {
             id: "capped",
+            prevents: "test",
+            irreversible: false,
             default_stance: Stance::Observe,
             max_stance: max,
             evidence: crate::rules::Evidence {

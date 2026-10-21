@@ -61,6 +61,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "forge-status-stale-row",
+    prevents: "Reading a stale row of the append-only status list as the current state of a check",
+    irreversible: false,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

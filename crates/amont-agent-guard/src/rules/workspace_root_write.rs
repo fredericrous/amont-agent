@@ -46,6 +46,8 @@ use std::path::{Path, PathBuf};
 
 pub const RULE: Rule = Rule {
     id: "workspace-root-write",
+    prevents: "An output file created in a workspace root, which belongs to no repository",
+    irreversible: false,
     default_stance: Stance::Deny,
     max_stance: Stance::Deny,
     evidence: Evidence {

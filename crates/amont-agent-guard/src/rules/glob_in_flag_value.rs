@@ -23,6 +23,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "glob-in-flag-value",
+    prevents: "The shell expanding a glob inside a flag value, or failing on it, before the program sees it",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

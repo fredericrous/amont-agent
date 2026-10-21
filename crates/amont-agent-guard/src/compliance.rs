@@ -82,14 +82,30 @@ impl Cell {
     pub fn answered(&self) -> u32 {
         self.complied + self.ignored
     }
+    /// The share of ANSWERED firings that matched again. `None` when nothing
+    /// was answered: an unmeasured share, which is not the same as zero.
+    pub fn ignored_share(&self) -> Option<f64> {
+        if self.answered() == 0 {
+            None
+        } else {
+            Some(f64::from(self.ignored) / f64::from(self.answered()))
+        }
+    }
     /// The share of ANSWERED firings that changed. `None` when nothing was
-    /// answered — an unmeasured share, which is not the same as zero.
+    /// answered.
     pub fn share(&self) -> Option<f64> {
         if self.answered() == 0 {
             None
         } else {
             Some(f64::from(self.complied) / f64::from(self.answered()))
         }
+    }
+    /// Add `other`'s counts into this cell.
+    pub fn add(&mut self, other: &Cell) {
+        self.firings += other.firings;
+        self.complied += other.complied;
+        self.ignored += other.ignored;
+        self.unanswered += other.unanswered;
     }
 }
 
@@ -98,16 +114,16 @@ pub struct Subject {
     pub stance: Stance,
     /// One cell per (model, week starting), both in ascending order.
     pub cells: BTreeMap<(String, Day), Cell>,
+    /// One cell per transcript session id, so a caller that knows a
+    /// session's arm (the journal does; a transcript does not) can split.
+    pub by_session: BTreeMap<String, Cell>,
 }
 
 impl Subject {
     pub fn total(&self) -> Cell {
         let mut t = Cell::default();
         for c in self.cells.values() {
-            t.firings += c.firings;
-            t.complied += c.complied;
-            t.ignored += c.ignored;
-            t.unanswered += c.unanswered;
+            t.add(c);
         }
         t
     }
@@ -120,15 +136,27 @@ pub struct Report {
 }
 
 pub fn run(scan: &Scan, rules: &[&'static Rule], options: Options) -> Result<Report, ScanError> {
+    run_with(scan, rules, options, crate::stance::resolve)
+}
+
+/// [`run`] with the stance a rule runs at given by the caller.
+pub fn run_with(
+    scan: &Scan,
+    rules: &[&'static Rule],
+    options: Options,
+    stance_of: impl Fn(&Rule) -> Stance,
+) -> Result<Report, ScanError> {
     // `deny` never gets a "next command" to compare against: the command it
     // names did not run. Dropped here rather than reported empty, because a
     // row of zeroes reads as "the advice did nothing".
     let watched: Vec<(&'static Rule, Stance)> = rules
         .iter()
-        .map(|r| (*r, crate::stance::resolve(r)))
+        .map(|r| (*r, stance_of(r)))
         .filter(|(_, s)| *s != Stance::Deny)
         .collect();
     let mut cells: Vec<BTreeMap<(String, Day), Cell>> =
+        watched.iter().map(|_| BTreeMap::new()).collect();
+    let mut sessions: Vec<BTreeMap<String, Cell>> =
         watched.iter().map(|_| BTreeMap::new()).collect();
 
     let stats = transcript::for_each_transcript(scan, |records| {
@@ -175,24 +203,29 @@ pub fn run(scan: &Scan, rules: &[&'static Rule], options: Options) -> Result<Rep
                 } else {
                     record.model.clone()
                 };
-                let cell = cells[k].entry((model, week_start(record.day))).or_default();
-                cell.firings += 1;
-                match next {
-                    None => cell.unanswered += 1,
-                    Some((j, then)) if fires(rule, &records[j].command, then) => cell.ignored += 1,
-                    Some(_) => cell.complied += 1,
-                }
+                let answer = next.map(|(j, then)| fires(rule, &records[j].command, then));
+                let tally = |cell: &mut Cell| {
+                    cell.firings += 1;
+                    match answer {
+                        None => cell.unanswered += 1,
+                        Some(true) => cell.ignored += 1,
+                        Some(false) => cell.complied += 1,
+                    }
+                };
+                tally(cells[k].entry((model, week_start(record.day))).or_default());
+                tally(sessions[k].entry(record.session.clone()).or_default());
             }
         }
     })?;
 
     let mut subjects: Vec<Subject> = watched
         .iter()
-        .zip(cells)
-        .map(|((rule, stance), cells)| Subject {
+        .zip(cells.into_iter().zip(sessions))
+        .map(|((rule, stance), (cells, by_session))| Subject {
             id: rule.id,
             stance: *stance,
             cells,
+            by_session,
         })
         .collect();
     // Advice first — it is the one that costs tokens — then the silent

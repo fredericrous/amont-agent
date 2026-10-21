@@ -221,6 +221,44 @@ regular expression. Against the Rust lexer it overcounts by about 6% (1,551
 against 1,461 on 2026-10-07), so `backtest --rule publish-without-skill` remains
 the count of matches. Run it again two weeks after a release.
 
+## 4b. Harness review - which part still earns its place on this model?
+
+`amont-agent harness-review` (ADR-0042, `harness.retire-on-evidence`) prints
+one row per rule and assertion: its id, the failure it `prevents`, its stance,
+whether it is `irreversible`, and from the journal its `per_1000` (live rows
+over the transcripts' Bash calls) and the date it last fired. Shadow rows
+(`arm=shadow`) are the experiment, not the part, and are never counted as live.
+
+Each row adds the compliance replay of section 4, grouped by `message.model`.
+Where any journal row for the part has `arm=shadow`, it also gives the
+`ignored` share per arm. A transcript does not record whether the hook spoke,
+so each session's arm comes from the journal row's `arm` field, joined to the
+transcript session id by the journal's eight-character session prefix. A part
+guarding an irreversible action is never dropped live; its row carries a
+`replay` count instead: how many of the newest model's Bash calls its
+`examine` matches.
+
+A `deny` rule has no live compliance (its refused command never ran); when it
+is shadowed, its shadow rows are replayed as `observe` and give the shadow arm a
+share, with the live share left empty.
+
+`--json` emits the same rows. Each run also writes `<YYYY-MM-DD>.json` into
+`--out <dir>`, by default `<journal dir>/harness-review`, with the date, the newest
+transcript model and the rows. The newest model is the one first seen on the
+latest day in the transcripts' Bash calls.
+
+```
+amont-agent harness-review [--json] [--transcripts <dir>] [--since <date>] [--out <dir>]
+amont-agent harness-review --check
+```
+
+`--check` reads the newest review file and the newest model in the
+transcripts. It prints one line and exits 1 in three cases: that model is not
+the reviewed one, no review exists, or the newest review file cannot be read
+or parsed (the line names the file). Otherwise it prints nothing and exits 0. The weekly retro runs it (`harness.revisit-on-a-new-model`): a new model
+starts a harness review, and running `harness-review` records it. Keeping or
+retiring a part stays the person's decision.
+
 ## 5. Graduate — promote on the evidence
 
 ```sh

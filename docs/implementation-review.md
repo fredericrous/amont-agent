@@ -219,3 +219,30 @@ deny` holds a push whose review is missing, stale, `rework` or unknown;
 `observe` journals and says nothing. The 2026-10-06 soak review, alongside
 `push-preview`, decides between `deny`, `advise` and retiring the gate from
 the journal's `review=` counts and the first real cycles' finding quality.
+
+## Recording what a review found
+
+```
+echo '[{"severity":"high","disposition":"fixed","section":"Verification"}]' |
+  amont-agent implementation-review record <plan.md> --verdict approve-with-changes
+```
+
+Appends one `amont-agent-impl-review-outcome-v1` row per invocation to
+`~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl` (outside
+the hook-only store): `recorded_at`,
+`tree` (the content id of HEAD, as `tree-sha`), `round` (one more than the rows
+already kept for the plan: a per-plan count, unlike the plan-review ledger's
+`round`), `plan_path`, `model` (the `resolvedModel` of the completed
+`implementation-review` agent in the newest transcript of the working
+directory's session, empty when none), `verdict` and
+`findings`. Each finding on stdin is `{severity: blocking|high|medium|low,
+disposition: fixed|deliberate|overruled, section?}` and is rebuilt from those
+keys alone; `--verdict` is
+`approve`, `approve-with-changes` or `rework`. A bad severity, disposition or
+verdict exits 2 and appends nothing; an unreadable stdin exits 1. When a pass
+is remembered for the tree and its verdict differs from `--verdict` (a remembered
+`overruled` counts as agreeing with `rework`), a warning
+goes to stderr. The command writes only `outcomes.jsonl`
+and its lock file, never a pass file. `amont-agent plan-review stats` reads
+this ledger and reports it as role `implementation-review`, `fixed` counting as
+accepted.

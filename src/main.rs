@@ -28,6 +28,7 @@ use amont_agent_guard::decision;
 use amont_agent_guard::doctor;
 use amont_agent_guard::graduate;
 use amont_agent_guard::guidance;
+use amont_agent_guard::harness_review;
 use amont_agent_process::attestations;
 use amont_agent_process::content_id;
 mod hook;
@@ -39,6 +40,7 @@ use amont_agent_guard::payload;
 use amont_agent_guard::push_target;
 #[cfg(unix)]
 use amont_agent_guard::quiet;
+use amont_agent_process::impl_review_outcomes;
 use amont_agent_process::implementation_review;
 use amont_agent_process::implementation_review_rule;
 use amont_agent_process::plan_apply;
@@ -79,6 +81,13 @@ usage: amont-agent <command>
   demote <rule>         back to observing, no questions asked
   mine [flags]          shapes the model got wrong that no rule names yet
   backtest [flags]      replay your transcripts through the rules
+  harness-review [--json] [--check] [--out <dir>]
+                        one row per rule and assertion: firings, compliance
+                        per model, shadow-arm share, replay count; writes
+                        <out dir>/<date>.json, --out defaulting to
+                        <journal dir>/harness-review. --check
+                        prints one line and exits 1 when the newest model in
+                        your transcripts was not in the last review
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
                         [--dialect bash|zsh|unknown, default unknown]
@@ -96,6 +105,12 @@ usage: amont-agent <command>
                         plan-review-panel hook will judge it
   plan-review record <plan.md> [--transcript <path>]
                         keep what each reviewer of a plan did, as outcome rows
+  plan-review stats [--json] [--model <id>]
+                        per (role, model): reviews, findings, accepted ones;
+                        marks a seat that is a retire-candidate
+  implementation-review record <plan.md> --verdict <v>
+                        keep the implementation review's findings (JSON on
+                        stdin) as one outcome row
   plan-apply [--dry-run|--check|--record-fallback] <plan.md>
                         apply the reviewers' Patches to a plan with no model
                         (accepted findings on stdin; exit 3 = some unmatched)
@@ -155,6 +170,7 @@ enum Sub {
     Graduate,
     Demote,
     Backtest,
+    HarnessReview,
     Explain,
     Mine,
     Check,
@@ -164,6 +180,7 @@ enum Sub {
     PlanSha,
     PlanPanel,
     PlanReview,
+    ImplementationReview,
     PlanApply,
     TreeSha,
     Attestations,
@@ -171,7 +188,7 @@ enum Sub {
     Shipped,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 23] = [
+const SUBCOMMANDS: [(&str, Sub); 25] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -181,6 +198,7 @@ const SUBCOMMANDS: [(&str, Sub); 23] = [
     ("graduate", Sub::Graduate),
     ("demote", Sub::Demote),
     ("backtest", Sub::Backtest),
+    ("harness-review", Sub::HarnessReview),
     ("explain", Sub::Explain),
     ("mine", Sub::Mine),
     ("check", Sub::Check),
@@ -190,6 +208,7 @@ const SUBCOMMANDS: [(&str, Sub); 23] = [
     ("plan-sha", Sub::PlanSha),
     ("plan-panel", Sub::PlanPanel),
     ("plan-review", Sub::PlanReview),
+    ("implementation-review", Sub::ImplementationReview),
     ("plan-apply", Sub::PlanApply),
     ("tree-sha", Sub::TreeSha),
     ("attestations", Sub::Attestations),
@@ -336,6 +355,7 @@ fn main() -> ExitCode {
             Sub::Graduate => run_graduate(&args, true),
             Sub::Demote => run_graduate(&args, false),
             Sub::Backtest => run_backtest(&args, false),
+            Sub::HarnessReview => run_harness_review(&args),
             Sub::Explain => run_backtest(&args, true),
             Sub::Mine => run_mine(&args),
             Sub::Check => run_check(&args),
@@ -347,6 +367,11 @@ fn main() -> ExitCode {
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);
+                print!("{said}");
+                code
+            }
+            Sub::ImplementationReview => {
+                let (said, code) = impl_review_outcomes::run(&args);
                 print!("{said}");
                 code
             }
@@ -387,6 +412,8 @@ struct Flags {
     min_rate: Option<f64>,
     rank: Option<String>,
     compliance: bool,
+    check: bool,
+    out: Option<PathBuf>,
     dialect: Option<rules::Dialect>,
     rest: Vec<String>,
 }
@@ -403,6 +430,7 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                 .ok_or_else(|| format!("{what} needs a value"))
         };
         match a.as_str() {
+            "--out" => f.out = Some(PathBuf::from(value(&mut i, &a)?)),
             "--transcripts" => f.transcripts.push(PathBuf::from(value(&mut i, &a)?)),
             "--since" => {
                 let v = value(&mut i, &a)?;
@@ -450,6 +478,7 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                 );
             }
             "--compliance" => f.compliance = true,
+            "--check" => f.check = true,
             "--json" => f.json = true,
             "--format" => f.format = Some(value(&mut i, &a)?),
             "--to" => f.to = Some(value(&mut i, &a)?),
@@ -633,6 +662,92 @@ fn rank_by_novelty(report: &mut backtest::Report, n: usize) {
         let mut held: Vec<Option<backtest::Sample>> =
             report.samples[i].drain(..).map(Some).collect();
         report.samples[i] = picked.iter().filter_map(|&j| held[j].take()).collect();
+    }
+}
+
+/// `harness-review`: the ADR-0042 review table, or with `--check` the one line
+/// that says a model has not been reviewed yet.
+fn run_harness_review(args: &[OsString]) -> ExitCode {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("usage: amont-agent harness-review [--json] [--check] [--transcripts <dir>] [--since <date>] [--out <dir>]");
+        return ExitCode::SUCCESS;
+    }
+    let f = match flags(args) {
+        Ok(f) => f,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(operand) = f.rest.first() {
+        eprintln!("amont-agent: harness-review takes no operand, got `{operand}`");
+        return ExitCode::from(2);
+    }
+    let Some(journal_dir) = journal::dir() else {
+        eprintln!("amont-agent: no home directory, so no journal directory");
+        return ExitCode::from(2);
+    };
+    let roots = match transcript::roots(&f.transcripts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("amont-agent: {}", e.explain());
+            return ExitCode::from(2);
+        }
+    };
+    let scan = transcript::Scan {
+        roots: &roots,
+        tool: "Bash",
+        since: f.since,
+    };
+    let out = f
+        .out
+        .clone()
+        .unwrap_or_else(|| harness_review::reviews_dir(&journal_dir));
+    if f.check {
+        return match harness_review::check(&out, &scan) {
+            Ok(None) => ExitCode::SUCCESS,
+            Ok(Some(line)) => {
+                println!("{line}");
+                ExitCode::FAILURE
+            }
+            Err(e) => {
+                eprintln!("amont-agent: {}", e.explain());
+                ExitCode::from(2)
+            }
+        };
+    }
+    let today = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() / 86_400) as civil::Day,
+        Err(e) => {
+            eprintln!("amont-agent: cannot read the clock: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let table: Vec<&'static rules::Rule> = rule_table::RULES.iter().collect();
+    let review =
+        match harness_review::review(&scan, &table, stance_of_part, &journal::paths(), today) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("amont-agent: {}", e.explain());
+                return ExitCode::from(2);
+            }
+        };
+    if let Err(e) = harness_review::write(&out, &review) {
+        eprintln!("amont-agent: could not write the review file: {e}");
+        return ExitCode::from(2);
+    }
+    if f.json {
+        println!("{}", review.to_json());
+    } else {
+        print!("{}", review.render());
+    }
+    ExitCode::SUCCESS
+}
+
+fn stance_of_part(part: &backtest::Subject) -> rules::Stance {
+    match part {
+        backtest::Subject::Rule(r) => stance::resolve(r),
+        backtest::Subject::Assertion(a) => stance::resolve_assertion(a),
     }
 }
 
@@ -1406,7 +1521,9 @@ fn print_rules_json() -> ExitCode {
                  ships: rules::Stance,
                  now: rules::Stance,
                  max: rules::Stance,
-                 e: &rules::Evidence| {
+                 e: &rules::Evidence,
+                 prevents: &str,
+                 irreversible: bool| {
         json::object(&[
             json::string_field("id", id),
             json::string_field("kind", kind),
@@ -1415,6 +1532,8 @@ fn print_rules_json() -> ExitCode {
             json::string_field("max_stance", max.as_str()),
             json::float_field("per_1000", e.per_1000),
             json::string_field("measured", e.measured),
+            json::string_field("prevents", prevents),
+            json::bool_field("irreversible", irreversible),
         ])
     };
     let mut items: Vec<String> = rule_table::RULES
@@ -1427,6 +1546,8 @@ fn print_rules_json() -> ExitCode {
                 stance::resolve(r),
                 r.max_stance,
                 &r.evidence,
+                r.prevents,
+                r.irreversible,
             )
         })
         .collect();
@@ -1439,6 +1560,8 @@ fn print_rules_json() -> ExitCode {
             stance::resolve_assertion(a),
             rules::Stance::Deny,
             &a.evidence,
+            a.prevents,
+            a.irreversible,
         )
     }));
     println!("{}", json::array(&items));

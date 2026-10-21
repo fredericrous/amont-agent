@@ -42,6 +42,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "push-preflight",
+    prevents: "A push whose pre-push test gate has not been rehearsed, so the gate runs for minutes inside the push",
+    irreversible: false,
     // Advises from the start: it refuses nothing, it speaks only when
     // `confirm` has established that a slow gate is about to run inside the
     // transport window, and the failure it names is one no correcting loop

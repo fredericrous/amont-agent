@@ -35,6 +35,8 @@ use crate::shell::{Parsed, Word};
 
 pub const RULE: Rule = Rule {
     id: "unsplit-expansion",
+    prevents: "An unquoted variable that only works if the shell splits it, which zsh does not",
+    irreversible: false,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

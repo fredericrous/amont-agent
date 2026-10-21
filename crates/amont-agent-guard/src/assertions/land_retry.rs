@@ -26,6 +26,9 @@ use crate::shell::Parsed;
 
 pub const ASSERTION: Assertion = Assertion {
     id: "land-retry",
+    prevents:
+        "A land retry pushing a commit that the implementation review and preview never judged",
+    irreversible: false,
     default_stance: Stance::Advise,
     evidence: Evidence {
         per_1000: 0.0,

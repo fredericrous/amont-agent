@@ -17,6 +17,7 @@ use crate::plan_review::{self, Completed, AGENT_PREFIX};
 
 pub const USAGE: &str = "\
 usage: amont-agent plan-review record <plan.md> [--transcript <path>]
+       amont-agent plan-review stats [--json] [--model <id>]
 
 Append one row per completed plan-review reviewer of the plan to
 ~/.claude/amont-agent/plan-review/outcomes.jsonl, skipping agents already
@@ -33,13 +34,20 @@ stdin: a JSON array of findings (empty stdin is `[]`):
    \"section\": str (optional), \"area\": str (optional)}
 They are attached to the rows written by this call for the highest round.
 
+stats: one row per (role, model) of the plan-review and implementation-review
+ledgers: reviews, findings by severity, accepted findings by severity (plan
+review `accepted`, implementation review `fixed`) and accepted high-or-blocking
+findings per review. A row with 20 or more reviews and under 0.05 accepted
+high-or-blocking per review is marked `retire-candidate` (ADR-0042). --json
+prints one array; --model keeps one model.
+
 Exit 0 when the ledger is up to date, 1 when a reviewer has no agent id, no
 transcript names the plan or the ledger cannot be written, 2 on a usage error
 (including malformed findings).
 ";
 
 const SCHEMA: &str = "amont-agent-review-outcome-v1";
-const SEVERITIES: [&str; 4] = ["blocking", "high", "medium", "low"];
+pub(crate) const SEVERITIES: [&str; 4] = ["blocking", "high", "medium", "low"];
 const DISPOSITIONS: [&str; 3] = ["accepted", "rejected", "decision"];
 const WEEK: u64 = 7 * 86_400;
 const BODY_TTL: u64 = 90 * 86_400;
@@ -59,8 +67,10 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
         (String::new(), ExitCode::from(2))
     };
     let mut it = args.iter();
-    if it.next().map(String::as_str) != Some("record") {
-        return usage("plan-review takes one verb: record");
+    match it.next().map(String::as_str) {
+        Some("record") => {}
+        Some("stats") => return run_stats(&args[1..]),
+        _ => return usage("plan-review takes one verb: record or stats"),
     }
     let mut plan: Option<&String> = None;
     // The last `--transcript` wins, in either form.
@@ -268,7 +278,7 @@ fn verdict(result: &str) -> Option<&'static str> {
         })
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -344,19 +354,26 @@ fn create_body(path: &Path) -> std::io::Result<std::fs::File> {
     private_options().write(true).create_new(true).open(path)
 }
 
+/// The rows of a ledger, in file order; a missing file is no rows. A torn
+/// line (a crash mid-append) is skipped, not fatal. The one reader of every
+/// outcomes ledger.
+pub fn read_rows(path: &Path) -> std::io::Result<Vec<serde_json::Value>> {
+    let text = match std::fs::read(path) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    Ok(text
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect())
+}
+
 /// What the ledger already holds: the review agent ids on record, and the round-1
 /// body an earlier call recorded for `plan`, if any. A torn line (a crash
 /// mid-append) is skipped, not fatal.
 fn recorded(path: &Path, plan: &str) -> std::io::Result<(BTreeSet<String>, Option<String>)> {
-    let text = match std::fs::read(path) {
-        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
-        Err(e) => return Err(e),
-    };
-    let rows: Vec<serde_json::Value> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+    let rows = read_rows(path)?;
     // Only review rows: a merge row (`plan-apply`) has an `agent_id` too, and
     // must not make a reviewer look recorded.
     let ids = rows
@@ -589,4 +606,169 @@ fn prune(dir: &Path) {
             }
         }
     }
+}
+
+pub(crate) const IMPL_SCHEMA: &str = "amont-agent-impl-review-outcome-v1";
+const IMPL_ROLE: &str = "implementation-review";
+const RETIRE_MIN_REVIEWS: u64 = 20;
+const RETIRE_BELOW: f64 = 0.05;
+
+/// One (role, model) line of `plan-review stats`.
+#[derive(Default, Debug, PartialEq)]
+pub struct Stat {
+    pub reviews: u64,
+    pub found: [u64; 4],
+    pub accepted: [u64; 4],
+}
+
+impl Stat {
+    /// Accepted blocking and high findings per review.
+    pub fn serious_per_review(&self) -> f64 {
+        if self.reviews == 0 {
+            return 0.0;
+        }
+        (self.accepted[0] + self.accepted[1]) as f64 / self.reviews as f64
+    }
+
+    pub fn retire_candidate(&self) -> bool {
+        self.reviews >= RETIRE_MIN_REVIEWS && self.serious_per_review() < RETIRE_BELOW
+    }
+}
+
+/// The rows of both ledgers folded to one [`Stat`] per (role, model), in key
+/// order. Rows of another schema (merge rows) are not reviews.
+pub fn tally(rows: &[serde_json::Value]) -> std::collections::BTreeMap<(String, String), Stat> {
+    let mut out: std::collections::BTreeMap<(String, String), Stat> = Default::default();
+    for r in rows {
+        let text = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
+        let (role, accepted_word) = match text("schema") {
+            SCHEMA => (text("role").to_string(), "accepted"),
+            IMPL_SCHEMA => (IMPL_ROLE.to_string(), "fixed"),
+            _ => continue,
+        };
+        let stat = out.entry((role, text("model").to_string())).or_default();
+        stat.reviews += 1;
+        let list = r.get("findings").and_then(|f| f.as_array());
+        for f in list.into_iter().flatten() {
+            let Some(i) = f
+                .get("severity")
+                .and_then(|s| s.as_str())
+                .and_then(|s| SEVERITIES.iter().position(|x| *x == s))
+            else {
+                continue;
+            };
+            stat.found[i] += 1;
+            if f.get("disposition").and_then(|d| d.as_str()) == Some(accepted_word) {
+                stat.accepted[i] += 1;
+            }
+        }
+    }
+    out
+}
+
+/// How `plan-review stats` prints.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Text,
+    Json,
+}
+
+/// `plan-review stats`: what the panel's seats caught, per role and model.
+pub fn stats_report(rows: &[serde_json::Value], model: Option<&str>, format: Format) -> String {
+    let tallied = tally(rows);
+    let shown: Vec<_> = tallied
+        .iter()
+        .filter(|((_, m), _)| model.is_none_or(|want| want == m))
+        .collect();
+    if format == Format::Json {
+        let list: Vec<serde_json::Value> = shown
+            .iter()
+            .map(|((role, model), s)| {
+                let by = |a: &[u64; 4]| {
+                    serde_json::json!({
+                        "blocking": a[0], "high": a[1], "medium": a[2], "low": a[3]
+                    })
+                };
+                serde_json::json!({
+                    "role": role,
+                    "model": model,
+                    "reviews": s.reviews,
+                    "findings": by(&s.found),
+                    "accepted": by(&s.accepted),
+                    "accepted_high_or_blocking_per_review": s.serious_per_review(),
+                    "retire_candidate": s.retire_candidate(),
+                })
+            })
+            .collect();
+        return format!("{}\n", serde_json::Value::Array(list));
+    }
+    let mut out = String::new();
+    for ((role, model), s) in shown {
+        let model = if model.is_empty() { "-" } else { model };
+        let sev = |a: &[u64; 4]| format!("{}/{}/{}/{}", a[0], a[1], a[2], a[3]);
+        out.push_str(&format!(
+            "{role}\t{model}\treviews={}\tfound={}\taccepted={}\tserious/review={:.2}{}\n",
+            s.reviews,
+            sev(&s.found),
+            sev(&s.accepted),
+            s.serious_per_review(),
+            if s.retire_candidate() {
+                "\tretire-candidate"
+            } else {
+                ""
+            }
+        ));
+    }
+    out
+}
+
+/// The ledgers' path under the journal directory, for `store`.
+fn ledger_path(store: &str) -> Result<PathBuf, String> {
+    Ok(amont_agent_guard::journal::dir()
+        .ok_or("no home directory, so the ledger cannot be located")?
+        .join(store)
+        .join("outcomes.jsonl"))
+}
+
+fn run_stats(args: &[String]) -> (String, ExitCode) {
+    let usage = |why: &str| {
+        eprint!("amont-agent: {why}\n\n{USAGE}");
+        (String::new(), ExitCode::from(2))
+    };
+    let (mut json, mut model) = (false, None::<String>);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--json" {
+            json = true;
+        } else if a == "--model" {
+            let Some(v) = it.next() else {
+                return usage("--model needs a model id");
+            };
+            model = Some(v.clone());
+        } else if let Some(v) = a.strip_prefix("--model=") {
+            model = Some(v.to_string());
+        } else {
+            return usage(&format!("unexpected argument `{a}`"));
+        }
+    }
+    let mut rows = Vec::new();
+    for store in ["plan-review", crate::impl_review_outcomes::STORE] {
+        let read = ledger_path(store)
+            .and_then(|p| read_rows(&p).map_err(|e| format!("cannot read {}: {e}", p.display())));
+        match read {
+            Ok(mut r) => rows.append(&mut r),
+            Err(why) => {
+                eprintln!("amont-agent: {why}");
+                return (String::new(), ExitCode::from(1));
+            }
+        }
+    }
+    (
+        stats_report(
+            &rows,
+            model.as_deref(),
+            if json { Format::Json } else { Format::Text },
+        ),
+        ExitCode::SUCCESS,
+    )
 }

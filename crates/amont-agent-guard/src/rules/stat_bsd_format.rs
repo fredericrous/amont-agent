@@ -22,6 +22,8 @@ use crate::shell::{Connector, Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "stat-bsd-format",
+    prevents: "stat -f spelled for the other stat, which succeeds with a wrong answer",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

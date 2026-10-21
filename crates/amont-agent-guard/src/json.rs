@@ -10,9 +10,9 @@
 //! rewrite; nothing about it should reach the hook's answer.
 //!
 //! Trimmed to what this crate calls. The emitter in `amont-runtime` also
-//! carries `bool_field`, `opt_int_field` and `opt_string_field`; they are
-//! omitted here because an unused `pub fn` in a binary crate is a `dead_code`
-//! warning, and this crate builds under `-D warnings`.
+//! carries `opt_int_field` and `opt_string_field`; they are
+//! omitted here because nothing in the workspace calls them, and code no
+//! caller needs is code to keep in step for nothing.
 
 /// Escape `s` per the JSON spec: `"`, `\`, and control characters.
 pub fn escape(s: &str) -> String {
@@ -48,6 +48,11 @@ pub fn int_field(key: &str, value: i64) -> String {
 /// non-finite one is a bug, not input.
 pub fn float_field(key: &str, value: f32) -> String {
     assert!(value.is_finite(), "{key}: {value} is not a JSON number");
+    format!("\"{}\":{value}", escape(key))
+}
+
+/// A JSON boolean, unquoted.
+pub fn bool_field(key: &str, value: bool) -> String {
     format!("\"{}\":{value}", escape(key))
 }
 
@@ -96,6 +101,12 @@ mod tests {
             "\"rule\":\"pipe-to-tail\""
         );
         assert_eq!(int_field("per_1000", 42), "\"per_1000\":42");
+    }
+
+    #[test]
+    fn a_bool_field_is_unquoted() {
+        assert_eq!(bool_field("x", true), "\"x\":true");
+        assert_eq!(bool_field("x", false), "\"x\":false");
     }
 
     #[test]

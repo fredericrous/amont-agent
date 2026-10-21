@@ -20,6 +20,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "worktree-remove-force",
+    prevents: "Deleting a worktree together with its uncommitted and untracked work",
+    irreversible: true,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

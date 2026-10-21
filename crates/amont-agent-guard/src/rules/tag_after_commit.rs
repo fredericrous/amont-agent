@@ -19,6 +19,9 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "tag-after-commit",
+    prevents:
+        "A release tag chained onto a commit that may have been refused, tagging the wrong commit",
+    irreversible: true,
     // Advises from the start: pure shape, and the cost of a miss is a
     // published artefact nobody can unpublish.
     default_stance: Stance::Advise,

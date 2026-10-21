@@ -94,6 +94,12 @@ pub enum Verdict {
 
 pub struct Assertion {
     pub id: &'static str,
+    /// One sentence naming the failure this assertion prevents (ADR-0042).
+    /// Where it is counted is the same for every assertion: the journal's
+    /// claims and verdicts, read by `amont-agent harness-review`.
+    pub prevents: &'static str,
+    /// True when the action the assertion checks cannot be undone.
+    pub irreversible: bool,
     pub default_stance: Stance,
     pub evidence: Evidence,
     /// PURE. No processes, no filesystem, no network.

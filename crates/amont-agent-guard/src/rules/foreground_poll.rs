@@ -28,6 +28,9 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "foreground-poll",
+    prevents:
+        "A wait outlasting the tool's own timeout, which kills it and reports nothing but the kill",
+    irreversible: false,
     // Advises from the start: it refuses nothing, and the failure it names
     // is a ten-minute wait that ends in a kill nobody explains.
     default_stance: Stance::Advise,

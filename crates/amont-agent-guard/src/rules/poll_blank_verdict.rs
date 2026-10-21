@@ -41,6 +41,9 @@ use crate::shell::{Parsed, Simple, Word};
 
 pub const RULE: Rule = Rule {
     id: "poll-blank-verdict",
+    prevents:
+        "A polling loop that reads its own failure to answer as the verdict it was waiting for",
+    irreversible: false,
     // Ships observing, like everything here: measured first, promoted on the
     // corpus rather than on how good the argument reads.
     default_stance: Stance::Observe,

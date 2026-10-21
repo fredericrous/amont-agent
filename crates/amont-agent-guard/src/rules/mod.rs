@@ -218,6 +218,12 @@ pub enum Trend {
 
 pub struct Rule {
     pub id: &'static str,
+    /// One sentence naming the failure this rule prevents (ADR-0042). Where
+    /// it is counted is the same for every rule: the journal's firings, read
+    /// with compliance replay by `amont-agent harness-review`.
+    pub prevents: &'static str,
+    /// True when the action the rule guards cannot be undone.
+    pub irreversible: bool,
     pub default_stance: Stance,
     /// The loudest this rule may ever be, whatever git config says.
     ///

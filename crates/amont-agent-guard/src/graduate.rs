@@ -228,6 +228,8 @@ mod tests {
         let base = &crate::rules::pipe_to_tail::RULE;
         let capped = Rule {
             id: "capped",
+            prevents: "test",
+            irreversible: false,
             default_stance: Stance::Observe,
             max_stance: Stance::Advise,
             evidence: base.evidence,

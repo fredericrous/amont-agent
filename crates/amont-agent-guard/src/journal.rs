@@ -119,10 +119,10 @@ pub fn paths() -> Vec<PathBuf> {
 /// Timestamp of the oldest record in the journal, if any.
 pub fn oldest_record() -> Option<u64> {
     paths().iter().find_map(|p| {
-        fs::read_to_string(p).ok()?.lines().find_map(|l| {
-            let mut f = l.strip_prefix("F ")?.split_whitespace();
-            f.next()?.parse::<u64>().ok()
-        })
+        fs::read_to_string(p)
+            .ok()?
+            .lines()
+            .find_map(|l| fixed_fields(l).map(|r| r.ts))
     })
 }
 
@@ -203,22 +203,19 @@ fn tally_into(
     };
     let floor = now.saturating_sub(since);
     for line in text.lines() {
-        if !line.starts_with("F ") {
-            continue;
-        }
-        let mut f = line.split_whitespace();
-        let (Some(_), Some(ts), Some(rule), Some(stance), Some(outcome)) =
-            (f.next(), f.next(), f.next(), f.next(), f.next())
-        else {
+        let Some(row) = fixed_fields(line) else {
             continue;
         };
-        let Ok(ts) = ts.parse::<u64>() else {
-            continue;
-        };
-        if ts < floor {
+        if row.ts < floor {
             continue;
         }
-        let seen = out.entry(rule.to_string()).or_default();
+        // Shadow rows are the part dropped to observe on purpose: counting
+        // them would read the experiment as the part's own behaviour.
+        if row.arm == Arm::Shadow {
+            continue;
+        }
+        let (stance, outcome) = (row.stance.as_str(), row.outcome.as_str());
+        let seen = out.entry(row.rule.clone()).or_default();
         match (stance, outcome) {
             // A `confirm` that declined, or an assertion that could not check
             // its claim. The outcome field carries the reason; older records
@@ -236,6 +233,94 @@ fn tally_into(
             _ => {}
         }
     }
+}
+
+/// Which arm of the ADR-0042 shadow a record belongs to. `Live` is every
+/// record that carries no `arm=` field, so an old journal reads as live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arm {
+    Live,
+    Shadow,
+}
+
+impl Arm {
+    /// The fixed field as written, one token, placed before the excerpt.
+    pub fn token(self) -> &'static str {
+        match self {
+            Arm::Live => "arm=live",
+            Arm::Shadow => "arm=shadow",
+        }
+    }
+
+    /// The arm a record's fields name, given the field after `mode`, if any.
+    pub fn parse(field: Option<&str>) -> Arm {
+        match field {
+            Some("arm=shadow") => Arm::Shadow,
+            _ => Arm::Live,
+        }
+    }
+
+    /// The arm a part is in for this process's session.
+    fn of_part(id: &str) -> Arm {
+        if crate::shadow::is_marked(id) {
+            Arm::Shadow
+        } else {
+            Arm::Live
+        }
+    }
+}
+
+/// The arm of one `F ` record line, reading the fixed fields only.
+pub fn arm_of_line(line: &str) -> Arm {
+    // F ts rule stance outcome session repo mode [arm=..] excerpt
+    Arm::parse(line.split_whitespace().nth(8))
+}
+
+/// One journal record, fixed fields only: what `harness-review` reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub ts: u64,
+    pub rule: String,
+    pub stance: String,
+    pub outcome: String,
+    /// The first eight characters of the session id, as written.
+    pub session: String,
+    pub arm: Arm,
+}
+
+/// The fixed fields of one `F ` record line, or `None` for any other line and
+/// for a torn write that lacks them. The session may be absent (a record
+/// cut after the outcome still counts); the excerpt is not parsed.
+pub fn fixed_fields(line: &str) -> Option<Row> {
+    // F ts rule stance outcome session repo mode [arm=..] excerpt
+    let mut f = line.strip_prefix("F ")?.split_whitespace();
+    let ts = f.next()?.parse::<u64>().ok()?;
+    let rule = f.next()?;
+    let stance = f.next()?;
+    let outcome = f.next()?;
+    let session = f.next().unwrap_or_default();
+    let arm = Arm::parse(f.nth(2));
+    Some(Row {
+        ts,
+        rule: rule.to_string(),
+        stance: stance.to_string(),
+        outcome: outcome.to_string(),
+        session: session.to_string(),
+        arm,
+    })
+}
+
+/// Every `F ` record in `paths`, in file order, torn lines dropped. Unlike
+/// [`tally`] it keeps shadow rows and says which arm each belongs to.
+pub fn rows_in(paths: &[std::path::PathBuf]) -> Vec<Row> {
+    let mut out = Vec::new();
+    for p in paths {
+        let Ok(text) = fs::read_to_string(p) else {
+            continue;
+        };
+        out.extend(text.lines().filter_map(fixed_fields));
+    }
+    out
 }
 
 /// One thing that happened.
@@ -413,7 +498,7 @@ fn rotate(path: &std::path::Path, max: u64) -> Result<(), String> {
 pub fn line_for(entry: &Entry) -> String {
     let excerpt = redact_and_trim(entry.excerpt);
     let mut line = format!(
-        "F {} {} {} {} {} {} {} {}\n",
+        "F {} {} {} {} {} {} {} {} {}\n",
         now(),
         field(entry.rule),
         field(entry.stance),
@@ -421,6 +506,7 @@ pub fn line_for(entry: &Entry) -> String {
         field(&entry.session.chars().take(8).collect::<String>()),
         field(entry.repo),
         field(entry.mode),
+        Arm::of_part(entry.rule).token(),
         excerpt
     );
     if line.len() > MAX_RECORD {
@@ -724,6 +810,46 @@ mod tests {
         assert_eq!(ir.reasons.get("reviewed"), Some(&2));
         assert_eq!(ir.reasons.get("no-plan"), Some(&1));
         assert_eq!(ir.reasons.get("overruled"), Some(&1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A row written before `arm` existed reads as live and is counted; a
+    /// shadow row is not, so the per-1000 on a fixed journal does not move.
+    #[test]
+    fn old_rows_are_live_and_shadow_rows_do_not_count() {
+        assert_eq!(
+            arm_of_line("F 1 pipe-to-tail deny denied sess repo default git push | tail"),
+            Arm::Live
+        );
+        assert_eq!(
+            arm_of_line("F 1 r deny denied sess repo default arm=live x"),
+            Arm::Live
+        );
+        assert_eq!(
+            arm_of_line("F 1 r observe watched sess repo default arm=shadow x"),
+            Arm::Shadow
+        );
+        let dir = std::env::temp_dir().join(format!("amont-agent-arm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("journal.log");
+        let now = 2_000_000u64;
+        let t = now - 10;
+        let fixed = format!(
+            "{FORMAT}\n\
+             F {t} r deny denied s repo default git push | tail\n\
+             F {t} r deny denied s repo default arm=live git push | tail\n"
+        );
+        fs::write(&path, &fixed).expect("write");
+        let before = tally_at(&path, 100_000, now);
+        let more = format!(
+            "{fixed}F {t} r observe watched s repo default arm=shadow git push | tail\n\
+             F {t} r observe watched s repo default arm=shadow git push | tail\n"
+        );
+        fs::write(&path, more).expect("write");
+        let after = tally_at(&path, 100_000, now);
+        assert_eq!(before, after);
+        assert_eq!(after["r"].total(), 2);
         let _ = fs::remove_dir_all(&dir);
     }
 

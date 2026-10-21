@@ -89,7 +89,67 @@ pub fn run(table: &[rules::Rule], extra: Option<Finding>) -> Vec<Finding> {
     out.push(stances(table));
     out.push(journal_span());
     out.push(lsp_rules());
+    out.extend(shadow_settings(table));
     out.extend(extra);
+    out
+}
+
+/// The shadow rates of ADR-0042: nothing when none is set, the active ones
+/// when some are, and a warning for each that does not parse (it is off) or
+/// that sits on an irreversible part (refused: such a part is never shadowed).
+fn shadow_settings(table: &[rules::Rule]) -> Vec<Finding> {
+    shadow_findings(
+        &crate::shadow::bad_settings(),
+        crate::shadow::configured(),
+        |id| {
+            table.iter().any(|r| r.id == id && r.irreversible)
+                || crate::assertions::ASSERTIONS
+                    .iter()
+                    .any(|a| a.id == id && a.irreversible)
+        },
+    )
+}
+
+fn shadow_findings(
+    bad: &[(String, String)],
+    configured: &std::collections::BTreeMap<String, String>,
+    irreversible: impl Fn(&str) -> bool,
+) -> Vec<Finding> {
+    if !bad.is_empty() {
+        let list = bad
+            .iter()
+            .map(|(id, v)| format!("{id}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return vec![Finding::warn(
+            "shadow: a rate does not parse, so that part is not shadowed",
+            format!("{list}: set a number in [0,1], or unset amont.agent.<id>.shadow"),
+        )];
+    }
+    let mut on = Vec::new();
+    let mut refused = Vec::new();
+    for (id, v) in configured {
+        if let crate::shadow::Rate::On(r) = crate::shadow::parse_rate(v) {
+            if irreversible(id) {
+                refused.push(id.clone());
+            } else {
+                on.push(format!("{id} at {r}"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if !on.is_empty() {
+        out.push(Finding::good(format!("shadow: {}", on.join(", "))));
+    }
+    if !refused.is_empty() {
+        out.push(Finding::warn(
+            format!(
+                "shadow: a rate is set on an irreversible part, so it is refused (irreversible): {}",
+                refused.join(", ")
+            ),
+            "an irreversible part is judged by replay and never switched off live; unset amont.agent.<id>.shadow",
+        ));
+    }
     out
 }
 
@@ -575,4 +635,29 @@ pub fn report(findings: &[Finding]) -> bool {
         }
     }
     healthy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shadow_rate_on_an_irreversible_part_is_a_warning_naming_it_refused() {
+        let mut configured = std::collections::BTreeMap::new();
+        configured.insert("no-verify".to_string(), "0.1".to_string());
+        configured.insert("sed-in-place".to_string(), "0.2".to_string());
+        let found = shadow_findings(&[], &configured, |id| id == "no-verify");
+        let warn = found
+            .iter()
+            .find(|f| !f.ok && f.advisory)
+            .expect("a warning");
+        assert!(
+            warn.line.contains("no-verify") && warn.line.contains("refused (irreversible)"),
+            "{}",
+            warn.line
+        );
+        let good = found.iter().find(|f| f.ok).expect("the good line");
+        assert!(good.line.contains("sed-in-place"), "{}", good.line);
+        assert!(!good.line.contains("no-verify"), "{}", good.line);
+    }
 }

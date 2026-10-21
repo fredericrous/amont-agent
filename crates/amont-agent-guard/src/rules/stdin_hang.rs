@@ -42,6 +42,8 @@ use crate::shell::{Parsed, Simple};
 
 pub const RULE: Rule = Rule {
     id: "stdin-hang",
+    prevents: "A command that waits on standard input with nothing on it, hanging until the tool's timeout",
+    irreversible: false,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

@@ -23,6 +23,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "whole-file-dump",
+    prevents: "A file poured into the tool result with no window, most of it unread",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

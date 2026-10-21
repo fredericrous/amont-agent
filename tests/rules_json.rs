@@ -82,10 +82,12 @@ fn every_rule_and_assertion_with_exactly_the_pinned_keys() {
     let keys = [
         "default_stance",
         "id",
+        "irreversible",
         "kind",
         "max_stance",
         "measured",
         "per_1000",
+        "prevents",
         "stance",
     ];
     for e in &entries {
@@ -97,6 +99,8 @@ fn every_rule_and_assertion_with_exactly_the_pinned_keys() {
             "{e}"
         );
         assert!(e["per_1000"].is_number(), "{e}");
+        assert!(e["irreversible"].is_boolean(), "{e}");
+        assert!(!e["prevents"].as_str().unwrap().is_empty(), "{e}");
     }
     assert!(entries.iter().any(|e| e["kind"] == "assertion"));
 }
@@ -178,4 +182,30 @@ fn rules_takes_only_json() {
             "usage: amont-agent rules [--json]\n"
         );
     }
+}
+
+#[test]
+fn exactly_the_named_ids_are_irreversible() {
+    let entries = Home::new("irreversible").json();
+    let mut got: Vec<&str> = entries
+        .iter()
+        .filter(|e| e["irreversible"] == true)
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    got.sort_unstable();
+    let mut want = vec![
+        "amend-pushed",
+        "bare-stash-pop",
+        "branch-force-delete",
+        "forge-merge-by-hand",
+        "gh-pr-merge-auto",
+        "kubectl-gitops",
+        "no-verify",
+        "publish-without-skill",
+        "release-tag-push",
+        "tag-after-commit",
+        "worktree-remove-force",
+    ];
+    want.sort_unstable();
+    assert_eq!(got, want);
 }

@@ -16,6 +16,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "plan-review-panel",
+    prevents: "A plan presented for approval before its review panel ran",
+    irreversible: false,
     default_stance: Stance::Deny,
     max_stance: Stance::Deny,
     evidence: Evidence {

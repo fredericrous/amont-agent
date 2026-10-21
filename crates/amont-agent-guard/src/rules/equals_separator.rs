@@ -24,6 +24,8 @@ use crate::shell::Parsed;
 
 pub const RULE: Rule = Rule {
     id: "equals-separator",
+    prevents: "A bare word starting with = being read by the shell as a command or an expansion, not as a separator",
+    irreversible: false,
     default_stance: Stance::Observe,
     max_stance: Stance::Deny,
     evidence: Evidence {

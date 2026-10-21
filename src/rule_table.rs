@@ -60,6 +60,24 @@ mod tests {
     use super::RULES;
     use amont_agent_guard::corpus;
 
+    /// ADR-0042: every part names the failure it prevents, in one sentence.
+    #[test]
+    fn every_rule_and_assertion_names_its_failure() {
+        let parts = super::RULES.iter().map(|r| (r.id, r.prevents)).chain(
+            amont_agent_guard::assertions::ASSERTIONS
+                .iter()
+                .map(|a| (a.id, a.prevents)),
+        );
+        for (id, prevents) in parts {
+            let n = prevents.chars().count();
+            assert!(n > 0, "`{id}` has an empty `prevents`");
+            assert!(
+                n < 140,
+                "`{id}` prevents is {n} characters; keep it under 140"
+            );
+        }
+    }
+
     /// The config key is derived from the id, and git subsections are
     /// case-sensitive. An id with a capital in it would produce a key nobody
     /// could set from the shell without knowing that.

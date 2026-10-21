@@ -31,6 +31,8 @@ use std::path::{Path, PathBuf};
 
 pub const RULE: Rule = Rule {
     id: "glob-no-match",
+    prevents: "An unquoted glob that matches nothing, which zsh turns into a hard error before the command runs",
+    irreversible: false,
     default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {

@@ -7,6 +7,7 @@
 pub mod attestations;
 pub mod content_id;
 pub mod guide;
+pub mod impl_review_outcomes;
 pub mod implementation_review;
 pub mod implementation_review_rule;
 pub mod plan_apply;
