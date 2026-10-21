@@ -2778,3 +2778,58 @@ fn bug_nudge_reads_the_error_text_of_a_failed_pipeline() {
     let r = send(&payload);
     assert_eq!(advisory_count(&r), 1, "{}", r.stdout);
 }
+
+#[test]
+fn bug_nudge_is_silent_when_a_subagent_loaded_the_skill() {
+    let parent = unloaded_transcript("bugnudge-sub-parent.jsonl");
+    let agent = home().join("bugnudge-sub-agent.jsonl");
+    let line = serde_json::json!({"type":"assistant","message":{"content":[
+        {"type":"tool_use","id":"s1","name":"Skill","input":{"skill":"diagnosing-bugs"}}]}});
+    std::fs::write(&agent, line.to_string() + "\n").expect("write the agent transcript");
+    let mut v: serde_json::Value = serde_json::from_str(&post_bash(
+        "PostToolUseFailure",
+        "bugnudge-sub",
+        "cargo test",
+        "",
+        "Exit code 101\ntest result: FAILED",
+        Some(&parent),
+    ))
+    .expect("payload");
+    v["agent_id"] = "a1".into();
+    v["agent_type"] = "worker".into();
+    v["agent_transcript_path"] = agent.display().to_string().into();
+    let r = send(&v.to_string());
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_and_unknown_on_an_unreadable_transcript() {
+    let gone = home().join("bugnudge-gone.jsonl");
+    let _ = std::fs::remove_file(&gone);
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-gone",
+        "cargo test",
+        "",
+        "Exit code 101\ntest result: FAILED",
+        Some(&gone),
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+    assert_ne!(r.decision().as_deref(), Some("deny"), "{}", r.stdout);
+}
+
+#[test]
+fn bug_nudge_is_silent_without_a_transcript_path() {
+    let payload = post_bash(
+        "PostToolUseFailure",
+        "bugnudge-nopath",
+        "cargo test",
+        "",
+        "Exit code 101\ntest result: FAILED",
+        None,
+    );
+    let r = send(&payload);
+    assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
+    assert_ne!(r.decision().as_deref(), Some("deny"), "{}", r.stdout);
+}

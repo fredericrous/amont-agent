@@ -8,7 +8,7 @@
 //! trace and is judged again next time.
 //!
 //! Advise only. Every uncertainty (no transcript, an unreadable one, a marker
-//! that cannot be written) is silence.
+//! that cannot be written) is silence, and is reported as an unknown verdict.
 
 use crate::assertions::{Assertion, Claim, Verdict};
 use crate::rules::test_output_trimmed::is_check_run;
@@ -47,67 +47,84 @@ fn names_failure(output: Option<&str>) -> bool {
     })
 }
 
-/// Whether the run behind `claim` was red.
+/// Whether the run behind `claim` was red. The connector after the runner's
+/// clause decides what the evidence is worth: a failed call's exit status is
+/// the runner's own only when nothing follows it or `&&` does; a call that
+/// exited 0 says nothing of a bare runner, so its text is read only when the
+/// runner feeds a pipe or precedes `;`.
 fn is_red(ctx: &Context, claim: &Claim) -> bool {
+    use crate::shell::Connector;
+    let next = ctx
+        .parsed
+        .clauses()
+        .iter()
+        .find(|c| c.at == claim.span.start)
+        .map(|c| c.next);
     if ctx.failed {
-        let last = ctx
-            .parsed
-            .clauses()
-            .iter()
-            .find(|c| c.at == claim.span.start)
-            .is_some_and(|c| !c.next.is_some_and(|n| n.is_pipe()));
-        last || names_failure(ctx.output)
+        let exit_is_the_runners = matches!(next, Some(None | Some(Connector::AndAnd)));
+        exit_is_the_runners || names_failure(ctx.output)
     } else {
-        names_failure(ctx.output)
+        let text_is_the_runners = matches!(next, Some(Some(Connector::Pipe | Connector::Semi)));
+        text_is_the_runners && names_failure(ctx.output)
     }
 }
 
-/// The skill was loaded in this turn or the one before, or that cannot be
-/// told: `true` means stay silent.
-fn skill_loaded_or_unknown(ctx: &Context) -> bool {
+/// Whether the skill was loaded in this turn or the one before; `Err` names
+/// why that cannot be told.
+fn skill_loaded(ctx: &Context) -> Result<bool, &'static str> {
     if ctx.transcript.is_none() && ctx.agent_transcript.is_none() {
-        return true;
+        return Err("no transcript to read");
     }
     for path in [ctx.transcript, ctx.agent_transcript].into_iter().flatten() {
         let Ok(file) = std::fs::File::open(path) else {
-            return true;
+            return Err("transcript unreadable");
         };
         match skill_window::skill_window(file, SKILL) {
-            Ok(Window::Current | Window::Previous) | Err(_) => return true,
+            Ok(Window::Current | Window::Previous) => return Ok(true),
+            Err(_) => return Err("transcript unreadable"),
             Ok(Window::Outside) => {}
         }
     }
-    false
+    Ok(false)
 }
 
-/// Create the session's marker; `true` only for the call that created it.
-fn claim_marker(session: &str) -> bool {
+/// Create the session's marker. `Ok(true)` only for the call that created
+/// it; `Ok(false)` when it already exists.
+fn claim_marker(session: &str) -> Result<bool, &'static str> {
     if !crate::session_state::usable_id(session) {
-        return false;
+        return Err("session id unusable for a marker");
     }
     let Some(dir) = crate::journal::dir() else {
-        return false;
+        return Err("no state directory for a marker");
     };
     let sessions = dir.join("sessions");
     if std::fs::create_dir_all(&sessions).is_err() {
-        return false;
+        return Err("marker directory not creatable");
     }
-    std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(sessions.join(format!("{session}.bug-nudge")))
-        .is_ok()
+    {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(_) => Err("marker not creatable"),
+    }
 }
 
 fn verify(ctx: &Context, claim: &Claim) -> Verdict {
     if !is_red(ctx, claim) {
         return Verdict::Held;
     }
-    if skill_loaded_or_unknown(ctx) {
-        return Verdict::Held;
+    match skill_loaded(ctx) {
+        Ok(true) => return Verdict::Held,
+        Ok(false) => {}
+        Err(why) => return Verdict::Unknown(why),
     }
-    if !claim_marker(ctx.session) {
-        return Verdict::Held;
+    match claim_marker(ctx.session) {
+        Ok(true) => {}
+        Ok(false) => return Verdict::Held,
+        Err(why) => return Verdict::Unknown(why),
     }
     Verdict::Broken {
         reason: "Call the diagnosing-bugs skill, then build a red loop before running more \
@@ -259,9 +276,58 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_transcript_is_silent() {
+    fn a_missing_transcript_is_unknown() {
         with_home("missing", |_| {
-            assert!(!said(&run("cargo test", true, None, None, "s1")));
+            let v = run("cargo test", true, None, None, "s1");
+            assert!(matches!(v, Verdict::Unknown(_)));
+        });
+    }
+
+    #[test]
+    fn an_unreadable_transcript_is_unknown() {
+        with_home("unreadable", |dir| {
+            let gone = dir.join("gone.jsonl");
+            let v = run("cargo test", true, None, Some(&gone), "s1");
+            assert!(matches!(v, Verdict::Unknown(_)));
+        });
+    }
+
+    #[test]
+    fn a_failed_runner_followed_by_semicolon_needs_failure_text() {
+        with_home("semi", |dir| {
+            let t = transcript(dir, &[human()]);
+            let v = run(
+                "cargo test; ls missing",
+                true,
+                Some("ls: missing"),
+                Some(&t),
+                "s1",
+            );
+            assert!(!said(&v));
+            let v = run("cargo test || true", true, Some("quiet"), Some(&t), "s1");
+            assert!(!said(&v));
+            let v = run(
+                "cargo test; ls missing",
+                true,
+                Some("test x ... FAILED"),
+                Some(&t),
+                "s1",
+            );
+            assert!(said(&v));
+        });
+    }
+
+    #[test]
+    fn a_bare_runner_that_exited_0_is_not_read_for_text() {
+        with_home("bare", |dir| {
+            let t = transcript(dir, &[human()]);
+            for cmd in [
+                "cargo test -- --nocapture",
+                "cargo test -- --nocapture && echo done",
+            ] {
+                let v = run(cmd, false, Some("test x ... FAILED"), Some(&t), "s1");
+                assert!(!said(&v), "{cmd}");
+            }
         });
     }
 
