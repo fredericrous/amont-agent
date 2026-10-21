@@ -56,6 +56,11 @@ pub struct Bash {
     /// `tool_response.stdout`, after the call. Only `preview register` output
     /// is ever read from it.
     pub stdout: Option<String>,
+    /// `tool_response.stderr`, after a call that ran. `None` when absent.
+    pub stderr: Option<String>,
+    /// The top-level `error` string of a `PostToolUseFailure` payload (for
+    /// example `Exit code 101\nFAILED`). `None` when absent.
+    pub error: Option<String>,
     /// The payload carried a `tool_response` at all.
     pub has_response: bool,
     /// The result reports an error or an interruption (`is_error`,
@@ -637,6 +642,12 @@ pub fn parse(raw: &str) -> Event {
                 .and_then(|r| r.get("stdout"))
                 .and_then(|o| o.as_str())
                 .map(str::to_string);
+            let stderr = v
+                .get("tool_response")
+                .and_then(|r| r.get("stderr"))
+                .and_then(|o| o.as_str())
+                .map(str::to_string);
+            let error = v.get("error").and_then(|e| e.as_str()).map(str::to_string);
             let transcript = transcript();
             let agent_transcript = path_at(v.get("agent_transcript_path").and_then(|x| x.as_str()));
             let bash = Box::new(Bash {
@@ -649,6 +660,8 @@ pub fn parse(raw: &str) -> Event {
                 tool_use_id: str_at("tool_use_id"),
                 prompt_id: str_at("prompt_id"),
                 stdout,
+                stderr,
+                error,
                 has_response: v.get("tool_response").is_some(),
                 errored: v.get("is_error").and_then(|e| e.as_bool()) == Some(true)
                     || v.get("tool_response").is_some_and(|r| {
@@ -811,6 +824,33 @@ mod tests {
         match parse(raw) {
             Event::PostBashFailure(b) => assert_eq!(b.command, "git push"),
             _ => panic!("expected a failed Bash call"),
+        }
+    }
+
+    #[test]
+    fn a_failed_call_exposes_its_error_text() {
+        let raw = r#"{"hook_event_name":"PostToolUseFailure","tool_name":"Bash",
+                      "tool_input":{"command":"cargo test"},
+                      "error":"Exit code 101\nFAILED"}"#;
+        match parse(raw) {
+            Event::PostBashFailure(b) => {
+                assert_eq!(b.error.as_deref(), Some("Exit code 101\nFAILED"));
+            }
+            _ => panic!("expected a failed Bash call"),
+        }
+    }
+
+    #[test]
+    fn a_finished_call_exposes_its_stderr() {
+        let raw = r#"{"hook_event_name":"PostToolUse","tool_name":"Bash",
+                      "tool_input":{"command":"git push"},
+                      "tool_response":{"stdout":"","stderr":"warning: x","interrupted":false}}"#;
+        match parse(raw) {
+            Event::PostBash(b) => {
+                assert_eq!(b.stderr.as_deref(), Some("warning: x"));
+                assert!(b.error.is_none());
+            }
+            _ => panic!("expected a finished Bash call"),
         }
     }
 

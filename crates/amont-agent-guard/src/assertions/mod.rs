@@ -90,7 +90,8 @@ pub struct Assertion {
     pub evidence: Evidence,
     /// PURE. No processes, no filesystem, no network.
     pub examine: fn(&Parsed) -> Option<Claim>,
-    /// Runs only after `examine` fired, and only for a call that succeeded.
+    /// Runs only after `examine` fired, for a call that succeeded or, for the
+    /// assertions that read it, one that failed.
     pub verify: fn(&Context, &Claim) -> Verdict,
 }
 
