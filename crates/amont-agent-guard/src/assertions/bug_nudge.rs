@@ -287,4 +287,16 @@ mod tests {
             assert!(said(&v));
         });
     }
+
+    #[test]
+    fn a_heredoc_body_naming_a_runner_is_not_claimed() {
+        let parsed = lex("python3 - <<'EOF'\nprint('cargo test -q')\nEOF");
+        assert!(examine(&parsed).is_none());
+    }
+
+    #[test]
+    fn a_runner_after_a_heredoc_is_still_claimed() {
+        let parsed = lex("python3 - <<'EOF'\nprint('cargo test -q')\nEOF\ncargo test");
+        assert!(examine(&parsed).is_some());
+    }
 }
