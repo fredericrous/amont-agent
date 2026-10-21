@@ -505,7 +505,14 @@ fn on_post_bash_failure(bash: &Bash) -> Decision {
     if claimed.is_empty() {
         return Decision::Silent;
     }
-    let output = joined_output(bash);
+    // The failure text is the top-level `error` string, after stdout and stderr.
+    let output = [
+        joined_output(bash),
+        bash.error.clone().filter(|e| !e.is_empty()),
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(|acc, e| format!("{acc}\n{e}"));
     let ctx = Context {
         platform: Some(crate::rules::Platform::host()),
         cwd: &bash.cwd,
