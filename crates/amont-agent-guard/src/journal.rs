@@ -218,6 +218,11 @@ fn tally_into(
         if ts < floor {
             continue;
         }
+        // Shadow rows are the part dropped to observe on purpose: counting
+        // them would read the experiment as the part's own behaviour.
+        if arm_of_line(line) == Arm::Shadow {
+            continue;
+        }
         let seen = out.entry(rule.to_string()).or_default();
         match (stance, outcome) {
             // A `confirm` that declined, or an assertion that could not check
@@ -236,6 +241,47 @@ fn tally_into(
             _ => {}
         }
     }
+}
+
+/// Which arm of the ADR-0042 shadow a record belongs to. `Live` is every
+/// record that carries no `arm=` field, so an old journal reads as live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arm {
+    Live,
+    Shadow,
+}
+
+impl Arm {
+    /// The fixed field as written, one token, placed before the excerpt.
+    pub fn token(self) -> &'static str {
+        match self {
+            Arm::Live => "arm=live",
+            Arm::Shadow => "arm=shadow",
+        }
+    }
+
+    /// The arm a record's fields name, given the field after `mode`, if any.
+    pub fn parse(field: Option<&str>) -> Arm {
+        match field {
+            Some("arm=shadow") => Arm::Shadow,
+            _ => Arm::Live,
+        }
+    }
+
+    /// The arm a part is in for this process's session.
+    fn of_part(id: &str) -> Arm {
+        if crate::shadow::is_marked(id) {
+            Arm::Shadow
+        } else {
+            Arm::Live
+        }
+    }
+}
+
+/// The arm of one `F ` record line, reading the fixed fields only.
+pub fn arm_of_line(line: &str) -> Arm {
+    // F ts rule stance outcome session repo mode [arm=..] excerpt
+    Arm::parse(line.split_whitespace().nth(8))
 }
 
 /// One thing that happened.
@@ -413,7 +459,7 @@ fn rotate(path: &std::path::Path, max: u64) -> Result<(), String> {
 pub fn line_for(entry: &Entry) -> String {
     let excerpt = redact_and_trim(entry.excerpt);
     let mut line = format!(
-        "F {} {} {} {} {} {} {} {}\n",
+        "F {} {} {} {} {} {} {} {} {}\n",
         now(),
         field(entry.rule),
         field(entry.stance),
@@ -421,6 +467,7 @@ pub fn line_for(entry: &Entry) -> String {
         field(&entry.session.chars().take(8).collect::<String>()),
         field(entry.repo),
         field(entry.mode),
+        Arm::of_part(entry.rule).token(),
         excerpt
     );
     if line.len() > MAX_RECORD {
@@ -724,6 +771,46 @@ mod tests {
         assert_eq!(ir.reasons.get("reviewed"), Some(&2));
         assert_eq!(ir.reasons.get("no-plan"), Some(&1));
         assert_eq!(ir.reasons.get("overruled"), Some(&1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A row written before `arm` existed reads as live and is counted; a
+    /// shadow row is not, so the per-1000 on a fixed journal does not move.
+    #[test]
+    fn old_rows_are_live_and_shadow_rows_do_not_count() {
+        assert_eq!(
+            arm_of_line("F 1 pipe-to-tail deny denied sess repo default git push | tail"),
+            Arm::Live
+        );
+        assert_eq!(
+            arm_of_line("F 1 r deny denied sess repo default arm=live x"),
+            Arm::Live
+        );
+        assert_eq!(
+            arm_of_line("F 1 r observe watched sess repo default arm=shadow x"),
+            Arm::Shadow
+        );
+        let dir = std::env::temp_dir().join(format!("amont-agent-arm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("journal.log");
+        let now = 2_000_000u64;
+        let t = now - 10;
+        let fixed = format!(
+            "{FORMAT}\n\
+             F {t} r deny denied s repo default git push | tail\n\
+             F {t} r deny denied s repo default arm=live git push | tail\n"
+        );
+        fs::write(&path, &fixed).expect("write");
+        let before = tally_at(&path, 100_000, now);
+        let more = format!(
+            "{fixed}F {t} r observe watched s repo default arm=shadow git push | tail\n\
+             F {t} r observe watched s repo default arm=shadow git push | tail\n"
+        );
+        fs::write(&path, more).expect("write");
+        let after = tally_at(&path, 100_000, now);
+        assert_eq!(before, after);
+        assert_eq!(after["r"].total(), 2);
         let _ = fs::remove_dir_all(&dir);
     }
 

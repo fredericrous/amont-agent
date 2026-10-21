@@ -59,6 +59,13 @@ pub fn run() -> ExitCode {
 }
 
 fn decide(raw: &str) -> Decision {
+    // Name the session before any stance is looked up (ADR-0042 shadow arm).
+    if let Some(session) = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.get("session_id")?.as_str().map(str::to_string))
+    {
+        amont_agent_guard::shadow::enter_session(&session);
+    }
     match payload::parse(raw) {
         Event::SessionStart(session) => {
             // The fact that we ran is what `doctor` uses to tell "no rule

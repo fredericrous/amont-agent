@@ -34,6 +34,7 @@ pub mod rules;
 pub mod session_state;
 pub mod settings;
 pub mod sha256;
+pub mod shadow;
 pub mod shape;
 pub mod shell;
 pub mod shim;

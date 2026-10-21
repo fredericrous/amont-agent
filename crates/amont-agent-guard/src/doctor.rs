@@ -89,8 +89,34 @@ pub fn run(table: &[rules::Rule], extra: Option<Finding>) -> Vec<Finding> {
     out.push(stances(table));
     out.push(journal_span());
     out.push(lsp_rules());
+    out.extend(shadow_settings());
     out.extend(extra);
     out
+}
+
+/// The shadow rates of ADR-0042: nothing when none is set, the active ones
+/// when some are, and a warning for each that does not parse (it is off).
+fn shadow_settings() -> Option<Finding> {
+    let bad = crate::shadow::bad_settings();
+    if !bad.is_empty() {
+        let list = bad
+            .iter()
+            .map(|(id, v)| format!("{id}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(Finding::warn(
+            "shadow: a rate does not parse, so that part is not shadowed",
+            format!("{list}: set a number in [0,1], or unset amont.agent.<id>.shadow"),
+        ));
+    }
+    let on: Vec<String> = crate::shadow::configured()
+        .iter()
+        .filter_map(|(id, v)| match crate::shadow::parse_rate(v) {
+            crate::shadow::Rate::On(r) => Some(format!("{id} at {r}")),
+            _ => None,
+        })
+        .collect();
+    (!on.is_empty()).then(|| Finding::good(format!("shadow: {}", on.join(", "))))
 }
 
 /// Whether `code-read-not-lsp` and `symbol-grep-not-lsp` can speak here: they
