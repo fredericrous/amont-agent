@@ -322,8 +322,9 @@ mod tests {
     /// `CLAUDE_CONFIG_DIR` is process-wide and the test threads are not, so
     /// the tests that set it take turns.
     fn with_home<T>(name: &str, f: impl FnOnce(&Path) -> T) -> T {
-        static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::assertions::test_support::CONFIG_DIR_TURN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir =
             std::env::temp_dir().join(format!("amont-agent-state-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

@@ -13,15 +13,20 @@ Nothing in a command string tells you that the push you just ran reported
 | `push-landed` | `git push` | is the branch on the remote, at the commit you have? |
 | `push-published` | `git push` to a UI repository | did it publish a new commit, and was it an approved preview? (records only; see [preview approval](preview.md)) |
 | `land-retry` | `amont land`, successful or failed | did the land push the commit the review and preview judged, or a retry nobody judged? Read from the land's receipt, never the tracking ref |
+| `bug-nudge` | a check runner that failed (`PostToolUseFailure`), or printed a failure while exiting 0 | did the agent load `diagnosing-bugs` before it ran more commands? Advise only, once per session |
 
-## Only successful calls, with one exception
+## Successful calls, with two exceptions
 
 Claude Code sends a failed tool call to `PostToolUseFailure`. Everything the
 other assertions see claimed to work, which is the whole point: a command that
 returned an error is already in front of the model, and there is nothing
 invisible left to point out.
 
-`land-retry` is the exception. An `amont land` retries once when its pre-push
+`bug-nudge` is the second. A red check runner is the one failure the model may
+not read as a bug to diagnose, so it runs on `PostToolUseFailure` too. It asks
+for the `diagnosing-bugs` skill once per session, and never blocks.
+
+`land-retry` is the first exception. An `amont land` retries once when its pre-push
 hook moves HEAD, and a land that then ends `unverified` or `not-observed` exits
 non-zero after the remote accepted the push, so it also runs on
 `PostToolUseFailure`. It compares the sha PreToolUse judged (recorded for every

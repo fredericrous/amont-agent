@@ -20,7 +20,7 @@ use std::ops::Range;
 
 use crate::rules::pipe_to_tail::{pipefail_is_on, pipeline_sink};
 use crate::rules::{Evidence, Examine, Finding, Input, Rule, Stance, Trend};
-use crate::shell::{Parsed, Simple};
+use crate::shell::{Parsed, Simple, Word};
 
 pub const RULE: Rule = Rule {
     id: "test-output-trimmed",
@@ -50,8 +50,13 @@ fn is_runner(cmd: &Simple) -> bool {
     let Some(program) = cmd.program() else {
         return false;
     };
-    let args: Vec<&str> = cmd
-        .args()
+    runner_words(program, cmd.args())
+}
+
+/// `is_runner` over a program and its argument words, so a wrapper can match
+/// the words it was given without rebuilding a command line from them.
+fn runner_words(program: &str, words: &[Word]) -> bool {
+    let args: Vec<&str> = words
         .iter()
         .filter(|w| !w.quoted)
         .map(|w| w.text.as_str())
@@ -77,6 +82,40 @@ fn is_runner(cmd: &Simple) -> bool {
         }
         "make" => matches!(first_operand, Some("test" | "check" | "lint")),
         "just" => matches!(first_operand, Some("test" | "check")),
+        _ => false,
+    }
+}
+
+/// Whether `cmd` runs a check: a bare runner, `amont run <check>`, or a
+/// runner wrapped as `amont-agent quiet -- <runner>`.
+pub(crate) fn is_check_run(cmd: &Simple) -> bool {
+    if is_runner(cmd) {
+        return true;
+    }
+    let operands = || cmd.args().iter().filter(|w| !w.quoted);
+    match cmd.program() {
+        Some("amont") => {
+            let mut it = operands()
+                .map(|w| w.text.as_str())
+                .filter(|a| !a.starts_with('-'));
+            it.next() == Some("run") && it.next().is_some()
+        }
+        Some("amont-agent") => {
+            let words = cmd.args();
+            let Some(sep) = words.iter().position(|w| !w.quoted && w.text == "--") else {
+                return false;
+            };
+            let first = words[..sep]
+                .iter()
+                .find(|w| !w.quoted && !w.text.starts_with('-'));
+            if first.map(|w| w.text.as_str()) != Some("quiet") {
+                return false;
+            }
+            match words[sep + 1..].split_first() {
+                Some((program, rest)) if !program.quoted => runner_words(&program.text, rest),
+                _ => false,
+            }
+        }
         _ => false,
     }
 }
@@ -147,4 +186,29 @@ fn examine(input: &Input) -> Option<Finding> {
         });
     }
     None
+}
+
+#[cfg(test)]
+mod check_run_tests {
+    use super::*;
+    use crate::shell::lex;
+
+    fn is_check(src: &str) -> bool {
+        lex(src).judgeable().any(is_check_run)
+    }
+
+    #[test]
+    fn a_check_run_is_a_runner_or_amont_run_or_quiet_wrapped() {
+        assert!(is_check("cargo test"));
+        assert!(is_check("amont run cargo-test"));
+        assert!(is_check("amont-agent quiet -- cargo test"));
+    }
+
+    #[test]
+    fn a_command_that_only_names_a_check_is_not_one() {
+        assert!(!is_check("amont run"));
+        assert!(!is_check("amont-agent -- cargo test"));
+        assert!(!is_check("amont-agent quiet -- 'cargo test'"));
+        assert!(!is_check("grep -n error src/main.rs"));
+    }
 }
