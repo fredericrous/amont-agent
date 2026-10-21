@@ -1,0 +1,16 @@
+amont-provenance-v1
+commit 739d147a9d4b94da9a56ce82912d07ab88d54ef1
+tree 65d047656cc9d9c69f5e5e023cb051c8413e6604
+canon 3c48ceda8562f4ce3a1efb5939752852950cfe99
+patch 1ccb9976377db55245f814eab3d63ba89c5e23af
+plan docs/plans/2026-10-21-harness-earns-its-place.md b8bbe8f601bc6c4ff834d06dd94f41d689f1551fd374d505d5a7da3c80afa778
+review reviewed 6c8b16206f6cd24228b8a4e05b0fb00ed645e07b6446aab690a202602e06ce25
+preview not-required
+producer amont-agent 2.46.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEA3SHPH7GTaqumjc/xYnAXtbcNDCbz0CxFmIs7wYsVzTY3vph
+MZ97gbWvhtjkHVJOz59HVX2+Pcc4s3KbPPQncB
+-----END SSH SIGNATURE-----
