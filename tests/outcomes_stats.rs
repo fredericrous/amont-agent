@@ -231,6 +231,11 @@ fn only_the_validated_keys_of_a_finding_are_kept() {
     );
 }
 
+// Unix only: the project-directory name is checked against a layout observed
+// on macOS (below). On Windows `canonicalize` adds a `\\?\` prefix the
+// binary's working directory lacks, and Claude Code's Windows layout has not
+// been observed, so there is no independent basis to test it against there.
+#[cfg(unix)]
 #[test]
 fn the_model_is_the_review_agents_resolved_model_not_the_sessions() {
     let r = root("model");
