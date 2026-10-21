@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.46.0
+
+### Added
+
+- **`bug-nudge`, an advise-only assertion.** When a check runner fails, or
+  prints a failure while exiting 0, and the `diagnosing-bugs` skill was not
+  loaded this turn or the one before, it asks the agent to load it, once per
+  session. It never denies. A failed call's exit counts as the runner's when
+  nothing or `&&` follows it; a call that exited 0 is read for failure text
+  only where the runner feeds a pipe or precedes `;`. Turn it off with
+  `git config --global amont.agent.bug-nudge.stance observe`.
+- The Bash payload now carries `tool_response.stderr` and the `error` of a
+  failed call, and assertions see the call's output, session and whether it
+  failed.
+
 ## v2.45.1
 
 ### Fixed
