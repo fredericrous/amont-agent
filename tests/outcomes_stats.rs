@@ -235,6 +235,8 @@ fn only_the_validated_keys_of_a_finding_are_kept() {
 // on macOS (below). On Windows `canonicalize` adds a `\\?\` prefix the
 // binary's working directory lacks, and Claude Code's Windows layout has not
 // been observed, so there is no independent basis to test it against there.
+// holds-until: Claude Code's Windows project-directory layout is observed;
+// then take the expected name from it and drop the cfg.
 #[cfg(unix)]
 #[test]
 fn the_model_is_the_review_agents_resolved_model_not_the_sessions() {
