@@ -148,8 +148,9 @@ fn date_of(ts: u64) -> String {
 /// Build the review. `journal_paths` are the journal generations, oldest
 /// first; `today` is the UTC day the review is dated. `stance_of` is the
 /// stance a rule or assertion runs at (`stance::resolve` and
-/// `stance::resolve_assertion` in the binary), asked once per part: a `deny`
-/// rule has no compliance row, its refused command never having run.
+/// `stance::resolve_assertion` in the binary), asked once per part. A `deny`
+/// rule has no live compliance, its refused command never having run; when it
+/// has shadow rows it is replayed as `observe` and gets a shadow-arm share only.
 pub fn review(
     scan: &Scan,
     rules: &[&'static Rule],
@@ -177,10 +178,24 @@ pub fn review(
         .filter(|(p, _)| matches!(p, Part::Rule(_)))
         .map(|(p, s)| (p.id(), *s))
         .collect();
-    let compliant = compliance::run_with(scan, rules, compliance::Options::default(), |r| {
-        by_rule.get(r.id).copied().unwrap_or(r.default_stance)
-    })?;
     let rows_seen = journal::rows_in(journal_paths);
+    // A deny rule with shadow rows is replayed as observe, so its shadow arm
+    // has an ignored share; its live arm stays empty (see below).
+    let shadowed: std::collections::BTreeSet<&str> = rows_seen
+        .iter()
+        .filter(|r| r.arm == Arm::Shadow)
+        .map(|r| r.rule.as_str())
+        .collect();
+    let compliant =
+        compliance::run_with(
+            scan,
+            rules,
+            compliance::Options::default(),
+            |r| match by_rule.get(r.id).copied().unwrap_or(r.default_stance) {
+                Stance::Deny if shadowed.contains(r.id) => Stance::Observe,
+                other => other,
+            },
+        )?;
     // The transcripts' calls are counted from `--since`, so the journal rows
     // over them are too.
     let floor = scan
@@ -211,8 +226,11 @@ pub fn review(
                 per_model.entry(model.clone()).or_default().add(c);
             }
         }
+        // A deny rule refuses on the live arm: there is no live compliance.
+        let denied = *part_stance == Stance::Deny;
         let compliance = per_model
             .into_iter()
+            .filter(|_| !denied)
             .map(|(model, c)| ModelShare {
                 model,
                 firings: c.firings,
@@ -234,7 +252,8 @@ pub fn review(
                 for (session, cell) in &s.by_session {
                     let prefix: String = session.chars().take(8).collect();
                     match arm_of.get(prefix.as_str()) {
-                        Some(Arm::Live) => share.live.add(cell),
+                        Some(Arm::Live) if !denied => share.live.add(cell),
+                        Some(Arm::Live) => {}
                         Some(Arm::Shadow) => share.shadow.add(cell),
                         None => {}
                     }
@@ -413,10 +432,10 @@ pub fn reviews_dir(journal_dir: &Path) -> PathBuf {
     journal_dir.join("harness-review")
 }
 
-/// Write `<journal dir>/harness-review/<date>.json`.
-pub fn write(journal_dir: &Path, review: &Review) -> std::io::Result<PathBuf> {
-    let dir = reviews_dir(journal_dir);
-    std::fs::create_dir_all(&dir)?;
+/// Write `<dir>/<date>.json`. The binary passes [`reviews_dir`] when `--out` is
+/// absent.
+pub fn write(dir: &Path, review: &Review) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.json", review.date));
     crate::atomic::write_atomic(&path, &format!("{}\n", review.to_json()))?;
     Ok(path)
@@ -425,8 +444,8 @@ pub fn write(journal_dir: &Path, review: &Review) -> std::io::Result<PathBuf> {
 /// The model the newest review file (latest date in its name) was made for:
 /// `Ok(None)` when there is no review, `Ok(Some(None))` when it saw no model,
 /// `Err` naming the file when it cannot be read or parsed.
-fn reviewed_model(journal_dir: &Path) -> Result<Option<Option<String>>, String> {
-    let Ok(entries) = std::fs::read_dir(reviews_dir(journal_dir)) else {
+fn reviewed_model(dir: &Path) -> Result<Option<Option<String>>, String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(None);
     };
     let Some(newest) = entries
@@ -453,12 +472,12 @@ fn reviewed_model(journal_dir: &Path) -> Result<Option<Option<String>>, String> 
 /// `harness-review --check`: the one line to print when the newest model in
 /// the transcripts is not the one the newest review was made for, or when the
 /// newest review file cannot be read.
-pub fn check(journal_dir: &Path, scan: &Scan) -> Result<Option<String>, ScanError> {
+pub fn check(dir: &Path, scan: &Scan) -> Result<Option<String>, ScanError> {
     let surveyed = survey(scan, &[])?;
     let Some(newest) = surveyed.newest() else {
         return Ok(None);
     };
-    Ok(match reviewed_model(journal_dir) {
+    Ok(match reviewed_model(dir) {
         Ok(Some(Some(m))) if m == newest => None,
         Ok(Some(_)) => Some(format!(
             "harness-review: new model {newest} since the last review; run `amont-agent harness-review`"
@@ -635,6 +654,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&f.root);
     }
 
+    /// A deny rule refuses on the live arm, so it has no live compliance; its
+    /// shadow rows are replayed as observe and give the shadow arm a share.
+    #[test]
+    fn a_shadowed_deny_rule_has_a_shadow_share_and_no_live_one() {
+        let f = fixture("deny-shadow");
+        // aaaaaaaa ignored the advice; here it is the session in the shadow arm.
+        std::fs::write(
+            &f.journal,
+            "F 1790848800 sed-in-place watched watched aaaaaaaa repo default arm=shadow x\n",
+        )
+        .unwrap();
+        let scan = Scan {
+            roots: &f.roots,
+            tool: "Bash",
+            since: None,
+        };
+        let r = review(
+            &scan,
+            &rules(),
+            |p| match p {
+                Part::Rule(r) if r.id == "sed-in-place" => Stance::Deny,
+                Part::Rule(r) => r.default_stance,
+                Part::Assertion(a) => a.default_stance,
+            },
+            std::slice::from_ref(&f.journal),
+            civil::days_from_civil(2026, 10, 21),
+        )
+        .unwrap();
+        let arms = row(&r, "sed-in-place")
+            .arms
+            .as_ref()
+            .expect("a deny rule with shadow rows is replayed");
+        let shadow = arms.shadow.ignored_share().expect("a shadow share");
+        assert!(
+            shadow > 0.0,
+            "aaaaaaaa ignored it in the shadow arm: {shadow}"
+        );
+        assert_eq!(
+            arms.live.ignored_share(),
+            None,
+            "deny has no live compliance"
+        );
+        let _ = std::fs::remove_dir_all(&f.root);
+    }
+
     #[test]
     fn the_ignored_share_is_split_by_the_arm_the_journal_names() {
         let f = fixture("arms");
@@ -665,11 +729,13 @@ mod tests {
             tool: "Bash",
             since: None,
         };
-        let line = check(&f.root, &scan).unwrap().expect("no review yet");
+        let line = check(&reviews_dir(&f.root), &scan)
+            .unwrap()
+            .expect("no review yet");
         assert!(line.contains("claude-new"), "{line}");
         let r = run(&f);
-        write(&f.root, &r).unwrap();
-        assert_eq!(check(&f.root, &scan).unwrap(), None);
+        write(&reviews_dir(&f.root), &r).unwrap();
+        assert_eq!(check(&reviews_dir(&f.root), &scan).unwrap(), None);
         // A newer model appears.
         let proj = f.root.join("projects").join("p");
         std::fs::write(
@@ -677,7 +743,9 @@ mod tests {
             call("dddddddd-4", "claude-newer", "2026-10-10", 1, "ls"),
         )
         .unwrap();
-        let line = check(&f.root, &scan).unwrap().expect("unseen model");
+        let line = check(&reviews_dir(&f.root), &scan)
+            .unwrap()
+            .expect("unseen model");
         assert!(line.contains("claude-newer"), "{line}");
         let _ = std::fs::remove_dir_all(&f.root);
     }
@@ -742,7 +810,9 @@ mod tests {
         let dir = reviews_dir(&f.root);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("2026-10-20.json"), "{not json").unwrap();
-        let line = check(&f.root, &scan).unwrap().expect("a finding");
+        let line = check(&reviews_dir(&f.root), &scan)
+            .unwrap()
+            .expect("a finding");
         assert!(
             line.contains("2026-10-20.json") && line.contains("parse"),
             "{line}"

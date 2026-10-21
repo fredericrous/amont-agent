@@ -238,13 +238,17 @@ guarding an irreversible action is never dropped live; its row carries a
 `replay` count instead: how many of the newest model's Bash calls its
 `examine` matches.
 
-`--json` emits the same rows. Each run also writes
-`<journal dir>/harness-review/<YYYY-MM-DD>.json` with the date, the newest
+A `deny` rule has no live compliance (its refused command never ran); when it
+is shadowed, its shadow rows are replayed as `observe` and give the shadow arm a
+share, with the live share left empty.
+
+`--json` emits the same rows. Each run also writes `<YYYY-MM-DD>.json` into
+`--out <dir>`, by default `<journal dir>/harness-review`, with the date, the newest
 transcript model and the rows. The newest model is the one first seen on the
 latest day in the transcripts' Bash calls.
 
 ```
-amont-agent harness-review [--json] [--transcripts <dir>] [--since <date>]
+amont-agent harness-review [--json] [--transcripts <dir>] [--since <date>] [--out <dir>]
 amont-agent harness-review --check
 ```
 

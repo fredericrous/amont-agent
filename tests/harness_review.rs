@@ -31,6 +31,11 @@ impl Home {
         )
         .expect("a transcript");
     }
+    /// Where every run writes its review: a temporary `--out`, never the
+    /// real review directory.
+    fn out(&self) -> PathBuf {
+        self.0.join("reviews-out")
+    }
     fn run(&self, args: &[&str]) -> (i32, String) {
         let (code, out, _) = self.run_err(args);
         (code, out)
@@ -39,6 +44,8 @@ impl Home {
         let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
             .arg("harness-review")
             .args(args)
+            .arg("--out")
+            .arg(self.out())
             .env("CLAUDE_CONFIG_DIR", &self.0)
             .env_remove("AMONT_AGENT_OFF")
             .output()
@@ -73,12 +80,7 @@ fn check_exits_1_on_an_unseen_model_and_0_after_a_review_of_it() {
     assert_eq!(code, 0);
     assert!(json.contains("\"newest_model\":\"claude-one\""), "{json}");
     assert!(
-        h.0.join("amont-agent")
-            .join("harness-review")
-            .read_dir()
-            .expect("review dir")
-            .count()
-            == 1,
+        h.out().read_dir().expect("review dir").count() == 1,
         "one review file written"
     );
 
@@ -120,7 +122,7 @@ fn the_json_has_one_row_per_rule_and_assertion() {
 fn check_names_a_corrupt_review_file_and_exits_1() {
     let h = Home::new("corrupt");
     h.session("a", "claude-one", "2026-10-01");
-    let dir = h.0.join("amont-agent").join("harness-review");
+    let dir = h.out();
     std::fs::create_dir_all(&dir).expect("review dir");
     std::fs::write(dir.join("2026-10-20.json"), "{not json").expect("corrupt file");
     let (code, said) = h.run(&["--check"]);

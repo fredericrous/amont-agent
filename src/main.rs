@@ -81,10 +81,11 @@ usage: amont-agent <command>
   demote <rule>         back to observing, no questions asked
   mine [flags]          shapes the model got wrong that no rule names yet
   backtest [flags]      replay your transcripts through the rules
-  harness-review [--json] [--check]
+  harness-review [--json] [--check] [--out <dir>]
                         one row per rule and assertion: firings, compliance
                         per model, shadow-arm share, replay count; writes
-                        <journal dir>/harness-review/<date>.json. --check
+                        <out dir>/<date>.json, --out defaulting to
+                        <journal dir>/harness-review. --check
                         prints one line and exits 1 when the newest model in
                         your transcripts was not in the last review
   explain <rule>        every match for one rule, for review
@@ -412,6 +413,7 @@ struct Flags {
     rank: Option<String>,
     compliance: bool,
     check: bool,
+    out: Option<PathBuf>,
     dialect: Option<rules::Dialect>,
     rest: Vec<String>,
 }
@@ -428,6 +430,7 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                 .ok_or_else(|| format!("{what} needs a value"))
         };
         match a.as_str() {
+            "--out" => f.out = Some(PathBuf::from(value(&mut i, &a)?)),
             "--transcripts" => f.transcripts.push(PathBuf::from(value(&mut i, &a)?)),
             "--since" => {
                 let v = value(&mut i, &a)?;
@@ -666,7 +669,7 @@ fn rank_by_novelty(report: &mut backtest::Report, n: usize) {
 /// that says a model has not been reviewed yet.
 fn run_harness_review(args: &[OsString]) -> ExitCode {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage: amont-agent harness-review [--json] [--check] [--transcripts <dir>] [--since <date>]");
+        println!("usage: amont-agent harness-review [--json] [--check] [--transcripts <dir>] [--since <date>] [--out <dir>]");
         return ExitCode::SUCCESS;
     }
     let f = match flags(args) {
@@ -696,8 +699,12 @@ fn run_harness_review(args: &[OsString]) -> ExitCode {
         tool: "Bash",
         since: f.since,
     };
+    let out = f
+        .out
+        .clone()
+        .unwrap_or_else(|| harness_review::reviews_dir(&journal_dir));
     if f.check {
-        return match harness_review::check(&journal_dir, &scan) {
+        return match harness_review::check(&out, &scan) {
             Ok(None) => ExitCode::SUCCESS,
             Ok(Some(line)) => {
                 println!("{line}");
@@ -709,10 +716,13 @@ fn run_harness_review(args: &[OsString]) -> ExitCode {
             }
         };
     }
-    let today = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_secs() / 86_400) as civil::Day)
-        .unwrap_or(0);
+    let today = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() / 86_400) as civil::Day,
+        Err(e) => {
+            eprintln!("amont-agent: cannot read the clock: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let table: Vec<&'static rules::Rule> = rule_table::RULES.iter().collect();
     let review =
         match harness_review::review(&scan, &table, stance_of_part, &journal::paths(), today) {
@@ -722,7 +732,7 @@ fn run_harness_review(args: &[OsString]) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-    if let Err(e) = harness_review::write(&journal_dir, &review) {
+    if let Err(e) = harness_review::write(&out, &review) {
         eprintln!("amont-agent: could not write the review file: {e}");
         return ExitCode::from(2);
     }
