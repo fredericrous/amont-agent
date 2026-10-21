@@ -1146,5 +1146,9 @@ mod tests {
         ));
         assert!(!names_store("~/.claude/amont-agent/journal.log"));
         assert!(!names_store("implementation-review"));
+        // The outcome ledger lives beside the store, not in it.
+        assert!(!names_store(
+            "~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl"
+        ));
     }
 }

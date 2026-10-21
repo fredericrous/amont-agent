@@ -223,3 +223,22 @@ never count as a recorded reviewer.
 | 3 | some patch unmatched or not verified; the matched ones are written |
 | 1 | file I/O, the plan changed under the apply (nothing written), or no transcript holds the reviewer's result |
 | 2 | usage error, including an empty `old_string` |
+
+## Judging a seat: `plan-review stats`
+
+```
+amont-agent plan-review stats [--json] [--model <id>]
+```
+
+Reads `~/.claude/amont-agent/plan-review/outcomes.jsonl` and, for the
+implementation review, `~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl`,
+through the one ledger reader in `review_outcomes.rs`; rows of another schema
+(merge rows) are not reviews. It prints one row per (role, model): reviews,
+findings by severity (`blocking/high/medium/low`), accepted findings by
+severity, and accepted high-or-blocking findings per review. A finding is
+accepted when its disposition is `accepted` (plan review) or `fixed`
+(implementation review, role `implementation-review`). A row with 20 or more
+reviews and under 0.05 accepted high-or-blocking findings per review ends in
+`retire-candidate` (ADR-0042); retiring the seat stays the person's decision.
+`--json` prints one array of objects instead, `--model` keeps one model. Exit
+0, or 1 when a ledger cannot be read, 2 on a usage error.

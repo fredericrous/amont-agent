@@ -40,6 +40,7 @@ use amont_agent_guard::payload;
 use amont_agent_guard::push_target;
 #[cfg(unix)]
 use amont_agent_guard::quiet;
+use amont_agent_process::impl_review_outcomes;
 use amont_agent_process::implementation_review;
 use amont_agent_process::implementation_review_rule;
 use amont_agent_process::plan_apply;
@@ -103,6 +104,12 @@ usage: amont-agent <command>
                         plan-review-panel hook will judge it
   plan-review record <plan.md> [--transcript <path>]
                         keep what each reviewer of a plan did, as outcome rows
+  plan-review stats [--json] [--model <id>]
+                        per (role, model): reviews, findings, accepted ones;
+                        marks a seat that is a retire-candidate
+  implementation-review record <plan.md> --verdict <v>
+                        keep the implementation review's findings (JSON on
+                        stdin) as one outcome row
   plan-apply [--dry-run|--check|--record-fallback] <plan.md>
                         apply the reviewers' Patches to a plan with no model
                         (accepted findings on stdin; exit 3 = some unmatched)
@@ -172,6 +179,7 @@ enum Sub {
     PlanSha,
     PlanPanel,
     PlanReview,
+    ImplementationReview,
     PlanApply,
     TreeSha,
     Attestations,
@@ -179,7 +187,7 @@ enum Sub {
     Shipped,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 24] = [
+const SUBCOMMANDS: [(&str, Sub); 25] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -199,6 +207,7 @@ const SUBCOMMANDS: [(&str, Sub); 24] = [
     ("plan-sha", Sub::PlanSha),
     ("plan-panel", Sub::PlanPanel),
     ("plan-review", Sub::PlanReview),
+    ("implementation-review", Sub::ImplementationReview),
     ("plan-apply", Sub::PlanApply),
     ("tree-sha", Sub::TreeSha),
     ("attestations", Sub::Attestations),
@@ -357,6 +366,11 @@ fn main() -> ExitCode {
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);
+                print!("{said}");
+                code
+            }
+            Sub::ImplementationReview => {
+                let (said, code) = impl_review_outcomes::run(&args);
                 print!("{said}");
                 code
             }
