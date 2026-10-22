@@ -336,6 +336,8 @@ pub(crate) fn findings_of(result: &str) -> (Vec<(u32, Severity)>, usize) {
         let parsed = body[..digits].parse::<u32>().ok().zip(
             body[digits + 1..]
                 .trim_start()
+                // `1. **[high]** …`: bold after the number, as reviewers write it.
+                .trim_start_matches('*')
                 .strip_prefix('[')
                 .and_then(|r| r.split_once(']'))
                 .and_then(|(w, _)| match w.trim().to_lowercase().as_str() {
@@ -1258,6 +1260,20 @@ mod tests {
     fn a_malformed_numbered_line_is_counted_not_parsed() {
         let r = "Findings:\n1. [high] ok\n2. [severe] bad\n3. no severity\n";
         assert_eq!(findings_of(r), (vec![(1, Severity::High)], 2));
+    }
+
+    /// A reviewer on 2026-10-22 wrote its findings as `1. **[high] text**`:
+    /// bold after the number. The live ledger counted both as unparsed.
+    #[test]
+    fn bold_after_the_number_parses() {
+        let r = "Verdict: approve-with-changes\n\n**Findings:**\n\n\
+                 1. **[high] A delta round that resumes the reviewer is never recorded.**\n\
+                 2. **[high] The disposition is fixed at write time.**\n\n\
+                 **What I would measure:**\n";
+        assert_eq!(
+            findings_of(r),
+            (vec![(1, Severity::High), (2, Severity::High)], 0)
+        );
     }
 
     #[test]
