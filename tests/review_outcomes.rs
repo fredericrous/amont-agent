@@ -710,3 +710,127 @@ fn stdin_for_a_recorded_reviewer_appends_disposition_rows_only() {
         assert_eq!(r["disposition"], d);
     }
 }
+
+// --- the PostToolUse ExitPlanMode hook ---------------------------------
+
+const REVIEW: &str =
+    "Verdict: approve-with-changes\nFindings:\n1. [high] A. Edit: x.\n2. [low] B.\n";
+
+impl World {
+    fn payload(&self, transcript: &Path, approved: bool) -> String {
+        let response = if approved {
+            serde_json::json!({"plan": "p", "isAgent": false, "filePath": self.plan})
+        } else {
+            serde_json::json!("The user doesn't want to proceed")
+        };
+        serde_json::json!({
+            "hook_event_name": "PostToolUse", "tool_name": "ExitPlanMode",
+            "session_id": "sess1234", "transcript_path": transcript,
+            "tool_input": {"planFilePath": self.plan}, "tool_response": response,
+        })
+        .to_string()
+    }
+
+    fn hook(&self, payload: &str) -> std::process::Output {
+        let mut c = self
+            .bin()
+            .arg("hook")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        c.wait_with_output().unwrap()
+    }
+
+    fn journal(&self) -> String {
+        std::fs::read_to_string(self.root.join("claude/amont-agent/journal.log"))
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn the_exit_plan_hook_records_once_on_approval_and_on_rejection() {
+    let mut w = World::new("hook");
+    w.reviewed("backend", "agent-1", REVIEW);
+    let t = w.transcript();
+    let o = w.hook(&w.payload(&t, true));
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(out(&o), "");
+    let rows = w.rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["findings"].as_array().unwrap().len(), 2);
+    // The same payload, and a rejection of the same plan, write nothing more.
+    assert_eq!(w.hook(&w.payload(&t, true)).status.code(), Some(0));
+    assert_eq!(w.hook(&w.payload(&t, false)).status.code(), Some(0));
+    assert_eq!(w.rows().len(), 1);
+    assert!(
+        !w.journal().contains("plan-review-record"),
+        "{}",
+        w.journal()
+    );
+
+    // A rejection alone records too.
+    let mut r = World::new("hook-reject");
+    r.reviewed("backend", "agent-1", REVIEW);
+    let t = r.transcript();
+    assert_eq!(r.hook(&r.payload(&t, false)).status.code(), Some(0));
+    assert_eq!(r.rows().len(), 1);
+}
+
+#[test]
+fn an_unreadable_transcript_is_journalled_and_the_hook_stays_silent() {
+    let w = World::new("hook-bad");
+    let missing = w.root.join("nope.jsonl");
+    let o = w.hook(&w.payload(&missing, true));
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(out(&o), "");
+    assert!(w.rows().is_empty());
+    let j = w.journal();
+    assert_eq!(j.matches("plan-review-record").count(), 1, "{j}");
+    assert!(j.contains("error"), "{j}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_held_ledger_lock_makes_the_hook_journal_one_skip_within_the_budget() {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn flock(fd: i32, op: i32) -> i32;
+    }
+    let mut w = World::new("hook-lock");
+    w.reviewed("backend", "agent-1", REVIEW);
+    let t = w.transcript();
+    std::fs::create_dir_all(w.store()).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(w.store().join("outcomes.jsonl.lock"))
+        .unwrap();
+    assert_eq!(unsafe { flock(held.as_raw_fd(), 2) }, 0);
+
+    let start = std::time::Instant::now();
+    let o = w.hook(&w.payload(&t, true));
+    let took = start.elapsed();
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert!(took < std::time::Duration::from_millis(2500), "{took:?}");
+    assert!(w.rows().is_empty());
+    let j = w.journal();
+    assert_eq!(j.matches("plan-review-record").count(), 1, "{j}");
+    assert!(j.contains("skipped"), "{j}");
+
+    // stats lists the plan, and a manual record catches up.
+    let stats = |w: &World| {
+        let o = w.bin().args(["plan-review", "stats"]).output().unwrap();
+        out(&o)
+    };
+    assert!(stats(&w).contains("record-skipped"), "{}", stats(&w));
+    drop(held);
+    assert_eq!(w.record("").status.code(), Some(0));
+    assert!(!stats(&w).contains("record-skipped"), "{}", stats(&w));
+}

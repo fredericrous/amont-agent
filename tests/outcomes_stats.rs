@@ -70,11 +70,11 @@ fn stats_gives_a_row_per_role_and_model_and_marks_one_retire_candidate() {
     );
     assert_eq!(
         lines[1],
-        "security\tm1\treviews=2\tfound=0/1/1/0\taccepted=0/1/0/0\tserious/review=0.50"
+        "security\tm1\treviews=2\tfound=0/1/1/0\taccepted=0/1/0/0\tserious/review=0.50\tpredate-change=1"
     );
     assert_eq!(
         lines[2],
-        "security\tm2\treviews=1\tfound=0/0/0/0\taccepted=0/0/0/0\tserious/review=0.00"
+        "security\tm2\treviews=1\tfound=0/0/0/0\taccepted=0/0/0/0\tserious/review=0.00\tpredate-change=1"
     );
     assert_eq!(
         lines[3],
@@ -333,4 +333,127 @@ fn a_failed_stdin_read_exits_1() {
         .unwrap();
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("stdin cannot be read"));
+}
+
+fn plan_row(role: &str, agent: &str, sha: &str, extra: &str, findings: &str) -> String {
+    format!(
+        "{{\"schema\":\"amont-agent-review-outcome-v1\",\"role\":\"{role}\",\"model\":\"m1\",\"agent_id\":\"{agent}\",\"body_sha\":\"{sha}\"{extra},\"findings\":{findings}}}\n"
+    )
+}
+
+fn merge_row(sha: &str, labels: &str) -> String {
+    format!(
+        "{{\"schema\":\"amont-agent-review-merge-v1\",\"body_sha_before\":\"{sha}\",\"applied_labels\":{labels}}}\n"
+    )
+}
+
+fn stats_text(ledger: &str, name: &str) -> String {
+    let r = root(name);
+    std::fs::write(
+        r.join("claude/amont-agent/plan-review/outcomes.jsonl"),
+        ledger,
+    )
+    .unwrap();
+    let out = bin(&r).args(["plan-review", "stats"]).output().unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
+
+const TWO_HIGH: &str = r#"[{"n":1,"severity":"high"},{"n":2,"severity":"high"}]"#;
+
+#[test]
+fn a_merge_row_appended_after_the_reviews_makes_the_applied_finding_accepted() {
+    let ledger = plan_row("rust", "a1", "s1", "", TWO_HIGH) + &merge_row("s1", r#"["rust#1"]"#);
+    let text = stats_text(&ledger, "derive");
+    assert_eq!(
+        text,
+        "rust\tm1\treviews=1\tfound=0/2/0/0\taccepted=0/1/0/0\tunresolved=0/1/0/0\tserious/review=2.00\n"
+    );
+}
+
+#[test]
+fn a_merge_of_another_body_does_not_accept_the_finding() {
+    let ledger = plan_row("rust", "a1", "s1", "", TWO_HIGH) + &merge_row("s2", r#"["rust#1"]"#);
+    let text = stats_text(&ledger, "other-body");
+    assert!(
+        text.contains("accepted=0/0/0/0\tunresolved=0/2/0/0"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_disposition_row_after_the_hook_wins_over_the_derived_value() {
+    let disposition = |n: u32, d: &str| {
+        format!(
+            "{{\"schema\":\"amont-agent-review-disposition-v1\",\"agent_id\":\"a1\",\"body_sha\":\"s1\",\"role\":\"rust\",\"n\":{n},\"disposition\":\"{d}\"}}\n"
+        )
+    };
+    // rust#1 was merged but then recorded rejected; rust#2 recorded accepted
+    // although no merge applied it. The latest row per finding wins.
+    let ledger = plan_row("rust", "a1", "s1", "", TWO_HIGH)
+        + &merge_row("s1", r#"["rust#1"]"#)
+        + &disposition(1, "accepted")
+        + &disposition(1, "rejected")
+        + &disposition(2, "accepted");
+    let text = stats_text(&ledger, "disposition");
+    assert_eq!(
+        text,
+        "rust\tm1\treviews=1\tfound=0/2/0/0\taccepted=0/1/0/0\tserious/review=1.00\n"
+    );
+}
+
+#[test]
+fn a_seat_with_only_unresolved_serious_findings_is_not_a_retire_candidate() {
+    let mut ledger = String::new();
+    for i in 0..20 {
+        ledger += &plan_row(
+            "rust",
+            &format!("a{i}"),
+            "s1",
+            "",
+            r#"[{"n":1,"severity":"high"}]"#,
+        );
+    }
+    let text = stats_text(&ledger, "unresolved-seat");
+    assert!(text.contains("unresolved=0/20/0/0"), "{text}");
+    assert!(!text.contains("retire-candidate"), "{text}");
+    // The same seat with nothing serious at all is one.
+    let mut quiet = String::new();
+    for i in 0..20 {
+        quiet += &plan_row(
+            "rust",
+            &format!("a{i}"),
+            "s1",
+            ",\"findings_unparsed\":0",
+            "[]",
+        );
+    }
+    assert!(stats_text(&quiet, "quiet-seat").contains("retire-candidate"));
+}
+
+#[test]
+fn stats_counts_old_rows_and_lists_verdicts_without_findings() {
+    let ledger = plan_row("rust", "a1", "s1", ",\"verdict\":\"rework\"", "[]")
+        + &plan_row(
+            "go",
+            "a2",
+            "s1",
+            ",\"verdict\":\"rework\",\"findings_unparsed\":0",
+            "[]",
+        )
+        + &plan_row(
+            "go",
+            "a3",
+            "s1",
+            ",\"verdict\":\"approve\",\"findings_unparsed\":0",
+            "[]",
+        );
+    let text = stats_text(&ledger, "old-rows");
+    assert!(text.contains("rust\tm1\treviews=1\t"), "{text}");
+    assert!(text.contains("predate-change=1"), "{text}");
+    assert!(
+        text.contains("no-parsed-findings\tgo\tm1\t1 reviews"),
+        "{text}"
+    );
+    assert!(!text.contains("no-parsed-findings\trust"), "{text}");
 }

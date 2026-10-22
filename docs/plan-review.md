@@ -182,6 +182,21 @@ once as `plan-review/bodies/<sha>.md`, if the plan file still has that body
 (otherwise a note on stderr); bodies older than 90 days are deleted. The
 directories are 0700 and the files 0600.
 
+### The hook records on its own
+
+The PostToolUse `ExitPlanMode` hook runs this `record` for the plan when the
+person answers it, on approval and on rejection alike, reading the session
+transcript from the payload (`transcript_path`). It never fails the call:
+nothing goes to stdout, and an error (an unreadable transcript, no completed
+review, a ledger that cannot be written) is journalled as outcome `error` of
+the rule `plan-review-record`. A repeat run is safe, by the dedupe above. The
+hook takes the ledger lock with `LOCK_NB` and retries for at most 2 s; if
+another process still holds it, it journals one `skipped` entry (body sha and
+plan path) and returns. `plan-review stats` lists such a plan as
+`record-skipped` until the ledger has a row for that body (or any row for the
+plan recorded after the skip); running `amont-agent plan-review record
+<plan.md>` by hand catches up.
+
 Its status line (`wrote N rows (round R, plan <sha12>)`, `already recorded
 round R of <sha12>; nothing written`, or `no rows written …` when every
 reviewer lacked an agent id) goes to stderr; stdout stays empty.
@@ -251,10 +266,29 @@ implementation review, `~/.claude/amont-agent/implementation-review-outcomes/out
 through the one ledger reader in `review_outcomes.rs`; rows of another schema
 (merge rows) are not reviews. It prints one row per (role, model): reviews,
 findings by severity (`blocking/high/medium/low`), accepted findings by
-severity, and accepted high-or-blocking findings per review. A finding is
-accepted when its disposition is `accepted` (plan review) or `fixed`
-(implementation review, role `implementation-review`). A row with 20 or more
-reviews and under 0.05 accepted high-or-blocking findings per review ends in
-`retire-candidate` (ADR-0042); retiring the seat stays the person's decision.
-`--json` prints one array of objects instead, `--model` keeps one model. Exit
+severity, accepted findings by severity, unresolved findings by severity
+(shown when there are any) and accepted-plus-unresolved high-or-blocking
+findings per review. A finding is accepted when its disposition is `accepted`
+(plan review) or `fixed` (implementation review, role `implementation-review`).
+
+A parsed plan-review finding (one `record` wrote as `{n, severity}`) has its
+disposition derived when stats are read, so a merge or a disposition row
+appended after the review rows still counts. In order: the latest
+`amont-agent-review-disposition-v1` row for its `agent_id`, `body_sha` and `n`
+wins; else it is `accepted` when any `amont-agent-review-merge-v1` row whose
+`body_sha_before` equals the review row's `body_sha` lists `role#n` in
+`applied_labels` (the union over every such row); else `unresolved`. Findings
+given on stdin keep the disposition they were given.
+
+A row with 20 or more reviews and under 0.05 accepted-plus-unresolved
+high-or-blocking findings per review ends in `retire-candidate` (ADR-0042): an
+unresolved finding is not evidence that the seat caught nothing. Retiring the
+seat stays the person's decision. Stats also print `predate-change=N` for the
+reviews recorded before findings were parsed (`findings` empty and no
+`findings_unparsed`; the ledger is not backfilled, so the 20-review bar counts
+from the new rows), a `no-parsed-findings` line per seat with reviews that
+closed approve-with-changes or rework yet have 0 parsed findings, and a
+`record-skipped` line per plan whose hook record was skipped and not caught up.
+`--json` prints one array of objects instead (the skipped plans as extra
+`record_skipped` objects), `--model` keeps one model. Exit
 0, or 1 when a ledger cannot be read, 2 on a usage error.
