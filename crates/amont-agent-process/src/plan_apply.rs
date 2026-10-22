@@ -730,6 +730,7 @@ fn apply(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
             "round": round_of(&launches, &before),
             "accepted": findings.len(),
             "applied": applied,
+            "applied_labels": judged.iter().filter(|j| j.verdict.is_ok()).map(|j| j.label.clone()).collect::<Vec<_>>(),
             "unmatched": unmatched_list(&judged),
             "mode": "command",
         });

@@ -160,7 +160,23 @@ first body any call recorded for this plan path, across sessions, `verdict` (`re
 `approve-with-changes`, `approve` or null), `remit` (the areas the role is
 asked for; `*` for backend) and `findings`.
 
-Rows are deduped by agent id under an exclusive lock, so a second run, or two
+`findings` is what stdin gave for the row's role, as given. Otherwise it is
+what the reviewer wrote: `findings_of(result)` reads only the lines between
+`Findings:` and the next of `What I would measure:` / `Patches:` (or the end),
+matches `N. [blocking|high|medium|low]` at the start of a line (a leading `**`
+or spaces tolerated) and gives `{n, severity}` with no disposition. The count
+of numbered lines that did not match is the row's `findings_unparsed`; a line
+is skipped, never guessed. `None.` gives no findings.
+
+`record` reads the launches as `plan-apply` does, so a round resumed with
+`SendMessage` counts. Rows are deduped on (`agent_id`, `body_sha`): a resumed
+round on a changed body gets its own row, on an unchanged body nothing. A
+manual call with stdin findings (each may carry `n`) for a reviewer already on
+record writes no outcome row; it appends one
+`amont-agent-review-disposition-v1` row `{agent_id, body_sha, role, n,
+disposition}` per finding, exempt from that dedupe.
+
+Outcome rows are deduped as above under an exclusive lock, so a second run, or two
 at once, writes nothing twice. Each round written also saves the plan body
 once as `plan-review/bodies/<sha>.md`, if the plan file still has that body
 (otherwise a note on stderr); bodies older than 90 days are deleted. The

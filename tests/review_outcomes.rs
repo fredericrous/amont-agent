@@ -99,6 +99,42 @@ impl World {
         self.result(&id, tur, "Verdict: Approve-With-Changes\nfine");
     }
 
+    /// A foreground review of the plan as it is now, answering `text`.
+    fn reviewed(&mut self, role: &str, agent_id: &str, text: &str) {
+        let agent = format!("plan-review-{role}");
+        let id = self.launch(&agent);
+        let tur = serde_json::json!({"status": "completed", "agentType": agent,
+            "agentId": agent_id, "resolvedModel": "claude-opus-4-7",
+            "totalTokens": 5000, "totalDurationMs": 12500});
+        self.result(&id, tur, text);
+    }
+
+    /// A round resumed with `SendMessage` on the plan as it is now.
+    fn resume(&mut self, agent_id: &str, text: &str) {
+        let id = "toolu_send".to_string();
+        let message = format!("Round 2.\n{}\n", self.block());
+        self.lines.push(
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{
+                "type": "tool_use", "id": id, "name": "SendMessage",
+                "input": {"to": agent_id, "message": message}
+            }]}})
+            .to_string(),
+        );
+        self.result(
+            &id,
+            serde_json::json!({"resumedAgentId": agent_id}),
+            "resumed",
+        );
+        let note = format!(
+            "<task-notification>\n<task-id>{agent_id}</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>completed</status>\n<result>{text}</result>\n<usage><subagent_tokens>900</subagent_tokens><tool_uses>1</tool_uses><duration_ms>2000</duration_ms></usage>\n</task-notification>"
+        );
+        self.lines.push(
+            serde_json::json!({"type": "user", "origin": {"kind": "task-notification"},
+                "message": {"role": "user", "content": note}})
+            .to_string(),
+        );
+    }
+
     fn background(&mut self, role: &str, agent_id: &str) {
         let id = self.launch(&format!("plan-review-{role}"));
         self.result(
@@ -603,4 +639,74 @@ fn the_last_transcript_flag_wins() {
         .unwrap();
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     assert_eq!(w.rows().len(), 1);
+}
+
+const TWO: &str = "Verdict: approve-with-changes\n\n**Findings:**\n1. [high] A. Edit: x.\n2. [low] B.\n3. bad line\n\n**Patches:**\n";
+
+#[test]
+fn stdin_findings_win_for_their_role_and_the_rest_are_parsed() {
+    let mut w = World::new("parsed");
+    w.reviewed("backend", "ag-b", TWO);
+    w.reviewed("architect", "ag-a", TWO);
+    let o = w.record(r#"[{"role":"backend","severity":"blocking","disposition":"rejected"}]"#);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let rows = w.rows();
+    let by = |r: &str| rows.iter().find(|x| x["role"] == r).unwrap().clone();
+    let b = by("backend");
+    assert_eq!(b["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(b["findings"][0]["disposition"], "rejected");
+    assert!(b.get("findings_unparsed").is_none());
+    let a = by("architect");
+    assert_eq!(
+        a["findings"],
+        serde_json::json!([{"n": 1, "severity": "high"}, {"n": 2, "severity": "low"}])
+    );
+    assert_eq!(a["findings_unparsed"], 1);
+}
+
+#[test]
+fn a_resumed_round_on_a_changed_body_gets_its_own_row() {
+    let mut w = World::new("resume-changed");
+    w.reviewed("backend", "ag-b", TWO);
+    w.set_body(&format!("{BODY}\nMore.\n"));
+    w.resume("ag-b", TWO);
+    let o = w.record("");
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let rows = w.rows();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["round"], 1);
+    assert_eq!(rows[1]["round"], 2);
+    assert_ne!(rows[0]["body_sha"], rows[1]["body_sha"]);
+}
+
+#[test]
+fn a_resumed_round_on_an_unchanged_body_writes_nothing_more() {
+    let mut w = World::new("resume-same");
+    w.reviewed("backend", "ag-b", TWO);
+    w.resume("ag-b", TWO);
+    let o = w.record("");
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(w.rows().len(), 1);
+}
+
+#[test]
+fn stdin_for_a_recorded_reviewer_appends_disposition_rows_only() {
+    let mut w = World::new("disposition");
+    w.reviewed("backend", "ag-b", TWO);
+    assert_eq!(w.record("").status.code(), Some(0));
+    let o = w.record(
+        r#"[{"role":"backend","n":1,"severity":"high","disposition":"accepted"},{"role":"backend","n":2,"severity":"low","disposition":"rejected"}]"#,
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let rows = w.rows();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0]["schema"], "amont-agent-review-outcome-v1");
+    for (r, n, d) in [(&rows[1], 1, "accepted"), (&rows[2], 2, "rejected")] {
+        assert_eq!(r["schema"], "amont-agent-review-disposition-v1");
+        assert_eq!(r["agent_id"], "ag-b");
+        assert_eq!(r["body_sha"], rows[0]["body_sha"]);
+        assert_eq!(r["role"], "backend");
+        assert_eq!(r["n"], n);
+        assert_eq!(r["disposition"], d);
+    }
 }

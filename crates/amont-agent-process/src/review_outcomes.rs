@@ -31,7 +31,7 @@ reviewed this plan, the one that reviewed its current body, then the newest.
 stdin: a JSON array of findings (empty stdin is `[]`):
   {\"role\": str, \"severity\": \"blocking\"|\"high\"|\"medium\"|\"low\",
    \"disposition\": \"accepted\"|\"rejected\"|\"decision\",
-   \"section\": str (optional), \"area\": str (optional)}
+   \"n\": number (optional), \"section\": str (optional), \"area\": str (optional)}
 They are attached to the rows written by this call for the highest round.
 
 stats: one row per (role, model) of the plan-review and implementation-review
@@ -47,6 +47,7 @@ transcript names the plan or the ledger cannot be written, 2 on a usage error
 ";
 
 const SCHEMA: &str = "amont-agent-review-outcome-v1";
+const DISPOSITION_SCHEMA: &str = "amont-agent-review-disposition-v1";
 pub(crate) const SEVERITIES: [&str; 4] = ["blocking", "high", "medium", "low"];
 const DISPOSITIONS: [&str; 3] = ["accepted", "rejected", "decision"];
 const WEEK: u64 = 7 * 86_400;
@@ -147,6 +148,9 @@ fn parse_findings(text: &str) -> Result<Vec<serde_json::Value>, String> {
                 }
             }
         }
+        if f.get("n").is_some_and(|v| v.as_u64().is_none()) {
+            return Err(format!("finding {i}: `n` must be a number"));
+        }
         for key in ["section", "area"] {
             if f.get(key).is_some_and(|v| !v.is_string() && !v.is_null()) {
                 return Err(format!("finding {i}: `{key}` must be a string"));
@@ -164,15 +168,10 @@ pub(crate) struct Launch {
 }
 
 /// The completed launches of `transcript` that reviewed `plan`, in launch
-/// order, one per agent: a launch whose prompt carries several blocks for
-/// the plan is one reviewer.
-fn launches(transcript: &Path, plan: &str) -> std::io::Result<Vec<Launch>> {
-    collect(transcript, plan, plan_review::completed_agents)
-}
-
-/// [`launches`], with the rounds a reviewer was resumed for by `SendMessage`
-/// counted as launches of their own: `plan-apply` reads a round-2 reviewer's
-/// patches from its resume.
+/// order: a launch whose prompt carries several blocks for the plan is one
+/// reviewer. The rounds a reviewer was resumed for by `SendMessage` count as
+/// launches of their own: `plan-apply` reads a round-2 reviewer's patches
+/// from its resume, and `record` writes a row per (agent, body).
 pub(crate) fn launches_resumable(transcript: &Path, plan: &str) -> std::io::Result<Vec<Launch>> {
     collect(transcript, plan, |r, p| {
         plan_review::completed_agents_resumable(r, p)
@@ -285,6 +284,70 @@ pub(crate) fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// How serious a reviewer called a finding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Severity {
+    Blocking,
+    High,
+    Medium,
+    Low,
+}
+
+impl Severity {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Severity::Blocking => "blocking",
+            Severity::High => "high",
+            Severity::Medium => "medium",
+            Severity::Low => "low",
+        }
+    }
+}
+
+/// The numbered findings of a reviewer's result: each `N. [severity]` line
+/// between `Findings:` and `What I would measure:` / `Patches:` (or the end),
+/// a leading `**` or spaces tolerated, with the count of numbered lines that
+/// did not match. A line is skipped, never guessed.
+pub(crate) fn findings_of(result: &str) -> (Vec<(u32, Severity)>, usize) {
+    let heading = |l: &str| l.trim().trim_matches('*').trim().to_string();
+    let mut found = Vec::new();
+    let mut unparsed = 0;
+    let mut inside = false;
+    for line in result.lines() {
+        let h = heading(line);
+        if !inside {
+            inside = h.starts_with("Findings:");
+            continue;
+        }
+        if h.starts_with("What I would measure:") || h.starts_with("Patches:") {
+            break;
+        }
+        let body = line.trim_start().trim_start_matches('*').trim_start();
+        let digits = body.chars().take_while(char::is_ascii_digit).count();
+        if digits == 0 || !body[digits..].starts_with('.') {
+            continue;
+        }
+        let parsed = body[..digits].parse::<u32>().ok().zip(
+            body[digits + 1..]
+                .trim_start()
+                .strip_prefix('[')
+                .and_then(|r| r.split_once(']'))
+                .and_then(|(w, _)| match w.trim().to_lowercase().as_str() {
+                    "blocking" => Some(Severity::Blocking),
+                    "high" => Some(Severity::High),
+                    "medium" => Some(Severity::Medium),
+                    "low" => Some(Severity::Low),
+                    _ => None,
+                }),
+        );
+        match parsed {
+            Some(f) => found.push(f),
+            None => unparsed += 1,
+        }
+    }
+    (found, unparsed)
+}
+
 fn json_list<'a>(items: impl IntoIterator<Item = &'a String>) -> serde_json::Value {
     serde_json::Value::Array(items.into_iter().map(|s| s.as_str().into()).collect())
 }
@@ -369,17 +432,24 @@ pub fn read_rows(path: &Path) -> std::io::Result<Vec<serde_json::Value>> {
         .collect())
 }
 
-/// What the ledger already holds: the review agent ids on record, and the round-1
-/// body an earlier call recorded for `plan`, if any. A torn line (a crash
-/// mid-append) is skipped, not fatal.
-fn recorded(path: &Path, plan: &str) -> std::io::Result<(BTreeSet<String>, Option<String>)> {
+type Recorded = (BTreeSet<(String, String)>, Option<String>);
+
+/// What the ledger already holds: the (review agent id, body sha) pairs on
+/// record, and the round-1 body an earlier call recorded for `plan`, if any.
+/// A torn line (a crash mid-append) is skipped, not fatal.
+fn recorded(path: &Path, plan: &str) -> std::io::Result<Recorded> {
     let rows = read_rows(path)?;
     // Only review rows: a merge row (`plan-apply`) has an `agent_id` too, and
     // must not make a reviewer look recorded.
     let ids = rows
         .iter()
         .filter(|v| v.get("schema").and_then(|s| s.as_str()) == Some(SCHEMA))
-        .filter_map(|v| v.get("agent_id")?.as_str().map(str::to_string))
+        .filter_map(|v| {
+            Some((
+                v.get("agent_id")?.as_str()?.to_string(),
+                v.get("body_sha")?.as_str()?.to_string(),
+            ))
+        })
         .collect();
     let first = rows
         .iter()
@@ -400,11 +470,11 @@ fn record(
     let plan_sha = crate::plan_text::body_sha(&text);
     let (transcript, found) = match transcript {
         Some(t) => {
-            let l = launches(&t, &real)
+            let l = launches_resumable(&t, &real)
                 .map_err(|e| format!("cannot read transcript {}: {e}", t.display()))?;
             (t, l)
         }
-        None => discover(&real, &plan_sha, launches).ok_or_else(|| {
+        None => discover(&real, &plan_sha, launches_resumable).ok_or_else(|| {
             format!(
                 "no transcript from the last 7 days has a completed plan-review of {real}; name one with --transcript"
             )
@@ -446,6 +516,7 @@ fn record(
     // holds-until: `round` is still counted within this transcript; a plan
     // reviewed across sessions gets a second round 1 until rounds are
     // numbered from the ledger too.
+    let before = seen.clone();
     let first_round_sha = first_on_record.unwrap_or_else(|| shas[0].to_string());
 
     // A row describes the body its reviewer read: the current file when it
@@ -480,6 +551,7 @@ fn record(
     let at = now();
     let mut buffer = String::new();
     let mut written: BTreeSet<usize> = BTreeSet::new();
+    let mut written_roles: BTreeSet<&str> = BTreeSet::new();
     let mut count = 0;
     // The findings on stdin are this call's merge: they belong to the
     // highest round it writes, which is not always the transcript's top.
@@ -489,7 +561,7 @@ fn record(
             l.done
                 .agent_id
                 .as_ref()
-                .is_some_and(|id| !seen.contains(id))
+                .is_some_and(|id| !seen.contains(&(id.clone(), l.sha.clone())))
         })
         .map(|l| round_of(&l.sha))
         .max();
@@ -497,7 +569,7 @@ fn record(
         let Some(id) = l.done.agent_id.as_ref() else {
             continue;
         };
-        if !seen.insert(id.clone()) {
+        if !seen.insert((id.clone(), l.sha.clone())) {
             continue;
         }
         let round = round_of(&l.sha);
@@ -506,6 +578,17 @@ fn record(
             .iter()
             .filter(|f| attach && f.get("role").and_then(|r| r.as_str()) == Some(&l.role))
             .collect();
+        // Stdin wins for a role it names; else what the reviewer wrote.
+        let (listed, unparsed) = if mine.is_empty() {
+            let (parsed, unparsed) = findings_of(&l.done.result);
+            let rows: Vec<serde_json::Value> = parsed
+                .iter()
+                .map(|(n, sev)| serde_json::json!({"n": n, "severity": sev.as_str()}))
+                .collect();
+            (rows, Some(unparsed))
+        } else {
+            (mine.iter().map(|f| (*f).clone()).collect(), None)
+        };
         let row = serde_json::json!({
             "schema": SCHEMA,
             "recorded_at": at,
@@ -521,11 +604,18 @@ fn record(
             "plan": features(&l.sha),
             "verdict": verdict(&l.done.result),
             "remit": json_list(&plan_review::remit(&l.role)),
-            "findings": mine,
+            "findings": listed,
         });
+        let mut row = row;
+        if let Some(u) = unparsed {
+            row["findings_unparsed"] = u.into();
+        }
         buffer.push_str(&row.to_string());
         buffer.push('\n');
         written.insert(round);
+        if attach {
+            written_roles.insert(l.role.as_str());
+        }
         count += 1;
     }
     if count > 0 {
@@ -534,6 +624,49 @@ fn record(
         f.write_all(buffer.as_bytes())
             .and_then(|()| f.flush())
             .map_err(io(&format!("cannot write {}", ledger.display())))?;
+    }
+
+    // A stdin finding no new row took is a disposition for a reviewer already
+    // on record: appended, never deduped.
+    let mut dispositions = 0;
+    if !findings.is_empty() {
+        let mut buffer = String::new();
+        for f in findings {
+            let Some(role) = f.get("role").and_then(|r| r.as_str()) else {
+                continue;
+            };
+            let taken = written_roles.contains(role);
+            let target = found
+                .iter()
+                .filter(|l| l.role == role && l.done.agent_id.is_some())
+                .filter(|l| {
+                    let id = l.done.agent_id.clone().unwrap_or_default();
+                    before.contains(&(id, l.sha.clone()))
+                })
+                .max_by_key(|l| round_of(&l.sha));
+            let (false, Some(l)) = (taken, target) else {
+                continue;
+            };
+            let row = serde_json::json!({
+                "schema": DISPOSITION_SCHEMA,
+                "recorded_at": at,
+                "agent_id": l.done.agent_id,
+                "body_sha": l.sha,
+                "role": role,
+                "n": f.get("n").cloned().unwrap_or(serde_json::Value::Null),
+                "disposition": f.get("disposition"),
+            });
+            buffer.push_str(&row.to_string());
+            buffer.push('\n');
+            dispositions += 1;
+        }
+        if dispositions > 0 {
+            let mut f =
+                open_ledger(&ledger).map_err(io(&format!("cannot open {}", ledger.display())))?;
+            f.write_all(buffer.as_bytes())
+                .and_then(|()| f.flush())
+                .map_err(io(&format!("cannot write {}", ledger.display())))?;
+        }
     }
 
     for &round in &written {
@@ -568,7 +701,7 @@ fn record(
         Some(&r) => (r, shas[r - 1]),
         None => (top, shas[top - 1]),
     };
-    let said = if count > 0 {
+    let mut said = if count > 0 {
         format!("wrote {count} rows (round {round}, plan {})\n", &sha[..12])
     } else if missing {
         format!("no rows written for round {round} of {}\n", &sha[..12])
@@ -578,6 +711,9 @@ fn record(
             &sha[..12]
         )
     };
+    if dispositions > 0 {
+        said.push_str(&format!("wrote {dispositions} disposition rows\n"));
+    }
     Ok((said, u8::from(missing)))
 }
 
@@ -771,4 +907,46 @@ fn run_stats(args: &[String]) -> (String, ExitCode) {
         ),
         ExitCode::SUCCESS,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_output_contract_example_parses() {
+        let r = "Verdict: approve-with-changes\n\n**Findings:**\n1. [blocking] Section A: x. Edit: y.\n   evidence 2. [low] not a finding\n**2. [high]** B\n3. [low] C\n\n**Patches:**\n````json\n[]\n````\n4. [high] after\n";
+        assert_eq!(
+            findings_of(r),
+            (
+                vec![
+                    (1, Severity::Blocking),
+                    (2, Severity::High),
+                    (3, Severity::Low)
+                ],
+                0
+            )
+        );
+    }
+
+    #[test]
+    fn a_malformed_numbered_line_is_counted_not_parsed() {
+        let r = "Findings:\n1. [high] ok\n2. [severe] bad\n3. no severity\n";
+        assert_eq!(findings_of(r), (vec![(1, Severity::High)], 2));
+    }
+
+    #[test]
+    fn none_gives_no_findings() {
+        assert_eq!(
+            findings_of("Verdict: approve\nFindings:\nNone.\n"),
+            (vec![], 0)
+        );
+        assert_eq!(findings_of("no list at all"), (vec![], 0));
+    }
+
+    #[test]
+    fn a_numbered_line_after_the_measure_heading_is_ignored() {
+        let r = "Findings:\n1. [medium] a\nWhat I would measure:\n2. [high] b\n3. junk\n";
+        assert_eq!(findings_of(r), (vec![(1, Severity::Medium)], 0));
+    }
 }
