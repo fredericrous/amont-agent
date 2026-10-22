@@ -28,6 +28,15 @@
 //! unless `-e`/`-f` carried it. Anything with a `$`, a glob character or a
 //! substitution is unknowable and skipped.
 //!
+//! Only reads where the miss is hidden are judged: a grep-family reader
+//! (`grep`, `rg`, `ugrep`, `egrep`, `fgrep`, `git grep`), whose missing path is
+//! a mid-stream warning; a read naming more than one path, where the other
+//! operands still print; and a read whose clause is not the one whose exit
+//! status the command returns, because `;`, `|` or `&` follows it. A lone read
+//! that is the command's own exit status (`cat missing.txt`,
+//! `head -n 5 gone.rs`, `wc -l x && echo ok`, where the miss stops the chain)
+//! fails loudly and is not judged.
+//!
 //! ## What is deliberate
 //!
 //! A clause that sends stderr to `/dev/null`, one followed by `||`, one
@@ -324,6 +333,24 @@ fn excused(parsed: &Parsed, idx: usize) -> bool {
     false
 }
 
+/// Is a missing path in this read easy to miss? Only when the reader is
+/// grep-family (a mid-stream warning), the read names several paths (the
+/// others still print), or its clause is not the one whose exit status the
+/// command returns (`;`, `|` or `&` follows it). A lone read ending the
+/// command, or followed by `&&`, fails loudly on its own.
+fn hides_the_miss(cmd: &Simple, operands: usize) -> bool {
+    let program = cmd.program().unwrap_or_default();
+    let program = program.rsplit('/').next().unwrap_or(program);
+    let grep_family = matches!(program, "grep" | "rg" | "ugrep" | "egrep" | "fgrep")
+        || (program == "git" && cmd.args().first().is_some_and(|w| w.text == "grep"));
+    grep_family
+        || operands > 1
+        || matches!(
+            cmd.next,
+            Some(Connector::Semi | Connector::Pipe | Connector::Amp)
+        )
+}
+
 fn examine(parsed: &Parsed) -> Option<Finding> {
     // Enumerated over ALL clauses so `excused` can look back at everything
     // that ran, readable or not.
@@ -336,6 +363,9 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
             continue;
         };
         if excused(parsed, idx) {
+            continue;
+        }
+        if !hides_the_miss(cmd, found.len()) {
             continue;
         }
         let program = cmd.program().unwrap_or("the command");
@@ -461,13 +491,15 @@ mod tests {
             "cd /x && grep -rn \"useLinkTarget\" app e2e docs --include=\"*.ts\""
         ));
         assert!(fires(
-            "head -3 kubernetes/homelab/platform-foundation/crds/istio-base-crds.yaml"
+            "head -3 kubernetes/homelab/platform-foundation/crds/istio-base-crds.yaml | wc -l"
         ));
         assert!(fires("find .forgejo .github -type f | sort"));
-        assert!(fires("sed -n 115,200p app/components/risk/RiskMatrix.tsx"));
+        assert!(fires(
+            "sed -n 115,200p app/components/risk/RiskMatrix.tsx; echo"
+        ));
         assert!(fires("grep -n 'no-raw-html-element' eslint.config.mjs"));
-        assert!(fires("jq -r .id resp.json"));
-        assert!(fires("stat -c '%s' Cargo.toml"));
+        assert!(fires("jq -r .id resp.json | head"));
+        assert!(fires("stat -c '%s' Cargo.toml; echo"));
     }
 
     #[test]
@@ -509,6 +541,36 @@ mod tests {
         assert!(!fires("cat app/lib/*.ts"));
         assert!(!fires("git log --oneline -8 && git tag | head"));
         assert!(!fires("grep -c foo"));
+    }
+
+    #[test]
+    fn a_grep_family_read_fires_even_alone() {
+        assert!(fires("grep -n foo missing.rs"));
+    }
+
+    #[test]
+    fn a_two_operand_read_fires_even_last() {
+        assert!(fires("cat a.rs b.rs"));
+    }
+
+    #[test]
+    fn a_read_followed_by_a_semicolon_fires() {
+        assert!(fires("cat missing.txt; echo done"));
+    }
+
+    #[test]
+    fn a_lone_cat_does_not_fire() {
+        assert!(!fires("cat missing.txt"));
+    }
+
+    #[test]
+    fn a_lone_head_does_not_fire() {
+        assert!(!fires("head -n 5 gone.rs"));
+    }
+
+    #[test]
+    fn a_read_followed_by_and_and_does_not_fire() {
+        assert!(!fires("wc -l x.txt && echo ok"));
     }
 
     #[test]
