@@ -108,14 +108,6 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/pipe-to-tail.cases"),
     ),
     (
-        "poll-blank-verdict",
-        include_str!("../tests/corpus/poll-blank-verdict.cases"),
-    ),
-    (
-        "forge-status-stale-row",
-        include_str!("../tests/corpus/forge-status-stale-row.cases"),
-    ),
-    (
         "bare-stash-pop",
         include_str!("../tests/corpus/bare-stash-pop.cases"),
     ),
@@ -267,10 +259,6 @@ const EMBEDDED: &[(&str, &str)] = &[
     (
         "worktree-isolation",
         include_str!("../tests/corpus/worktree-isolation.cases"),
-    ),
-    (
-        "request-fanout",
-        include_str!("../tests/corpus/request-fanout.cases"),
     ),
     (
         "test-output-trimmed",

@@ -235,7 +235,7 @@ Where any journal row for the part has `arm=shadow`, it also gives the
 so each session's arm comes from the journal row's `arm` field, joined to the
 transcript session id by the journal's eight-character session prefix. A part
 guarding an irreversible action is never dropped live; its row carries a
-`replay` count instead: how many of the newest model's Bash calls its
+`replay` count instead: how many of the reviewed model's Bash calls its
 `examine` matches.
 
 A `deny` rule has no live compliance (its refused command never ran); when it
@@ -243,18 +243,23 @@ is shadowed, its shadow rows are replayed as `observe` and give the shadow arm a
 share, with the live share left empty.
 
 `--json` emits the same rows. Each run also writes `<YYYY-MM-DD>.json` into
-`--out <dir>`, by default `<journal dir>/harness-review`, with the date, the newest
-transcript model and the rows. The newest model is the one first seen on the
-latest day in the transcripts' Bash calls.
+`--out <dir>`, by default `<journal dir>/harness-review`, with the date, the `model`
+the review is for, the `newest_model` and the rows. `--model <id>` names the
+reviewed model; without it the review is for the model with the most Bash
+calls in the transcripts (not the newest, which may have barely started), and
+the output says which. Compliance rows, the shadow arm shares and the replay
+count cover that model's calls only (a session that also holds another
+model's calls is left out of the arm shares). The newest model is the one
+first seen on the latest day in the transcripts' Bash calls.
 
 ```
-amont-agent harness-review [--json] [--transcripts <dir>] [--since <date>] [--out <dir>]
+amont-agent harness-review [--json] [--model <id>] [--transcripts <dir>] [--since <date>] [--out <dir>]
 amont-agent harness-review --check
 ```
 
-`--check` reads the newest review file and the newest model in the
-transcripts. It prints one line and exits 1 in three cases: that model is not
-the reviewed one, no review exists, or the newest review file cannot be read
+`--check` reads the newest review file and takes the default model (most
+Bash calls) of the transcripts. It prints one line and exits 1 in three cases:
+that model is not the review's `model`, no review exists, or the newest review file cannot be read
 or parsed (the line names the file). Otherwise it prints nothing and exits 0. The weekly retro runs it (`harness.revisit-on-a-new-model`): a new model
 starts a harness review, and running `harness-review` records it. Keeping or
 retiring a part stays the person's decision.

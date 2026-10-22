@@ -68,6 +68,7 @@ impl Drop for Home {
 fn check_exits_1_on_an_unseen_model_and_0_after_a_review_of_it() {
     let h = Home::new("check");
     h.session("a", "claude-one", "2026-10-01");
+    h.session("a2", "claude-one", "2026-10-01");
 
     let (code, said) = h.run(&["--check"]);
     assert_eq!(code, 1, "no review on record: {said}");
@@ -91,7 +92,14 @@ fn check_exits_1_on_an_unseen_model_and_0_after_a_review_of_it() {
         "reviewed model prints nothing"
     );
 
+    // A newer model with fewer calls (1 against 2) is not the default.
     h.session("b", "claude-two", "2026-10-09");
+    let (code, said) = h.run(&["--check"]);
+    assert_eq!((code, said.as_str()), (0, ""), "{said}");
+
+    // One with more calls (3 against 2) is.
+    h.session("c", "claude-two", "2026-10-09");
+    h.session("d", "claude-two", "2026-10-09");
     let (code, said) = h.run(&["--check"]);
     assert_eq!(code, 1);
     assert!(said.contains("claude-two"), "{said}");
@@ -141,4 +149,42 @@ fn help_prints_usage_and_an_operand_is_refused() {
     }
     let (code, _, err) = h.run_err(&["bogus"]);
     assert_eq!(code, 2, "{err}");
+}
+
+#[test]
+fn model_names_the_reviewed_model_and_the_output_says_which() {
+    let h = Home::new("named");
+    h.session("a", "claude-one", "2026-10-01");
+    h.session("b", "claude-two", "2026-10-09");
+    h.session("c", "claude-two", "2026-10-09");
+
+    let (code, said) = h.run(&[]);
+    assert_eq!(code, 0);
+    assert!(
+        said.contains("model: claude-two (default: the model with the most Bash calls)"),
+        "{said}"
+    );
+
+    let (code, json) = h.run(&["--model", "claude-one", "--json"]);
+    assert_eq!(code, 0);
+    assert!(json.contains("\"model\":\"claude-one\""), "{json}");
+    assert!(json.contains("\"newest_model\":\"claude-two\""), "{json}");
+}
+
+#[test]
+fn check_reads_newest_model_from_a_review_file_without_model() {
+    let h = Home::new("legacy-review");
+    h.session("a", "claude-one", "2026-10-01");
+    h.session("a2", "claude-one", "2026-10-01");
+    h.session("b", "claude-two", "2026-10-09");
+    // A 2.47.0 review file: `newest_model` only. claude-one is the most-called.
+    let dir = h.out();
+    std::fs::create_dir_all(&dir).expect("review dir");
+    std::fs::write(
+        dir.join("2026-10-20.json"),
+        "{\"date\":\"2026-10-20\",\"newest_model\":\"claude-one\",\"rows\":[]}\n",
+    )
+    .expect("legacy review");
+    let (code, said) = h.run(&["--check"]);
+    assert_eq!((code, said.as_str()), (0, ""), "{said}");
 }
