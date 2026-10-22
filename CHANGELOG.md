@@ -1,5 +1,31 @@
 # Changelog
 
+## v3.0.0
+
+From the first ADR-0042 harness review on Opus 5.5 (2026-10-22). MAJOR under
+ADR-0012, because two changes can break a caller.
+
+### Removed
+
+- **Three rules are retired:** `request-fanout`, `forge-status-stale-row` and
+  `poll-blank-verdict`. They fired 3, 1 and 4 times on claude-opus-5-5.
+  `explain`, `demote` and `graduate` with these ids now fail as unknown rules,
+  and they are gone from `rules --json` and `status`. A leftover
+  `amont.agent.<id>.stance` for them is ignored without error.
+
+### Changed
+
+- **`harness-review` targets a model.** `--model <id>` names it. Without it,
+  the target is the model with the most Bash calls, no longer the newest.
+  `--check` compares against that same default, so it can now exit 1 when
+  the most-called model differs from the reviewed one. On this machine the
+  newest model was a proxied one, and every irreversible replay count read 0.
+  Review files record `model`; files that carry only `newest_model` still
+  read.
+- **`push-preflight` and `unbounded-background-push`** no longer judge a push
+  of bare tag names only (`git push origin v0.1.0`), their commonest false
+  positive. A branch refspec beside a tag still counts.
+
 ## v2.47.0
 
 ### Added
