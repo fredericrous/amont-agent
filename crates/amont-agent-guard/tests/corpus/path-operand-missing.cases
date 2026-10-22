@@ -23,12 +23,14 @@ match	wc -l app/components/storm/StormBoard.tsx app/components/storm/storm.css a
 match	cd ~/Developer/Perso/al-wt/storm-canvas && sed -n 115,200p app/components/risk/RiskMatrix.tsx; echo ---SERIALIZED; grep -n 'interface SerializedGridLayout' app/lib/grid.ts
 match	cd /Users/fredericrous/Developer/Perso/governance-audit-wt-attest && find .forgejo .github -type f | sort
 match	find node_modules/react-strict-dom/dist -name "*Props*" | head -20
-match	cd /Users/fredericrous/Developer/Perso/homelab && head -3 kubernetes/homelab/platform-foundation/crds/istio-base-crds.yaml
 match	grep -n 'no-raw-html-element' eslint.config.mjs
 # The shape; whether app/ is there is confirm's question.
 match	grep -rn "size={[0-9]" app/ | wc -l
 
 # --- the rule must stay silent ---
+# Narrowed to reads whose miss is hidden: a lone read that is the command's own
+# exit status fails loudly (formerly a match).
+nomatch	cd /Users/fredericrous/Developer/Perso/homelab && head -3 kubernetes/homelab/platform-foundation/crds/istio-base-crds.yaml
 # Deliberate probes.
 nomatch	grep -rn "application-landscape:" ~/Developer/Perso/homelab/kubernetes/ 2>/dev/null | grep -v Binary | head -10
 nomatch	ls node_modules/@fredericrous/grid/ 2>/dev/null; cat node_modules/@fredericrous/grid/package.json 2>/dev/null | head -30
