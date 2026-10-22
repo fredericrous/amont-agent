@@ -81,13 +81,15 @@ usage: amont-agent <command>
   demote <rule>         back to observing, no questions asked
   mine [flags]          shapes the model got wrong that no rule names yet
   backtest [flags]      replay your transcripts through the rules
-  harness-review [--json] [--check] [--out <dir>]
+  harness-review [--json] [--check] [--model <id>] [--out <dir>]
                         one row per rule and assertion: firings, compliance
                         per model, shadow-arm share, replay count; writes
                         <out dir>/<date>.json, --out defaulting to
-                        <journal dir>/harness-review. --check
-                        prints one line and exits 1 when the newest model in
-                        your transcripts was not in the last review
+                        <journal dir>/harness-review. --model is the model
+                        the review is for (default: the model with the most
+                        Bash calls in your transcripts, named in the output).
+                        --check prints one line and exits 1 when that default
+                        model is not the one the last review was made for
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
                         [--dialect bash|zsh|unknown, default unknown]
@@ -414,6 +416,7 @@ struct Flags {
     compliance: bool,
     check: bool,
     out: Option<PathBuf>,
+    model: Option<String>,
     dialect: Option<rules::Dialect>,
     rest: Vec<String>,
 }
@@ -431,6 +434,7 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
         };
         match a.as_str() {
             "--out" => f.out = Some(PathBuf::from(value(&mut i, &a)?)),
+            "--model" => f.model = Some(value(&mut i, &a)?),
             "--transcripts" => f.transcripts.push(PathBuf::from(value(&mut i, &a)?)),
             "--since" => {
                 let v = value(&mut i, &a)?;
@@ -669,7 +673,7 @@ fn rank_by_novelty(report: &mut backtest::Report, n: usize) {
 /// that says a model has not been reviewed yet.
 fn run_harness_review(args: &[OsString]) -> ExitCode {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage: amont-agent harness-review [--json] [--check] [--transcripts <dir>] [--since <date>] [--out <dir>]");
+        println!("usage: amont-agent harness-review [--json] [--check] [--model <id>] [--transcripts <dir>] [--since <date>] [--out <dir>]");
         return ExitCode::SUCCESS;
     }
     let f = match flags(args) {
@@ -724,14 +728,20 @@ fn run_harness_review(args: &[OsString]) -> ExitCode {
         }
     };
     let table: Vec<&'static rules::Rule> = rule_table::RULES.iter().collect();
-    let review =
-        match harness_review::review(&scan, &table, stance_of_part, &journal::paths(), today) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("amont-agent: {}", e.explain());
-                return ExitCode::from(2);
-            }
-        };
+    let review = match harness_review::review(
+        &scan,
+        &table,
+        stance_of_part,
+        &journal::paths(),
+        today,
+        f.model.as_deref(),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("amont-agent: {}", e.explain());
+            return ExitCode::from(2);
+        }
+    };
     if let Err(e) = harness_review::write(&out, &review) {
         eprintln!("amont-agent: could not write the review file: {e}");
         return ExitCode::from(2);

@@ -7,7 +7,6 @@
 | `gh-pr-merge-auto` | `observe` | `--auto` on a repository with no required checks, which merges immediately |
 | `publish-without-skill` | `advise` | a `v*` tag pushed or a pull request merged with no call of the `tag-release` / `merge-when-green` skill in this turn or the one before, so the procedure ran from memory |
 | `forge-merge-by-hand` | `advise` | merging a pull request by POSTing to the forge's merge endpoint, which answers `200` whether the checks passed, failed or never started |
-| `forge-status-stale-row` | `observe` | keeping the first row of a commit's append-only `/statuses` list, so a stale `pending` reads as the present and the wait never ends |
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
 | `git-add-broad` | `observe` | staging the tree instead of the change |
 | `stale-base` | `advise` | a branch or worktree started from a checkout the remote has moved past |
@@ -26,7 +25,6 @@
 | `worktree-remove-force` | `advise` | `git worktree remove --force` on a worktree that still holds uncommitted work |
 | `amend-pushed` | `advise` | `git commit --amend` on a commit the remote already has |
 | `branch-force-delete` | `observe` | `git branch -D` on a branch whose commits are on no remote and not merged |
-| `poll-blank-verdict` | `observe` | a wait that stops on any value but the one it names, so a failed lookup's empty string reads as the answer |
 | `worktree-isolation` | `observe` | a branch created, or `git reset --hard`, in the primary checkout of a repository that already has linked worktrees |
 | `stdin-hang` | `observe` | a command that will read standard input with nothing on it — `cat > file`, a bare interpreter, `tee` outside a pipe — which blocks silently until the tool's clock runs out |
 | `glob-in-flag-value` | `advise` | an unquoted glob inside a flag value (`--include=*.ts`), which zsh expands — or fails on — before the program sees it |
@@ -45,7 +43,6 @@
 | `lint-suppression-added` | `advise` (ceiling `deny`) | an Edit, MultiEdit or Write that adds a lint suppression (`# type: ignore`, `# noqa`, `eslint-disable`, `@ts-ignore`, `#[allow]`, `//nolint`) or loosens a lint configuration (tsconfig, eslint, pyright, ruff, Cargo `[lints]`, golangci), where `general.no-disabled-safety` says to fix the finding instead; the file is compared before and after by marker, not by line |
 | `agent-guidance-written` | `advise` (ceiling `advise`) | an Edit, MultiEdit or Write to agent guidance (`SKILL.md`, `CLAUDE.md`, `CLAUDE.md.tmpl`, `AGENTS.md`, `MEMORY.md`, `.claude/agents/*.md`, `dot_claude/agents/*.md`), where the `guidance.*` and `prose.*` rules apply (ADR-0026, ADR-0032) and `aval relevant --path <file>` lists them; told once per session and file (per agent), later writes are journalled only. Other memory files are exempt |
 | `agent-guidance-shape` | `advise` (ceiling `advise`) | a write that leaves a `SKILL.md` without `disable-model-invocation: true` and without a one-line `description:` that says when to use it — a `Use <word> …` or `whenever …` clause (`guidance.pointer-names-when`), or grows a `CLAUDE.md`, `CLAUDE.md.tmpl`, `AGENTS.md` or `MEMORY.md` past 8,192 bytes (`guidance.always-on-is-an-index`; a ratchet: shrinking or equal size passes). Judged on the rebuilt whole file only; a fragment is journalled and silent; told once per session and file |
-| `request-fanout` | `observe` (ceiling `advise`) | one command that may make more than 50 explicit network transfers to one destination — a loop following `Link: next`, `gh api --paginate`, a curl URL range — counted by the shell analysis ([analysis.md](analysis.md)) with the loops and calls that multiply them |
 | `test-output-trimmed` | `advise` (ceiling `deny`) | a test, lint or typecheck runner (`cargo test`, `pytest`, `npm run test`, `tsc`, …) piped into `tail`/`head`/`grep` while `pipefail` is not definitely on, so a failing run exits 0 and the trimming can cut the failure off. The shell analysis tracks `pipefail` as yes/no/maybe, including zsh `setopt`/`unsetopt` and `set -o nopipefail`; only a definite yes exempts. Evidence: 33.7 per 1000 calls (2,790 of 82,857, `amont-agent backtest --rule test-output-trimmed --since 2026-09-11`, measured 2026-10-11; weekly 20.1 to 53.4, flat 4 weeks) |
 
 Two more checks run after a command rather than before it, on `PostToolUse`:

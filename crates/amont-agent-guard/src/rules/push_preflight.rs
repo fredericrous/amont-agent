@@ -74,7 +74,26 @@ fn detect(parsed: &Parsed) -> Option<&Simple> {
             && !cmd.has_short('d')
             // operands()[0] is `push`; the rest name a remote and refspecs.
             && !cmd.operands().iter().skip(1).any(|w| not_a_branch_push(&w.text))
+            && !pushes_only_bare_tags(cmd)
     })
+}
+
+/// A bare tag name: `v` and a digit first, no `/` or `:` (those name a ref or
+/// a branch mapping). holds-until: a tag not named `v<digit>…` is judged as a
+/// branch; ends when the rule can ask git whether the name is a tag.
+fn is_bare_tag_name(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next() == Some('v')
+        && chars.next().is_some_and(|c| c.is_ascii_digit())
+        && !word.contains(['/', ':'])
+}
+
+/// `git push <remote> v1.2.3 [v1.2.4…]`: every refspec after the remote is a
+/// bare tag name. A branch refspec beside a tag makes this false.
+pub(crate) fn pushes_only_bare_tags(cmd: &Simple) -> bool {
+    let ops = cmd.operands();
+    let mut refspecs = ops.iter().skip(2).peekable();
+    refspecs.peek().is_some() && refspecs.all(|w| is_bare_tag_name(&w.text))
 }
 
 /// A refspec this rule leaves alone: amont's own notes push, a tag, the
@@ -262,5 +281,20 @@ mod tests {
             "git status && git push origin feat/x"[f.span.clone()].trim(),
             "git push origin feat/x"
         );
+    }
+
+    #[test]
+    fn a_push_of_only_bare_tag_names_is_not_judged() {
+        assert!(!fires("git push origin v0.1.0"));
+        assert!(!fires("git push origin v1.2.3 v1.2.4"));
+        assert!(fires("git push origin feat/x v1.2.3"));
+        assert!(fires("git push origin feat/x"));
+    }
+
+    #[test]
+    fn a_branch_push_is_still_judged_beside_the_tag_exemption() {
+        // `main` is exempt on its own account (branch-protect); a branch is not.
+        assert!(fires("git push origin feat/thing"));
+        assert!(fires("git push -u origin feat/thing v0.1.0"));
     }
 }

@@ -2,8 +2,9 @@
 
 `src/analysis/` answers one question about a single Bash command, before it
 runs: which network transfers it may make, and which it must, with the
-evidence for each count. `request-fanout` is its first consumer. The analysis
-decides nothing; the rules do.
+evidence for each count. No rule consumes it now (`request-fanout`, its
+first consumer, was retired); `amont-agent analyze` prints it. The analysis
+decides nothing.
 
 ## Layers
 
@@ -12,7 +13,6 @@ decides nothing; the rules do.
 | frontend | `analysis::frontend` | source → crate-owned IR, spans on every node |
 | semantics | `analysis::interp`, `state`, `domain` | abstract interpretation: state, control flow, exit statuses, counts |
 | command models | `analysis::models` | a client's arguments → its explicit transfers |
-| policy | `rules::request_fanout` | whether the result warrants advice, and the words |
 
 Everything in `analysis` is pure. The dialect is an input; nothing reads the
 environment, the filesystem or the network. The legacy lexer
@@ -84,10 +84,6 @@ included. The innermost paced loop is the one recorded.
 
 Paced and unpaced transfers never join across `if` branches: a poll in one
 branch and a one-off request in the other are two different kinds of load.
-
-`request-fanout` exempts a call site paced at least 10 seconds apart whose
-burst is within its budget: a poll, not a burst, and `foreground-poll`'s
-business if it runs in the foreground.
 
 ## The supported subset
 

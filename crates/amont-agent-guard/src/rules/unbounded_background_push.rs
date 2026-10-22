@@ -56,6 +56,10 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     if cmd.is_dry_run() || cmd.has_short('n') || cmd.wrapped_by("timeout") {
         return None;
     }
+    // A tag push carries a tree the branch push already proved.
+    if crate::rules::push_preflight::pushes_only_bare_tags(cmd) {
+        return None;
+    }
     // `2>&1` is an fd duplicate (empty target); `> push.log` is a file.
     let to_a_file = cmd
         .redirects
@@ -118,6 +122,14 @@ mod tests {
         assert!(!fires("git push --dry-run origin dev > p.log"));
         assert!(!fires("git push -n origin dev > p.log"));
         assert!(!fires("git status"));
+    }
+
+    #[test]
+    fn a_push_of_only_bare_tags_is_not_judged() {
+        assert!(!fires("git push origin v0.1.0 > p.log 2>&1"));
+        assert!(!fires("git push origin v1.2.3 v1.2.4 > p.log"));
+        assert!(fires("git push origin main > p.log 2>&1"));
+        assert!(fires("git push origin feat/x v1.2.3 > p.log"));
     }
 
     #[test]

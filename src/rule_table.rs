@@ -11,7 +11,6 @@ pub const RULES: &[Rule] = &[
     crate::rules::gh_pr_merge_auto::RULE,
     crate::rules::publish_without_skill::RULE,
     crate::rules::forge_merge_by_hand::RULE,
-    crate::rules::forge_status_stale_row::RULE,
     crate::rules::no_verify::RULE,
     crate::rules::git_add_broad::RULE,
     crate::rules::stale_base::RULE,
@@ -30,7 +29,6 @@ pub const RULES: &[Rule] = &[
     crate::rules::worktree_remove_force::RULE,
     crate::rules::amend_pushed::RULE,
     crate::rules::branch_force_delete::RULE,
-    crate::rules::poll_blank_verdict::RULE,
     crate::rules::worktree_isolation::RULE,
     crate::rules::stdin_hang::RULE,
     crate::rules::glob_in_flag_value::RULE,
@@ -48,7 +46,6 @@ pub const RULES: &[Rule] = &[
     crate::rules::lint_suppression_added::RULE,
     crate::rules::agent_guidance_written::RULE,
     crate::rules::agent_guidance_shape::RULE,
-    crate::rules::request_fanout::RULE,
     crate::rules::test_output_trimmed::RULE,
     crate::rules::workspace_root_write::RULE,
 ];
@@ -155,13 +152,13 @@ mod tests {
     }
 
     /// The table holds every rule, in its place: 45 on main before the
-    /// workspace split, with `push-preview` between `push-preflight` and
+    /// workspace split (42 after three observe rules were retired), with `push-preview` between `push-preflight` and
     /// `plan-review-panel`, and `implementation-review` after
     /// `plan-phases-open`. A rule a crate stopped listing would vanish here.
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 45, "{ids:?}");
+        assert_eq!(ids.len(), 42, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)

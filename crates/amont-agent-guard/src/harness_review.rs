@@ -12,13 +12,22 @@
 //!
 //! A part guarding an irreversible action is never switched off live, so it
 //! has no shadow arm to compare. It is judged by replaying: how many of the
-//! newest model's Bash calls its `examine` matches.
+//! reviewed model's Bash calls its `examine` matches.
 //!
 //! `per_1000` is live journal rows over the transcripts' Bash calls, times
 //! 1000. The journal keeps no call counter, so the transcripts are the
 //! denominator.
 //! holds-until: the journal and the transcripts cover different spans, which
 //! skews the rate; ends when the journal records the calls it saw.
+//!
+//! The reviewed model is the one `--model` names; without it, the model with
+//! the most Bash calls in the transcripts (not the newest, which may have
+//! barely started), and the output says which. Compliance rows, the shadow arm
+//! shares and the replay count are computed for that model's calls only. A
+//! shadow arm is joined per session, and a session's cell cannot be split by
+//! model, so a session that also holds another model's calls is left out of
+//! the arm shares.
+//! holds-until: the compliance replay can tally by (session, model).
 //!
 //! "Newest model" is the one first seen on the latest day in the transcripts'
 //! Bash calls, ties broken by last seen and then by name; empty ids and
@@ -60,14 +69,18 @@ pub struct Row {
     pub last_fired: Option<String>,
     pub compliance: Vec<ModelShare>,
     pub arms: Option<ArmShare>,
-    /// Newest model's Bash calls the part's `examine` matches. Irreversible
-    /// parts only.
+    /// The reviewed model's Bash calls the part's `examine` matches.
+    /// Irreversible parts only.
     pub replay: Option<u32>,
 }
 
 pub struct Review {
     pub date: String,
     pub newest_model: Option<String>,
+    /// The model the review is for: `--model`, or the one with most Bash calls.
+    pub model: Option<String>,
+    /// Whether `--model` named it (otherwise it is the default).
+    pub model_named: bool,
     pub calls: u64,
     pub rows: Vec<Row>,
 }
@@ -75,6 +88,8 @@ pub struct Review {
 struct ModelSeen {
     first: Day,
     last: Day,
+    /// Bash calls of this model.
+    calls: u64,
     /// Matches per replayed part index.
     matches: Vec<u32>,
 }
@@ -82,6 +97,8 @@ struct ModelSeen {
 struct Survey {
     calls: u64,
     models: BTreeMap<String, ModelSeen>,
+    /// The models whose calls each session holds.
+    session_models: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 impl Survey {
@@ -91,6 +108,14 @@ impl Survey {
             .max_by_key(|(name, m)| (m.first, m.last, std::cmp::Reverse((*name).clone())))
             .map(|(name, _)| name.as_str())
     }
+
+    /// The model with the most Bash calls, ties broken by name.
+    fn most_calls(&self) -> Option<&str> {
+        self.models
+            .iter()
+            .max_by_key(|(name, m)| (m.calls, std::cmp::Reverse((*name).clone())))
+            .map(|(name, _)| name.as_str())
+    }
 }
 
 /// One pass over the transcripts: which models, and for each of `replayed` how
@@ -98,6 +123,7 @@ impl Survey {
 /// replayed.
 fn survey(scan: &Scan, replayed: &[Part]) -> Result<Survey, ScanError> {
     let mut models: BTreeMap<String, ModelSeen> = BTreeMap::new();
+    let mut session_models: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
     let stats = transcript::for_each_transcript(scan, |records| {
         for r in records {
             if r.tool != scan.tool || r.model.is_empty() || r.model.starts_with('<') {
@@ -106,10 +132,16 @@ fn survey(scan: &Scan, replayed: &[Part]) -> Result<Survey, ScanError> {
             let seen = models.entry(r.model.clone()).or_insert_with(|| ModelSeen {
                 first: r.day,
                 last: r.day,
+                calls: 0,
                 matches: vec![0; replayed.len()],
             });
             seen.first = seen.first.min(r.day);
             seen.last = seen.last.max(r.day);
+            seen.calls += 1;
+            session_models
+                .entry(r.session.clone())
+                .or_default()
+                .insert(r.model.clone());
             if r.command.is_empty() {
                 continue;
             }
@@ -123,6 +155,7 @@ fn survey(scan: &Scan, replayed: &[Part]) -> Result<Survey, ScanError> {
     Ok(Survey {
         calls: stats.calls,
         models,
+        session_models,
     })
 }
 
@@ -157,6 +190,7 @@ pub fn review(
     stance_of: fn(&Part) -> Stance,
     journal_paths: &[PathBuf],
     today: Day,
+    model: Option<&str>,
 ) -> Result<Review, ScanError> {
     let all: Vec<(Part, Stance)> = parts(rules)
         .into_iter()
@@ -172,6 +206,9 @@ pub fn review(
         .collect();
     let surveyed = survey(scan, &irreversible)?;
     let newest = surveyed.newest().map(str::to_string);
+    let chosen: Option<String> = model
+        .map(str::to_string)
+        .or_else(|| surveyed.most_calls().map(str::to_string));
 
     let by_rule: BTreeMap<&str, Stance> = all
         .iter()
@@ -230,6 +267,7 @@ pub fn review(
         let denied = *part_stance == Stance::Deny;
         let compliance = per_model
             .into_iter()
+            .filter(|(m, _)| chosen.as_deref() == Some(m.as_str()))
             .filter(|_| !denied)
             .map(|(model, c)| ModelShare {
                 model,
@@ -250,6 +288,12 @@ pub fn review(
             };
             if let Some(s) = subject {
                 for (session, cell) in &s.by_session {
+                    let only_chosen = surveyed.session_models.get(session).is_some_and(|ms| {
+                        ms.len() == 1 && chosen.as_ref().is_some_and(|c| ms.contains(c))
+                    });
+                    if !only_chosen {
+                        continue;
+                    }
                     let prefix: String = session.chars().take(8).collect();
                     match arm_of.get(prefix.as_str()) {
                         Some(Arm::Live) if !denied => share.live.add(cell),
@@ -266,7 +310,7 @@ pub fn review(
 
         let replay = if is_irreversible {
             let at = irreversible.iter().position(|p| p.id() == id);
-            Some(match (newest.as_ref(), at) {
+            Some(match (chosen.as_ref(), at) {
                 (Some(m), Some(i)) => surveyed.models.get(m).map_or(0, |s| s.matches[i]),
                 _ => 0,
             })
@@ -291,6 +335,8 @@ pub fn review(
     Ok(Review {
         date: iso(today),
         newest_model: newest,
+        model: chosen,
+        model_named: model.is_some(),
         calls: surveyed.calls,
         rows,
     })
@@ -367,6 +413,8 @@ impl Review {
         json::object(&[
             json::string_field("date", &self.date),
             opt_string("newest_model", self.newest_model.as_deref()),
+            opt_string("model", self.model.as_deref()),
+            format!("\"model_named\":{}", self.model_named),
             json::int_field("calls", self.calls as i64),
             format!("\"rows\":{}", json::array(&rows)),
         ])
@@ -378,8 +426,14 @@ impl Review {
             None => "-".to_string(),
         };
         let mut s = format!(
-            "harness review {} - newest model: {} ({} Bash calls)\n\n",
+            "harness review {} - model: {} ({}); newest model: {}; {} Bash calls\n\n",
             self.date,
+            self.model.as_deref().unwrap_or("(none seen)"),
+            if self.model_named {
+                "named by --model"
+            } else {
+                "default: the model with the most Bash calls"
+            },
             self.newest_model.as_deref().unwrap_or("(none seen)"),
             self.calls
         );
@@ -420,7 +474,7 @@ impl Review {
                 ));
             }
             if let Some(n) = r.replay {
-                s.push_str(&format!("  replay: {n} newest-model call(s) matched\n"));
+                s.push_str(&format!("  replay: {n} reviewed-model call(s) matched\n"));
             }
         }
         s
@@ -461,29 +515,31 @@ fn reviewed_model(dir: &Path) -> Result<Option<Option<String>>, String> {
         .map_err(|e| format!("cannot read the review file {shown}: {e}"))?;
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("cannot parse the review file {shown}: {e}"))?;
+    // Files written by 2.47.0 carry only `newest_model`.
     Ok(Some(
         value
-            .get("newest_model")
+            .get("model")
+            .or_else(|| value.get("newest_model"))
             .and_then(|m| m.as_str())
             .map(str::to_string),
     ))
 }
 
-/// `harness-review --check`: the one line to print when the newest model in
-/// the transcripts is not the one the newest review was made for, or when the
-/// newest review file cannot be read.
+/// `harness-review --check`: the one line to print when the default model (the
+/// one with the most Bash calls in the transcripts) is not the `model` the
+/// newest review was made for, or when the newest review file cannot be read.
 pub fn check(dir: &Path, scan: &Scan) -> Result<Option<String>, ScanError> {
     let surveyed = survey(scan, &[])?;
-    let Some(newest) = surveyed.newest() else {
+    let Some(default_model) = surveyed.most_calls() else {
         return Ok(None);
     };
     Ok(match reviewed_model(dir) {
-        Ok(Some(Some(m))) if m == newest => None,
+        Ok(Some(Some(m))) if m == default_model => None,
         Ok(Some(_)) => Some(format!(
-            "harness-review: new model {newest} since the last review; run `amont-agent harness-review`"
+            "harness-review: the default model {default_model} differs from the one last reviewed; run `amont-agent harness-review`"
         )),
         Ok(None) => Some(format!(
-            "harness-review: new model {newest} and no review on record; run `amont-agent harness-review`"
+            "harness-review: the default model {default_model} has no review on record; run `amont-agent harness-review`"
         )),
         Err(why) => Some(format!(
             "harness-review: {why}; run `amont-agent harness-review`"
@@ -622,6 +678,7 @@ mod tests {
             },
             std::slice::from_ref(&f.journal),
             civil::days_from_civil(2026, 10, 21),
+            None,
         )
         .unwrap()
     }
@@ -635,6 +692,7 @@ mod tests {
         let f = fixture("rows");
         let r = run(&f);
         assert_eq!(r.newest_model.as_deref(), Some("claude-new"));
+        assert_eq!(r.model.as_deref(), Some("claude-new"));
         assert_eq!(
             r.rows.len(),
             crate::assertions::ASSERTIONS.len() + 2,
@@ -681,6 +739,7 @@ mod tests {
             },
             std::slice::from_ref(&f.journal),
             civil::days_from_civil(2026, 10, 21),
+            None,
         )
         .unwrap();
         let arms = row(&r, "sed-in-place")
@@ -722,6 +781,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&f.root);
     }
 
+    /// `claude-old` made four calls (two `--no-verify`), the newer
+    /// `claude-new` one (also a `--no-verify`).
+    fn two_model_fixture(name: &str) -> Fixture {
+        let f = fixture(name);
+        let proj = f.root.join("projects").join("p");
+        for e in std::fs::read_dir(&proj).unwrap().flatten() {
+            std::fs::remove_file(e.path()).unwrap();
+        }
+        let old: String = [
+            "git commit --no-verify -m a",
+            "git commit --no-verify -m b",
+            "ls",
+            "pwd",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(n, c)| call("cccccccc-3", "claude-old", "2026-09-01", n as u32, c))
+        .collect();
+        let new = call(
+            "aaaaaaaa-1",
+            "claude-new",
+            "2026-10-01",
+            1,
+            "git commit -n -m x",
+        );
+        std::fs::write(proj.join("old.jsonl"), old).unwrap();
+        std::fs::write(proj.join("new.jsonl"), new).unwrap();
+        f
+    }
+
+    fn run_for(f: &Fixture, model: Option<&str>) -> Review {
+        let scan = Scan {
+            roots: &f.roots,
+            tool: "Bash",
+            since: None,
+        };
+        review(
+            &scan,
+            &rules(),
+            |p| match p {
+                Part::Rule(r) => r.default_stance,
+                Part::Assertion(a) => a.default_stance,
+            },
+            std::slice::from_ref(&f.journal),
+            civil::days_from_civil(2026, 10, 21),
+            model,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_default_model_is_the_one_with_more_bash_calls_not_the_newest() {
+        let f = two_model_fixture("default-model");
+        let r = run_for(&f, None);
+        assert_eq!(r.newest_model.as_deref(), Some("claude-new"));
+        assert_eq!(r.model.as_deref(), Some("claude-old"));
+        assert!(!r.model_named);
+        assert!(r
+            .render()
+            .contains("default: the model with the most Bash calls"));
+        assert!(r.to_json().contains("\"model\":\"claude-old\""));
+        assert_eq!(row(&r, "no-verify").replay, Some(2));
+        let _ = std::fs::remove_dir_all(&f.root);
+    }
+
+    #[test]
+    fn model_picks_the_named_model_and_the_replay_follows_it() {
+        let f = two_model_fixture("named-model");
+        let r = run_for(&f, Some("claude-new"));
+        assert_eq!(r.model.as_deref(), Some("claude-new"));
+        assert!(r.model_named);
+        assert!(r.render().contains("named by --model"));
+        assert_eq!(row(&r, "no-verify").replay, Some(1));
+        assert!(row(&r, "no-verify")
+            .compliance
+            .iter()
+            .all(|m| m.model == "claude-new"));
+        let _ = std::fs::remove_dir_all(&f.root);
+    }
+
     #[test]
     fn check_flags_an_unseen_model_and_passes_after_its_review() {
         let f = fixture("check");
@@ -737,13 +876,19 @@ mod tests {
         let r = run(&f);
         write(&reviews_dir(&f.root), &r).unwrap();
         assert_eq!(check(&reviews_dir(&f.root), &scan).unwrap(), None);
-        // A newer model appears.
+        // A newer model with fewer calls does not displace the default.
         let proj = f.root.join("projects").join("p");
         std::fs::write(
             proj.join("d.jsonl"),
             call("dddddddd-4", "claude-newer", "2026-10-10", 1, "ls"),
         )
         .unwrap();
+        assert_eq!(check(&reviews_dir(&f.root), &scan).unwrap(), None);
+        // A model with more calls becomes the default.
+        let many: String = (1..=9)
+            .map(|n| call("dddddddd-4", "claude-newer", "2026-10-10", n + 1, "ls"))
+            .collect();
+        std::fs::write(proj.join("d.jsonl"), many).unwrap();
         let line = check(&reviews_dir(&f.root), &scan)
             .unwrap()
             .expect("unseen model");
@@ -768,6 +913,7 @@ mod tests {
             },
             std::slice::from_ref(&f.journal),
             civil::days_from_civil(2026, 10, 21),
+            None,
         )
         .unwrap();
         let sed = row(&r, "sed-in-place");
@@ -790,6 +936,7 @@ mod tests {
             },
             std::slice::from_ref(&f.journal),
             civil::days_from_civil(2026, 10, 21),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -818,6 +965,45 @@ mod tests {
             line.contains("2026-10-20.json") && line.contains("parse"),
             "{line}"
         );
+        let _ = std::fs::remove_dir_all(&f.root);
+    }
+
+    #[test]
+    fn a_review_file_with_only_newest_model_counts_as_that_model() {
+        let f = fixture("legacy");
+        let scan = Scan {
+            roots: &f.roots,
+            tool: "Bash",
+            since: None,
+        };
+        let dir = reviews_dir(&f.root);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("2026-10-20.json"),
+            "{\"newest_model\":\"claude-new\"}",
+        )
+        .unwrap();
+        assert_eq!(check(&dir, &scan).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&f.root);
+    }
+
+    /// `aaaaaaaa-1` also holds a call of another model, so its cell cannot be
+    /// split by model and it is left out of the arm shares.
+    #[test]
+    fn a_session_holding_two_models_is_left_out_of_the_arm_shares() {
+        let f = fixture("mixed-session");
+        let proj = f.root.join("projects").join("p");
+        let extra = call("aaaaaaaa-1", "claude-other", "2026-10-01", 9, "ls");
+        std::fs::write(proj.join("x.jsonl"), extra).unwrap();
+        let r = run(&f);
+        assert_eq!(r.model.as_deref(), Some("claude-new"));
+        let arms = row(&r, "sed-in-place").arms.as_ref().expect("shadow rows");
+        assert_eq!(
+            arms.live.ignored_share(),
+            None,
+            "aaaaaaaa is the only live session and holds two models"
+        );
+        assert_eq!(arms.shadow.ignored_share(), Some(0.0), "bbbbbbbb stays");
         let _ = std::fs::remove_dir_all(&f.root);
     }
 }

@@ -7,7 +7,6 @@
 //! | frontend | [`frontend`] | source → crate-owned [`ir`], spans on every node |
 //! | semantics | [`interp`], [`state`], [`domain`] | abstract interpretation: state, control flow, execution counts |
 //! | command models | [`models`] | a network client's arguments → its explicit transfers |
-//! | policy | `rules::request_fanout` | whether the result warrants advice |
 //!
 //! Everything here is pure: the dialect is an input, and nothing reads the
 //! world. The contract — inputs, assumptions, the supported subset, and what

@@ -1,7 +1,7 @@
 //! What a command does to the network, with the evidence for each claim.
 //!
 //! Mechanism, not policy: this module records transfers and how their counts
-//! were derived. Whether a count is too many is `rules::request_fanout`'s
+//! were derived. Whether a count is too many is a policy's
 //! business.
 
 use std::collections::BTreeSet;

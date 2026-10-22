@@ -266,18 +266,70 @@ fn a_relocated_global_config_is_still_read() {
     );
 }
 
-/// A rule built on an estimate may advise and never refuse, whichever key
-/// asks it to: the ceiling is applied after every configured stance.
+/// A stance left in git config for a rule that has been removed is ignored:
+/// the hook and `status` still run, and no live rule changes.
+#[test]
+fn a_stance_for_a_retired_rule_is_ignored() {
+    let f = Fixture::new("retired-id");
+    for id in [
+        "request-fanout",
+        "forge-status-stale-row",
+        "poll-blank-verdict",
+    ] {
+        f.set("--global", &format!("amont.agent.{id}.stance"), "deny");
+        f.set("--local", &format!("amont.agent.{id}.stance"), "advise");
+    }
+    assert_eq!(f.stance_of("pipe-to-tail"), "deny");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("hook")
+        .current_dir(f.repo())
+        .env("CLAUDE_CONFIG_DIR", f.dir.join("claude"))
+        .env("GIT_CONFIG_GLOBAL", f.dir.join("global"))
+        .env("GIT_CONFIG_SYSTEM", f.dir.join("system"))
+        .env_remove("AMONT_AGENT_OFF")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    std::io::Write::write_all(
+        &mut child.stdin.take().expect("stdin"),
+        br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/tmp","session_id":"retired1","permission_mode":"default","tool_input":{"command":"ls"}}"#,
+    )
+    .expect("write the payload");
+    let out = child.wait_with_output().expect("the hook exits");
+    assert!(out.status.success(), "{:?}", out.status.code());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).trim().is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A rule capped at advise stays at advise when either key asks for deny: the
+/// ceiling is applied after both the per-rule key and the blanket key.
+/// `agent-guidance-written` ships at advise with an advise ceiling, so the
+/// observe step first shows the key does move it.
 #[test]
 fn a_ceiling_holds_against_both_keys() {
     let f = Fixture::new("ceiling-rule");
-    assert_eq!(f.stance_of("request-fanout"), "observe");
-    f.set("--global", "amont.agent.request-fanout.stance", "deny");
-    assert_eq!(f.stance_of("request-fanout"), "advise");
+    assert_eq!(f.stance_of("agent-guidance-written"), "advise");
+    f.set(
+        "--global",
+        "amont.agent.agent-guidance-written.stance",
+        "observe",
+    );
+    assert_eq!(f.stance_of("agent-guidance-written"), "observe");
+    f.set(
+        "--global",
+        "amont.agent.agent-guidance-written.stance",
+        "deny",
+    );
+    assert_eq!(f.stance_of("agent-guidance-written"), "advise");
 
     let f = Fixture::new("ceiling-blanket");
     f.set("--global", "amont.agent.stance", "deny");
-    assert_eq!(f.stance_of("request-fanout"), "advise");
+    assert_eq!(f.stance_of("agent-guidance-written"), "advise");
     assert_eq!(f.stance_of("pipe-to-tail"), "deny");
 }
 
