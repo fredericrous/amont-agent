@@ -1,5 +1,36 @@
 # Changelog
 
+## v3.1.0
+
+### Added
+
+- **Plan-review rounds record themselves.** The PostToolUse hook on
+  ExitPlanMode runs `plan-review record` for the plan once the person
+  answers, approve or reject. It never fails the call: it waits at most 2 s
+  for the ledger lock and journals a skip that `plan-review stats` lists.
+- **`record` reads each reviewer's own findings.** It parses the numbered
+  `N. [severity]` lines under `Findings:` and stores the count it could not
+  parse as `findings_unparsed`. It also records rounds resumed by
+  SendMessage, deduped on agent id and body sha. Findings passed on stdin
+  still win; a manual `record` after the hook appends a disposition row
+  (`amont-agent-review-disposition-v1`).
+- **`plan-apply`'s merge row lists `applied_labels`** (`role#n`), beside the
+  `applied` count, which keeps its type.
+- **`plan-review stats` derives dispositions at read time:** a finding
+  applied by a merge row on the same body is `accepted`, any other is
+  `unresolved` (a new value). A seat is a retire candidate only when its
+  accepted plus unresolved high-or-blocking findings per review stay under
+  0.05 over 20 reviews. Rows recorded before this release are not
+  backfilled, and `stats` shows how many reviews per seat predate it.
+
+### Changed
+
+- **`path-operand-missing` judges only reads that can hide a miss:** a
+  grep-family read, a read naming several paths, or a read whose exit
+  status is not the command's (followed by `;`, `|` or `&`). A lone read
+  whose failure is the command's own exit status no longer fires (-15% of
+  firings in a backtest over local transcripts).
+
 ## v3.0.0
 
 From the first ADR-0042 harness review on Opus 5.5 (2026-10-22). MAJOR under
