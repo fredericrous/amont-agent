@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/review-rounds-record-themselves
 repos: amont-agent
 adrs: [ADR-0042]
@@ -54,7 +54,7 @@ The person chose automatic recording, planned.
    the person answers, so a late delta round is included. `PlanAnswered`
    (`payload.rs:205-219`) gains the transcript path. The hook never fails
    the call: an error is journalled, and `record`'s lock and `(agent_id, body_sha)` dedupe
-   dedupe make a repeat run safe. A manual `record` with stdin after the hook appends a disposition row keyed by `agent_id` and exempt from that dedupe; for a `role#n` a disposition row wins over the merge-derived value, and `stats` takes the latest disposition row. The hook runs on approval and on rejection alike. Budget: `record` takes
+   make a repeat run safe. A manual `record` with stdin after the hook appends a disposition row keyed by `agent_id` and exempt from that dedupe; for a `role#n` a disposition row wins over the merge-derived value, and `stats` takes the latest disposition row. The hook runs on approval and on rejection alike. Budget: `record` takes
    under 1 s on the largest transcript of the last week, measured before the
    release. The hook waits at most 2 s for the ledger lock (`record` itself
    blocks with no timeout, `review_outcomes.rs:313`); if it cannot get the
@@ -90,7 +90,24 @@ says how many reviews per seat predate it.
 - `plan-review stats` on a fixture where the merge row is appended after the review rows: the applied finding shows as accepted; unresolved shown; a seat with only
   unresolved serious findings is not a retire candidate.
 - `cargo test --workspace` → exit 0, new tests listed by name; `cargo clippy --workspace -- -D warnings` → exit 0.
-- Hook cost: `time amont-agent plan-review record --plan &lt;p&gt; --transcript &lt;largest of last week&gt;` → under 1 s; record the measured value.
+- Hook cost: `time amont-agent plan-review record --plan <p> --transcript <largest of last week>` → under 1 s; record the measured value.
 - After release: for the next plan reviewed, `jq` over outcomes.jsonl shows one row per launched seat, each `findings` count equal to that reviewer's numbered list, `findings_unparsed` 0, and no manual `record` in the transcript.
+
+## Observed
+
+| check | input | expected | observed |
+|---|---|---|---|
+| tests named in Verification | `cargo test --workspace` | pass | pass, incl. `a_disposition_row_after_the_hook_wins_over_the_derived_value`, `a_held_ledger_lock_makes_the_hook_journal_one_skip_within_the_budget`, `an_unreadable_transcript_is_journalled_and_the_hook_stays_silent` |
+| clippy, Windows target | `-D warnings`; `--target x86_64-pc-windows-msvc` | pass | pass |
+| dedupe key | drop `body_sha` from the key | the changed-body resumed test fails | exactly it fails |
+| read-time derivation | disable the `applied_labels` lookup | the appended-merge test fails | exactly it fails |
+| cost | `record` on this session's 14 MB transcript | under 1 s | 0.19 s, 17 rows |
+| cost | `record` on the week's largest transcript (91 MB) | under 1 s | 0.19 s |
+| parse | the same 17 rows | `findings_unparsed` 0 | 2 before the bold-after-number fix, 0 after |
+| hook timeout | installed `ExitPlanMode` PostToolUse | above 2 s + record | 10 s |
+
+## Implementation review
+
+- approve-with-changes. Fixed in this closing commit: the plan's escaped `<p>` and repeated "dedupe", the three tests listed by name, the observed values. Deliberate: no test for an unwritable ledger (the path journals and returns; the reviewer read it as correct), and `record`'s two `eprintln!` notes stay (stdout is empty and the exit code is 0).
 
 <!-- panel: repos=amont-agent reviewers=backend body-sha=b63300f7be2e -->
