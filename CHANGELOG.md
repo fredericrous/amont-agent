@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.47.0
+
+### Added
+
+- **Every rule and assertion names its failure** (ADR-0042). `prevents` is
+  one sentence on each, and `irreversible` marks the 11 parts guarding an
+  action that cannot be undone. `rules --json` gains both keys.
+- **Shadow switch.** `git config --global amont.agent.<id>.shadow <rate>`
+  drops a reversible part to observe for a hashed sample of sessions, so its
+  journal shows what it would have caught. Irreversible parts refuse any rate,
+  and `doctor` says so. Journal rows carry `arm=live|shadow`; shadow rows stay
+  out of the rates.
+- **`amont-agent harness-review`** prints one row per part (prevents, stance,
+  rate, compliance per model, the ignored share per arm, a replay count for
+  irreversible parts) and records the reviewed model. `--check` exits 1 on a
+  model no review covers.
+- **`plan-review stats`** reports each reviewer seat's accepted high-or-blocking
+  findings per review, per model, and marks a retire candidate.
+  **`implementation-review record`** keeps implementation-review findings with
+  their disposition.
+
 ## v2.46.0
 
 ### Added
