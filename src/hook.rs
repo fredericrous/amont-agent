@@ -103,6 +103,7 @@ fn decide(raw: &str) -> Decision {
         }
         Event::PostPlanExit(plan) => {
             crate::preview::on_plan_answered(&plan);
+            crate::review_outcomes::on_plan_answered(&plan);
             Decision::Silent
         }
         Event::PostAsk(ask) => {

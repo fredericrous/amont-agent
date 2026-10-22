@@ -230,6 +230,22 @@ fn a_unique_match_applies_and_writes_one_command_row() {
 }
 
 #[test]
+fn the_merge_row_lists_the_labels_it_applied_and_keeps_the_count() {
+    let mut w = World::new("labels");
+    w.review(
+        "backend",
+        "a1",
+        &patches(&[(1, "alpha beta", "ALPHA BETA"), (2, "no such text", "x")]),
+    );
+    let o = w.run(&[], F12);
+    assert_eq!(o.status.code(), Some(3), "{}", err(&o));
+    let rows = w.rows();
+    assert_eq!(rows[0]["applied"], 1);
+    assert!(rows[0]["applied"].is_number());
+    assert_eq!(rows[0]["applied_labels"], serde_json::json!(["backend#1"]));
+}
+
+#[test]
 fn absent_and_multiple_matches_are_unmatched_and_the_file_is_untouched() {
     let mut w = World::new("none");
     w.review(

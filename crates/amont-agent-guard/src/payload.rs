@@ -211,6 +211,9 @@ pub struct PlanAnswered {
     /// `tool_input.planFilePath`, read when the hook runs: the person may
     /// edit the plan before approving it. `None` when the payload had none.
     pub plan_file: Option<PathBuf>,
+    /// `transcript_path`: where this session's plan reviews are recorded.
+    /// `None` when the payload carried none.
+    pub transcript: Option<PathBuf>,
     /// The shape of an approval: `tool_response` is an object carrying the
     /// `plan` (seen as `{plan, isAgent, filePath}`), with no `is_error` and
     /// `isAgent` not true. A rejection is an error string instead: so were all
@@ -428,6 +431,7 @@ pub fn parse(raw: &str) -> Event {
                         .and_then(|i| i.get("planFilePath"))
                         .and_then(|x| x.as_str()),
                 ),
+                transcript: transcript(),
                 approved,
             }))
         }

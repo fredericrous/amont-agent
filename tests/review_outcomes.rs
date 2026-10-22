@@ -99,6 +99,42 @@ impl World {
         self.result(&id, tur, "Verdict: Approve-With-Changes\nfine");
     }
 
+    /// A foreground review of the plan as it is now, answering `text`.
+    fn reviewed(&mut self, role: &str, agent_id: &str, text: &str) {
+        let agent = format!("plan-review-{role}");
+        let id = self.launch(&agent);
+        let tur = serde_json::json!({"status": "completed", "agentType": agent,
+            "agentId": agent_id, "resolvedModel": "claude-opus-4-7",
+            "totalTokens": 5000, "totalDurationMs": 12500});
+        self.result(&id, tur, text);
+    }
+
+    /// A round resumed with `SendMessage` on the plan as it is now.
+    fn resume(&mut self, agent_id: &str, text: &str) {
+        let id = "toolu_send".to_string();
+        let message = format!("Round 2.\n{}\n", self.block());
+        self.lines.push(
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{
+                "type": "tool_use", "id": id, "name": "SendMessage",
+                "input": {"to": agent_id, "message": message}
+            }]}})
+            .to_string(),
+        );
+        self.result(
+            &id,
+            serde_json::json!({"resumedAgentId": agent_id}),
+            "resumed",
+        );
+        let note = format!(
+            "<task-notification>\n<task-id>{agent_id}</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>completed</status>\n<result>{text}</result>\n<usage><subagent_tokens>900</subagent_tokens><tool_uses>1</tool_uses><duration_ms>2000</duration_ms></usage>\n</task-notification>"
+        );
+        self.lines.push(
+            serde_json::json!({"type": "user", "origin": {"kind": "task-notification"},
+                "message": {"role": "user", "content": note}})
+            .to_string(),
+        );
+    }
+
     fn background(&mut self, role: &str, agent_id: &str) {
         let id = self.launch(&format!("plan-review-{role}"));
         self.result(
@@ -603,4 +639,198 @@ fn the_last_transcript_flag_wins() {
         .unwrap();
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     assert_eq!(w.rows().len(), 1);
+}
+
+const TWO: &str = "Verdict: approve-with-changes\n\n**Findings:**\n1. [high] A. Edit: x.\n2. [low] B.\n3. bad line\n\n**Patches:**\n";
+
+#[test]
+fn stdin_findings_win_for_their_role_and_the_rest_are_parsed() {
+    let mut w = World::new("parsed");
+    w.reviewed("backend", "ag-b", TWO);
+    w.reviewed("architect", "ag-a", TWO);
+    let o = w.record(r#"[{"role":"backend","severity":"blocking","disposition":"rejected"}]"#);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let rows = w.rows();
+    let by = |r: &str| rows.iter().find(|x| x["role"] == r).unwrap().clone();
+    let b = by("backend");
+    assert_eq!(b["findings"].as_array().unwrap().len(), 1);
+    assert_eq!(b["findings"][0]["disposition"], "rejected");
+    assert!(b.get("findings_unparsed").is_none());
+    let a = by("architect");
+    assert_eq!(
+        a["findings"],
+        serde_json::json!([{"n": 1, "severity": "high"}, {"n": 2, "severity": "low"}])
+    );
+    assert_eq!(a["findings_unparsed"], 1);
+}
+
+#[test]
+fn a_resumed_round_on_a_changed_body_gets_its_own_row() {
+    let mut w = World::new("resume-changed");
+    w.reviewed("backend", "ag-b", TWO);
+    w.set_body(&format!("{BODY}\nMore.\n"));
+    w.resume("ag-b", TWO);
+    let o = w.record("");
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let rows = w.rows();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["round"], 1);
+    assert_eq!(rows[1]["round"], 2);
+    assert_ne!(rows[0]["body_sha"], rows[1]["body_sha"]);
+}
+
+#[test]
+fn a_resumed_round_on_an_unchanged_body_writes_nothing_more() {
+    let mut w = World::new("resume-same");
+    w.reviewed("backend", "ag-b", TWO);
+    w.resume("ag-b", TWO);
+    let o = w.record("");
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(w.rows().len(), 1);
+}
+
+#[test]
+fn stdin_for_a_recorded_reviewer_appends_disposition_rows_only() {
+    let mut w = World::new("disposition");
+    w.reviewed("backend", "ag-b", TWO);
+    assert_eq!(w.record("").status.code(), Some(0));
+    let o = w.record(
+        r#"[{"role":"backend","n":1,"severity":"high","disposition":"accepted"},{"role":"backend","n":2,"severity":"low","disposition":"rejected"}]"#,
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let rows = w.rows();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0]["schema"], "amont-agent-review-outcome-v1");
+    for (r, n, d) in [(&rows[1], 1, "accepted"), (&rows[2], 2, "rejected")] {
+        assert_eq!(r["schema"], "amont-agent-review-disposition-v1");
+        assert_eq!(r["agent_id"], "ag-b");
+        assert_eq!(r["body_sha"], rows[0]["body_sha"]);
+        assert_eq!(r["role"], "backend");
+        assert_eq!(r["n"], n);
+        assert_eq!(r["disposition"], d);
+    }
+}
+
+// --- the PostToolUse ExitPlanMode hook ---------------------------------
+
+const REVIEW: &str =
+    "Verdict: approve-with-changes\nFindings:\n1. [high] A. Edit: x.\n2. [low] B.\n";
+
+impl World {
+    fn payload(&self, transcript: &Path, approved: bool) -> String {
+        let response = if approved {
+            serde_json::json!({"plan": "p", "isAgent": false, "filePath": self.plan})
+        } else {
+            serde_json::json!("The user doesn't want to proceed")
+        };
+        serde_json::json!({
+            "hook_event_name": "PostToolUse", "tool_name": "ExitPlanMode",
+            "session_id": "sess1234", "transcript_path": transcript,
+            "tool_input": {"planFilePath": self.plan}, "tool_response": response,
+        })
+        .to_string()
+    }
+
+    fn hook(&self, payload: &str) -> std::process::Output {
+        let mut c = self
+            .bin()
+            .arg("hook")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        c.wait_with_output().unwrap()
+    }
+
+    fn journal(&self) -> String {
+        std::fs::read_to_string(self.root.join("claude/amont-agent/journal.log"))
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn the_exit_plan_hook_records_once_on_approval_and_on_rejection() {
+    let mut w = World::new("hook");
+    w.reviewed("backend", "agent-1", REVIEW);
+    let t = w.transcript();
+    let o = w.hook(&w.payload(&t, true));
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert_eq!(out(&o), "");
+    let rows = w.rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["findings"].as_array().unwrap().len(), 2);
+    // The same payload, and a rejection of the same plan, write nothing more.
+    assert_eq!(w.hook(&w.payload(&t, true)).status.code(), Some(0));
+    assert_eq!(w.hook(&w.payload(&t, false)).status.code(), Some(0));
+    assert_eq!(w.rows().len(), 1);
+    assert!(
+        !w.journal().contains("plan-review-record"),
+        "{}",
+        w.journal()
+    );
+
+    // A rejection alone records too.
+    let mut r = World::new("hook-reject");
+    r.reviewed("backend", "agent-1", REVIEW);
+    let t = r.transcript();
+    assert_eq!(r.hook(&r.payload(&t, false)).status.code(), Some(0));
+    assert_eq!(r.rows().len(), 1);
+}
+
+#[test]
+fn an_unreadable_transcript_is_journalled_and_the_hook_stays_silent() {
+    let w = World::new("hook-bad");
+    let missing = w.root.join("nope.jsonl");
+    let o = w.hook(&w.payload(&missing, true));
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(out(&o), "");
+    assert!(w.rows().is_empty());
+    let j = w.journal();
+    assert_eq!(j.matches("plan-review-record").count(), 1, "{j}");
+    assert!(j.contains("error"), "{j}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_held_ledger_lock_makes_the_hook_journal_one_skip_within_the_budget() {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn flock(fd: i32, op: i32) -> i32;
+    }
+    let mut w = World::new("hook-lock");
+    w.reviewed("backend", "agent-1", REVIEW);
+    let t = w.transcript();
+    std::fs::create_dir_all(w.store()).unwrap();
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(w.store().join("outcomes.jsonl.lock"))
+        .unwrap();
+    assert_eq!(unsafe { flock(held.as_raw_fd(), 2) }, 0);
+
+    let start = std::time::Instant::now();
+    let o = w.hook(&w.payload(&t, true));
+    let took = start.elapsed();
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert!(took < std::time::Duration::from_millis(2500), "{took:?}");
+    assert!(w.rows().is_empty());
+    let j = w.journal();
+    assert_eq!(j.matches("plan-review-record").count(), 1, "{j}");
+    assert!(j.contains("skipped"), "{j}");
+
+    // stats lists the plan, and a manual record catches up.
+    let stats = |w: &World| {
+        let o = w.bin().args(["plan-review", "stats"]).output().unwrap();
+        out(&o)
+    };
+    assert!(stats(&w).contains("record-skipped"), "{}", stats(&w));
+    drop(held);
+    assert_eq!(w.record("").status.code(), Some(0));
+    assert!(!stats(&w).contains("record-skipped"), "{}", stats(&w));
 }
