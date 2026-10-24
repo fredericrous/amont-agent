@@ -37,4 +37,5 @@ Behaviour 1 ships journal-only here, which this codebase calls `observe`: a miss
 - Fixed: POSIX flag shapes and a multibyte-word panic, `rules-current` on a match, a `PromptRules` enum, aval output validated (rules, relevant `keys`, empty resolve), aval stderr in errors, hermetic tests on every platform.
 - deliberate: ships journal-only (`observe`); the canonical plan's `advise` wording is corrected in the decisions PR that records this phase.
 - deliberate: a `keys` row without a string `key` is still dropped silently; phase 4 rewrites this decisions builder and validates rows there.
-- About 89k + 101k + 113k + 120k tokens over four review rounds.
+- CI fix after the first closing commit, reviewed as two deltas (approve, approve): the ADR job's aval pin 1.9.0 → 1.10.0 (the refreshed pack's `governs` field), the hook rewritten by aval 1.10.0, and `exit /b 0` in the Windows fake aval.
+- About 89k + 101k + 113k + 120k + 124k + 125k tokens over six review rounds.
