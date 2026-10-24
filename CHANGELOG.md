@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.1.1
+
+### Fixed
+
+- **`path-operand-missing` no longer reads a flag with a quoted value as a
+  path.** In `cut -d'|' -f2` the word `-d'|'` is quoted because its value
+  is, so the flag test skipped it and the rule named `-d|` as a missing
+  file. A word whose raw text starts with an unquoted `-` is a flag (#140).
+
 ## v3.1.0
 
 ### Added
