@@ -1257,10 +1257,15 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
         // POSIX shapes: `--name=value`, and a short flag's value attached as `-C<dir>`.
         let (flag, attached) = match word.split_once('=') {
             Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
-            _ if word.len() > 2 && !word.starts_with("--") && accepted.contains(&&word[..2]) => {
-                (&word[..2], Some(word[2..].to_string()))
-            }
-            _ => (word, None),
+            // `get` keeps a word whose second byte is inside a character a usage error.
+            _ => match (word.get(..2), word.get(2..)) {
+                (Some(short), Some(rest))
+                    if !rest.is_empty() && !word.starts_with("--") && accepted.contains(&short) =>
+                {
+                    (short, Some(rest.to_string()))
+                }
+                _ => (word, None),
+            },
         };
         if !accepted.contains(&flag) {
             eprintln!(

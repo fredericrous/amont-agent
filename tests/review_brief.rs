@@ -102,6 +102,8 @@ fn a_usage_error_exits_2() {
     for sub in ["rules-sha", "review-brief"] {
         assert_eq!(run(&[sub, "--bogus"], &bin).status.code(), Some(2), "{sub}");
         assert_eq!(run(&[sub, "-C"], &bin).status.code(), Some(2), "{sub}");
+        // A word whose second byte is inside a character is a usage error, not a panic.
+        assert_eq!(run(&[sub, "aé"], &bin).status.code(), Some(2), "{sub}");
     }
     assert_eq!(
         run(&["rules-sha", "--plan", "x"], &bin).status.code(),
@@ -208,9 +210,13 @@ fn the_brief_binds_the_same_tree_and_rules_as_tree_sha_and_rules_sha() {
     assert_eq!(brief.status.code(), Some(0), "{brief:?}");
     let brief = String::from_utf8(brief.stdout).unwrap();
     let rules_sha = run(&["rules-sha", "-C", dir], &bin);
+    assert_eq!(rules_sha.status.code(), Some(0), "{rules_sha:?}");
     let rules_sha = String::from_utf8(rules_sha.stdout).unwrap();
+    assert_eq!(rules_sha.trim().len(), 64, "{rules_sha}");
     let tree = run(&["tree-sha", "--block", "-C", dir], &bin);
+    assert_eq!(tree.status.code(), Some(0), "{tree:?}");
     let tree = String::from_utf8(tree.stdout).unwrap();
+    assert!(tree.trim().starts_with("<<<TREE "), "{tree}");
     assert!(
         brief.contains(&format!("<<<RULES sha={}>>>", rules_sha.trim())),
         "{brief}"

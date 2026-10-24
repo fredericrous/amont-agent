@@ -1542,6 +1542,13 @@ fn a_conflict_free_rebase_keeps_the_review_by_patch() {
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
     let line = w.last_line();
     assert!(line.contains(" unconfirmed reviewed-by-patch "), "{line}");
+    // The patch memory served this push, and the rules check ran on it too.
+    let journal = w.journal();
+    let rules_line = &journal[journal.len() - 2];
+    assert!(
+        rules_line.contains(" rules-checked ") && rules_line.contains("review=rules-current"),
+        "{journal:?}"
+    );
     let f = w.pass_file("app", &after);
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
     assert_eq!(v["how"], format!("patch {}", &before[..12]));

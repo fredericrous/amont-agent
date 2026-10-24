@@ -669,8 +669,9 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
 }
 
 /// The advise-only comparison of the rules a passing review read with the
-/// rules now: journalled, never holding the push. `stored` is what the
-/// pass remembered: `None` for a pass from before the sha was stored.
+/// rules now: journalled, never holding the push. `prompt_rules` is what the
+/// pass remembered: `NotRecorded` (from before the line was stored) journals
+/// `rules-unknown`; `Absent` and `Sha` are compared with `rules_sha` now.
 fn check_remembered_rules(repo: &Path, name: &str, tree: &str, prompt_rules: &PromptRules) {
     let excerpt = match prompt_rules {
         PromptRules::NotRecorded => "review=rules-unknown",
