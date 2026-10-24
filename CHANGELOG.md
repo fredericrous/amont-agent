@@ -1,15 +1,22 @@
 # Changelog
 
-## Unreleased
+## v3.2.0
 
 ### Added
 
 - **`amont-agent rules-sha` and `amont-agent review-brief`.** `rules-sha`
-  hashes the `aval` code rules; `review-brief` prints the implementation
-  review brief with the rules in full behind a `<<<RULES sha=...>>>` line.
-  The implementation-review push check journals `review=rules-missing`,
-  `rules-stale` or `rules-unknown` for a passing review, and never holds
-  the push for it (ADR-0043, ADR-0044).
+  prints the sha256 of the code rules `aval` reports. `review-brief` prints
+  the implementation-review brief: the tree and `<<<RULES sha=...>>>` lines,
+  the plan's Verification and Non-goals, the diff, the code rules in full,
+  the constraint index and the decisions that apply. A brief built this way
+  no longer depends on a session copying the rules by hand (ADR-0043,
+  ADR-0044).
+- **The implementation-review push check journals the rules a review read.**
+  Every passing push writes one `rules-checked` line, `review=rules-current`,
+  `rules-missing`, `rules-stale` or `rules-unknown`, from the transcript,
+  the tree memory or the patch memory. It never holds the push yet.
+- **`AMONT_AGENT_AVAL`** names the `aval` program to run, as
+  `AMONT_AGENT_GH` does for `gh` (#142).
 
 ## v3.1.1
 
