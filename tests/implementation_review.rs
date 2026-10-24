@@ -144,7 +144,12 @@ impl World {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         #[cfg(windows)]
-        std::fs::write(&path, format!("@echo off\r\n<nul set /p \"={stdout}\"\r\n")).unwrap();
+        // `set /p` leaves errorlevel 1 on empty input: exit 0 explicitly.
+        std::fs::write(
+            &path,
+            format!("@echo off\r\n<nul set /p \"={stdout}\"\r\nexit /b 0\r\n"),
+        )
+        .unwrap();
     }
 
     fn set_global(&self, key: &str, value: &str) {
