@@ -312,24 +312,60 @@ pub fn remembered(repo: &str, sha: &str) -> Option<String> {
     remembered_pass(repo, sha).map(|pass| pass.verdict)
 }
 
-/// A remembered verdict and the rules sha the passing review's prompt
-/// carried: [`RULES_ABSENT`] for a prompt with no rules line, `None` for a
-/// pass remembered before the sha was stored.
+/// A remembered verdict and the rules line the passing review's prompt
+/// carried.
 struct Pass {
     verdict: String,
-    prompt_rules: Option<String>,
+    prompt_rules: PromptRules,
 }
 
-/// Stored as the prompt's rules sha when the prompt had no rules line.
-const RULES_ABSENT: &str = "";
+/// What a passing review's prompt said about the rules it was given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptRules {
+    /// The pass was remembered before the rules line was stored.
+    NotRecorded,
+    /// The prompt carried no rules line.
+    Absent,
+    /// The prompt's rules line, 64 hex.
+    Sha(String),
+}
+
+/// How [`PromptRules::Absent`] is stored: the field is kept, and empty, so
+/// it reads apart from a pass that predates the field.
+const RULES_ABSENT_STORED: &str = "";
+
+impl PromptRules {
+    fn of_prompt(sha: Option<&str>) -> PromptRules {
+        sha.map_or(PromptRules::Absent, |sha| PromptRules::Sha(sha.to_string()))
+    }
+
+    /// The stored `prompt_rules_sha`: `null` (not recorded), `""` (absent)
+    /// or the sha.
+    fn stored(&self) -> Option<&str> {
+        match self {
+            PromptRules::NotRecorded => None,
+            PromptRules::Absent => Some(RULES_ABSENT_STORED),
+            PromptRules::Sha(sha) => Some(sha),
+        }
+    }
+
+    fn from_stored(stored: Option<&str>) -> PromptRules {
+        match stored {
+            None => PromptRules::NotRecorded,
+            Some(RULES_ABSENT_STORED) => PromptRules::Absent,
+            Some(sha) => PromptRules::Sha(sha.to_string()),
+        }
+    }
+}
 
 fn pass_of(stored_record: &serde_json::Value) -> Option<Pass> {
     Some(Pass {
         verdict: stored_record.get("verdict")?.as_str()?.to_string(),
-        prompt_rules: stored_record
-            .get("prompt_rules_sha")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
+        prompt_rules: PromptRules::from_stored(
+            stored_record
+                .get("prompt_rules_sha")
+                .and_then(serde_json::Value::as_str),
+        ),
     })
 }
 
@@ -345,7 +381,7 @@ fn remember(
     sha: &str,
     verdict: &str,
     how: &str,
-    prompt_rules: Option<&str>,
+    prompt_rules: &PromptRules,
 ) -> Option<()> {
     let f = pass_file(repo, sha)?;
     private_dir(f.parent()?)?;
@@ -355,7 +391,7 @@ fn remember(
         "verdict": verdict,
         "agent": AGENT,
         "how": how,
-        "prompt_rules_sha": prompt_rules,
+        "prompt_rules_sha": prompt_rules.stored(),
     })
     .to_string();
     amont_agent_guard::atomic::write_atomic(&f, &body).ok()?;
@@ -397,7 +433,7 @@ fn remember_patch(
     tree: &str,
     verdict: &str,
     how: &str,
-    prompt_rules: Option<&str>,
+    prompt_rules: &PromptRules,
 ) -> Option<()> {
     let f = patch_file(repo, &key.patch)?;
     private_dir(f.parent()?)?;
@@ -409,7 +445,7 @@ fn remember_patch(
         "verdict": verdict,
         "agent": AGENT,
         "how": how,
-        "prompt_rules_sha": prompt_rules,
+        "prompt_rules_sha": prompt_rules.stored(),
     })
     .to_string();
     amont_agent_guard::atomic::write_atomic(&f, &body).ok()?;
@@ -519,7 +555,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     {
         if let Some(k) = &key {
             if remembered_patch(&name, k).is_none() {
-                remember_patch(&name, k, &tree, &verdict, "tree", prompt_rules.as_deref());
+                remember_patch(&name, k, &tree, &verdict, "tree", &prompt_rules);
             }
         }
         let overruled = verdict == "overruled";
@@ -533,7 +569,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &tree,
         );
         if !overruled {
-            check_remembered_rules(&repo, &name, &tree, prompt_rules.as_deref());
+            check_remembered_rules(&repo, &name, &tree, &prompt_rules);
         }
         return Judged::Decline(if overruled { "overruled" } else { "reviewed" });
     }
@@ -547,7 +583,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &tree,
             &verdict,
             &format!("patch {}", short(&old_tree)),
-            prompt_rules.as_deref(),
+            &prompt_rules,
         );
         let overruled = verdict == "overruled";
         provenance(
@@ -560,7 +596,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &old_tree,
         );
         if !overruled {
-            check_remembered_rules(&repo, &name, &tree, prompt_rules.as_deref());
+            check_remembered_rules(&repo, &name, &tree, &prompt_rules);
         }
         return Judged::Decline(if overruled {
             "overruled-by-patch"
@@ -602,20 +638,13 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                 ),
             },
             Some(v) => {
-                let prompt_rules = latest.rules_sha.as_deref().unwrap_or(RULES_ABSENT);
-                remember(&name, &tree, v.as_str(), "transcript", Some(prompt_rules));
+                let prompt_rules = PromptRules::of_prompt(latest.rules_sha.as_deref());
+                remember(&name, &tree, v.as_str(), "transcript", &prompt_rules);
                 if let Some(k) = &key {
-                    remember_patch(
-                        &name,
-                        k,
-                        &tree,
-                        v.as_str(),
-                        "transcript",
-                        Some(prompt_rules),
-                    );
+                    remember_patch(&name, k, &tree, v.as_str(), "transcript", &prompt_rules);
                 }
                 provenance(&push, Bound::Reviewed, &tree);
-                check_remembered_rules(&repo, &name, &tree, Some(prompt_rules));
+                check_remembered_rules(&repo, &name, &tree, &prompt_rules);
                 Judged::Decline("reviewed")
             }
         };
@@ -642,22 +671,22 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
 /// The advise-only comparison of the rules a passing review read with the
 /// rules now: journalled, never holding the push. `stored` is what the
 /// pass remembered: `None` for a pass from before the sha was stored.
-fn check_remembered_rules(repo: &Path, name: &str, tree: &str, stored: Option<&str>) {
-    let excerpt = match stored {
-        None => Some("review=rules-unknown"),
-        Some(seen) => {
-            let seen = (seen != RULES_ABSENT).then_some(seen);
-            crate::review_brief::rules_excerpt(seen, &crate::review_brief::rules_sha(repo))
+fn check_remembered_rules(repo: &Path, name: &str, tree: &str, prompt_rules: &PromptRules) {
+    let excerpt = match prompt_rules {
+        PromptRules::NotRecorded => "review=rules-unknown",
+        PromptRules::Absent => {
+            crate::review_brief::rules_excerpt(None, &crate::review_brief::rules_sha(repo))
+        }
+        PromptRules::Sha(seen) => {
+            crate::review_brief::rules_excerpt(Some(seen), &crate::review_brief::rules_sha(repo))
         }
     };
-    if let Some(excerpt) = excerpt {
-        note(
-            "rules-checked",
-            "-",
-            name,
-            &format!("tree={} {excerpt}", short(tree)),
-        );
-    }
+    note(
+        "rules-checked",
+        "-",
+        name,
+        &format!("tree={} {excerpt}", short(tree)),
+    );
 }
 
 /// Files the provenance record of a pass and journals what came of it. A
@@ -968,7 +997,13 @@ pub fn on_post_ask(ask: &amont_agent_guard::payload::Ask) -> Option<String> {
             ));
             continue;
         }
-        remember(&repo, &sha, "overruled", "person", None);
+        remember(
+            &repo,
+            &sha,
+            "overruled",
+            "person",
+            &PromptRules::NotRecorded,
+        );
         note(
             "overruled",
             &ask.session,

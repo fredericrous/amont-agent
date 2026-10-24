@@ -528,11 +528,14 @@ fn a_reviewed_tree_passes_and_recording_the_review_keeps_it_reviewed() {
         line.contains(" implementation-review unconfirmed reviewed "),
         "{line}"
     );
-    assert_eq!(
-        w.journal().len(),
-        1,
-        "exactly one line per push: {:?}",
-        w.journal()
+    // One decision line, and the rules line beside it (ADR-0044).
+    let journal = w.journal();
+    assert_eq!(journal.len(), 2, "{journal:?}");
+    assert!(
+        journal
+            .iter()
+            .any(|l| l.contains(" rules-checked ") && l.contains("review=rules-current")),
+        "{journal:?}"
     );
     assert!(
         w.pass_file("app", &tree).is_file(),
@@ -2063,12 +2066,16 @@ fn a_rules_line_with_another_hash_is_stale_and_still_passes() {
 
 #[cfg(unix)]
 #[test]
-fn a_matching_rules_line_writes_no_extra_note() {
+fn a_matching_rules_line_journals_rules_current() {
     let (said, journal) =
         rules_check_journal("rules-match", &format!("\n<<<RULES sha={ABC_SHA}>>>"));
     assert_eq!(said, Said::Silent);
+    let notes: Vec<&String> = journal
+        .iter()
+        .filter(|l| l.contains("review=rules-"))
+        .collect();
     assert!(
-        !journal.iter().any(|l| l.contains("review=rules-")),
+        notes.len() == 1 && notes[0].contains("review=rules-current"),
         "{journal:?}"
     );
 }
@@ -2118,7 +2125,11 @@ fn a_pass_remembered_before_the_sha_was_stored_journals_rules_unknown() {
     t.review(&w, AGENT, &block, "Verdict: approve", Done::Foreground);
     let transcript = w.transcript("t", &t);
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
-    assert!(rules_notes(&w).is_empty(), "{:?}", w.journal());
+    let first = rules_notes(&w);
+    assert!(
+        first.len() == 1 && first[0].contains("review=rules-current"),
+        "{first:?}"
+    );
 
     let file = w.pass_file("app", &tree);
     let mut pass: serde_json::Value =
@@ -2129,7 +2140,7 @@ fn a_pass_remembered_before_the_sha_was_stored_journals_rules_unknown() {
     assert_eq!(w.push(&repo, "s2", None), Said::Silent);
     let notes = rules_notes(&w);
     assert!(
-        notes.len() == 1 && notes[0].contains("review=rules-unknown"),
+        notes.len() == 2 && notes[1].contains("review=rules-unknown"),
         "{notes:?}"
     );
 }

@@ -173,16 +173,17 @@ pub fn parse_rules_sha(prompt: &str) -> Option<String> {
 }
 
 /// The journal excerpt for how a reviewer's rules line compares with the
-/// current rules; `None` when they match.
+/// current rules. A match is journalled too (`rules-current`), so the
+/// rollout can count the pushes the check passed.
 pub fn rules_excerpt(
     prompt_sha: Option<&str>,
     current: &Result<String, AvalFailed>,
-) -> Option<&'static str> {
+) -> &'static str {
     match (prompt_sha, current) {
-        (_, Err(_)) => Some("review=rules-unknown"),
-        (None, Ok(_)) => Some("review=rules-missing"),
-        (Some(seen), Ok(now)) if seen != now => Some("review=rules-stale"),
-        (Some(_), Ok(_)) => None,
+        (_, Err(_)) => "review=rules-unknown",
+        (None, Ok(_)) => "review=rules-missing",
+        (Some(seen), Ok(now)) if seen != now => "review=rules-stale",
+        (Some(_), Ok(_)) => "review=rules-current",
     }
 }
 
@@ -218,26 +219,34 @@ pub fn render_rules(json: &[u8]) -> Result<String, String> {
         .get("rules")
         .and_then(serde_json::Value::as_array)
         .ok_or("aval rules has no `rules` array")?;
-    let text = |rule: &serde_json::Value, field: &str| {
+    // A rule the reviewer is bound to must have its text: a missing field is
+    // an aval defect, never an empty rule.
+    let text = |rule: &serde_json::Value, field: &str| -> Result<String, String> {
         rule.get(field)
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string()
+            .map(str::to_string)
+            .ok_or_else(|| {
+                let id = rule
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<no id>");
+                format!("aval rules: rule `{id}` has no string `{field}`")
+            })
     };
-    Ok(rules
+    let rendered = rules
         .iter()
         .filter(|rule| rule.get("active").and_then(serde_json::Value::as_bool) != Some(false))
         .map(|rule| {
-            format!(
+            Ok(format!(
                 "## {} [{}]\n\n{}\n\n{}\n",
-                text(rule, "id"),
-                text(rule, "level"),
-                text(rule, "statement"),
-                text(rule, "body")
-            )
+                text(rule, "id")?,
+                text(rule, "level")?,
+                text(rule, "statement")?,
+                text(rule, "body")?
+            ))
         })
-        .collect::<Vec<_>>()
-        .join("\n"))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(rendered.join("\n"))
 }
 
 /// What the caller chose for a brief.
@@ -448,17 +457,14 @@ mod tests {
     #[test]
     fn the_three_outcomes_compare_the_prompt_with_the_current_rules() {
         let now: Result<String, AvalFailed> = Ok(SHA.to_string());
-        assert_eq!(rules_excerpt(None, &now), Some("review=rules-missing"));
+        assert_eq!(rules_excerpt(None, &now), "review=rules-missing");
         assert_eq!(
             rules_excerpt(Some(&"0".repeat(64)), &now),
-            Some("review=rules-stale")
+            "review=rules-stale"
         );
-        assert_eq!(rules_excerpt(Some(SHA), &now), None);
+        assert_eq!(rules_excerpt(Some(SHA), &now), "review=rules-current");
         let failed: Result<String, AvalFailed> = Err(AvalFailed("x".into()));
-        assert_eq!(
-            rules_excerpt(Some(SHA), &failed),
-            Some("review=rules-unknown")
-        );
+        assert_eq!(rules_excerpt(Some(SHA), &failed), "review=rules-unknown");
     }
 
     #[test]
@@ -492,5 +498,13 @@ mod tests {
             text.contains("## new [constraint]") && !text.contains("old"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_rule_without_its_body_is_an_error_naming_it() {
+        let json =
+            br#"{"rules":[{"id":"x.y","level":"constraint","statement":"s","active":true}]}"#;
+        let err = render_rules(json).unwrap_err();
+        assert!(err.contains("x.y") && err.contains("body"), "{err}");
     }
 }

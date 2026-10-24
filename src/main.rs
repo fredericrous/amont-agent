@@ -1242,25 +1242,49 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
     };
     let mut i = 0;
     while i < args.len() {
-        let flag = args[i].as_str();
+        let word = args[i].as_str();
+        i += 1;
+        // Neither command takes an operand, so `--` only ends the flags.
+        if word == "--" {
+            if let Some(operand) = args.get(i) {
+                eprintln!(
+                    "amont-agent: {name}: unknown argument `{operand}`; try `amont-agent {name} --help`"
+                );
+                return Err(ExitCode::from(2));
+            }
+            break;
+        }
+        // POSIX shapes: `--name=value`, and a short flag's value attached as `-C<dir>`.
+        let (flag, attached) = match word.split_once('=') {
+            Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
+            _ if word.len() > 2 && !word.starts_with("--") && accepted.contains(&&word[..2]) => {
+                (&word[..2], Some(word[2..].to_string()))
+            }
+            _ => (word, None),
+        };
         if !accepted.contains(&flag) {
             eprintln!(
-                "amont-agent: {name}: unknown argument `{flag}`; try `amont-agent {name} --help`"
+                "amont-agent: {name}: unknown argument `{word}`; try `amont-agent {name} --help`"
             );
             return Err(ExitCode::from(2));
         }
-        i += 1;
-        let Some(value) = args.get(i) else {
-            eprintln!("amont-agent: {name}: {flag} needs a value");
-            return Err(ExitCode::from(2));
+        let value = match attached {
+            Some(value) => value,
+            None => {
+                let Some(value) = args.get(i) else {
+                    eprintln!("amont-agent: {name}: {flag} needs a value");
+                    return Err(ExitCode::from(2));
+                };
+                i += 1;
+                value.clone()
+            }
         };
         match flag {
             "-C" => flags.dir = std::path::PathBuf::from(value),
             "--plan" => flags.plan = Some(std::path::PathBuf::from(value)),
-            "--base" => flags.base = Some(value.clone()),
+            "--base" => flags.base = Some(value),
             _ => unreachable!("`accepted` holds only -C, --plan and --base"),
         }
-        i += 1;
     }
     Ok(flags)
 }

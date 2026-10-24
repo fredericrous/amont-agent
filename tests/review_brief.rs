@@ -168,3 +168,72 @@ fn a_failed_git_diff_is_a_repository_error_with_nothing_on_stdout() {
         "{out:?}"
     );
 }
+
+/// A scratch repository with a base commit and one change on top, for the
+/// brief's success path and the flag shapes.
+#[cfg(unix)]
+fn two_commit_repo(name: &str) -> PathBuf {
+    let repo = scratch(name);
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "base"]);
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    git(&repo, &["commit", "-qam", "change"]);
+    repo
+}
+
+/// An `aval` that answers each command the brief runs with fixed text.
+#[cfg(unix)]
+const BRIEF_AVAL: &str = r#"#!/bin/sh
+case "$*" in
+  "--json rules --level constraint --governs code --full")
+    printf '{"rules":[{"id":"names.reveal-intent","level":"constraint","statement":"A name says what it is.","body":"No placeholder names.","active":true}]}' ;;
+  "rules --level constraint") printf 'constraint names.reveal-intent\n' ;;
+  "--json relevant"*) printf '{"keys":[]}' ;;
+  *) exit 1 ;;
+esac
+"#;
+
+#[cfg(unix)]
+#[test]
+fn the_brief_binds_the_same_tree_and_rules_as_tree_sha_and_rules_sha() {
+    let bin = scratch("brief-ok");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo("brief-ok-repo");
+    let dir = repo.to_str().unwrap();
+    let brief = run(&["review-brief", "-C", dir, "--base", "HEAD~1"], &bin);
+    assert_eq!(brief.status.code(), Some(0), "{brief:?}");
+    let brief = String::from_utf8(brief.stdout).unwrap();
+    let rules_sha = run(&["rules-sha", "-C", dir], &bin);
+    let rules_sha = String::from_utf8(rules_sha.stdout).unwrap();
+    let tree = run(&["tree-sha", "--block", "-C", dir], &bin);
+    let tree = String::from_utf8(tree.stdout).unwrap();
+    assert!(
+        brief.contains(&format!("<<<RULES sha={}>>>", rules_sha.trim())),
+        "{brief}"
+    );
+    assert!(brief.contains(tree.trim()), "{brief}");
+    assert!(brief.contains("No placeholder names."), "{brief}");
+}
+
+#[cfg(unix)]
+#[test]
+fn flags_take_the_posix_shapes() {
+    let bin = scratch("posix");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo("posix-repo");
+    let attached = format!("-C{}", repo.display());
+    for args in [
+        vec!["review-brief", attached.as_str(), "--base=HEAD~1"],
+        vec!["review-brief", attached.as_str(), "--base=HEAD~1", "--"],
+        vec!["rules-sha", attached.as_str()],
+    ] {
+        let out = run(&args, &bin);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {out:?}");
+    }
+    let operand = run(&["rules-sha", attached.as_str(), "--", "extra"], &bin);
+    assert_eq!(operand.status.code(), Some(2), "{operand:?}");
+}
