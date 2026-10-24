@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`amont-agent rules-sha` and `amont-agent review-brief`.** `rules-sha`
+  hashes the `aval` code rules; `review-brief` prints the implementation
+  review brief with the rules in full behind a `<<<RULES sha=...>>>` line.
+  The implementation-review push check journals `review=rules-missing`,
+  `rules-stale` or `rules-unknown` for a passing review, and never holds
+  the push for it (ADR-0043, ADR-0044).
+
 ## v3.1.1
 
 ### Fixed

@@ -228,6 +228,10 @@ fn tally_into(
             (_, "denied") => seen.denied += 1,
             (_, "advised") => seen.advised += 1,
             (_, "watched") => seen.watched += 1,
+            // The implementation review's advisory rules comparison (ADR-0044):
+            // a note beside a push that passed, never a decision, so it is
+            // none of the four buckets.
+            (_, "rules-checked") => {}
             // An outcome this reader does not know. Counted as seen, because
             // it was, but not as any of the four it can name.
             _ => {}
@@ -811,6 +815,34 @@ mod tests {
         assert_eq!(ir.reasons.get("no-plan"), Some(&1));
         assert_eq!(ir.reasons.get("overruled"), Some(&1));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A `rules-checked` note sits beside a push that passed: it moves none
+    /// of the four counters a soak reads.
+    #[test]
+    fn a_rules_checked_note_counts_in_no_bucket() {
+        let dir =
+            std::env::temp_dir().join(format!("amont-agent-tally-rules-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir); // a scratch dir that is absent is the normal case
+        fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("journal.log");
+        let now = 2_000_000u64;
+        let t = now - 10;
+        let text = format!(
+            "{FORMAT}\n\
+             F {t} implementation-review - rules-checked - app - tree=5085edae1d66 review=rules-missing\n\
+             F {t} implementation-review - rules-checked - app - tree=5085edae1d66 review=rules-stale\n\
+             F {t} implementation-review - rules-checked - app - tree=5085edae1d66 review=rules-unknown\n"
+        );
+        fs::write(&path, text).expect("write journal");
+        let seen = tally_at(&path, 100_000, now);
+        let ir = &seen["implementation-review"];
+        assert_eq!(
+            (ir.advised, ir.denied, ir.watched, ir.unconfirmed),
+            (0, 0, 0, 0),
+            "{ir:?}"
+        );
+        let _ = fs::remove_dir_all(&dir); // cleanup only: a leftover scratch dir fails nothing
     }
 
     /// A row written before `arm` existed reads as live and is counted; a

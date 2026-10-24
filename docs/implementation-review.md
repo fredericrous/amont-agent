@@ -194,8 +194,8 @@ directory is hook-only: Write, Edit and Bash writes are refused.
 
 ## What the journal records
 
-One line per push, under the rule's id, in the buckets `amont-agent
-status` counts: a declined push as `unconfirmed` with the reason
+Every push writes its decision line, under the rule's id, in the buckets
+`amont-agent status` counts: a declined push as `unconfirmed` with the reason
 (`reviewed`, `reviewed-by-patch`, `overruled`, `overruled-by-patch`,
 `no-plan`, `dry-run`, `no-branch`, `unresolvable`), a spoken one as `advised`, `denied` or `watched`. The
 excerpt of a spoken line is structured:
@@ -203,6 +203,16 @@ excerpt of a spoken line is structured:
 ```
 tree=<12 hex> review=<stale|rework|missing|unknown> verdict=<approve|approve-with-changes|rework|->
 ```
+
+A push that passed writes a second line. Its review is compared with the
+rules as they are now, advise-only and never holding the push, and a
+`rules-checked` line is journalled. `status` counts it in no bucket, because
+its outcome, `rules-checked`, is a note beside a decision, not one. Its
+excerpt is `tree=<12 hex> review=<rules-current|rules-missing|rules-stale|rules-unknown>`:
+`rules-current` when the review read the rules as they are now (the count the
+rollout reads before the check may deny), `rules-missing` when its prompt had
+no rules line, `rules-stale` when the rules changed since, `rules-unknown`
+when the pass predates the stored sha or `aval` could not answer.
 
 Away from a push: `overruled`, `answered`, `unbound`, `unknown`,
 `prefilled`, `unrecorded` for the marked question, and `denied` for a

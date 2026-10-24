@@ -50,6 +50,7 @@ use amont_agent_process::plan_text;
 use amont_agent_process::plans;
 use amont_agent_process::preview;
 use amont_agent_process::push_preview;
+use amont_agent_process::review_brief;
 use amont_agent_process::review_outcomes;
 mod rule_table;
 use amont_agent_guard::rules;
@@ -123,6 +124,11 @@ usage: amont-agent <command>
                         the content id an implementation review and a
                         preview approval bind to: HEAD's tree without
                         docs/plans/ (not attest's canonical tree)
+  rules-sha [-C <dir>]  the sha256 of the code rules `aval` reports, as an
+                        implementation-review brief binds them
+  review-brief [-C <dir>] [--plan <path>] [--base <ref>]
+                        the implementation-review brief: tree and rules
+                        lines, plan, diff, full code rules, decisions
   shipped <plan.md> [--json]
                         what shipped under a plan, derived from git: per
                         repository its merge commits, PRs, releases, and
@@ -185,12 +191,14 @@ enum Sub {
     ImplementationReview,
     PlanApply,
     TreeSha,
+    RulesSha,
+    ReviewBrief,
     Attestations,
     Quiet,
     Shipped,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 25] = [
+const SUBCOMMANDS: [(&str, Sub); 27] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -213,6 +221,8 @@ const SUBCOMMANDS: [(&str, Sub); 25] = [
     ("implementation-review", Sub::ImplementationReview),
     ("plan-apply", Sub::PlanApply),
     ("tree-sha", Sub::TreeSha),
+    ("rules-sha", Sub::RulesSha),
+    ("review-brief", Sub::ReviewBrief),
     ("attestations", Sub::Attestations),
     ("quiet", Sub::Quiet),
     ("shipped", Sub::Shipped),
@@ -383,6 +393,8 @@ fn main() -> ExitCode {
                 code
             }
             Sub::TreeSha => run_tree_sha(&args),
+            Sub::RulesSha => run_rules_sha(&args),
+            Sub::ReviewBrief => run_review_brief(&args),
             Sub::Attestations => attestations::run_cli(&args),
             #[cfg(unix)]
             Sub::Quiet => quiet::run(&args),
@@ -1149,6 +1161,180 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
         println!("{sha}");
     }
     ExitCode::SUCCESS
+}
+
+const RULES_SHA_USAGE: &str = "\
+usage: amont-agent rules-sha [-C <dir>]
+
+The lowercase sha256 hex of the stdout of
+`aval --json rules --level constraint --governs code --full`, run in <dir>
+(default: the current directory). An implementation-review brief carries it
+as <<<RULES sha=<64 hex>>>>; the push check compares it.
+
+Prints one line on stdout. Exit 0; 3 when aval is missing or fails (the
+command on stderr, nothing on stdout); 2 on a usage error.
+";
+
+const REVIEW_BRIEF_USAGE: &str = "\
+usage: amont-agent review-brief [-C <dir>] [--plan <path>] [--base <ref>]
+
+The markdown brief an implementation reviewer is launched with: the
+<<<TREE ...>>> block and the <<<RULES sha=...>>> line, the plan's
+Verification section, the diff since the merge-base, the code rules in
+full, the constraint rules, the decisions that bear on the changed files,
+and the plan's Non-goals.
+
+  -C <dir>        the repository (default: the current directory)
+  --plan <path>   the plan (default: the one file under docs/plans/ changed
+                  since the merge-base; the brief says when there is none
+                  or several)
+  --base <ref>    the base ref (default: the remote's default branch)
+
+Exit 0; 1 when the repository or its base cannot be read; 3 when aval is missing or fails (nothing on
+stdout); 2 on a usage error.
+";
+
+/// The flags of `rules-sha` and `review-brief`.
+struct BriefFlags {
+    dir: std::path::PathBuf,
+    plan: Option<std::path::PathBuf>,
+    base: Option<String>,
+}
+
+/// One subcommand's name, usage and accepted flags, kept together.
+struct BriefCommand {
+    name: &'static str,
+    usage: &'static str,
+    flags: &'static [&'static str],
+}
+
+/// `rules-sha` takes `-C` alone.
+const RULES_SHA_COMMAND: BriefCommand = BriefCommand {
+    name: "rules-sha",
+    usage: RULES_SHA_USAGE,
+    flags: &["-C"],
+};
+
+const REVIEW_BRIEF_COMMAND: BriefCommand = BriefCommand {
+    name: "review-brief",
+    usage: REVIEW_BRIEF_USAGE,
+    flags: &["-C", "--plan", "--base"],
+};
+
+fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, ExitCode> {
+    let BriefCommand {
+        name,
+        usage,
+        flags: accepted,
+    } = command;
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{usage}");
+        return Err(ExitCode::SUCCESS);
+    }
+    let mut flags = BriefFlags {
+        dir: std::path::PathBuf::from("."),
+        plan: None,
+        base: None,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let word = args[i].as_str();
+        i += 1;
+        // Neither command takes an operand, so `--` only ends the flags.
+        if word == "--" {
+            if let Some(operand) = args.get(i) {
+                eprintln!(
+                    "amont-agent: {name}: unknown argument `{operand}`; try `amont-agent {name} --help`"
+                );
+                return Err(ExitCode::from(2));
+            }
+            break;
+        }
+        // POSIX shapes: `--name=value`, and a short flag's value attached as `-C<dir>`.
+        let (flag, attached) = match word.split_once('=') {
+            Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
+            // `get` keeps a word whose second byte is inside a character a usage error.
+            _ => match (word.get(..2), word.get(2..)) {
+                (Some(short), Some(rest))
+                    if !rest.is_empty() && !word.starts_with("--") && accepted.contains(&short) =>
+                {
+                    (short, Some(rest.to_string()))
+                }
+                _ => (word, None),
+            },
+        };
+        if !accepted.contains(&flag) {
+            eprintln!(
+                "amont-agent: {name}: unknown argument `{word}`; try `amont-agent {name} --help`"
+            );
+            return Err(ExitCode::from(2));
+        }
+        let value = match attached {
+            Some(value) => value,
+            None => {
+                let Some(value) = args.get(i) else {
+                    eprintln!("amont-agent: {name}: {flag} needs a value");
+                    return Err(ExitCode::from(2));
+                };
+                i += 1;
+                value.clone()
+            }
+        };
+        match flag {
+            "-C" => flags.dir = std::path::PathBuf::from(value),
+            "--plan" => flags.plan = Some(std::path::PathBuf::from(value)),
+            "--base" => flags.base = Some(value),
+            _ => unreachable!("`accepted` holds only -C, --plan and --base"),
+        }
+    }
+    Ok(flags)
+}
+
+fn run_rules_sha(args: &[OsString]) -> ExitCode {
+    let flags = match brief_flags(&RULES_SHA_COMMAND, args) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    match review_brief::rules_sha(&flags.dir) {
+        Ok(sha) => {
+            println!("{sha}");
+            ExitCode::SUCCESS
+        }
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            ExitCode::from(3)
+        }
+    }
+}
+
+fn run_review_brief(args: &[OsString]) -> ExitCode {
+    let flags = match brief_flags(&REVIEW_BRIEF_COMMAND, args) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let request = review_brief::BriefRequest {
+        dir: flags.dir,
+        plan: flags.plan,
+        base: flags.base,
+    };
+    match review_brief::build(&request) {
+        Ok(brief) => {
+            print!("{brief}");
+            ExitCode::SUCCESS
+        }
+        Err(review_brief::BriefError::Aval(why)) => {
+            eprintln!("amont-agent: {why}");
+            ExitCode::from(3)
+        }
+        Err(review_brief::BriefError::Repository(why)) => {
+            eprintln!("amont-agent: {why}");
+            ExitCode::from(1)
+        }
+    }
 }
 
 const PLAN_PANEL_USAGE: &str = "\
