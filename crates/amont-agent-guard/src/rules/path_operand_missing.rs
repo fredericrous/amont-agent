@@ -235,6 +235,20 @@ fn unknowable(w: &Word) -> bool {
             .any(|c| matches!(c, '$' | '`' | '*' | '?' | '[' | '{' | '~' | '\n'))
 }
 
+/// `-e'x'`: a short flag whose value is attached in quotes. `has_short` skips
+/// every quoted word, so read only the unquoted head of the raw text.
+fn quoted_value_short(args: &[Word], c: char) -> bool {
+    args.iter().any(|w| {
+        w.quoted
+            && w.raw.starts_with('-')
+            && !w.raw.starts_with("--")
+            && w.raw[1..]
+                .split(['\'', '"', '\\'])
+                .next()
+                .is_some_and(|head| head.contains(c))
+    })
+}
+
 /// The path operands of one clause, in the order written.
 fn paths(cmd: &Simple) -> Vec<&Word> {
     let Some(program) = cmd.program() else {
@@ -252,7 +266,7 @@ fn paths(cmd: &Simple) -> Vec<&Word> {
             after_ddash = true;
             continue;
         }
-        if !after_ddash && !w.quoted && w.text.starts_with('-') {
+        if !after_ddash && w.raw.starts_with('-') {
             // `find` reads paths until its first primary; everything after
             // `-name` is expression, not files.
             if program == "find" {
@@ -275,7 +289,7 @@ fn paths(cmd: &Simple) -> Vec<&Word> {
                 || f.strip_prefix('-')
                     .filter(|s| s.len() == 1)
                     .and_then(|s| s.chars().next())
-                    .is_some_and(|c| cmd.has_short(c))
+                    .is_some_and(|c| cmd.has_short(c) || quoted_value_short(args, c))
                 || args
                     .iter()
                     .any(|w| !w.quoted && w.text.starts_with(&format!("{f}=")))
@@ -514,6 +528,18 @@ mod tests {
         assert_eq!(named("awk '{print $1}' data.txt"), vec!["data.txt"]);
         assert_eq!(named("grep -rn foo/bar ."), Vec::<String>::new());
         assert_eq!(named("ls"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_flag_with_a_quoted_attached_value_is_still_a_flag() {
+        assert!(!fires(
+            "sqlite3 db \"q\" | cut -d'|' -f2 | tr '\\n' ' '; echo; sqlite3 db \"q\" | cut -d'|' -f2"
+        ));
+        assert_eq!(named("grep -e'x' missing.txt"), vec!["missing.txt"]);
+        assert!(fires("grep -e'x' missing.txt; true"));
+        assert_eq!(named("sort -t',' data.csv"), vec!["data.csv"]);
+        // A fully quoted word is not a flag: today's behaviour.
+        assert_eq!(named("cat '-d|'"), vec!["-d|"]);
     }
 
     #[test]
