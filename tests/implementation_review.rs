@@ -53,10 +53,14 @@ impl World {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("claude")).unwrap();
         std::fs::write(root.join("global"), "").unwrap();
-        World {
+        let world = World {
             root,
             ids: std::cell::Cell::new(0),
-        }
+        };
+        // No test runs the machine's own `aval`: a fake prints `abc` always,
+        // on every platform, and `bin` names it through `AMONT_AGENT_AVAL`.
+        world.fake_aval("abc");
+        world
     }
 
     /// A repository cloned the way `remote add` + `fetch` clones: there is no
@@ -107,19 +111,40 @@ impl World {
 
     fn bin(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
-        // A test that installed the fake `amont` (below) puts it first.
-        let fake = self.root.join("bin");
-        if fake.join("amont").is_file() || fake.join("git").is_file() {
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            let mut dirs = vec![fake];
-            dirs.extend(std::env::split_paths(&path));
-            c.env("PATH", std::env::join_paths(dirs).unwrap());
-        }
+        // The fakes (`aval`, and `amont` or `git` where a test installs
+        // them) come first on PATH.
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![self.root.join("bin")];
+        dirs.extend(std::env::split_paths(&path));
+        c.env("PATH", std::env::join_paths(dirs).unwrap());
+        c.env("AMONT_AGENT_AVAL", self.aval_path());
         c.env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("GIT_CONFIG_GLOBAL", self.root.join("global"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("AMONT_AGENT_OFF");
         c
+    }
+
+    /// Where the fake `aval` is: a `#!/bin/sh` script on unix, a batch file
+    /// on Windows. `bin` passes the path in `AMONT_AGENT_AVAL`, because
+    /// Windows finds only `aval.exe` on PATH, never a script.
+    fn aval_path(&self) -> PathBuf {
+        let name = if cfg!(windows) { "aval.bat" } else { "aval" };
+        self.root.join("bin").join(name)
+    }
+
+    /// An `aval` that prints `stdout` whatever it is asked.
+    fn fake_aval(&self, stdout: &str) {
+        let path = self.aval_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '%s' '{stdout}'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        std::fs::write(&path, format!("@echo off\r\n<nul set /p \"={stdout}\"\r\n")).unwrap();
     }
 
     fn set_global(&self, key: &str, value: &str) {
@@ -298,7 +323,14 @@ printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"ref
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
+    /// The review block and the rules line a brief carries; the rules line
+    /// matches what the fake `aval` prints.
     fn block(&self, dir: &Path) -> String {
+        format!("{}\n<<<RULES sha={ABC_SHA}>>>", self.block_only(dir))
+    }
+
+    /// The review block alone: a prompt with no rules line.
+    fn block_only(&self, dir: &Path) -> String {
         self.tree_sha(dir, &["--block"])
     }
 
@@ -1977,4 +2009,127 @@ fn only_the_hook_writes_a_provenance_record() {
     let cmd = format!("cat '{}'", target.display());
     let said = w.push_cmd(&repo, "s1", None, &cmd);
     assert!(matches!(said, Said::Silent), "{said:?}");
+}
+
+/// The sha256 of the bytes `abc`, which the fake `aval` prints.
+const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+/// Pushes a reviewed tree whose reviewer prompt is `block` plus `extra`, and
+/// returns the journal lines the push wrote.
+#[cfg(unix)]
+fn rules_check_journal(name: &str, extra: &str) -> (Said, Vec<String>) {
+    let w = World::new(name);
+    let repo = w.repo("app");
+    let block = format!("{}{extra}", w.block_only(&repo));
+    let mut t = Transcript::default();
+    t.review(&w, AGENT, &block, "Verdict: approve", Done::Foreground);
+    let transcript = w.transcript("t", &t);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    (said, w.journal())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reviewer_prompt_without_a_rules_line_is_journalled_and_passes() {
+    // A hand-built brief that lists the constraint statements only.
+    let (said, journal) = rules_check_journal(
+        "rules-missing",
+        "\nConstraints: names.reveal-intent: A name states what the thing is.",
+    );
+    assert_eq!(said, Said::Silent);
+    assert!(
+        journal.iter().any(|l| l.contains("review=rules-missing")),
+        "{journal:?}"
+    );
+    assert!(
+        journal.iter().any(|l| l.contains("unconfirmed reviewed")),
+        "{journal:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rules_line_with_another_hash_is_stale_and_still_passes() {
+    let (said, journal) = rules_check_journal(
+        "rules-stale",
+        &format!("\n<<<RULES sha={}>>>", "0".repeat(64)),
+    );
+    assert_eq!(said, Said::Silent);
+    assert!(
+        journal.iter().any(|l| l.contains("review=rules-stale")),
+        "{journal:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_matching_rules_line_writes_no_extra_note() {
+    let (said, journal) =
+        rules_check_journal("rules-match", &format!("\n<<<RULES sha={ABC_SHA}>>>"));
+    assert_eq!(said, Said::Silent);
+    assert!(
+        !journal.iter().any(|l| l.contains("review=rules-")),
+        "{journal:?}"
+    );
+}
+
+#[cfg(unix)]
+fn rules_notes(w: &World) -> Vec<String> {
+    w.journal()
+        .into_iter()
+        .filter(|l| l.contains("review=rules-"))
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_remembered_pass_runs_the_rules_check_on_the_second_push() {
+    let w = World::new("rules-remembered");
+    let repo = w.repo("app");
+    let block = format!(
+        "{}\n<<<RULES sha={}>>>",
+        w.block_only(&repo),
+        "0".repeat(64)
+    );
+    let mut t = Transcript::default();
+    t.review(&w, AGENT, &block, "Verdict: approve", Done::Foreground);
+    let transcript = w.transcript("t", &t);
+
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert_eq!(rules_notes(&w).len(), 1, "{:?}", w.journal());
+    // The tree memory answers the second push, and the check runs again.
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    let notes = rules_notes(&w);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(
+        notes.iter().all(|l| l.contains("review=rules-stale")),
+        "{notes:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pass_remembered_before_the_sha_was_stored_journals_rules_unknown() {
+    let w = World::new("rules-legacy");
+    let repo = w.repo("app");
+    let block = w.block(&repo);
+    let tree = w.tree(&repo);
+    let mut t = Transcript::default();
+    t.review(&w, AGENT, &block, "Verdict: approve", Done::Foreground);
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(rules_notes(&w).is_empty(), "{:?}", w.journal());
+
+    let file = w.pass_file("app", &tree);
+    let mut pass: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    pass.as_object_mut().unwrap().remove("prompt_rules_sha");
+    std::fs::write(&file, pass.to_string()).unwrap();
+
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    let notes = rules_notes(&w);
+    assert!(
+        notes.len() == 1 && notes[0].contains("review=rules-unknown"),
+        "{notes:?}"
+    );
 }
