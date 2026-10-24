@@ -63,6 +63,7 @@ impl From<AvalFailed> for BriefError {
 struct AvalAnswer {
     status: std::process::ExitStatus,
     stdout: Vec<u8>,
+    stderr: String,
 }
 
 /// The `aval` program to run: `AMONT_AGENT_AVAL` names another one (tests,
@@ -83,7 +84,7 @@ fn run_aval(dir: &Path, args: &[&str]) -> Result<AvalAnswer, AvalFailed> {
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| AvalFailed(format!("`{line}` could not run: {e}")))?;
     let mut pipe = child
@@ -93,6 +94,15 @@ fn run_aval(dir: &Path, args: &[&str]) -> Result<AvalAnswer, AvalFailed> {
     let reader = std::thread::spawn(move || {
         let mut printed = Vec::new();
         pipe.read_to_end(&mut printed).map(|_| printed)
+    });
+    // stderr on its own thread too: a full pipe would otherwise stall aval.
+    let mut err_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| AvalFailed(format!("`{line}` has no stderr")))?;
+    let err_reader = std::thread::spawn(move || {
+        let mut said = Vec::new();
+        err_pipe.read_to_end(&mut said).map(|_| said)
     });
     let deadline = std::time::Instant::now() + AVAL_DEADLINE;
     let status = loop {
@@ -115,14 +125,33 @@ fn run_aval(dir: &Path, args: &[&str]) -> Result<AvalAnswer, AvalFailed> {
         .join()
         .map_err(|_| AvalFailed(format!("`{line}` output reader panicked")))?
         .map_err(|e| AvalFailed(format!("`{line}` output could not be read: {e}")))?;
-    Ok(AvalAnswer { status, stdout })
+    // What aval said goes into an error message only; an unreadable stderr says nothing.
+    let stderr = err_reader
+        .join()
+        .ok()
+        .and_then(Result::ok)
+        .map(|said| String::from_utf8_lossy(&said).trim().to_string())
+        .unwrap_or_default();
+    Ok(AvalAnswer {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn aval(dir: &Path, args: &[&str]) -> Result<Vec<u8>, AvalFailed> {
     let answer = run_aval(dir, args)?;
     if !answer.status.success() {
         let line = format!("aval {}", args.join(" "));
-        return Err(AvalFailed(format!("`{line}` exited {}", answer.status)));
+        let said = if answer.stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", answer.stderr.lines().next().unwrap_or_default())
+        };
+        return Err(AvalFailed(format!(
+            "`{line}` exited {}{said}",
+            answer.status
+        )));
     }
     Ok(answer.stdout)
 }
@@ -163,7 +192,10 @@ pub fn parse_rules_sha(prompt: &str) -> Option<String> {
     let mut rest = prompt;
     while let Some(at) = rest.find(RULES_OPEN) {
         rest = &rest[at + RULES_OPEN.len()..];
-        let candidate = rest.get(..64)?;
+        // A mention in prose that is not a full line is skipped, not the end of the search.
+        let Some(candidate) = rest.get(..64) else {
+            continue;
+        };
         if crate::implementation_review::is_sha256(candidate) && rest[64..].starts_with(RULES_CLOSE)
         {
             return Some(candidate.to_ascii_lowercase());
@@ -404,20 +436,35 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
             "`aval --json relevant` printed output that is not JSON: {e}"
         )))
     })?;
-    let keys: Vec<String> = relevance
+    // Only an empty `keys` array means no decision applies; a missing one is an aval defect.
+    let rows = relevance
         .get("keys")
         .and_then(serde_json::Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| row.get("key").and_then(serde_json::Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            BriefError::Aval(AvalFailed(
+                "`aval --json relevant` printed no `keys` array".to_string(),
+            ))
+        })?;
+    let keys: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.get("key").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect();
     let mut out = String::new();
     for key in keys {
         // `undecided`, `retired` and `unknown` are answers that exit non-zero.
         let resolved = run_aval(repo, &["resolve", &key])?;
+        if resolved.stdout.iter().all(u8::is_ascii_whitespace) {
+            let said = resolved
+                .stderr
+                .lines()
+                .next()
+                .unwrap_or("nothing on stderr");
+            return Err(BriefError::Aval(AvalFailed(format!(
+                "`aval resolve {key}` printed nothing ({}): {said}",
+                resolved.status
+            ))));
+        }
         out.push_str(&format!(
             "## {key}\n\n```\n{}\n```\n\n",
             String::from_utf8_lossy(&resolved.stdout).trim_end()
@@ -506,5 +553,16 @@ mod tests {
             br#"{"rules":[{"id":"x.y","level":"constraint","statement":"s","active":true}]}"#;
         let err = render_rules(json).unwrap_err();
         assert!(err.contains("x.y") && err.contains("body"), "{err}");
+    }
+
+    #[test]
+    fn a_prose_mention_before_the_rules_line_does_not_hide_it() {
+        let prompt = format!(
+            "see {RULES_OPEN}<the sha here>>> below\n{}",
+            rules_line(SHA)
+        );
+        assert_eq!(parse_rules_sha(&prompt).as_deref(), Some(SHA));
+        let multibyte = format!("{RULES_OPEN}{}é>>>\n{}", "a".repeat(63), rules_line(SHA));
+        assert_eq!(parse_rules_sha(&multibyte).as_deref(), Some(SHA));
     }
 }

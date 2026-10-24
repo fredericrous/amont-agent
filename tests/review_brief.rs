@@ -243,3 +243,33 @@ fn flags_take_the_posix_shapes() {
     let operand = run(&["rules-sha", attached.as_str(), "--", "extra"], &bin);
     assert_eq!(operand.status.code(), Some(2), "{operand:?}");
 }
+
+#[cfg(unix)]
+#[test]
+fn an_aval_relevant_answer_without_keys_exits_3() {
+    let bin = scratch("no-keys");
+    fake_aval(
+        &bin,
+        &BRIEF_AVAL.replace(
+            r#""--json relevant"*) printf '{"keys":[]}' ;;"#,
+            r#""--json relevant"*) printf '{}' ;;"#,
+        ),
+    );
+    let repo = two_commit_repo("no-keys-repo");
+    let out = run(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+        ],
+        &bin,
+    );
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("keys"),
+        "{out:?}"
+    );
+}
