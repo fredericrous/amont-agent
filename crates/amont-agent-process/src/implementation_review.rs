@@ -47,6 +47,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::candidates_block::Reviewed;
 use crate::content_id::content_id;
 use crate::plan_review::{completed_agents_resumable, Completed};
 use crate::provenance::Review as Bound;
@@ -260,6 +261,8 @@ pub struct Review {
     pub verdict: Option<Verdict>,
     /// The sha of the prompt's `<<<RULES …>>>` line, when it has a valid one.
     pub rules_sha: Option<String>,
+    /// The candidates the prompt listed and the result ruled on.
+    pub candidates: Reviewed,
 }
 
 pub fn reviews(transcript: &Path) -> std::io::Result<Vec<Review>> {
@@ -270,6 +273,7 @@ pub fn reviews(transcript: &Path) -> std::io::Result<Vec<Review>> {
         .flat_map(|c: Completed| {
             let verdict = verdict_of(&c.result);
             let rules_sha = crate::review_brief::parse_rules_sha(&c.prompt);
+            let candidates = Reviewed::read(c.agent_id.as_deref(), &c.prompt, &c.result);
             parse_blocks(&c.prompt)
                 .into_iter()
                 .map(move |(repo, sha)| Review {
@@ -277,6 +281,7 @@ pub fn reviews(transcript: &Path) -> std::io::Result<Vec<Review>> {
                     sha,
                     verdict,
                     rules_sha: rules_sha.clone(),
+                    candidates: candidates.clone(),
                 })
         })
         .collect())
@@ -317,6 +322,7 @@ pub fn remembered(repo: &str, sha: &str) -> Option<String> {
 struct Pass {
     verdict: String,
     prompt_rules: PromptRules,
+    candidates: Reviewed,
 }
 
 /// What a passing review's prompt said about the rules it was given.
@@ -366,6 +372,7 @@ fn pass_of(stored_record: &serde_json::Value) -> Option<Pass> {
                 .get("prompt_rules_sha")
                 .and_then(serde_json::Value::as_str),
         ),
+        candidates: Reviewed::from_json(stored_record.get("candidates")),
     })
 }
 
@@ -382,6 +389,7 @@ fn remember(
     verdict: &str,
     how: &str,
     prompt_rules: &PromptRules,
+    candidates: &Reviewed,
 ) -> Option<()> {
     let f = pass_file(repo, sha)?;
     private_dir(f.parent()?)?;
@@ -392,6 +400,7 @@ fn remember(
         "agent": AGENT,
         "how": how,
         "prompt_rules_sha": prompt_rules.stored(),
+        "candidates": candidates.to_json(),
     })
     .to_string();
     amont_agent_guard::atomic::write_atomic(&f, &body).ok()?;
@@ -434,6 +443,7 @@ fn remember_patch(
     verdict: &str,
     how: &str,
     prompt_rules: &PromptRules,
+    candidates: &Reviewed,
 ) -> Option<()> {
     let f = patch_file(repo, &key.patch)?;
     private_dir(f.parent()?)?;
@@ -446,6 +456,7 @@ fn remember_patch(
         "agent": AGENT,
         "how": how,
         "prompt_rules_sha": prompt_rules.stored(),
+        "candidates": candidates.to_json(),
     })
     .to_string();
     amont_agent_guard::atomic::write_atomic(&f, &body).ok()?;
@@ -551,11 +562,20 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     if let Some(Pass {
         verdict,
         prompt_rules,
+        candidates,
     }) = remembered_pass(&name, &tree)
     {
         if let Some(k) = &key {
             if remembered_patch(&name, k).is_none() {
-                remember_patch(&name, k, &tree, &verdict, "tree", &prompt_rules);
+                remember_patch(
+                    &name,
+                    k,
+                    &tree,
+                    &verdict,
+                    "tree",
+                    &prompt_rules,
+                    &candidates,
+                );
             }
         }
         let overruled = verdict == "overruled";
@@ -570,6 +590,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         );
         if !overruled {
             check_remembered_rules(&repo, &name, &tree, &prompt_rules);
+            check_candidates(&name, &tree, &candidates);
         }
         return Judged::Decline(if overruled { "overruled" } else { "reviewed" });
     }
@@ -577,6 +598,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         let Pass {
             verdict,
             prompt_rules,
+            candidates,
         } = pass;
         remember(
             &name,
@@ -584,6 +606,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &verdict,
             &format!("patch {}", short(&old_tree)),
             &prompt_rules,
+            &candidates,
         );
         let overruled = verdict == "overruled";
         provenance(
@@ -597,6 +620,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         );
         if !overruled {
             check_remembered_rules(&repo, &name, &tree, &prompt_rules);
+            check_candidates(&name, &tree, &candidates);
         }
         return Judged::Decline(if overruled {
             "overruled-by-patch"
@@ -639,12 +663,29 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             },
             Some(v) => {
                 let prompt_rules = PromptRules::of_prompt(latest.rules_sha.as_deref());
-                remember(&name, &tree, v.as_str(), "transcript", &prompt_rules);
+                let candidates = &latest.candidates;
+                remember(
+                    &name,
+                    &tree,
+                    v.as_str(),
+                    "transcript",
+                    &prompt_rules,
+                    candidates,
+                );
                 if let Some(k) = &key {
-                    remember_patch(&name, k, &tree, v.as_str(), "transcript", &prompt_rules);
+                    remember_patch(
+                        &name,
+                        k,
+                        &tree,
+                        v.as_str(),
+                        "transcript",
+                        &prompt_rules,
+                        candidates,
+                    );
                 }
                 provenance(&push, Bound::Reviewed, &tree);
                 check_remembered_rules(&repo, &name, &tree, &prompt_rules);
+                check_candidates(&name, &tree, candidates);
                 Judged::Decline("reviewed")
             }
         };
@@ -688,6 +729,26 @@ fn check_remembered_rules(repo: &Path, name: &str, tree: &str, prompt_rules: &Pr
         name,
         &format!("tree={} {excerpt}", short(tree)),
     );
+}
+
+/// What a passing review did with the candidates adr-lint listed: one
+/// `candidates-checked` note, and one ruling record per ruled candidate.
+/// Never holds the push: a ruling that cannot be written is journalled.
+fn check_candidates(name: &str, tree: &str, candidates: &Reviewed) {
+    note(
+        "candidates-checked",
+        "-",
+        name,
+        &format!("tree={} {}", short(tree), candidates.excerpt()),
+    );
+    if let Err(why) = crate::candidates_block::append_rulings(name, tree, candidates) {
+        note(
+            "rulings-write-failed",
+            "-",
+            name,
+            &format!("tree={} {why}", short(tree)),
+        );
+    }
 }
 
 /// Files the provenance record of a pass and journals what came of it. A
@@ -1004,6 +1065,7 @@ pub fn on_post_ask(ask: &amont_agent_guard::payload::Ask) -> Option<String> {
             "overruled",
             "person",
             &PromptRules::NotRecorded,
+            &Reviewed::not_recorded(),
         );
         note(
             "overruled",

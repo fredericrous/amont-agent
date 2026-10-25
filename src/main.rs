@@ -1179,10 +1179,14 @@ const REVIEW_BRIEF_USAGE: &str = "\
 usage: amont-agent review-brief [-C <dir>] [--plan <path>] [--base <ref>]
 
 The markdown brief an implementation reviewer is launched with: the
-<<<TREE ...>>> block and the <<<RULES sha=...>>> line, the plan's
-Verification section, the diff since the merge-base, the code rules in
-full, the constraint rules, the decisions that bear on the changed files,
-and the plan's Non-goals.
+<<<TREE ...>>> block, the <<<RULES sha=...>>> line and adr-lint's
+<<<CANDIDATES ...>>> block (paste them verbatim into the reviewer prompt),
+the plan's Verification section, the diff since the merge-base, the
+candidates, the code rules in full, the constraint rules, the decisions that
+bear on the changed files, and the plan's Non-goals. A repository with no
+.adr.yaml gets no rules line and a note that no decided code rules apply.
+adr-lint is `adr-lint` from PATH, or $AMONT_AGENT_ADR_LINT; when it cannot
+answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
 
   -C <dir>        the repository (default: the current directory)
   --plan <path>   the plan (default: the one file under docs/plans/ changed
@@ -1323,7 +1327,10 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
     };
     match review_brief::build(&request) {
         Ok(brief) => {
-            print!("{brief}");
+            for notice in &brief.notices {
+                eprintln!("amont-agent: review-brief: {notice}");
+            }
+            print!("{}", brief.text);
             ExitCode::SUCCESS
         }
         Err(review_brief::BriefError::Aval(why)) => {

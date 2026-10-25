@@ -28,6 +28,8 @@ fn run(args: &[&str], bin: &std::path::Path) -> Output {
     let mut dirs = vec![bin.to_path_buf()];
     dirs.extend(std::env::split_paths(&inherited));
     cmd.env("PATH", std::env::join_paths(dirs).unwrap());
+    // No test reaches the machine's own `adr-lint`: a fake in `bin`, or none.
+    cmd.env("AMONT_AGENT_ADR_LINT", bin.join("adr-lint"));
     cmd.output().expect("amont-agent runs")
 }
 
@@ -175,10 +177,20 @@ fn a_failed_git_diff_is_a_repository_error_with_nothing_on_stdout() {
 /// brief's success path and the flag shapes.
 #[cfg(unix)]
 fn two_commit_repo(name: &str) -> PathBuf {
+    two_commit_repo_with(name, &[".adr.yaml"])
+}
+
+/// The same, with `extra` files in the base commit (`.adr.yaml` marks a
+/// repository that has an aval corpus).
+#[cfg(unix)]
+fn two_commit_repo_with(name: &str, extra: &[&str]) -> PathBuf {
     let repo = scratch(name);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["config", "user.email", "t@example.com"]);
     git(&repo, &["config", "user.name", "t"]);
+    for file in extra {
+        std::fs::write(repo.join(file), "x: 1\n").unwrap();
+    }
     std::fs::write(repo.join("a.txt"), "one\n").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "base"]);
@@ -272,4 +284,206 @@ fn an_aval_relevant_answer_without_keys_exits_3() {
         String::from_utf8_lossy(&out.stderr).contains("keys"),
         "{out:?}"
     );
+}
+
+const ID_ONE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const ID_TWO: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+/// A fake `adr-lint` that records its arguments and prints `document`.
+#[cfg(unix)]
+fn fake_adr_lint(dir: &std::path::Path, document: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(dir.join("candidates.json"), document).unwrap();
+    let path = dir.join("adr-lint");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s' \"$*\" > \"$d/args\"\ncat \"$d/candidates.json\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn two_candidates() -> String {
+    let row = |id: &str, line: u32| {
+        format!(
+            r#"{{"id":"{id}","rule":"names.reveal-intent","pattern_id":"placeholder","pattern":"a placeholder name","path":"src/a.rs","line":{line},"col":5,"text":"let data = 1;","future":true}}"#
+        )
+    };
+    format!(
+        r#"{{"format":"adr-lint.candidates/1","base":"b","head":"h","candidates":[{},{}],"overflow":{{"names.reveal-intent":7}}}}"#,
+        row(ID_ONE, 3),
+        row(ID_TWO, 9)
+    )
+}
+
+#[cfg(unix)]
+fn brief_text(bin: &std::path::Path, repo: &std::path::Path) -> (Output, String) {
+    let out = run(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+        ],
+        bin,
+    );
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    (out, text)
+}
+
+#[cfg(unix)]
+#[test]
+fn the_brief_carries_adr_lints_candidates_right_after_the_rules_line() {
+    let bin = scratch("cand-two");
+    fake_aval(&bin, BRIEF_AVAL);
+    let document = two_candidates();
+    fake_adr_lint(&bin, &document);
+    let repo = two_commit_repo("cand-two-repo");
+    let (out, brief) = brief_text(&bin, &repo);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    let sha =
+        amont_agent_guard::sha256::hex(&amont_agent_guard::sha256::sha256(document.as_bytes()));
+    let lines: Vec<&str> = brief.lines().collect();
+    let rules = lines
+        .iter()
+        .position(|l| l.starts_with("<<<RULES sha="))
+        .expect("a rules line");
+    assert_eq!(lines[rules + 1], format!("<<<CANDIDATES sha={sha} n=2>>>"));
+    assert_eq!(
+        lines[rules + 2],
+        format!("{ID_ONE} names.reveal-intent placeholder src/a.rs:3")
+    );
+    assert_eq!(
+        lines[rules + 3],
+        format!("{ID_TWO} names.reveal-intent placeholder src/a.rs:9")
+    );
+    assert_eq!(lines[rules + 4], "<<<END CANDIDATES>>>");
+    assert!(brief.contains("## Candidates"), "{brief}");
+    assert!(brief.contains("a placeholder name"), "{brief}");
+    assert!(brief.contains("let data = 1;"), "{brief}");
+    assert!(brief.contains("names.reveal-intent: 7"), "{brief}");
+    assert!(brief.contains("`Candidates:` block"), "{brief}");
+    let base = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["rev-parse", "HEAD~1"])
+        .output()
+        .unwrap();
+    let base = String::from_utf8(base.stdout).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(bin.join("args")).unwrap(),
+        format!("candidates --base {} --json --max 40", base.trim())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn no_candidates_is_an_empty_block_and_no_ruling_is_needed() {
+    let bin = scratch("cand-zero");
+    fake_aval(&bin, BRIEF_AVAL);
+    let document =
+        r#"{"format":"adr-lint.candidates/1","base":"b","head":"h","candidates":[],"overflow":{}}"#;
+    fake_adr_lint(&bin, document);
+    let repo = two_commit_repo("cand-zero-repo");
+    let (out, brief) = brief_text(&bin, &repo);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let sha =
+        amont_agent_guard::sha256::hex(&amont_agent_guard::sha256::sha256(document.as_bytes()));
+    assert!(
+        brief.contains(&format!(
+            "<<<CANDIDATES sha={sha} n=0>>>\n<<<END CANDIDATES>>>\n"
+        )),
+        "{brief}"
+    );
+    assert!(brief.contains("no ruling is needed"), "{brief}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_adr_lint_leaves_the_brief_with_an_unavailable_marker() {
+    let bin = scratch("cand-missing");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo("cand-missing-repo");
+    let (out, brief) = brief_text(&bin, &repo);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(brief.contains("<<<CANDIDATES unavailable>>>"), "{brief}");
+    assert!(brief.contains("## Candidates"), "{brief}");
+    assert!(brief.contains("could not run"), "{brief}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.trim().lines().count(), 1, "{err}");
+    assert!(err.contains("adr-lint"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_wrong_format_token_or_a_failing_adr_lint_is_unavailable_too() {
+    let bin = scratch("cand-wrong");
+    fake_aval(&bin, BRIEF_AVAL);
+    fake_adr_lint(
+        &bin,
+        r#"{"format":"adr-lint.candidates/2","candidates":[]}"#,
+    );
+    let repo = two_commit_repo("cand-wrong-repo");
+    let (out, brief) = brief_text(&bin, &repo);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(brief.contains("<<<CANDIDATES unavailable>>>"), "{brief}");
+    assert!(brief.contains("candidates/2"), "{brief}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("candidates/2"),
+        "{out:?}"
+    );
+
+    use std::os::unix::fs::PermissionsExt;
+    let failing = bin.join("adr-lint");
+    std::fs::write(&failing, "#!/bin/sh\necho broken >&2\nexit 4\n").unwrap();
+    std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (out, brief) = brief_text(&bin, &repo);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(brief.contains("<<<CANDIDATES unavailable>>>"), "{brief}");
+    assert!(brief.contains("broken"), "{brief}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_repository_without_a_corpus_gets_a_brief_without_rules() {
+    let bin = scratch("no-corpus");
+    fake_aval(&bin, "#!/bin/sh\nexit 1\n");
+    fake_adr_lint(
+        &bin,
+        r#"{"format":"adr-lint.candidates/1","base":"b","head":"h","candidates":[],"overflow":{}}"#,
+    );
+    let repo = two_commit_repo_with("no-corpus-repo", &[]);
+    let (out, brief) = brief_text(&bin, &repo);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(!brief.contains("<<<RULES"), "{brief}");
+    assert!(brief.contains("# Code rules"), "{brief}");
+    assert!(brief.contains("no aval corpus"), "{brief}");
+    assert!(!brief.contains("# Constraint rules"), "{brief}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.trim().lines().count(), 1, "{err}");
+    assert!(err.contains(".adr.yaml"), "{err}");
+    let sha = run(&["rules-sha", "-C", repo.to_str().unwrap()], &bin);
+    assert_eq!(sha.status.code(), Some(3), "{sha:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_aval_keys_row_without_a_string_key_is_an_error_naming_the_row() {
+    let bin = scratch("keyless-row");
+    fake_aval(
+        &bin,
+        &BRIEF_AVAL.replace(
+            r#""--json relevant"*) printf '{"keys":[]}' ;;"#,
+            r#""--json relevant"*) printf '{"keys":[{"key":"a.b"},{"score":1}]}' ;;"#,
+        ),
+    );
+    let repo = two_commit_repo("keyless-row-repo");
+    let (out, _) = brief_text(&bin, &repo);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("row 1") && err.contains("key"), "{err}");
 }

@@ -232,6 +232,9 @@ fn tally_into(
             // a note beside a push that passed, never a decision, so it is
             // none of the four buckets.
             (_, "rules-checked") => {}
+            // The same for the candidates adr-lint listed and the reviewer
+            // ruled on (ADR-0044): a note beside a push that passed.
+            (_, "candidates-checked") => {}
             // An outcome this reader does not know. Counted as seen, because
             // it was, but not as any of the four it can name.
             _ => {}
@@ -833,6 +836,36 @@ mod tests {
              F {t} implementation-review - rules-checked - app - tree=5085edae1d66 review=rules-missing\n\
              F {t} implementation-review - rules-checked - app - tree=5085edae1d66 review=rules-stale\n\
              F {t} implementation-review - rules-checked - app - tree=5085edae1d66 review=rules-unknown\n"
+        );
+        fs::write(&path, text).expect("write journal");
+        let seen = tally_at(&path, 100_000, now);
+        let ir = &seen["implementation-review"];
+        assert_eq!(
+            (ir.advised, ir.denied, ir.watched, ir.unconfirmed),
+            (0, 0, 0, 0),
+            "{ir:?}"
+        );
+        let _ = fs::remove_dir_all(&dir); // cleanup only: a leftover scratch dir fails nothing
+    }
+
+    /// A `candidates-checked` note is a note too: it moves no counter.
+    #[test]
+    fn a_candidates_checked_note_counts_in_no_bucket() {
+        let dir = std::env::temp_dir().join(format!(
+            "amont-agent-tally-candidates-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir); // a scratch dir that is absent is the normal case
+        fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("journal.log");
+        let now = 2_000_000u64;
+        let t = now - 10;
+        let text = format!(
+            "{FORMAT}\n\
+             F {t} implementation-review - candidates-checked - app - tree=5085edae1d66 review=candidates-ruled n=2\n\
+             F {t} implementation-review - candidates-checked - app - tree=5085edae1d66 review=candidates-undisposed n=1/2\n\
+             F {t} implementation-review - candidates-checked - app - tree=5085edae1d66 review=candidates-unlisted\n\
+             F {t} implementation-review - candidates-checked - app - tree=5085edae1d66 review=candidates-unavailable\n"
         );
         fs::write(&path, text).expect("write journal");
         let seen = tally_at(&path, 100_000, now);

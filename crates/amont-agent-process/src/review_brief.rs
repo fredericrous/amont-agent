@@ -74,12 +74,31 @@ fn aval_program() -> std::ffi::OsString {
         .unwrap_or_else(|| std::ffi::OsString::from("aval"))
 }
 
+/// The `adr-lint` program to run: `AMONT_AGENT_ADR_LINT` names another one,
+/// else `adr-lint` from PATH.
+fn adr_lint_program() -> std::ffi::OsString {
+    std::env::var_os("AMONT_AGENT_ADR_LINT")
+        .filter(|program| !program.is_empty())
+        .unwrap_or_else(|| std::ffi::OsString::from("adr-lint"))
+}
+
 /// Runs `aval` with a deadline: a hung `aval` is killed and reported, so the
 /// push check that calls it never waits on it for long.
 fn run_aval(dir: &Path, args: &[&str]) -> Result<AvalAnswer, AvalFailed> {
+    run_bounded(&aval_program(), "aval", dir, args)
+}
+
+/// Runs a program with stdin from /dev/null and a deadline; `name` is how
+/// an error spells the command.
+fn run_bounded(
+    program: &std::ffi::OsStr,
+    name: &str,
+    dir: &Path,
+    args: &[&str],
+) -> Result<AvalAnswer, AvalFailed> {
     use std::io::Read;
-    let line = format!("aval {}", args.join(" "));
-    let mut child = Command::new(aval_program())
+    let line = format!("{name} {}", args.join(" "));
+    let mut child = Command::new(program)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -281,6 +300,44 @@ pub fn render_rules(json: &[u8]) -> Result<String, String> {
     Ok(rendered.join("\n"))
 }
 
+/// The `.adr.yaml` that marks a repository with an aval corpus.
+const CORPUS_FILE: &str = ".adr.yaml";
+
+/// The candidates section and block for the brief: what adr-lint printed, or
+/// why it could not.
+enum Candidates {
+    Answered(crate::candidates_block::Document),
+    Unavailable(String),
+}
+
+/// Asks adr-lint for the candidates the branch adds since `merge_base`.
+/// Advisory input: every failure is an `Unavailable` with its cause.
+fn candidates(repo: &Path, merge_base: &str) -> Candidates {
+    let args = ["candidates", "--base", merge_base, "--json", "--max", "40"];
+    let answer = match run_bounded(&adr_lint_program(), "adr-lint", repo, &args) {
+        Ok(answer) => answer,
+        Err(why) => return Candidates::Unavailable(why.0),
+    };
+    if !answer.status.success() {
+        let said = answer.stderr.lines().next().unwrap_or_default();
+        return Candidates::Unavailable(format!(
+            "`adr-lint candidates` exited {}: {said}",
+            answer.status
+        ));
+    }
+    match crate::candidates_block::parse_document(&answer.stdout) {
+        Ok(document) => Candidates::Answered(document),
+        Err(why) => Candidates::Unavailable(why),
+    }
+}
+
+/// A brief and the lines for stderr that go with it.
+pub struct Brief {
+    pub text: String,
+    /// One line each, for the caller to say on stderr.
+    pub notices: Vec<String>,
+}
+
 /// What the caller chose for a brief.
 pub struct BriefRequest {
     pub dir: PathBuf,
@@ -289,16 +346,22 @@ pub struct BriefRequest {
 }
 
 /// The brief, whole, or why it could not be built. Nothing is partial.
-pub fn build(request: &BriefRequest) -> Result<String, BriefError> {
+pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
     let repo = amont_agent_guard::push_target::toplevel(&request.dir).ok_or_else(|| {
         BriefError::Repository(format!(
             "{} is not inside a git repository",
             request.dir.display()
         ))
     })?;
-    let code_rules = rules(&repo)?;
-    let rules_text =
-        render_rules(&code_rules.json).map_err(|why| BriefError::Aval(AvalFailed(why)))?;
+    let has_corpus = repo.join(CORPUS_FILE).is_file();
+    let code_rules = if has_corpus {
+        let code_rules = rules(&repo)?;
+        let text =
+            render_rules(&code_rules.json).map_err(|why| BriefError::Aval(AvalFailed(why)))?;
+        Some((code_rules.sha, text))
+    } else {
+        None
+    };
     let tree = crate::content_id::content_id(&repo, "HEAD").map_err(BriefError::Repository)?;
     let name = crate::implementation_review::repo_name(&repo)
         .ok_or_else(|| BriefError::Repository("the repository has no name".into()))?;
@@ -316,7 +379,17 @@ pub fn build(request: &BriefRequest) -> Result<String, BriefError> {
     brief.push_str("# Implementation review brief\n\n");
     brief.push_str(&crate::implementation_review::block(&name, &tree));
     brief.push('\n');
-    brief.push_str(&rules_line(&code_rules.sha));
+    if let Some((sha, _)) = &code_rules {
+        brief.push_str(&rules_line(sha));
+        brief.push('\n');
+    }
+    let found = candidates(&repo, &merge_base);
+    match &found {
+        Candidates::Answered(document) => {
+            brief.push_str(&crate::candidates_block::block(document));
+        }
+        Candidates::Unavailable(_) => brief.push_str(crate::candidates_block::UNAVAILABLE),
+    }
     brief.push_str("\n\n");
 
     let (plan_label, plan_text) = plan_of(&repo, request.plan.as_deref(), &merge_base)?;
@@ -348,23 +421,49 @@ pub fn build(request: &BriefRequest) -> Result<String, BriefError> {
         );
     }
 
-    brief.push_str(&format!("# Code rules (in full)\n\n{rules_text}\n"));
+    let section_text = match &found {
+        Candidates::Answered(document) => crate::candidates_block::section(document),
+        Candidates::Unavailable(cause) => crate::candidates_block::unavailable_section(cause),
+    };
+    brief.push_str(&format!("{section_text}\n"));
 
-    let index = aval(&repo, &["rules", "--level", "constraint"])?;
-    brief.push_str(&format!(
-        "# Constraint rules\n\n{}\n\n",
-        String::from_utf8_lossy(&index).trim_end()
-    ));
+    let mut notices = Vec::new();
+    if let Candidates::Unavailable(cause) = &found {
+        notices.push(format!("adr-lint's candidates are unavailable: {cause}"));
+    }
+    match &code_rules {
+        Some((_, rules_text)) => {
+            brief.push_str(&format!("# Code rules (in full)\n\n{rules_text}\n"));
 
-    brief.push_str("# Decisions that apply to the changed paths\n\n");
-    brief.push_str(&decisions(&repo, &range)?);
+            let index = aval(&repo, &["rules", "--level", "constraint"])?;
+            brief.push_str(&format!(
+                "# Constraint rules\n\n{}\n\n",
+                String::from_utf8_lossy(&index).trim_end()
+            ));
+
+            brief.push_str("# Decisions that apply to the changed paths\n\n");
+            brief.push_str(&decisions(&repo, &range)?);
+        }
+        None => {
+            brief.push_str(&format!(
+                "# Code rules\n\nThis repository has no aval corpus (no {CORPUS_FILE}), so no decided code rules apply.\n"
+            ));
+            notices.push(format!(
+                "{} has no {CORPUS_FILE}: the brief carries no decided code rules",
+                repo.display()
+            ));
+        }
+    }
 
     let non_goals = plan_text
         .as_deref()
         .and_then(|t| section(t, "Non-goals"))
         .unwrap_or_else(|| missing_section(plan_text.as_deref(), "Non-goals"));
     brief.push_str(&format!("\n{non_goals}\n"));
-    Ok(brief)
+    Ok(Brief {
+        text: brief,
+        notices,
+    })
 }
 
 fn missing_section(plan_text: Option<&str>, heading: &str) -> String {
@@ -445,11 +544,18 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
                 "`aval --json relevant` printed no `keys` array".to_string(),
             ))
         })?;
-    let keys: Vec<String> = rows
-        .iter()
-        .filter_map(|row| row.get("key").and_then(serde_json::Value::as_str))
-        .map(str::to_string)
-        .collect();
+    let mut keys: Vec<String> = Vec::with_capacity(rows.len());
+    for (index, row) in rows.iter().enumerate() {
+        let key = row
+            .get("key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                BriefError::Aval(AvalFailed(format!(
+                    "`aval --json relevant` row {index} of `keys` has no string `key`"
+                )))
+            })?;
+        keys.push(key.to_string());
+    }
     let mut out = String::new();
     for key in keys {
         // `undecided`, `retired` and `unknown` are answers that exit non-zero.

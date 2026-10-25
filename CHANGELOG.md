@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`review-brief` carries adr-lint's candidates.** It runs `adr-lint
+  candidates --base <merge-base> --json --max 40` (`AMONT_AGENT_ADR_LINT`
+  names the program) and prints a `<<<CANDIDATES sha=... n=...>>>` block
+  after the RULES line, a `## Candidates` section, and the instruction for
+  the reviewer's `Candidates:` rulings. A missing or failing adr-lint gives
+  `<<<CANDIDATES unavailable>>>` and an exit 0.
+- **The implementation-review push check reads the rulings.** A passing push
+  journals one `candidates-checked` line (`candidates-ruled`,
+  `candidates-undisposed`, `candidates-unlisted` or `candidates-unavailable`;
+  it holds nothing and `status` counts it in no bucket) and appends each
+  ruling as an `adr-lint.ruling/1` record to
+  `~/.claude/amont-agent/rulings/<repo>.jsonl`, once per review and
+  candidate.
+
+### Fixed
+
+- **`review-brief` in a repository with no `.adr.yaml`** exits 0 with a brief
+  that says no decided code rules apply, instead of failing on `aval`.
+- **A `keys` row of `aval relevant` without a string `key`** is an aval
+  error (exit 3) naming the row, instead of being dropped.
+
 ## v3.2.0
 
 ### Added
