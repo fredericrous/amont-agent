@@ -48,8 +48,26 @@ This branch carries Phase 5: a PostToolUse rule on Edit, Write and MultiEdit of 
 - **What it says:** findings come back as advice (`path:line:col: rule: statement` and `aval rule <id>`). It never denies.
 - **What it journals:** each finding as (rule, path, line text), so phase 8 can count the fixes. A missing binary, exit 2 and exit 3 are journalled once per session.
 
-Measured before building: `adr-lint check -- <one .rs file>` takes p50 151 ms and p95 163 ms (20 runs), against a 300 ms budget; `amont list --json` takes about 1 s, hence the cache. adr-lint 0.5.0 ships the `amont.pack` row and `text` in `check --json`. A dotfiles PR adds the matcher to the chezmoi-managed `settings.json`.
+Measured before building: `adr-lint check -- <one .rs file>` takes p50 151 ms and p95 163 ms (20 runs), against a 300 ms budget; `amont list --json` takes about 1 s, hence the cache. adr-lint 0.5.0 ships the `amont.pack` row and `text` in `check --json`. The new `PostToolUse` `Edit|Write|MultiEdit` matcher arrives through `amont-agent install --write`, and `doctor` names it when it is missing, like its neighbours. There is no dotfiles PR: the chezmoi source of `~/.claude/settings.json` already lacks six amont-agent matchers and holds machine-local settings, so reconciling it is the person's call. One edit can be told about one suppression twice: `lint-suppression-added` speaks before the write, and this rule after it when `general.no-disabled-safety` matches. Both only advise, and each journals under its own id. That overlap is accepted until phase 8 measures it.
 
 ## Verification (phase 5)
 
-(filled at finish)
+Input → expected → actual:
+- `make check` → pass → pass (the hook's 9 integration tests, plus unit and corpus cases).
+- The release binary's `hook` was fed a `PostToolUse` Edit payload whose cwd is a different directory, with real adr-lint 0.5.0 and real amont. The file has a reasonless `#[ignore]`, in a scratch repository that vendors adr-lint's pack (untrusted) → advice naming `tests.first-properties` and `aval rule tests.first-properties` → `additionalContext`, with the finding, the `aval rule` line and the waiver.
+- The same payload for a relais file (relais vendors no row) → no output → none.
+- 10 calls with the gate cached → p95 ≤ 300 ms → 150 to 181 ms. The first call also pays `amont list --json`, about 1 s.
+- The journal → each finding as (rule, path, text) under the file's repository → `adr-lint-written advise advised … tests.first-properties src/lib.rs #[ignore]` under the scratch repository's name, not the cwd's.
+- The gate is matched by row id, because `amont list --json` shows an untrusted vendored row as `unusable` with `command: null`, as seen after `amont add`.
+
+### Implementation review (phase 5)
+
+- approve-with-changes (1 high, 3 medium, 1 low), then approve-with-changes on the Delta, with the 3 plan items owed to this commit; 72k + 78k tokens, 77 s + 18 s.
+- Fixed:
+  - `amont list` gets 5 s, inside the hook's 10 s, so a hung amont's closed gate is cached;
+  - docs/rules.md describes the gate by id;
+  - this record;
+  - the dotfiles line;
+  - the overlap sentence.
+- The reviewer ruled all 14 adr-lint candidates `fine`.
+- The relais run `run-65ead843594b0-15be8` hit its wall time, with the hook built and its tests passing. I finished it by hand: the id gate, the journal repo, same-line reasons, two more corpus negatives. It is recorded as salvaged at aa907c1.
