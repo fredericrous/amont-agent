@@ -533,9 +533,9 @@ fn a_reviewed_tree_passes_and_recording_the_review_keeps_it_reviewed() {
         line.contains(" implementation-review unconfirmed reviewed "),
         "{line}"
     );
-    // One decision line, and the rules line beside it (ADR-0044).
+    // One decision line, and the rules and candidates lines beside it (ADR-0044).
     let journal = w.journal();
-    assert_eq!(journal.len(), 2, "{journal:?}");
+    assert_eq!(journal.len(), 3, "{journal:?}");
     assert!(
         journal
             .iter()
@@ -1549,7 +1549,7 @@ fn a_conflict_free_rebase_keeps_the_review_by_patch() {
     assert!(line.contains(" unconfirmed reviewed-by-patch "), "{line}");
     // The patch memory served this push, and the rules check ran on it too.
     let journal = w.journal();
-    let rules_line = &journal[journal.len() - 2];
+    let rules_line = &journal[journal.len() - 3];
     assert!(
         rules_line.contains(" rules-checked ") && rules_line.contains("review=rules-current"),
         "{journal:?}"
@@ -2155,4 +2155,325 @@ fn a_pass_remembered_before_the_sha_was_stored_journals_rules_unknown() {
         notes.len() == 2 && notes[1].contains("review=rules-unknown"),
         "{notes:?}"
     );
+}
+
+const ID_ONE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const ID_TWO: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+/// The `<<<CANDIDATES …>>>` block and section a brief prints for `ids`.
+fn candidates_prompt(ids: &[&str]) -> String {
+    let mut out = format!("<<<CANDIDATES sha={} n={}>>>\n", "0".repeat(64), ids.len());
+    for (index, id) in ids.iter().enumerate() {
+        out.push_str(&format!(
+            "{id} names.reveal-intent placeholder src/lib.rs:{}\n",
+            index + 1
+        ));
+    }
+    out.push_str("<<<END CANDIDATES>>>\n\n## Candidates\n\n");
+    for (index, id) in ids.iter().enumerate() {
+        out.push_str(&format!(
+            "- {id} src/lib.rs:{} rule names.reveal-intent \u{2014} a placeholder name\n  text: let data = 1;\n",
+            index + 1
+        ));
+    }
+    out
+}
+
+/// Pushes a reviewed tree whose reviewer prompt is `block` plus `extra` and
+/// whose result is `result`; returns the journal lines the push wrote.
+fn candidates_journal(name: &str, extra: &str, result: &str) -> (World, PathBuf, Vec<String>) {
+    let w = World::new(name);
+    let repo = w.repo("app");
+    let block = format!("{}\n{extra}", w.block(&repo));
+    let mut t = Transcript::default();
+    t.review(&w, AGENT, &block, result, Done::NotifiedUser);
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let journal = w.journal();
+    (w, repo, journal)
+}
+
+fn candidates_notes(journal: &[String]) -> Vec<String> {
+    journal
+        .iter()
+        .filter(|l| l.contains(" candidates-checked "))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn every_listed_candidate_ruled_is_journalled_ruled() {
+    let result = format!(
+        "Verdict: approve\nCandidates:\n{ID_ONE} fine: \"No placeholder names.\"\n{} violation: data says nothing",
+        &ID_TWO[..12]
+    );
+    let (_, _, journal) =
+        candidates_journal("cand-ruled", &candidates_prompt(&[ID_ONE, ID_TWO]), &result);
+    let notes = candidates_notes(&journal);
+    assert!(
+        notes.len() == 1 && notes[0].contains("review=candidates-ruled n=2"),
+        "{journal:?}"
+    );
+    assert!(
+        journal.iter().any(|l| l.contains("unconfirmed reviewed")),
+        "{journal:?}"
+    );
+}
+
+#[test]
+fn a_listed_candidate_without_a_ruling_is_undisposed_and_the_push_still_passes() {
+    let result = format!("Verdict: approve\nCandidates:\n{ID_ONE} fine: a clause");
+    let (_, _, journal) = candidates_journal(
+        "cand-undisposed",
+        &candidates_prompt(&[ID_ONE, ID_TWO]),
+        &result,
+    );
+    let notes = candidates_notes(&journal);
+    assert!(
+        notes.len() == 1 && notes[0].contains("review=candidates-undisposed n=1/2"),
+        "{journal:?}"
+    );
+}
+
+#[test]
+fn a_prompt_without_a_block_or_with_the_unavailable_marker_is_journalled() {
+    let (_, _, journal) = candidates_journal("cand-unlisted", "just a brief", "Verdict: approve");
+    let notes = candidates_notes(&journal);
+    assert!(
+        notes.len() == 1 && notes[0].contains("review=candidates-unlisted"),
+        "{journal:?}"
+    );
+    let (_, _, journal) = candidates_journal(
+        "cand-unavailable",
+        "<<<CANDIDATES unavailable>>>\n",
+        "Verdict: approve",
+    );
+    let notes = candidates_notes(&journal);
+    assert!(
+        notes.len() == 1 && notes[0].contains("review=candidates-unavailable"),
+        "{journal:?}"
+    );
+}
+
+const RULING_FIELDS: [&str; 12] = [
+    "format",
+    "review",
+    "tool",
+    "repo",
+    "tree",
+    "candidate",
+    "rule",
+    "pattern_id",
+    "pattern",
+    "ruling",
+    "clause",
+    "at",
+];
+
+fn rulings_file(w: &World) -> PathBuf {
+    w.root.join("claude/amont-agent/rulings/app.jsonl")
+}
+
+#[test]
+fn rulings_are_appended_once_per_review_and_candidate() {
+    let result = format!(
+        "Verdict: approve\nCandidates:\n{ID_ONE} fine: \"No placeholder names.\"\n{} violation: data says nothing",
+        &ID_TWO[..12]
+    );
+    let (w, repo, _) = candidates_journal(
+        "cand-rulings",
+        &candidates_prompt(&[ID_ONE, ID_TWO]),
+        &result,
+    );
+    let file = rulings_file(&w);
+    let first = std::fs::read_to_string(&file).unwrap();
+    let records: Vec<serde_json::Value> = first
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2, "{first}");
+    let tree = w.tree(&repo);
+    for record in &records {
+        let mut keys: Vec<&str> = record
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut wanted = RULING_FIELDS.to_vec();
+        keys.sort_unstable();
+        wanted.sort_unstable();
+        assert_eq!(keys, wanted, "{record}");
+        assert_eq!(record["format"], "adr-lint.ruling/1");
+        assert_eq!(record["tool"], "amont-agent");
+        assert_eq!(record["repo"], "app");
+        assert_eq!(record["tree"], tree.as_str());
+        assert_eq!(record["rule"], "names.reveal-intent");
+        assert_eq!(record["pattern_id"], "placeholder");
+        assert_eq!(record["pattern"], "a placeholder name");
+        assert_eq!(record["review"], "a0001");
+        let at = record["at"].as_str().unwrap();
+        assert!(
+            at.len() == 20 && at.as_bytes()[10] == b'T' && at.ends_with('Z'),
+            "{at}"
+        );
+    }
+    assert_eq!(records[0]["candidate"], ID_ONE);
+    assert_eq!(records[0]["ruling"], "fine");
+    assert_eq!(records[0]["clause"], "\"No placeholder names.\"");
+    assert_eq!(records[1]["candidate"], ID_TWO);
+    assert_eq!(records[1]["ruling"], "violation");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(mode(file.parent().unwrap()), 0o700);
+    }
+
+    // The tree memory answers a second push: the check runs again, no second record.
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    let notes = candidates_notes(&w.journal());
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes
+        .iter()
+        .all(|l| l.contains("review=candidates-ruled n=2")));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), first);
+
+    check_with_adr_lint(&file);
+}
+
+/// Validates a rulings file with a real `adr-lint` 0.2.0 or newer on PATH;
+/// prints why it did not when there is none.
+#[test]
+fn a_pass_remembered_before_candidates_were_stored_journals_candidates_unknown() {
+    let result = format!("Verdict: approve\nCandidates:\n{ID_ONE} fine: \"No placeholder names.\"");
+    let (w, repo, _) = candidates_journal("cand-legacy", &candidates_prompt(&[ID_ONE]), &result);
+    let tree = w.tree(&repo);
+    let file = w.pass_file("app", &tree);
+    let mut pass: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    pass.as_object_mut().unwrap().remove("candidates");
+    std::fs::write(&file, pass.to_string()).unwrap();
+
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    let notes = candidates_notes(&w.journal());
+    assert!(
+        notes.len() == 2 && notes[1].contains("review=candidates-unknown"),
+        "{notes:?}"
+    );
+}
+
+/// chmod is the only way to make a file unreadable from a test, and it has
+/// no effect for root, so the test skips with a reason when the file stays
+/// readable.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_rulings_file_is_journalled_and_not_appended_to() {
+    use std::os::unix::fs::PermissionsExt;
+    let result = format!("Verdict: approve\nCandidates:\n{ID_ONE} fine: \"No placeholder names.\"");
+    let (w, repo, _) =
+        candidates_journal("cand-unreadable", &candidates_prompt(&[ID_ONE]), &result);
+    let file = rulings_file(&w);
+    let first = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(first.lines().count(), 1, "{first}");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&file).is_ok() {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        eprintln!("skipped: the rulings file stays readable after chmod 000 (running as root)");
+        return;
+    }
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        first,
+        "nothing appended"
+    );
+    let failed: Vec<String> = w
+        .journal()
+        .into_iter()
+        .filter(|l| l.contains(" rulings-write-failed "))
+        .collect();
+    assert!(
+        failed.len() == 1 && failed[0].contains("cannot be read"),
+        "{failed:?}"
+    );
+}
+
+fn check_with_adr_lint(file: &Path) {
+    let version = Command::new("adr-lint").arg("--version").output();
+    let Some(version) = version.ok().filter(|v| v.status.success()) else {
+        eprintln!("skipped: no `adr-lint` on PATH to run `ruling-record --check`");
+        return;
+    };
+    let version = String::from_utf8_lossy(&version.stdout).to_string();
+    if version.contains("0.1.") {
+        eprintln!("skipped: `{}` has no ruling-record command", version.trim());
+        return;
+    }
+    let checked = Command::new("adr-lint")
+        .arg("ruling-record")
+        .arg("--check")
+        .arg(file)
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "adr-lint ruling-record --check: {}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+}
+
+#[test]
+fn a_patch_memory_pass_runs_the_candidates_check_and_the_rulings_stay_deduped() {
+    let w = World::new("cand-patch");
+    let repo = w.repo("app");
+    let block = format!("{}\n{}", w.block(&repo), candidates_prompt(&[ID_ONE]));
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &block,
+        &format!("Verdict: approve\nCandidates:\n{ID_ONE} fine: a clause"),
+        Done::NotifiedUser,
+    );
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(
+        w.last_line().contains("reviewed-by-patch"),
+        "{}",
+        w.last_line()
+    );
+    let notes = candidates_notes(&w.journal());
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes
+        .iter()
+        .all(|l| l.contains("review=candidates-ruled n=1")));
+    let lines = std::fs::read_to_string(rulings_file(&w)).unwrap();
+    assert_eq!(lines.lines().count(), 1, "{lines}");
+}
+
+#[test]
+fn a_held_push_appends_no_ruling() {
+    let w = World::new("cand-held");
+    let repo = w.repo("app");
+    let block = format!("{}\n{}", w.block(&repo), candidates_prompt(&[ID_ONE]));
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &block,
+        &format!("Verdict: rework\nCandidates:\n{ID_ONE} violation: x"),
+        Done::NotifiedUser,
+    );
+    let transcript = w.transcript("t", &t);
+    assert!(matches!(
+        w.push(&repo, "s1", Some(&transcript)),
+        Said::Advise(_)
+    ));
+    assert!(!rulings_file(&w).exists());
+    assert!(candidates_notes(&w.journal()).is_empty());
 }

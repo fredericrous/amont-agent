@@ -5,6 +5,7 @@
 //! binary.
 
 pub mod attestations;
+pub mod candidates_block;
 pub mod content_id;
 pub mod guide;
 pub mod impl_review_outcomes;
