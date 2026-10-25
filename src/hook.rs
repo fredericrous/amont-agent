@@ -969,9 +969,11 @@ fn on_post_file(op: &crate::payload::FileOp) -> Decision {
 
 /// How long `adr-lint check` gets on one file.
 const ADR_LINT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
-/// How long `amont list --json` gets; it takes about a second, and is asked
-/// once per session and repository.
-const AMONT_LIST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long `amont list --json` gets: it takes about a second, and is asked
+/// once per session and repository. Well under the hook's own 10 s timeout,
+/// so a hung `amont` ends here and its closed gate is cached, instead of
+/// Claude Code killing the hook before anything is recorded.
+const AMONT_LIST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A child process that was run with a deadline.
 enum Ran {
