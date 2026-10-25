@@ -8,7 +8,7 @@
 //! the `Candidates:` rulings from the reviewer's result. Candidates are
 //! advisory input: nothing here holds a push.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -519,7 +519,9 @@ impl Reviewed {
                     })
                     .unwrap_or_default(),
             ),
-            _ => Prompted::Unlisted,
+            Some("unlisted") => Prompted::Unlisted,
+            // A state this reader does not know says nothing it can trust.
+            _ => Prompted::NotRecorded,
         };
         let rulings = stored
             .get("rulings")
@@ -570,13 +572,14 @@ fn now_rfc3339() -> String {
     rfc3339_utc(seconds)
 }
 
-/// Whether the file already holds a record for this review and candidate.
+/// The (review, candidate) pairs the file already holds, read once per push.
 /// A file that is missing holds nothing; a file that cannot be read, or a
 /// line that cannot be parsed, is an error, so nothing is appended blind.
-fn already_recorded(file: &Path, review: &str, candidate: &str) -> std::io::Result<bool> {
+fn recorded_pairs(file: &Path) -> std::io::Result<BTreeSet<(String, String)>> {
+    let mut pairs = BTreeSet::new();
     let text = match std::fs::read_to_string(file) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(pairs),
         Err(error) => {
             return Err(std::io::Error::new(
                 error.kind(),
@@ -594,13 +597,17 @@ fn already_recorded(file: &Path, review: &str, candidate: &str) -> std::io::Resu
                 ),
             )
         })?;
-        if record.get("review").and_then(serde_json::Value::as_str) == Some(review)
-            && record.get("candidate").and_then(serde_json::Value::as_str) == Some(candidate)
-        {
-            return Ok(true);
+        let text_of = |name: &str| {
+            record
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        };
+        if let (Some(review), Some(candidate)) = (text_of("review"), text_of("candidate")) {
+            pairs.insert((review, candidate));
         }
     }
-    Ok(false)
+    Ok(pairs)
 }
 
 /// Appends one `adr-lint.ruling/1` record per disposed candidate to
@@ -624,9 +631,10 @@ pub fn append_rulings(repo: &str, tree: &str, reviewed: &Reviewed) -> std::io::R
     std::fs::create_dir_all(&dir)?;
     journal::private(&dir, 0o700);
     let file = dir.join(format!("{repo}.jsonl"));
+    let mut recorded = recorded_pairs(&file)?;
     let mut appended = 0;
     for item in disposed {
-        if already_recorded(&file, &reviewed.review, &item.listed.id)? {
+        if !recorded.insert((reviewed.review.clone(), item.listed.id.clone())) {
             continue;
         }
         let record = serde_json::json!({

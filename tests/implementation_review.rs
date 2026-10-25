@@ -2343,8 +2343,6 @@ fn rulings_are_appended_once_per_review_and_candidate() {
     check_with_adr_lint(&file);
 }
 
-/// Validates a rulings file with a real `adr-lint` 0.2.0 or newer on PATH;
-/// prints why it did not when there is none.
 #[test]
 fn a_pass_remembered_before_candidates_were_stored_journals_candidates_unknown() {
     let result = format!("Verdict: approve\nCandidates:\n{ID_ONE} fine: \"No placeholder names.\"");
@@ -2401,6 +2399,8 @@ fn an_unreadable_rulings_file_is_journalled_and_not_appended_to() {
     );
 }
 
+/// Validates a rulings file with a real `adr-lint` 0.2.0 or newer on PATH;
+/// prints why it did not when there is none.
 fn check_with_adr_lint(file: &Path) {
     let version = Command::new("adr-lint").arg("--version").output();
     let Some(version) = version.ok().filter(|v| v.status.success()) else {
