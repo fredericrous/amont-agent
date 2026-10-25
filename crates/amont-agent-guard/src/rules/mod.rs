@@ -27,6 +27,7 @@ use std::ops::Range;
 
 use crate::shell::Parsed;
 
+pub mod adr_lint_written;
 pub mod agent_guidance_shape;
 pub mod agent_guidance_written;
 pub mod amend_pushed;

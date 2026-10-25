@@ -177,6 +177,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/lint-suppression-added.cases"),
     ),
     (
+        "adr-lint-written",
+        include_str!("../tests/corpus/adr-lint-written.cases"),
+    ),
+    (
         "agent-guidance-written",
         include_str!("../tests/corpus/agent-guidance-written.cases"),
     ),
