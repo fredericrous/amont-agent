@@ -290,7 +290,8 @@ fn configured(installs: &[Install]) -> Finding {
                  what proves the guard is alive, the Read|Edit|Write and PostToolUse Read \
                  entries let `file-reread` see a file opened twice, the Grep entry lets \
                  `symbol-grep-not-lsp` see the Grep tool, and the PostToolUse LSP entry lets \
-                 `code-read-not-lsp` see what LSP was asked",
+                 `code-read-not-lsp` see what LSP was asked, and the PostToolUse \
+                 Edit|Write|MultiEdit entry lets `adr-lint-written` check a file just written",
                 missing.join(", ")
             ),
         );

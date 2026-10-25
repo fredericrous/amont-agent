@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`adr-lint-written`** (advise, never deny): after a successful Edit, Write
+  or MultiEdit of a `.rs`, `.ts`, `.tsx`, `.go` or `.py` file, runs
+  `adr-lint check --json -- <path>` in the file's git root and gives the
+  findings back as advice with their `aval rule <id>` lines. Quiet unless
+  `amont list --json` shows that repository runs an `adr-lint check` row
+  (asked once per session and repository). Findings are journalled; a kill at
+  1 s is `adr-lint-slow`. Needs the new `PostToolUse` `Edit|Write|MultiEdit`
+  hook entry: `amont-agent doctor` reports it missing, `install --write`
+  adds it.
+
 ## v3.3.0
 
 ### Added

@@ -277,6 +277,9 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // file LSP was asked about is not advised (or refused) as a blind Read.
     // Its own block, as Grep got in 2.32.0.
     ("PostToolUse", Some("LSP")),
+    // `adr-lint-written` checks the file a successful Edit, Write or
+    // MultiEdit left on disk. Its own block, as Read and LSP have.
+    ("PostToolUse", Some("Edit|Write|MultiEdit")),
     ("SessionStart", None),
     // Preview approval (ADR-0023). A typed approval arrives as a prompt; an
     // answered marked question arrives after `AskUserQuestion`, and whether

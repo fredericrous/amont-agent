@@ -289,6 +289,18 @@ pub fn told(session: &str, key: &str) -> Told {
     }
 }
 
+/// Whether `key` is already on the session's record, without adding it.
+pub fn was_told(session: &str, key: &str) -> bool {
+    if !crate::session_state::usable_id(session) || key.contains('\n') {
+        return false;
+    }
+    let Some(dir) = crate::journal::dir().map(|d| d.join("sessions")) else {
+        return false;
+    };
+    std::fs::read_to_string(dir.join(format!("{session}.lsp")))
+        .is_ok_and(|seen| seen.lines().any(|l| l == key))
+}
+
 /// The one normal form a path is stored and looked up in: `.` and `..`
 /// removed lexically, then `canonicalize` when the file exists (macOS `/tmp`
 /// is `/private/tmp`). A file that does not exist keeps its lexical form.

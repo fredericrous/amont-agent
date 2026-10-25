@@ -204,6 +204,36 @@ fn a_settings_file_without_the_lsp_block_is_reported_by_name() {
     assert!(!fixed.contains("missing:"), "{fixed}");
 }
 
+/// The PostToolUse write block (`adr-lint-written`) is named when missing,
+/// and install restores it.
+#[test]
+fn a_settings_file_without_the_write_block_is_reported_by_name() {
+    let h = Home::new("no-write");
+    h.with_a_session();
+    let (code, out) = h.run(&["install", "--write"]);
+    assert_eq!(code, 0, "{out}");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(h.settings()).unwrap()).unwrap();
+    let post = doc["hooks"]["PostToolUse"]
+        .as_array_mut()
+        .expect("PostToolUse");
+    assert!(
+        post.iter().any(|b| b["matcher"] == "Edit|Write|MultiEdit"),
+        "installed"
+    );
+    post.retain(|b| b["matcher"] != "Edit|Write|MultiEdit");
+    std::fs::write(h.settings(), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    let (_, out) = h.run(&["doctor"]);
+    assert!(
+        out.contains("missing: PostToolUse Edit|Write|MultiEdit"),
+        "{out}"
+    );
+    let (_, again) = h.run(&["install", "--write"]);
+    assert!(!again.is_empty(), "install runs");
+    let (_, fixed) = h.run(&["doctor"]);
+    assert!(!fixed.contains("missing:"), "{fixed}");
+}
+
 /// The bug this test was written for: with no SessionStart entry there is no
 /// heartbeat, and the first version reported "the guard has never run" — on a
 /// machine where it had refused a command minutes earlier. Absence of a

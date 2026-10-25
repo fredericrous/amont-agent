@@ -46,6 +46,7 @@ pub const RULES: &[Rule] = &[
     crate::rules::lint_suppression_added::RULE,
     crate::rules::agent_guidance_written::RULE,
     crate::rules::agent_guidance_shape::RULE,
+    crate::rules::adr_lint_written::RULE,
     crate::rules::test_output_trimmed::RULE,
     crate::rules::workspace_root_write::RULE,
 ];
@@ -158,7 +159,7 @@ mod tests {
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 42, "{ids:?}");
+        assert_eq!(ids.len(), 43, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)

@@ -10,6 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -139,9 +141,7 @@ impl World {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::write(&path, format!("#!/bin/sh\nprintf '%s' '{stdout}'\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            common::write_fake(&path, &format!("#!/bin/sh\nprintf '%s' '{stdout}'\n"));
         }
         #[cfg(windows)]
         // `set /p` leaves errorlevel 1 on empty input: exit 0 explicitly.
@@ -221,7 +221,6 @@ impl World {
     /// receipt directory, and amont's own refusal on `main`.
     #[cfg(unix)]
     fn fake_amont(&self) {
-        use std::os::unix::fs::PermissionsExt;
         let dir = self.root.join("bin");
         std::fs::create_dir_all(&dir).unwrap();
         let script = r#"#!/bin/sh
@@ -234,13 +233,10 @@ if [ "$b" = main ] || [ "$b" = master ]; then
 fi
 printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"refs/heads/%s","retried":false,"status":"would-land","receipt_dir":"%s","lease":false}\n' "$b" "$(git rev-parse HEAD)" "$b" "$(git rev-parse --absolute-git-dir)/amont/land"
 "#;
-        let path = dir.join("amont");
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         // The first exec of a fresh script can be held by Gatekeeper for
-        // seconds on macOS, longer under a parallel suite: run it once here,
-        // outside the hook's 3 s budget for the dry-run.
-        let _ = Command::new(&path).output();
+        // seconds on macOS, longer under a parallel suite: the helper runs it
+        // once here, outside the hook's 3 s budget for the dry-run.
+        common::write_fake(&dir.join("amont"), script);
     }
 
     /// A Bash payload for `stage` with an explicit `tool_use_id`, so a
@@ -1686,7 +1682,6 @@ fn an_overrule_carries_over_by_patch() {
 #[cfg(unix)]
 #[test]
 fn a_patch_id_that_cannot_be_computed_holds_the_push() {
-    use std::os::unix::fs::PermissionsExt;
     let w = World::new("bypatch-noid");
     let repo = w.repo("app");
     let transcript = reviewed(&w, &repo);
@@ -1701,31 +1696,13 @@ fn a_patch_id_that_cannot_be_computed_holds_the_push() {
     .unwrap();
     let bin = w.root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let shim = bin.join("git");
-    std::fs::write(
-        &shim,
-        format!(
+    common::write_fake(
+        &bin.join("git"),
+        &format!(
             "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = patch-id ] && exit 1; done\nexec {} \"$@\"\n",
             real.trim()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // A parallel test that forks while this file is still open for writing
-    // keeps a write descriptor until it execs, and exec of the shim then
-    // fails with ETXTBSY (Linux). Run it once, retrying that error, before
-    // the hook depends on it.
-    for _ in 0..100 {
-        match Command::new(&shim).arg("--version").output() {
-            Err(e) if e.raw_os_error() == Some(26) => {
-                std::thread::sleep(std::time::Duration::from_millis(20))
-            }
-            other => {
-                other.expect("the shim runs");
-                break;
-            }
-        }
-    }
+    );
     let said = w.push(&repo, "s1", Some(&transcript));
     let text = advised(&said);
     assert!(text.contains("(stale)"), "{text}");

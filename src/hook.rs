@@ -133,6 +133,7 @@ fn decide(raw: &str) -> Decision {
         Event::PreGrep(op) => on_grep(&op),
         Event::PostLsp(call) => on_post_lsp(&call),
         Event::PostFile(op) => on_post_file(&op),
+        Event::PostWrite(op) => on_post_write(&op),
         Event::PreBash(bash) => on_bash(&bash),
         Event::PostBash(bash) => on_post_bash(&bash),
         Event::PostBashFailure(bash) => on_post_bash_failure(&bash),
@@ -964,6 +965,228 @@ fn on_post_file(op: &crate::payload::FileOp) -> Decision {
         }
     }
     Decision::Silent
+}
+
+/// How long `adr-lint check` gets on one file.
+const ADR_LINT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long `amont list --json` gets; it takes about a second, and is asked
+/// once per session and repository.
+const AMONT_LIST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A child process that was run with a deadline.
+enum Ran {
+    Exited { code: Option<i32>, stdout: String },
+    TimedOut,
+    Failed(String),
+}
+
+/// Runs `program` in `dir` with stdin closed and stdout captured, and kills
+/// it at `deadline`. The reader is never joined after a kill: a grandchild
+/// holding the pipe would hold the hook with it.
+fn run_with_deadline(
+    program: &std::ffi::OsStr,
+    args: &[&str],
+    dir: &std::path::Path,
+    deadline: std::time::Duration,
+) -> Ran {
+    use std::process::Stdio;
+    let mut child = match std::process::Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => return Ran::Failed(e.to_string()),
+    };
+    let Some(mut pipe) = child.stdout.take() else {
+        return Ran::Failed("no stdout".to_string());
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut printed = Vec::new();
+        pipe.read_to_end(&mut printed).ok(); // a short read leaves what was read; the exit status reports the rest
+        sender.send(printed).ok(); // the receiver is gone only after a kill, when the output is not wanted
+    });
+    let end = std::time::Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < end => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Ok(None) => {
+                child.kill().ok(); // a child that already exited needs no kill; the timeout is reported either way
+                child.wait().ok(); // reaped if it can be; the timeout is reported either way
+                return Ran::TimedOut;
+            }
+            Err(e) => return Ran::Failed(e.to_string()),
+        }
+    };
+    let printed = receiver
+        .recv_timeout(std::time::Duration::from_millis(500))
+        .unwrap_or_default();
+    Ran::Exited {
+        code: status.code(),
+        stdout: String::from_utf8_lossy(&printed).into_owned(),
+    }
+}
+
+/// The `adr-lint` program to run: `AMONT_AGENT_ADR_LINT`, else PATH's.
+fn adr_lint_program() -> std::ffi::OsString {
+    std::env::var_os("AMONT_AGENT_ADR_LINT")
+        .filter(|program| !program.is_empty())
+        .unwrap_or_else(|| std::ffi::OsString::from("adr-lint"))
+}
+
+/// Journals a note under `adr-lint-written` at most once per session and
+/// outcome.
+fn adr_lint_note_once(
+    op: &crate::payload::FileOp,
+    root: &std::path::Path,
+    outcome: &str,
+    excerpt: &str,
+) {
+    let key = format!("adr-lint-written {outcome}");
+    let first = match crate::lsp::told(&op.session, &key) {
+        crate::lsp::Told::Before => false,
+        crate::lsp::Told::First | crate::lsp::Told::Unrecorded(_) => true,
+    };
+    if first {
+        adr_lint_note(op, root, "-", outcome, excerpt);
+    }
+}
+
+/// `stance` is `-` for a note that is not about a finding: the stance is
+/// resolved (several `git config` reads) only when there is one to say. The
+/// repository is the written file's, not the session's working directory.
+fn adr_lint_note(
+    op: &crate::payload::FileOp,
+    root: &std::path::Path,
+    stance: &str,
+    outcome: &str,
+    excerpt: &str,
+) {
+    journal::record(&journal::Entry {
+        rule: rules::adr_lint_written::RULE.id,
+        stance,
+        outcome,
+        session: &op.session,
+        repo: &repo_name(root),
+        mode: &op.permission_mode,
+        excerpt,
+    });
+}
+
+/// Does the repository at `root` vendor adr-lint's `check` row? Asked of
+/// `amont list --json` once per session and repository; the answer is kept on
+/// the session's record.
+fn adr_lint_gate(op: &crate::payload::FileOp, root: &std::path::Path) -> bool {
+    use rules::adr_lint_written::{gate, Gate};
+    let open_key = format!("adr-lint-written gate-open {}", root.display());
+    let closed_key = format!("adr-lint-written gate-closed {}", root.display());
+    if crate::lsp::was_told(&op.session, &open_key) {
+        return true;
+    }
+    if crate::lsp::was_told(&op.session, &closed_key) {
+        return false;
+    }
+    let shown = root.display().to_string();
+    let answer = run_with_deadline(
+        std::ffi::OsStr::new("amont"),
+        &["list", "--json"],
+        root,
+        AMONT_LIST_DEADLINE,
+    );
+    let open = match answer {
+        Ran::Exited {
+            code: Some(0),
+            stdout,
+        } => match gate(&stdout) {
+            Gate::Open => true,
+            Gate::Closed => false,
+            Gate::Unexpected => {
+                adr_lint_note_once(op, root, "amont-list-unexpected", &shown);
+                false
+            }
+        },
+        Ran::Exited { .. } | Ran::TimedOut | Ran::Failed(_) => {
+            adr_lint_note_once(op, root, "amont-list-failed", &shown);
+            false
+        }
+    };
+    let _ = crate::lsp::told(&op.session, if open { &open_key } else { &closed_key }); // unrecorded only means the next write asks again
+    open
+}
+
+/// An Edit, MultiEdit or Write that has run: the file is checked by
+/// `adr-lint check --json` when its repository vendors that row.
+fn on_post_write(op: &crate::payload::FileOp) -> Decision {
+    use rules::adr_lint_written as al;
+    if !al::considered(&op.path) {
+        return Decision::Silent;
+    }
+    let Some(dir) = op.path.parent() else {
+        return Decision::Silent;
+    };
+    let Some(top) = amont_agent_guard::git::stdout_in(dir, &["rev-parse", "--show-toplevel"])
+    else {
+        return Decision::Silent;
+    };
+    let root = crate::lsp::normal(std::path::Path::new(&top));
+    let Ok(relative) = crate::lsp::normal(&op.path)
+        .strip_prefix(&root)
+        .map(|p| p.to_owned())
+    else {
+        return Decision::Silent;
+    };
+    if !adr_lint_gate(op, &root) {
+        return Decision::Silent;
+    }
+    let relative = relative.to_string_lossy().into_owned();
+    let ran = run_with_deadline(
+        &adr_lint_program(),
+        &["check", "--json", "--", &relative],
+        &root,
+        ADR_LINT_DEADLINE,
+    );
+    let verdict = match ran {
+        Ran::Exited { code, stdout } => al::interpret(code, &stdout),
+        Ran::TimedOut => {
+            adr_lint_note(op, &root, "-", "adr-lint-slow", &relative);
+            return Decision::Silent;
+        }
+        Ran::Failed(why) => {
+            adr_lint_note_once(op, &root, "adr-lint-unavailable", &why);
+            return Decision::Silent;
+        }
+    };
+    match verdict {
+        al::Verdict::Clean => Decision::Silent,
+        al::Verdict::Failed(outcome) => {
+            adr_lint_note_once(op, &root, outcome, &relative);
+            Decision::Silent
+        }
+        al::Verdict::Findings(findings) => {
+            let stance = crate::stance::resolve(&al::RULE);
+            for finding in &findings {
+                adr_lint_note(
+                    op,
+                    &root,
+                    stance.as_str(),
+                    outcome_of(stance),
+                    &al::excerpt(finding),
+                );
+            }
+            match stance {
+                Stance::Observe => Decision::Silent,
+                // The ceiling is advise (`max_stance`); a deny stance still advises.
+                Stance::Advise | Stance::Deny => Decision::Assert(al::phrase(&findings)),
+            }
+        }
+    }
 }
 
 /// What `symbol-grep-not-lsp` needs beyond its `confirm`: the facts are in
