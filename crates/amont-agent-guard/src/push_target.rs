@@ -15,7 +15,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::shell::Simple;
+use crate::shell::{Resolved, Simple, Word};
+
+const VARIABLE_DIRECTORY: &str = "the -C directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)";
+pub const VARIABLE_CD: &str = "the cd directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)";
 
 /// The destination kind decides whether a ref is judged: a tag is excluded,
 /// a branch is judged — including a tag's commit pushed onto a branch.
@@ -113,8 +116,17 @@ const UNRESOLVABLE: &[(&str, &str)] = &[
     ("--stdin", "refspecs come from stdin"),
 ];
 
-/// Read the push out of a `git … push …` clause. Pure.
+/// Read the push out of a `git … push …` clause, taking no assignment on
+/// trust. Pure.
 pub fn read(cmd: &Simple) -> Read {
+    read_with(cmd, &|w| {
+        crate::shell::resolve_word(w, &crate::shell::home_only)
+    })
+}
+
+/// [`read`], with the value of each `-C` word supplied by the caller, which
+/// owns the clauses that may have assigned it. Pure.
+pub fn read_with(cmd: &Simple, value_of: &dyn Fn(&Word) -> Resolved) -> Read {
     let Some(start) = cmd.program_index() else {
         return Read::Unresolvable("no program");
     };
@@ -136,10 +148,13 @@ pub fn read(cmd: &Simple) -> Read {
                 let Some(d) = words.get(i + 1) else {
                     return Read::Unresolvable("-C without a directory");
                 };
-                if d.expanded {
-                    return Read::Unresolvable("a word comes from a substitution");
+                match value_of(d) {
+                    Resolved::Text(text) => dirs.push(text),
+                    Resolved::Variable => return Read::Unresolvable(VARIABLE_DIRECTORY),
+                    Resolved::Substitution => {
+                        return Read::Unresolvable("a word comes from a substitution")
+                    }
                 }
-                dirs.push(d.text.clone());
                 i += 2;
             }
             "-c" => i += 2,
@@ -251,7 +266,14 @@ pub fn read(cmd: &Simple) -> Read {
 /// Resolve a read push against the repository it runs in. `cwd` is the
 /// directory of the clause (`Context::cwd_at`).
 pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
-    let spec = match read(cmd) {
+    resolve_with(cwd, cmd, &|w| {
+        crate::shell::resolve_word(w, &crate::shell::home_only)
+    })
+}
+
+/// [`resolve`], with the value of each `-C` word supplied by the caller.
+pub fn resolve_with(cwd: &Path, cmd: &Simple, value_of: &dyn Fn(&Word) -> Resolved) -> Push {
+    let spec = match read_with(cmd, value_of) {
         Read::Spec(s) => s,
         Read::DryRun => return Push::DryRun,
         Read::DeleteOnly => return Push::DeleteOnly,
@@ -326,7 +348,12 @@ pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
 fn directory(cwd: &Path, spec: &Spec) -> Result<PathBuf, &'static str> {
     let mut dir = cwd.to_path_buf();
     for d in &spec.dirs {
-        dir = if let Some(rest) = d.strip_prefix("~/") {
+        dir = if d == "~" {
+            match std::env::var_os("HOME") {
+                Some(h) => PathBuf::from(h),
+                None => return Err("-C names a home-relative path and HOME is unset"),
+            }
+        } else if let Some(rest) = d.strip_prefix("~/") {
             match std::env::var_os("HOME") {
                 Some(h) => PathBuf::from(h).join(rest),
                 None => return Err("-C names a home-relative path and HOME is unset"),
@@ -408,7 +435,15 @@ fn publishes(c: &Simple) -> bool {
 /// than one push or land is unresolvable (only the first would be judged),
 /// and an `amont land` is resolved by asking amont what it would push.
 pub fn resolve_for(ctx: &crate::rules::Context, cmd: &Simple) -> Push {
-    let cwd = ctx.cwd_at(cmd.at);
+    let cwd = match ctx.cwd_walk(cmd.at) {
+        crate::rules::Walk::Walked(dir) => dir,
+        crate::rules::Walk::VariableCd { session_cwd } => {
+            return Push::Unresolvable {
+                repo: toplevel(&session_cwd),
+                shape: VARIABLE_CD,
+            };
+        }
+    };
     if ctx.parsed.clauses().iter().filter(|c| publishes(c)).count() > 1 {
         return Push::Unresolvable {
             repo: toplevel(&cwd),
@@ -416,7 +451,7 @@ pub fn resolve_for(ctx: &crate::rules::Context, cmd: &Simple) -> Push {
         };
     }
     if !crate::land::is_land(cmd) {
-        return resolve(&cwd, cmd);
+        return resolve_with(&cwd, cmd, &|w| ctx.parsed.word_value(cmd.at, w));
     }
     if cmd.is_dry_run() {
         return Push::DryRun;
@@ -500,6 +535,50 @@ mod tests {
             read_of("git -C /a -C b push origin other"),
             spec("origin", &["other"], &["/a", "b"])
         );
+    }
+
+    fn read_assigned(command: &str) -> Read {
+        let parsed = lex(command);
+        let cmd = find(&parsed).expect("a push clause");
+        read_with(cmd, &|w| parsed.word_value(cmd.at, w))
+    }
+
+    #[test]
+    fn a_variable_set_on_the_same_line_is_read() {
+        for (command, dir) in [
+            ("S=/a/b; git -C $S push -u origin feat/x", "/a/b"),
+            ("S='/a b'; git -C \"$S\" push origin feat/x", "/a b"),
+            ("S=/a && git -C ${S} push origin feat/x", "/a"),
+            ("git -C $HOME/wt push origin feat/x", "~/wt"),
+            ("S=/a; S=/c; git -C $S push origin feat/x", "/c"),
+            ("S=\"$HOME/x\"; git -C $S push origin feat/x", "~/x"),
+        ] {
+            assert_eq!(
+                read_assigned(command),
+                spec("origin", &["feat/x"], &[dir]),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_variable_nobody_set_names_the_variable() {
+        for command in [
+            "git -C $UNSET push origin feat/x",
+            "git -C $S push origin feat/x; S=/a",
+            "echo $(S=/a); git -C $S push origin feat/x",
+            "S=/a | cat; git -C $S push origin feat/x",
+            "S=/a || git -C $S push origin feat/x",
+            "S=$OTHER/x; git -C $S push origin feat/x",
+            "S=a~b; git -C $S push origin feat/x",
+            "S=/a; S=$(pwd); git -C $S push origin feat/x",
+        ] {
+            assert_eq!(
+                read_assigned(command),
+                Read::Unresolvable(VARIABLE_DIRECTORY),
+                "{command}"
+            );
+        }
     }
 
     #[test]

@@ -365,6 +365,27 @@ impl Rule {
     }
 }
 
+/// Where a clause runs.
+pub enum Walk {
+    /// The directory every `cd` before the clause moved it to (or the
+    /// session cwd when no `cd` could be read).
+    Walked(std::path::PathBuf),
+    /// A `cd` before the clause names a shell variable no same-line literal
+    /// assignment sets: the clause's directory is unknown, and the session
+    /// cwd is only a fallback.
+    VariableCd { session_cwd: std::path::PathBuf },
+}
+
+impl Walk {
+    /// The directory to use: the walked one, or the session-cwd fallback.
+    fn dir(self) -> std::path::PathBuf {
+        match self {
+            Walk::Walked(dir) => dir,
+            Walk::VariableCd { session_cwd } => session_cwd,
+        }
+    }
+}
+
 /// What a `confirm` is allowed to know.
 #[allow(dead_code)]
 pub struct Context<'a> {
@@ -424,6 +445,12 @@ impl Context<'_> {
     /// substitution is unknowable and ends the search: better the session
     /// cwd than a guess. A bare `cd` is `$HOME`; `cd -` is unknowable.
     pub fn cwd_at(&self, at: usize) -> std::path::PathBuf {
+        self.cwd_walk(at).dir()
+    }
+
+    /// [`Self::cwd_at`], and whether it stopped at a `cd` whose directory is
+    /// a shell variable no same-line literal assignment sets.
+    pub fn cwd_walk(&self, at: usize) -> Walk {
         let mut dir = self.cwd.to_path_buf();
         // A `cd` inside a substitution moves that subshell and nothing
         // else: it counts for the clauses of the SAME substitution and for
@@ -457,25 +484,38 @@ impl Context<'_> {
                 }
                 continue;
             };
-            if target.expanded || target.text.trim().is_empty() || target.text == "-" {
-                return self.cwd.to_path_buf();
+            let t = match self.parsed.word_value(cmd.at, target) {
+                crate::shell::Resolved::Text(text) => text,
+                crate::shell::Resolved::Variable => {
+                    return Walk::VariableCd {
+                        session_cwd: self.cwd.to_path_buf(),
+                    }
+                }
+                crate::shell::Resolved::Substitution => return self.unknown_cwd(),
+            };
+            if t.trim().is_empty() || t == "-" {
+                return self.unknown_cwd();
             }
-            let t = target.text.as_str();
+            let t = t.as_str();
             dir = if let Some(rest) = t.strip_prefix("~/") {
                 match std::env::var_os("HOME") {
                     Some(home) => std::path::PathBuf::from(home).join(rest),
-                    None => return self.cwd.to_path_buf(),
+                    None => return self.unknown_cwd(),
                 }
             } else if t == "~" {
                 match std::env::var_os("HOME") {
                     Some(home) => std::path::PathBuf::from(home),
-                    None => return self.cwd.to_path_buf(),
+                    None => return self.unknown_cwd(),
                 }
             } else {
                 dir.join(t)
             };
         }
-        dir
+        Walk::Walked(dir)
+    }
+
+    fn unknown_cwd(&self) -> Walk {
+        Walk::Walked(self.cwd.to_path_buf())
     }
 }
 
@@ -526,6 +566,38 @@ mod tests {
             .find(|c| c.words.iter().any(|w| w.text == needle))
             .map(|c| c.at)
             .expect("clause")
+    }
+
+    #[test]
+    fn a_cd_to_a_variable_set_on_the_line_is_followed() {
+        let parsed = lex("S=/x; cd $S && git push origin feat/x");
+        let ctx = Context {
+            platform: None,
+            cwd: std::path::Path::new("/session"),
+            parsed: &parsed,
+            background: false,
+            timeout_ms: None,
+            tool_use_id: "",
+            transcript: None,
+            agent_transcript: None,
+            command: "",
+            output: None,
+            session: "",
+            failed: false,
+        };
+        assert_eq!(
+            ctx.cwd_at(at_of(&parsed, "push")),
+            std::path::PathBuf::from("/x")
+        );
+        let parsed = lex("cd $NOPE && git push origin feat/x");
+        let ctx = Context {
+            parsed: &parsed,
+            ..ctx
+        };
+        assert!(matches!(
+            ctx.cwd_walk(at_of(&parsed, "push")),
+            Walk::VariableCd { .. }
+        ));
     }
 
     #[test]

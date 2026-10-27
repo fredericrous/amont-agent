@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The push guard reads a `git -C` or `cd` directory written as a variable
+  that an earlier assignment-only clause of the same command line set to a
+  literal (or a leading `$HOME`). A variable still unresolved is reported as
+  a shell variable, not as `not a git repository`.
+
 ## v3.4.0
 
 ### Added
