@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Guard rule `cd-carries-over`, shipped at `observe`: a top-level `cd` or
+  `pushd` (not inside `( … )`, `$( … )`, a function body or a `bash -c`
+  string, and not into `/tmp`) is carried by Claude Code's Bash tool into the
+  next call. The advice names the subshell `(cd X && …)`, `git -C X` and
+  absolute paths as the replacements.
+
 ## v3.5.0
 
 ### Added

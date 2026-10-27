@@ -8,6 +8,7 @@ use amont_agent_guard::rules::Rule;
 pub const RULES: &[Rule] = &[
     crate::rules::pipe_to_tail::RULE,
     crate::rules::bare_stash_pop::RULE,
+    crate::rules::cd_carries_over::RULE,
     crate::rules::gh_pr_merge_auto::RULE,
     crate::rules::publish_without_skill::RULE,
     crate::rules::forge_merge_by_hand::RULE,
@@ -159,7 +160,7 @@ mod tests {
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 43, "{ids:?}");
+        assert_eq!(ids.len(), 44, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)
