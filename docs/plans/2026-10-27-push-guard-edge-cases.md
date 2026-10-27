@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: fix/push-guard-edge-cases
 repos: amont-agent
 adrs: [ADR-0042]
@@ -85,7 +85,7 @@ directory it is run from.
 
 - [x] Phase 1 — `push_target` and `cwd_at` read same-line literal variables; the new unresolvable shape.
 - [x] Phase 2 — `amont-agent check` runs `confirm` in a context for `--cwd`.
-- [ ] Release amont-agent so the installed hook carries both (after this branch merges).
+- [x] Release amont-agent so the installed hook carries both (after this branch merges).
 
 ## Decision log
 
@@ -108,7 +108,16 @@ Observed 2026-10-27 on `fix/push-guard-edge-cases` with the built binary (`./tar
 
 ## Outcome
 
-(Filled when the plan closes.)
+Shipped in amont-agent#148 (3e19fd3) and released as v3.5.0 (#150, tag on cb7a1c8). The Homebrew tap updated itself, and the installed hook was upgraded on 2026-10-27; `amont-agent --version` gives 3.5.0. Checked against the release artifact: the x86_64 macOS binary matches SHA256SUMS. `check --cwd <holdouts store> 'git push -u origin docs/store-url'` gives `no rule fires`, and `git -C $UNSET push` gives the shell-variable message.
+
+What surprised:
+- Edge case 2 was first misdiagnosed: the hook was right and `check` was misleading.
+- `push-preflight` had ignored `git -C` all along.
+- One relais run accepted an unchanged candidate.
+- One relais worker changed the lexer beyond the plan's scope, and I reverted it.
+- Each review round found a further shell form that changes a variable; the reading ended conservative (a compound command clears everything).
+
+Not done: judging pushes inside loop bodies (`do … done`), left for its own change.
 
 ## Implementation review
 
