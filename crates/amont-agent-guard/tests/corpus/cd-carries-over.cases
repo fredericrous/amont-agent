@@ -1,0 +1,11 @@
+# amont-agent-cases-v1
+# Reviewed judgements for cd-carries-over.
+match	cd /repo && git status
+match	cd /repo
+match	pushd /repo && make
+nomatch	(cd /repo && git status)
+nomatch	git -C /repo status
+nomatch	echo $(cd /repo && pwd)
+nomatch	bash -c 'cd /repo && make'
+nomatch	cd /tmp && ls
+nomatch	cd /private/tmp/x && ls

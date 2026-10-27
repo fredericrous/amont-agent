@@ -33,6 +33,7 @@ pub mod agent_guidance_written;
 pub mod amend_pushed;
 pub mod bare_stash_pop;
 pub mod branch_force_delete;
+pub mod cd_carries_over;
 pub mod code_read_not_lsp;
 pub mod dump;
 pub mod equals_separator;

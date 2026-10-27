@@ -112,6 +112,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/bare-stash-pop.cases"),
     ),
     (
+        "cd-carries-over",
+        include_str!("../tests/corpus/cd-carries-over.cases"),
+    ),
+    (
         "gh-pr-merge-auto",
         include_str!("../tests/corpus/gh-pr-merge-auto.cases"),
     ),
