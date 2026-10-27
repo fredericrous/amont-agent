@@ -1,0 +1,15 @@
+amont-provenance-v1
+commit f6e66dc3d08777305cb323cd96657a9d39c48aa2
+tree bca1e5f9d6ada3d7d95c2903125a5cc3f97672a7
+canon 5a879e9fb533209f0bbd7839e68f9199c0ceb7e3
+plan docs/plans/2026-10-27-push-guard-edge-cases.md 47525ec03fa7e2e9b9cbfe0498b2329d92609506954672ea791e73f1c2e77b23
+review reviewed ae1fb79cd86a69dd4da0a4732afe805bda44087d466fa777e3a723a25e3f66eb
+preview not-required
+producer amont-agent 3.5.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEDJWzuFJrXKJHZjaIdACJ/R4Pk+kyDPkB5DcizOgHRKC/Gj9n
+d9tU4rXRcG6IQ0eigfGESDtec3jPsMNoDmf2MD
+-----END SSH SIGNATURE-----
