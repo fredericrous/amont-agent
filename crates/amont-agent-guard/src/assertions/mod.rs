@@ -72,7 +72,6 @@ pub mod push_published;
 pub struct Claim {
     /// A short label for the journal: what is about to be checked. Written by
     /// every assertion, read once the journal grows a per-claim column.
-    #[allow(dead_code)]
     pub what: String,
     /// Byte range within the original command, so the journal excerpt is
     /// centred on the claim rather than the head of a 2 KB script.
@@ -129,7 +128,6 @@ pub fn after_failure(parsed: &Parsed) -> Vec<(&'static Assertion, Claim)> {
 
 /// Consumed by `explain` and `graduate` once this tier has a measured rate;
 /// kept beside `ASSERTIONS` so the lookup has one spelling from the start.
-#[allow(dead_code)]
 pub fn by_id(id: &str) -> Option<&'static Assertion> {
     ASSERTIONS.iter().find(|a| a.id == id)
 }

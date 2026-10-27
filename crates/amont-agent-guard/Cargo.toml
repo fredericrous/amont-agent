@@ -45,3 +45,6 @@ amont-quiet = "1.60"
 # Failure injection for the binary's integration tests (see the root
 # manifest). Never on in a build that ships.
 test-hooks = []
+
+[lints]
+workspace = true

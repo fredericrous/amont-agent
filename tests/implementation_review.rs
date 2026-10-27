@@ -273,7 +273,11 @@ printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"ref
         }))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    // holds-until: amont-agent#149 groups these parameters into a struct.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an existing arity, until amont-agent#149 groups these parameters into a struct"
+    )]
     fn ask(
         &self,
         stage: &str,

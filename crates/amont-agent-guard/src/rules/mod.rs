@@ -123,7 +123,6 @@ impl Stance {
     /// The inverse of [`Stance::as_str`], for reading a stance back out of
     /// `git config amont.agent.<rule>.stance`. Paired with `as_str` from the
     /// start so the two spellings cannot drift apart later.
-    #[allow(dead_code)]
     pub fn parse(s: &str) -> Option<Stance> {
         match s {
             "observe" => Some(Stance::Observe),
@@ -158,7 +157,6 @@ pub struct Finding {
 /// Read by the hook path, which is the only caller that has a working
 /// directory to confirm against; the backtester deliberately never runs
 /// `confirm`, because the world has moved since those commands ran.
-#[allow(dead_code)]
 pub enum Confirmed {
     Yes,
     /// Confirmed, and this instance is serious enough to be held at least at
@@ -237,7 +235,6 @@ pub struct Rule {
     /// PURE. See the module note, and [`Examine`] for what each kind reads.
     pub examine: Examine,
     /// Consumed by the hook path; see [`Confirmed`].
-    #[allow(dead_code)]
     pub confirm: Option<fn(&crate::rules::Context, &Finding) -> Confirmed>,
 }
 
@@ -387,7 +384,6 @@ impl Walk {
 }
 
 /// What a `confirm` is allowed to know.
-#[allow(dead_code)]
 pub struct Context<'a> {
     pub cwd: &'a std::path::Path,
     pub parsed: &'a Parsed,

@@ -46,7 +46,6 @@ use crate::civil::{day_of, Day};
 /// `explain` and the labelled-corpus export need in order to say WHICH session
 /// and which call a sample came from, which is the difference between a sample
 /// a human can go and check and one they have to take on trust.
-#[allow(dead_code)]
 pub struct ToolCall<'a> {
     /// `tool_use.id` — the deduplication key.
     pub id: &'a str,
@@ -73,7 +72,6 @@ pub struct Roots {
     pub dirs: Vec<PathBuf>,
     /// Reported by `doctor`, which has to say where it looked before it can
     /// claim the guard is or is not alive.
-    #[allow(dead_code)]
     pub how: Discovery,
 }
 
@@ -186,7 +184,6 @@ pub enum Outcome {
 /// id, a session and a cwd are what let a report say WHICH call a number came
 /// from, and a mined number nobody can go and check is a number nobody should
 /// believe. Re-deriving them later is how a reader quietly loses that.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: String,

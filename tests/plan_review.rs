@@ -844,7 +844,7 @@ fn plan_sha_reads_stdin_and_ignores_line_endings() {
 /// Run with `cargo test --release -- --ignored`: a 50 MB transcript, with
 /// nothing in it about reviews, read under 300 ms.
 #[test]
-#[ignore]
+#[ignore = "a timing bound that holds only in a release build: run with `cargo test --release -- --ignored`"]
 fn a_large_transcript_is_read_quickly() {
     let w = World::new("large");
     w.repo("docs", &[("README.md", "x\n")]);
