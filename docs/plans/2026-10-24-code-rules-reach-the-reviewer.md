@@ -1,6 +1,6 @@
 ---
 canonical: decisions:docs/plans/2026-10-24-code-rules-reach-the-reviewer.md
-phases: [2, 4, 5]
+phases: [2, 4, 5, 7]
 status: active
 ---
 # Code rules reach the reviewer (pointer)
@@ -71,3 +71,17 @@ Input → expected → actual:
   - the overlap sentence.
 - The reviewer ruled all 14 adr-lint candidates `fine`.
 - The relais run `run-65ead843594b0-15be8` hit its wall time, with the hook built and its tests passing. I finished it by hand: the id gate, the journal repo, same-line reasons, two more corpus negatives. It is recorded as salvaged at aa907c1.
+
+## Phase 7: the cleanup in amont-agent
+
+The 2026-10-27 survey found one exact finding here, a reasonless `#[ignore]` (tests.first-properties) at tests/plan_review.rs:847, and 18 Rust `#[allow]` attributes without a reason. The workspace MSRV is 1.85, above the 1.81 that `reason =` and `#[expect]` need, so:
+- the `#[ignore]` gets its reason;
+- each `#[allow]` becomes `#[expect(…, reason = "…")]`, or a `cfg_attr` where the lint fires on some targets only;
+- `adr-lint sync` denies clippy `allow_attributes` and `allow_attributes_without_reason` in `[workspace.lints.clippy]`;
+- CI runs `adr-lint sync --check`.
+
+The `#[allow(…)]` text inside lint_suppression_added.rs's test strings is fixture data, not an attribute, and stays.
+
+## Verification (phase 7, cleanup)
+
+(filled at finish)
