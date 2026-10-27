@@ -1,13 +1,29 @@
 # Changelog
 
-## Unreleased
+## v3.5.0
+
+### Added
+
+- `amont-agent check --cwd <dir>` (default the current directory) decides as
+  the hook does: each rule a command fires has its `confirm` run in a
+  context built the way the hook builds it, and a rule whose confirm declines
+  is no longer printed as firing. `--explain` lists those as
+  `not confirmed: <why>`. Before, `check` printed shape matches the hook would
+  never confirm (for example `push-preview [deny]` in a repository with no
+  interface).
 
 ### Changed
 
 - The push guard reads a `git -C` or `cd` directory written as a variable
   that an earlier assignment-only clause of the same command line set to a
   literal (or a leading `$HOME`). A variable still unresolved is reported as
-  a shell variable, not as `not a git repository`.
+  a shell variable, not as `not a git repository`. The reading is
+  conservative: `+=`, `unset`, `read`, `export`, `declare`, `local`,
+  `typeset`, `for NAME` or any `NAME=` word clears that name, and a compound
+  command (`if`, `then`, `do`, `{` …) clears every name, `$HOME` included.
+- `push-preflight` asks the repository the push names: it followed `cd` but
+  ignored `git -C`, so `git -C <repo> push` from elsewhere judged the wrong
+  repository.
 
 ## v3.4.0
 
