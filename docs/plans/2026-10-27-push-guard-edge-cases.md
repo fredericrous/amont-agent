@@ -83,32 +83,28 @@ directory it is run from.
 
 ## Phases
 
-- [ ] Phase 1 — `push_target` and `cwd_at` read same-line literal variables; the new unresolvable shape.
-- [ ] Phase 2 — `amont-agent check` runs `confirm` in a context for `--cwd`.
+- [x] Phase 1 — `push_target` and `cwd_at` read same-line literal variables; the new unresolvable shape.
+- [x] Phase 2 — `amont-agent check` runs `confirm` in a context for `--cwd`.
 - [ ] Release amont-agent so the installed hook carries both.
 
 ## Decision log
 
+- 2026-10-27 — Edge case 2 was first misdiagnosed. The hook itself did not ask for a preview or a review on the holdouts push; `amont-agent check` printed shape matches as verdicts. The fix moved to `check`.
+- 2026-10-27 — The relais successor for phase 1's review fixes was accepted with an unchanged candidate (2e2b541, the same as its predecessor), all criteria marked met by profile checks. I made the fixes by hand and recorded it with relais (`feedback corrected`).
 - 2026-10-27 — The panel was not run: the person asked for these fixes
   directly, and the implementation review covers the code. The plan
   records that.
 
 ## Verification
 
-- Phase 1: `amont-agent check --cwd <a repo> 'S=<repo path>; git -C $S push -u origin feat/x'`
-  → the push is read as the repository at `<repo path>`, not as
-  unresolvable → (to fill).
-- Phase 1: `… 'git -C $UNSET push -u origin feat/x'` → the shape names a
-  shell variable, never `not a git repository` → (to fill).
-- Phase 1: `S=/x; cd $S && git push origin feat/x` → `cwd_at` gives `/x`
-  → (to fill).
-- Phase 2: `amont-agent check --cwd ~/.local/share/relais-holdouts-store-pending 'git push -u origin feat/x'`
-  (a repository with no interface and no plan in the branch) → neither
-  `push-preview` nor `implementation-review` is printed as firing →
-  (to fill).
-- Phase 2: the same command with `--cwd` set to a repository with a `dev`
-  script and an unapproved interface change → `push-preview` is printed →
-  (to fill).
+Observed 2026-10-27 on `fix/push-guard-edge-cases` with the built binary (`./target/debug/amont-agent check --explain`) and the test suites.
+- Phase 1: `S=<relais path>; git -C $S push origin HEAD:feat/x`, from `--cwd /tmp` → read as relais → observed: `push-preview not confirmed: not a repository with a user interface`, `implementation-review not confirmed: nothing-new`, and `push-preflight not confirmed: no test gate runs at push time here`. All three asked relais, not `/tmp`. The first run used `feat/x`, which doesn't exist; the held push was then the unresolvable refspec, not the variable.
+- Phase 1: `git -C $UNSET push -u origin feat/x` → observed: `the -C directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)`, never `not a git repository`.
+- Phase 1: `S=/x; cd $S && git push origin feat/x` → `cwd_at` gives `/x` (test `a_cd_to_a_variable_set_on_the_line_is_followed`), and `directory_for` gives `/b` for `S=/b; cd $S` (table `a_push_runs_in_its_cd_and_c_directories_with_same_line_variables_read`, which also covers `-C`, `"$S"`, `$NOPE` and `cd $NOPE`).
+- Found while verifying, and fixed: `push-preflight` ignored `git -C` entirely, literal or variable. It now uses `push_target::directory_for`, so `git -C <relais> push` from `/tmp` reads relais's own pre-push gate.
+- Phase 2: `check --cwd <holdouts store> --explain 'git push -u origin docs/store-url'` (no interface, no plan) → observed `no rule fires`, with `push-preview not confirmed: not a repository with a user interface` and `implementation-review not confirmed: nothing-new` listed under `--explain`. Test `tests/check_confirm.rs`, run against the real binary in a temp repository, covers push-preview not firing, its `not confirmed:` line, and an unconfirmed rule (pipe-to-tail) still printing.
+- Phase 2: the precision suite passes from a fresh single-worktree clone (`git worktree list` = 1): `cargo test --test precision --test check_confirm`, ok, 55 s.
+- The second Phase 2 row (a repository with an unapproved interface change) is not run separately; `push-preview`'s own confirm tests cover that branch, and `check` calls the same `confirmed()`.
 
 ## Outcome
 
