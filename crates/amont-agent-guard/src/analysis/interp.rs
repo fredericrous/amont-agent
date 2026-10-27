@@ -1061,9 +1061,10 @@ impl Interp<'_> {
         )
     }
 
+    // holds-until: amont-agent#149 groups these parameters into a struct.
     #[expect(
         clippy::too_many_arguments,
-        reason = "an existing arity, kept until these parameters are grouped into a struct"
+        reason = "an existing arity, until amont-agent#149 groups these parameters into a struct"
     )]
     fn arith_for(
         &mut self,
@@ -1112,9 +1113,10 @@ impl Interp<'_> {
 
     /// A counted loop (`for`, `for ((…))`): the first iteration from the entry
     /// state, the rest from a fixpoint, `count` iterations in all.
+    // holds-until: amont-agent#149 groups these parameters into a struct.
     #[expect(
         clippy::too_many_arguments,
-        reason = "an existing arity, kept until these parameters are grouped into a struct"
+        reason = "an existing arity, until amont-agent#149 groups these parameters into a struct"
     )]
     fn iterate(
         &mut self,
