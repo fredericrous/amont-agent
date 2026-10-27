@@ -187,11 +187,16 @@ fn head_is_stamped(cwd: &std::path::Path) -> bool {
     })
 }
 
-fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
-    if detect(ctx.parsed).is_none() {
+fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
+    let Some(cmd) = detect(ctx.parsed) else {
         return Confirmed::No("the command no longer matches");
-    }
-    let cwd = ctx.cwd_at(f.span.start);
+    };
+    // The repository the push publishes from: `cd`s and `-C`s followed,
+    // not just the clause's directory (`git -C <repo> push` from elsewhere).
+    let cwd = match crate::push_target::directory_for(ctx, cmd) {
+        Ok(dir) => dir,
+        Err(shape) => return Confirmed::No(shape),
+    };
     let cwd = cwd.as_path();
     if !cwd.is_dir() {
         return Confirmed::No("the directory the command moves to does not exist");
