@@ -94,6 +94,9 @@ usage: amont-agent <command>
   explain <rule>        every match for one rule, for review
   check '<command>'     run the rules over one command, no stdin
                         [--dialect bash|zsh|unknown, default unknown]
+                        [--cwd <dir>, default this directory] [--explain]
+                        decide as the hook would in <dir>; --explain also
+                        lists rules that matched but were not confirmed
   analyze '<command>'   the shell analysis of one command, as JSON — the
                         interface tools/shell-oracle compares against real
                         shells [--dialect, as for check]
@@ -430,6 +433,8 @@ struct Flags {
     out: Option<PathBuf>,
     model: Option<String>,
     dialect: Option<rules::Dialect>,
+    cwd: Option<PathBuf>,
+    explain: bool,
     rest: Vec<String>,
 }
 
@@ -493,6 +498,8 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
                         .ok_or_else(|| format!("--dialect: `{v}` is not bash, zsh or unknown"))?,
                 );
             }
+            "--cwd" => f.cwd = Some(PathBuf::from(value(&mut i, &a)?)),
+            "--explain" => f.explain = true,
             "--compliance" => f.compliance = true,
             "--check" => f.check = true,
             "--json" => f.json = true,
@@ -1617,12 +1624,42 @@ fn run_check(args: &[OsString]) -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    let cwd = match f.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("amont-agent: check: the working directory cannot be read: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut printed = 0;
     for (rule, finding) in found {
         // The stance in force on THIS machine, which is what the hook would
         // do — with the shipped one beside it when they differ. Printing
         // only the default read `[advise]` for a rule long graduated to deny,
         // and the reader took it for the verdict.
-        let now = stance::resolve(rule);
+        let mut now = stance::resolve(rule);
+        let mut reason = finding.reason.clone();
+        let mut remedy = finding.remedy.clone();
+        if rule.confirm.is_some() {
+            match hook::confirmed_for_check(rule, &finding, src, &cwd, &parsed) {
+                Ok(checked) => {
+                    now = checked.stance;
+                    if let Some((said, said_remedy)) = checked.said {
+                        reason = said;
+                        if let Some(said_remedy) = said_remedy {
+                            remedy = said_remedy;
+                        }
+                    }
+                }
+                Err(why) => {
+                    if f.explain {
+                        println!("{} not confirmed: {why}", rule.id);
+                    }
+                    continue;
+                }
+            }
+        }
+        printed += 1;
         if now == rule.default_stance {
             println!("{} [{}]", rule.id, now.as_str());
         } else {
@@ -1633,12 +1670,15 @@ fn run_check(args: &[OsString]) -> ExitCode {
                 rule.default_stance.as_str()
             );
         }
-        println!("  {}", finding.reason);
-        println!("  → {}", finding.remedy);
+        println!("  {reason}");
+        println!("  → {remedy}");
         println!(
             "  ▸ {}",
             backtest::excerpt(src, finding.span.start, finding.span.end)
         );
+    }
+    if printed == 0 {
+        println!("no rule fires");
     }
     name_the_unread(src, &parsed);
     ExitCode::SUCCESS

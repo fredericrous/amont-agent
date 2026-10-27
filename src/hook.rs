@@ -308,7 +308,7 @@ fn on_bash(bash: &Bash) -> Decision {
     }
 
     for (rule, finding) in &fired {
-        let mut stance = crate::stance::resolve(rule);
+        let stance = crate::stance::resolve(rule);
         let Confirmation {
             floor,
             ceiling,
@@ -331,11 +331,6 @@ fn on_bash(bash: &Bash) -> Decision {
                 continue;
             }
         }
-        if let Some(floor) = floor {
-            if stance >= Stance::Advise {
-                stance = stance.max(floor).min(rule.max_stance);
-            }
-        }
         // A `confirm` that learned the reason by looking speaks and journals
         // it in place of the finding's; every other rule keeps the finding's
         // reason and the command span.
@@ -348,19 +343,7 @@ fn on_bash(bash: &Bash) -> Decision {
             None => (finding.reason.as_str(), None, finding.remedy.as_str()),
         };
         let text = decision::phrase(rule.id, reason, remedy);
-        // Never refuse on half a reading. A `deny` derived from a command we
-        // only partly understood is the worst outcome available here: total
-        // opacity would have let it run. It still advises, and it is still
-        // journalled under its configured stance, so the evidence for lifting
-        // this cap accumulates in the usual place.
-        let stance = if parsed.fully_read() {
-            stance
-        } else {
-            stance.min(Stance::Advise)
-        };
-        // A `confirm` that could not establish its fact may cap itself, so
-        // that not knowing never refuses.
-        let stance = ceiling.map_or(stance, |c| stance.min(c));
+        let stance = final_stance(stance, floor, ceiling, parsed.fully_read(), rule.max_stance);
         match stance {
             Stance::Observe => note_with(rule, "observe", "watched", bash, finding, excerpt),
             Stance::Advise => {
@@ -1689,6 +1672,86 @@ fn confirmed(
         }),
         Confirmed::No(why) => Err(why),
     }
+}
+
+/// What `check` reports for a fired rule: the stance the hook would hold it
+/// at after `confirm`, and the reason and remedy when `confirm` learned them
+/// by looking.
+pub struct Checked {
+    pub stance: Stance,
+    pub said: Option<(String, Option<String>)>,
+}
+
+/// The stance a finding is acted on at: the resolved one, raised to the
+/// confirm's floor (only when it already advises, capped by the rule's
+/// maximum), held at advise on a half-read command so a partial reading never
+/// refuses, then held under the confirm's own ceiling. The hook and `check`
+/// both come here.
+pub fn final_stance(
+    resolved: Stance,
+    floor: Option<Stance>,
+    ceiling: Option<Stance>,
+    fully_read: bool,
+    max_stance: Stance,
+) -> Stance {
+    let mut stance = resolved;
+    if let Some(floor) = floor {
+        if stance >= Stance::Advise {
+            stance = stance.max(floor).min(max_stance);
+        }
+    }
+    if !fully_read {
+        stance = stance.min(Stance::Advise);
+    }
+    ceiling.map_or(stance, |c| stance.min(c))
+}
+
+/// `confirm` as the hook runs it, for a command typed to `check`: a [`Bash`]
+/// with no transcript and no session, in `cwd`, through [`confirmed`] itself so
+/// that there is one construction of the context.
+pub fn confirmed_for_check(
+    rule: &Rule,
+    finding: &Finding,
+    command: &str,
+    cwd: &std::path::Path,
+    parsed: &Parsed,
+) -> Result<Checked, &'static str> {
+    let bash = Bash {
+        command: command.to_string(),
+        cwd: cwd.to_path_buf(),
+        session: String::new(),
+        permission_mode: String::new(),
+        background: false,
+        timeout_ms: None,
+        tool_use_id: String::new(),
+        prompt_id: String::new(),
+        stdout: None,
+        stderr: None,
+        error: None,
+        has_response: false,
+        errored: false,
+        agent_id: None,
+        transcript: None,
+        agent_transcript: None,
+        agent: crate::lsp::Agent::Main,
+    };
+    let resolved = crate::stance::resolve(rule);
+    let Confirmation {
+        floor,
+        ceiling,
+        said,
+    } = confirmed(rule, resolved, finding, &bash, parsed)?;
+    let stance = final_stance(
+        resolved,
+        floor,
+        ceiling,
+        parsed.fully_read(),
+        rule.max_stance,
+    );
+    Ok(Checked {
+        stance,
+        said: said.map(|(reason, _, remedy)| (reason, remedy)),
+    })
 }
 
 /// The matched clause runs in a directory that does not exist. Most rules
