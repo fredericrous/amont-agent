@@ -35,3 +35,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # scanner, which would have to own CommonMark's list, quote, fence and
 # container-indent rules — the edge cases the line rules got wrong.
 pulldown-cmark = { version = "=0.13.4", default-features = false }
+
+[lints]
+workspace = true

@@ -273,7 +273,10 @@ printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"ref
         }))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an existing arity, kept until these parameters are grouped into a struct"
+    )]
     fn ask(
         &self,
         stage: &str,

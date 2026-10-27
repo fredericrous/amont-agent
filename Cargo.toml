@@ -85,3 +85,11 @@ rust-version = "1.85.0"
 [workspace.dependencies]
 amont-agent-guard = { path = "crates/amont-agent-guard", version = "=3.5.0" }
 amont-agent-process = { path = "crates/amont-agent-process", version = "=3.5.0" }
+
+[workspace.lints.clippy]
+# adr-lint sync: general.linters-police-suppressions
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+[lints]
+workspace = true

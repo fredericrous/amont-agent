@@ -1061,7 +1061,10 @@ impl Interp<'_> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an existing arity, kept until these parameters are grouped into a struct"
+    )]
     fn arith_for(
         &mut self,
         init: &Option<ArithExpr>,
@@ -1109,7 +1112,10 @@ impl Interp<'_> {
 
     /// A counted loop (`for`, `for ((…))`): the first iteration from the entry
     /// state, the rest from a fixpoint, `count` iterations in all.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an existing arity, kept until these parameters are grouped into a struct"
+    )]
     fn iterate(
         &mut self,
         count: Count,

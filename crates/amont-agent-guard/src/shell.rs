@@ -73,7 +73,6 @@ impl Connector {
 /// point at the original text. The rule that used `raw` was removed before the
 /// first commit (see rules/mod.rs); the fields stay because dropping and
 /// re-deriving them is how a lexer quietly loses the ability to explain itself.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Word {
     /// Quotes removed, substitutions blanked to spaces. What rules match on.
@@ -1291,7 +1290,6 @@ impl Simple {
     }
 
     /// `--flag=value` or `--flag value`.
-    #[allow(dead_code)]
     pub fn flag_value(&self, flag: &str) -> Option<&str> {
         let eq = format!("{flag}=");
         let args = self.args();
