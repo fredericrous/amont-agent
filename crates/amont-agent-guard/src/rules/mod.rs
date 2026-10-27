@@ -484,7 +484,7 @@ impl Context<'_> {
                 }
                 continue;
             };
-            let t = match self.parsed.word_value(cmd.at, target) {
+            let cd_target = match self.parsed.word_value(cmd.at, target) {
                 crate::shell::Resolved::Text(text) => text,
                 crate::shell::Resolved::Variable => {
                     return Walk::VariableCd {
@@ -493,22 +493,22 @@ impl Context<'_> {
                 }
                 crate::shell::Resolved::Substitution => return self.unknown_cwd(),
             };
-            if t.trim().is_empty() || t == "-" {
+            if cd_target.trim().is_empty() || cd_target == "-" {
                 return self.unknown_cwd();
             }
-            let t = t.as_str();
-            dir = if let Some(rest) = t.strip_prefix("~/") {
+            let cd_target = cd_target.as_str();
+            dir = if let Some(rest) = cd_target.strip_prefix("~/") {
                 match std::env::var_os("HOME") {
                     Some(home) => std::path::PathBuf::from(home).join(rest),
                     None => return self.unknown_cwd(),
                 }
-            } else if t == "~" {
+            } else if cd_target == "~" {
                 match std::env::var_os("HOME") {
                     Some(home) => std::path::PathBuf::from(home),
                     None => return self.unknown_cwd(),
                 }
             } else {
-                dir.join(t)
+                dir.join(cd_target)
             };
         }
         Walk::Walked(dir)

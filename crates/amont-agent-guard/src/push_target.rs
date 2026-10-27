@@ -627,6 +627,7 @@ mod tests {
             ("S=/a/b; git -C $S push -u origin feat/x", "/a/b"),
             ("S='/a b'; git -C \"$S\" push origin feat/x", "/a b"),
             ("S=/a && git -C ${S} push origin feat/x", "/a"),
+            ("S=/a; git add . && git -C $S push origin feat/x", "/a"),
             ("git -C $HOME/wt push origin feat/x", "~/wt"),
             ("S=/a; S=/c; git -C $S push origin feat/x", "/c"),
             ("S=\"$HOME/x\"; git -C $S push origin feat/x", "~/x"),
@@ -661,6 +662,7 @@ mod tests {
             "S=/a; if true; then S=/c; fi; git -C $S push origin feat/x",
             "S=/a; for x in y; do unset S; done; git -C $S push origin feat/x",
             "S=/a; env S=/c true; git -C $S push origin feat/x",
+            "if true; then HOME=/x; fi; git -C $HOME/wt push origin feat/x",
         ] {
             assert_eq!(
                 read_assigned(command),

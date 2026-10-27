@@ -316,9 +316,12 @@ const CLEARS_ALL: &[&str] = &[
 /// is not a literal this guard reads. A compound command or code the guard
 /// does not read clears every variable.
 fn names_otherwise_set(words: &[Word]) -> Clears<'_> {
+    // Only the command word: a `;` already puts `then`, `do`, `fi` and
+    // `done` first in their clause, and `.` or `done` as an argument
+    // (`git add .`, `echo done`) runs nothing.
     if words
-        .iter()
-        .any(|word| !word.quoted && CLEARS_ALL.contains(&word.raw.as_str()))
+        .first()
+        .is_some_and(|word| !word.quoted && CLEARS_ALL.contains(&word.raw.as_str()))
     {
         return Clears::All;
     }
@@ -401,6 +404,9 @@ impl Parsed {
             .and_then(|c| c.nested);
         let mut bound: std::collections::HashMap<&str, Option<String>> =
             std::collections::HashMap::new();
+        // Set by a compound command: after it, a name not assigned again
+        // (`HOME` included) has no value this guard trusts.
+        let mut cleared_all = false;
         for clause in clauses {
             let assigns_only = !clause.words.is_empty()
                 && clause.opaque.is_none()
@@ -417,9 +423,8 @@ impl Parsed {
                         }
                     }
                     Clears::All => {
-                        for value in bound.values_mut() {
-                            *value = None;
-                        }
+                        bound.clear();
+                        cleared_all = true;
                     }
                 }
             }
@@ -444,6 +449,7 @@ impl Parsed {
         }
         resolve_word(asked, &|name| match bound.get(name) {
             Some(value) => value.clone(),
+            None if cleared_all => None,
             None => home_only(name),
         })
     }
