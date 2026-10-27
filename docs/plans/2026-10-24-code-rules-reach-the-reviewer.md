@@ -76,7 +76,7 @@ Input → expected → actual:
 
 The 2026-10-27 survey found one exact finding here, a reasonless `#[ignore]` (tests.first-properties) at tests/plan_review.rs:847, and 18 Rust `#[allow]` attributes without a reason. The workspace MSRV is 1.85, above the 1.81 that `reason =` and `#[expect]` need, so:
 - the `#[ignore]` gets its reason;
-- each `#[allow]` becomes `#[expect(…, reason = "…")]`, or a `cfg_attr` where the lint fires on some targets only;
+- each `#[allow]` becomes `#[expect(…, reason = "…")]`, or a `cfg_attr` where the lint fires on some targets only, or is removed where the lint cannot fire (a `pub` item reachable from the library root: 15 `dead_code` allows);
 - `adr-lint sync` denies clippy `allow_attributes` and `allow_attributes_without_reason` in `[workspace.lints.clippy]`;
 - CI runs `adr-lint sync --check`.
 
@@ -84,4 +84,22 @@ The `#[allow(…)]` text inside lint_suppression_added.rs's test strings is fixt
 
 ## Verification (phase 7, cleanup)
 
-(filled at finish)
+Input → expected → actual:
+- **clippy.** `cargo clippy --workspace --all-targets -- -D warnings -D clippy::allow_attributes -D clippy::allow_attributes_without_reason` → exit 0 → 0. After `adr-lint sync`, the plain `-D warnings` run → 0 → 0. `make lint`, which runs clippy with `--features test-hooks` → 0 → 0.
+- **`adr-lint sync --check`** on origin/main → exit 1, with five gaps (both keys, and `lints.workspace` in the root package and both members) → as expected. After `sync` → 0 → 0.
+- **Probe 1.** A reasonless `#[allow(dead_code)]` added to amont-agent-guard → clippy refuses it → exit 101, `#[allow] attribute found` and `allow attribute without specifying a reason`. Restored afterwards.
+- **Probe 2.** `allow_attributes = "deny"` deleted from Cargo.toml → `sync --check` fails → exit 1, `./Cargo.toml: clippy.allow_attributes is missing`. Restored afterwards.
+- **The commit gate** → passes → 25 checks on each commit.
+- **adr-lint check** on tests/plan_review.rs → 0 findings → 0 (the `#[ignore]` now has its reason).
+
+### Implementation review (phase 7, cleanup)
+
+- **Verdicts.** approve-with-changes, then approve-with-changes on the Delta, with only this record owed; 58k + 61k tokens, 94 s + 20 s.
+- **Fixed:**
+  - the plan line for the removed allows;
+  - this record;
+  - amont-agent#149, cited in each of the three `too_many_arguments` reasons, with a `holds-until:` above each.
+- **Deliberate:**
+  - The three expects keep a cause inside the repository. The person chose to schedule the parameter-struct refactor (amont-agent#149) rather than block on it.
+  - The optional low finding, to name the limit in each `holds-until:`, is carried into #149, because a code change now would reopen the reviewed tree.
+- **The relais run.** `run-65ece54d34afc-306c` was approved after I corrected its three false reasons by hand.
