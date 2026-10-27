@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn a_cd_to_a_variable_set_on_the_line_is_followed() {
         let parsed = lex("S=/x; cd $S && git push origin feat/x");
-        let ctx = Context {
+        let context = Context {
             platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
@@ -586,16 +586,16 @@ mod tests {
             failed: false,
         };
         assert_eq!(
-            ctx.cwd_at(at_of(&parsed, "push")),
+            context.cwd_at(at_of(&parsed, "push")),
             std::path::PathBuf::from("/x")
         );
         let parsed = lex("cd $NOPE && git push origin feat/x");
-        let ctx = Context {
+        let context = Context {
             parsed: &parsed,
-            ..ctx
+            ..context
         };
         assert!(matches!(
-            ctx.cwd_walk(at_of(&parsed, "push")),
+            context.cwd_walk(at_of(&parsed, "push")),
             Walk::VariableCd { .. }
         ));
     }
@@ -605,7 +605,7 @@ mod tests {
         let parsed = lex(
             "cd /tmp/here && echo $(cd /tmp/sub && git status) && git worktree add ../x -b feat/y",
         );
-        let ctx = Context {
+        let context = Context {
             platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
@@ -620,12 +620,12 @@ mod tests {
             failed: false,
         };
         assert_eq!(
-            ctx.cwd_at(at_of(&parsed, "worktree")),
+            context.cwd_at(at_of(&parsed, "worktree")),
             std::path::PathBuf::from("/tmp/here"),
             "the subshell's cd did not leak out"
         );
         assert_eq!(
-            ctx.cwd_at(at_of(&parsed, "status")),
+            context.cwd_at(at_of(&parsed, "status")),
             std::path::PathBuf::from("/tmp/sub"),
             "the line's cd reached in, then the subshell's own applied"
         );
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn a_leading_cd_moves_the_question() {
         let parsed = lex("cd /tmp/elsewhere && git worktree add ../x -b feat/y");
-        let ctx = Context {
+        let context = Context {
             platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
@@ -649,7 +649,7 @@ mod tests {
             failed: false,
         };
         assert_eq!(
-            ctx.cwd_at(at_of(&parsed, "worktree")),
+            context.cwd_at(at_of(&parsed, "worktree")),
             std::path::PathBuf::from("/tmp/elsewhere")
         );
     }
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn a_relative_cd_resolves_against_the_session_and_the_last_wins() {
         let parsed = lex("cd sub; cd deeper && git stash pop");
-        let ctx = Context {
+        let context = Context {
             platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
@@ -672,7 +672,7 @@ mod tests {
             failed: false,
         };
         assert_eq!(
-            ctx.cwd_at(at_of(&parsed, "stash")),
+            context.cwd_at(at_of(&parsed, "stash")),
             std::path::PathBuf::from("/session/sub/deeper")
         );
     }
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn a_cd_after_the_clause_does_not_count() {
         let parsed = lex("git stash pop && cd /tmp/after");
-        let ctx = Context {
+        let context = Context {
             platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
@@ -695,7 +695,7 @@ mod tests {
             failed: false,
         };
         assert_eq!(
-            ctx.cwd_at(at_of(&parsed, "stash")),
+            context.cwd_at(at_of(&parsed, "stash")),
             std::path::PathBuf::from("/session")
         );
     }
@@ -705,7 +705,7 @@ mod tests {
     fn an_unknowable_cd_falls_back_to_the_session() {
         for command in ["cd $(mktemp -d) && git stash pop", "cd - && git stash pop"] {
             let parsed = lex(command);
-            let ctx = Context {
+            let context = Context {
                 platform: None,
                 cwd: std::path::Path::new("/session"),
                 parsed: &parsed,
@@ -720,7 +720,7 @@ mod tests {
                 failed: false,
             };
             assert_eq!(
-                ctx.cwd_at(at_of(&parsed, "stash")),
+                context.cwd_at(at_of(&parsed, "stash")),
                 std::path::PathBuf::from("/session"),
                 "{command}"
             );
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn tilde_is_home() {
         let parsed = lex("cd ~/work/repo && git stash pop");
-        let ctx = Context {
+        let context = Context {
             platform: None,
             cwd: std::path::Path::new("/session"),
             parsed: &parsed,
@@ -745,6 +745,9 @@ mod tests {
             failed: false,
         };
         let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME"));
-        assert_eq!(ctx.cwd_at(at_of(&parsed, "stash")), home.join("work/repo"));
+        assert_eq!(
+            context.cwd_at(at_of(&parsed, "stash")),
+            home.join("work/repo")
+        );
     }
 }

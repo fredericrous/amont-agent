@@ -74,3 +74,64 @@ fn a_rule_without_confirm_is_printed_unchanged() {
     );
     let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup of a temp directory; a leftover is harmless
 }
+
+fn assert_prints_remedy(dir: &Path, rule: &str, command: &str) {
+    let (ok, stdout) = check(dir, &[], command);
+    assert!(ok, "{stdout}");
+    let line_at = stdout
+        .lines()
+        .position(|l| l.starts_with(&format!("{rule} [")))
+        .unwrap_or_else(|| panic!("{rule} did not confirm for {command:?}:\n{stdout}"));
+    assert!(
+        stdout.lines().skip(line_at).any(|l| l.contains("→ ")),
+        "no remedy line for {command:?}:\n{stdout}"
+    );
+}
+
+#[test]
+fn a_confirmed_bare_stash_pop_prints_its_remedy() {
+    let dir = plain_repository("stash");
+    let second = dir.with_file_name(format!(
+        "amont-check-confirm-stash-wt-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&second); // best-effort cleanup of a temp directory; a leftover is harmless
+    git(
+        &dir,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            second.to_str().expect("utf-8"),
+        ],
+    );
+    assert_prints_remedy(&dir, "bare-stash-pop", "git stash pop");
+    let _ = std::fs::remove_dir_all(&dir); // best-effort cleanup of a temp directory; a leftover is harmless
+    let _ = std::fs::remove_dir_all(&second); // best-effort cleanup of a temp directory; a leftover is harmless
+}
+
+#[test]
+fn a_confirmed_stale_base_prints_its_remedy() {
+    let origin = plain_repository("origin");
+    let clone = origin.with_file_name(format!("amont-check-confirm-clone-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&clone); // best-effort cleanup of a temp directory; a leftover is harmless
+    let status = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&origin)
+        .arg(&clone)
+        .status()
+        .expect("git runs");
+    assert!(status.success());
+    git(
+        &origin,
+        &["commit", "-q", "--allow-empty", "-m", "chore: newer"],
+    );
+    git(&clone, &["config", "user.email", "t@example.invalid"]);
+    git(&clone, &["config", "user.name", "t"]);
+    git(&clone, &["config", "amont.agent.fetch", "true"]);
+    assert_prints_remedy(&clone, "stale-base", "git switch -c feat/z");
+    let _ = std::fs::remove_dir_all(&origin); // best-effort cleanup of a temp directory; a leftover is harmless
+    let _ = std::fs::remove_dir_all(&clone); // best-effort cleanup of a temp directory; a leftover is harmless
+}

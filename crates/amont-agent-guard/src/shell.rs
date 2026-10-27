@@ -208,15 +208,15 @@ pub enum Resolved {
 /// variable. A variable that is not leading, an escape beside an expansion
 /// and an unknown variable are [`Resolved::Variable`]; `$(…)`, backticks and
 /// `<(…)` are [`Resolved::Substitution`].
-pub fn resolve_word(w: &Word, lookup: &dyn Fn(&str) -> Option<String>) -> Resolved {
-    if !w.raw.contains('$') && !w.raw.contains('`') {
-        return if w.expanded {
+pub fn resolve_word(word: &Word, lookup: &dyn Fn(&str) -> Option<String>) -> Resolved {
+    if !word.raw.contains('$') && !word.raw.contains('`') {
+        return if word.expanded {
             Resolved::Substitution
         } else {
-            Resolved::Text(w.text.clone())
+            Resolved::Text(word.text.clone())
         };
     }
-    read_raw(&w.raw, lookup)
+    read_raw(&word.raw, lookup)
 }
 
 /// [`resolve_word`] for the written form of a word.
@@ -283,13 +283,57 @@ fn read_raw(raw: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Resolved {
 }
 
 /// `NAME=value` as one word: the name and the raw value.
-fn assignment_of(w: &Word) -> Option<(&str, &str)> {
-    let (name, value) = w.raw.split_once('=')?;
+fn assignment_of(word: &Word) -> Option<(&str, &str)> {
+    let (name, value) = word.raw.split_once('=')?;
     let mut chars = name.chars();
     let head = chars.next()?;
     let valid = (head.is_ascii_alphabetic() || head == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
     valid.then_some((name, value))
+}
+
+/// The variables a clause that is not a plain assignment may set or unset:
+/// `NAME+=`, `unset`, `read`, `export`, `declare`, `local`, `typeset` and
+/// `for NAME in`. A value set this way is not a literal this guard reads.
+fn names_otherwise_set(words: &[Word]) -> Vec<&str> {
+    let mut names = Vec::new();
+    for word in words {
+        if let Some((name, _)) = word.raw.split_once("+=") {
+            if is_variable_name(name) {
+                names.push(name);
+            }
+        }
+    }
+    let Some(command) = words.first() else {
+        return names;
+    };
+    match command.raw.as_str() {
+        "unset" | "read" | "export" | "declare" | "local" | "typeset" => {
+            for word in &words[1..] {
+                let name = word.raw.split('=').next().unwrap_or("");
+                if is_variable_name(name) {
+                    names.push(name);
+                }
+            }
+        }
+        "for" => {
+            if let Some(word) = words.get(1) {
+                if is_variable_name(&word.raw) {
+                    names.push(&word.raw);
+                }
+            }
+        }
+        _ => {}
+    }
+    names
+}
+
+fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|head| head.is_ascii_alphabetic() || head == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// An unquoted `~` anywhere but the start of an assignment's value.
@@ -311,16 +355,16 @@ pub(crate) fn home_only(name: &str) -> Option<String> {
 }
 
 impl Parsed {
-    /// The value of `w`, a word of the clause starting at `clause_at`, with
+    /// The value of `asked`, a word of the clause starting at `clause_at`, with
     /// the literal assignments an earlier assignment-only clause of the same
     /// command line made. Only a clause that ran in the same shell counts
     /// (same substitution, joined by `;` or `&&`, not behind `|` or `||`),
     /// and only a value that is a literal, a quoted literal or a leading
     /// `$HOME`; the last assignment wins, and one that cannot be read
     /// unsets the variable.
-    pub fn word_value(&self, clause_at: usize, w: &Word) -> Resolved {
-        if !w.raw.contains('$') && !w.raw.contains('`') {
-            return resolve_word(w, &home_only);
+    pub fn word_value(&self, clause_at: usize, asked: &Word) -> Resolved {
+        if !asked.raw.contains('$') && !asked.raw.contains('`') {
+            return resolve_word(asked, &home_only);
         }
         let clauses = self.clauses();
         let asking = clauses
@@ -337,6 +381,11 @@ impl Parsed {
                     .words
                     .iter()
                     .all(|word| assignment_of(word).is_some());
+            if clause.at < clause_at && !assigns_only {
+                for name in names_otherwise_set(&clause.words) {
+                    bound.insert(name, None);
+                }
+            }
             if clause.at >= clause_at
                 || !assigns_only
                 || clause.nested != asking
@@ -356,7 +405,7 @@ impl Parsed {
                 bound.insert(name, read);
             }
         }
-        resolve_word(w, &|name| match bound.get(name) {
+        resolve_word(asked, &|name| match bound.get(name) {
             Some(value) => value.clone(),
             None => home_only(name),
         })

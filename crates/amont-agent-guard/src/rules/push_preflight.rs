@@ -187,15 +187,19 @@ fn head_is_stamped(cwd: &std::path::Path) -> bool {
     })
 }
 
-fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
-    let Some(cmd) = detect(ctx.parsed) else {
+fn confirm(context: &Context, _finding: &Finding) -> Confirmed {
+    let Some(cmd) = detect(context.parsed) else {
         return Confirmed::No("the command no longer matches");
     };
     // The repository the push publishes from: `cd`s and `-C`s followed,
     // not just the clause's directory (`git -C <repo> push` from elsewhere).
-    let cwd = match crate::push_target::directory_for(ctx, cmd) {
+    let cwd = match crate::push_target::directory_for(context, cmd) {
         Ok(dir) => dir,
-        Err(shape) => return Confirmed::No(shape),
+        Err(
+            error @ (crate::push_target::DirectoryError::VariableDirectory
+            | crate::push_target::DirectoryError::VariableCd),
+        ) => return Confirmed::No(error.shape()),
+        Err(crate::push_target::DirectoryError::Unreadable(_)) => context.cwd_at(cmd.at),
     };
     let cwd = cwd.as_path();
     if !cwd.is_dir() {
@@ -301,5 +305,53 @@ mod tests {
         // `main` is exempt on its own account (branch-protect); a branch is not.
         assert!(fires("git push origin feat/thing"));
         assert!(fires("git push -u origin feat/thing v0.1.0"));
+    }
+
+    fn declined_with(command: &str) -> &'static str {
+        let parsed = lex(command);
+        let finding = examine(&parsed).expect("fires");
+        let session = std::env::temp_dir().join(format!("amont-preflight-{}", std::process::id()));
+        std::fs::create_dir_all(&session).expect("temp dir");
+        let context = Context {
+            platform: None,
+            cwd: &session,
+            parsed: &parsed,
+            background: false,
+            timeout_ms: None,
+            tool_use_id: "",
+            transcript: None,
+            agent_transcript: None,
+            command,
+            output: None,
+            session: "",
+            failed: false,
+        };
+        match confirm(&context, &finding) {
+            Confirmed::No(why) => why,
+            Confirmed::Yes | Confirmed::YesAt(_) | Confirmed::YesSaying { .. } => {
+                panic!("expected a decline for {command}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_global_option_the_guard_does_not_read_is_still_judged_where_the_clause_runs() {
+        // Judged: the answer is about the repository, not a refusal to find it.
+        let why = declined_with("git --git-dir=.git push origin feat/x");
+        assert_ne!(why, crate::push_target::VARIABLE_DIRECTORY);
+        assert_ne!(why, crate::push_target::VARIABLE_CD);
+        assert_ne!(why, "a git global option this guard does not read");
+    }
+
+    #[test]
+    fn only_the_two_shell_variable_shapes_decline_the_directory() {
+        assert_eq!(
+            declined_with("git -C $NOPE push origin feat/x"),
+            crate::push_target::VARIABLE_DIRECTORY
+        );
+        assert_eq!(
+            declined_with("cd $NOPE && git push origin feat/x"),
+            crate::push_target::VARIABLE_CD
+        );
     }
 }

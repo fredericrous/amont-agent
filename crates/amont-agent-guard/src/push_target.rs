@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::shell::{Resolved, Simple, Word};
 
-const VARIABLE_DIRECTORY: &str = "the -C directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)";
+pub(crate) const VARIABLE_DIRECTORY: &str = "the -C directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)";
 pub const VARIABLE_CD: &str = "the cd directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)";
 
 /// The destination kind decides whether a ref is judged: a tag is excluded,
@@ -133,7 +133,7 @@ pub fn read_with(cmd: &Simple, value_of: &dyn Fn(&Word) -> Resolved) -> Read {
     let words = &cmd.words[start + 1..];
     let (dirs, i) = match global_dirs(words, value_of) {
         Ok(found) => found,
-        Err(shape) => return Read::Unresolvable(shape),
+        Err(error) => return Read::Unresolvable(error.shape()),
     };
     let mut operands: Vec<String> = Vec::new();
     let mut after_ddash = false;
@@ -323,32 +323,64 @@ pub fn resolve_with(cwd: &Path, cmd: &Simple, value_of: &dyn Fn(&Word) -> Resolv
 fn global_dirs(
     words: &[Word],
     value_of: &dyn Fn(&Word) -> Resolved,
-) -> Result<(Vec<String>, usize), &'static str> {
+) -> Result<(Vec<String>, usize), DirectoryError> {
     let mut dirs = Vec::new();
     let mut i = 0;
     loop {
         let Some(w) = words.get(i) else {
-            return Err("no push subcommand");
+            return Err(DirectoryError::Unreadable("no push subcommand"));
         };
         if w.expanded {
-            return Err("a word comes from a substitution");
+            return Err(DirectoryError::Unreadable(
+                "a word comes from a substitution",
+            ));
         }
         match w.text.as_str() {
             "push" if !w.quoted => return Ok((dirs, i)),
             "-C" => {
                 let Some(d) = words.get(i + 1) else {
-                    return Err("-C without a directory");
+                    return Err(DirectoryError::Unreadable("-C without a directory"));
                 };
                 match value_of(d) {
                     Resolved::Text(text) => dirs.push(text),
-                    Resolved::Variable => return Err(VARIABLE_DIRECTORY),
-                    Resolved::Substitution => return Err("a word comes from a substitution"),
+                    Resolved::Variable => return Err(DirectoryError::VariableDirectory),
+                    Resolved::Substitution => {
+                        return Err(DirectoryError::Unreadable(
+                            "a word comes from a substitution",
+                        ))
+                    }
                 }
                 i += 2;
             }
             "-c" => i += 2,
             "--no-pager" | "--no-replace-objects" | "--literal-pathspecs" => i += 1,
-            _ => return Err("a git global option this guard does not read"),
+            _ => {
+                return Err(DirectoryError::Unreadable(
+                    "a git global option this guard does not read",
+                ))
+            }
+        }
+    }
+}
+
+/// Why [`directory_for`] cannot tell where a push runs.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DirectoryError {
+    /// A `-C` directory is a shell variable no same-line literal sets.
+    VariableDirectory,
+    /// A `cd` directory is a shell variable no same-line literal sets.
+    VariableCd,
+    /// Anything else this guard does not read; the text says what.
+    Unreadable(&'static str),
+}
+
+impl DirectoryError {
+    /// The shape a refusal names.
+    pub fn shape(&self) -> &'static str {
+        match self {
+            DirectoryError::VariableDirectory => VARIABLE_DIRECTORY,
+            DirectoryError::VariableCd => VARIABLE_CD,
+            DirectoryError::Unreadable(shape) => shape,
         }
     }
 }
@@ -358,21 +390,24 @@ fn global_dirs(
 /// same-line literal assignment sets read. `Err` names why it cannot be
 /// told: a `cd` or `-C` that is still a shell variable, or a global option
 /// this guard does not read.
-pub fn directory_for(ctx: &crate::rules::Context, cmd: &Simple) -> Result<PathBuf, &'static str> {
-    let cwd = match ctx.cwd_walk(cmd.at) {
+pub fn directory_for(
+    context: &crate::rules::Context,
+    cmd: &Simple,
+) -> Result<PathBuf, DirectoryError> {
+    let cwd = match context.cwd_walk(cmd.at) {
         crate::rules::Walk::Walked(dir) => dir,
-        crate::rules::Walk::VariableCd { .. } => return Err(VARIABLE_CD),
+        crate::rules::Walk::VariableCd { .. } => return Err(DirectoryError::VariableCd),
     };
     if crate::land::is_land(cmd) {
         return Ok(cwd);
     }
     let Some(start) = cmd.program_index() else {
-        return Err("no program");
+        return Err(DirectoryError::Unreadable("no program"));
     };
     let (dirs, _) = global_dirs(&cmd.words[start + 1..], &|w| {
-        ctx.parsed.word_value(cmd.at, w)
+        context.parsed.word_value(cmd.at, w)
     })?;
-    directory_from(&cwd, &dirs)
+    directory_from(&cwd, &dirs).map_err(DirectoryError::Unreadable)
 }
 
 /// The directory the push runs in: `cwd` moved by each `-C`.
@@ -470,8 +505,8 @@ fn publishes(c: &Simple) -> bool {
 /// [`resolve`], for a guard that has the whole call: a command with more
 /// than one push or land is unresolvable (only the first would be judged),
 /// and an `amont land` is resolved by asking amont what it would push.
-pub fn resolve_for(ctx: &crate::rules::Context, cmd: &Simple) -> Push {
-    let cwd = match ctx.cwd_walk(cmd.at) {
+pub fn resolve_for(context: &crate::rules::Context, cmd: &Simple) -> Push {
+    let cwd = match context.cwd_walk(cmd.at) {
         crate::rules::Walk::Walked(dir) => dir,
         crate::rules::Walk::VariableCd { session_cwd } => {
             return Push::Unresolvable {
@@ -480,19 +515,26 @@ pub fn resolve_for(ctx: &crate::rules::Context, cmd: &Simple) -> Push {
             };
         }
     };
-    if ctx.parsed.clauses().iter().filter(|c| publishes(c)).count() > 1 {
+    if context
+        .parsed
+        .clauses()
+        .iter()
+        .filter(|c| publishes(c))
+        .count()
+        > 1
+    {
         return Push::Unresolvable {
             repo: toplevel(&cwd),
             shape: "more than one push or land in one command: push each in its own command",
         };
     }
     if !crate::land::is_land(cmd) {
-        return resolve_with(&cwd, cmd, &|w| ctx.parsed.word_value(cmd.at, w));
+        return resolve_with(&cwd, cmd, &|w| context.parsed.word_value(cmd.at, w));
     }
     if cmd.is_dry_run() {
         return Push::DryRun;
     }
-    if let Err(shape) = crate::land::shape(ctx.parsed, cmd, ctx.background) {
+    if let Err(shape) = crate::land::shape(context.parsed, cmd, context.background) {
         return Push::Unresolvable {
             repo: toplevel(&cwd),
             shape,
@@ -608,6 +650,14 @@ mod tests {
             "S=$OTHER/x; git -C $S push origin feat/x",
             "S=a~b; git -C $S push origin feat/x",
             "S=/a; S=$(pwd); git -C $S push origin feat/x",
+            "S=/a; S+=/b; git -C $S push origin feat/x",
+            "S=/a; unset S; git -C $S push origin feat/x",
+            "S=/a; read S; git -C $S push origin feat/x",
+            "S=/a; export S=$(pwd); git -C $S push origin feat/x",
+            "S=/a; declare S=$(pwd); git -C $S push origin feat/x",
+            "S=/a; local S; git -C $S push origin feat/x",
+            "S=/a; typeset S; git -C $S push origin feat/x",
+            "S=/b; for S in /a; do :; done; git -C $S push origin feat/x",
         ] {
             assert_eq!(
                 read_assigned(command),
@@ -695,9 +745,9 @@ mod tests {
 
     /// The directory a push runs in, as `directory_for` reads it from a
     /// whole command line.
-    fn directory_of(command: &str) -> Result<PathBuf, &'static str> {
+    fn directory_of(command: &str) -> Result<PathBuf, DirectoryError> {
         let parsed = lex(command);
-        let ctx = crate::rules::Context {
+        let context = crate::rules::Context {
             platform: None,
             cwd: Path::new("/session"),
             parsed: &parsed,
@@ -716,7 +766,7 @@ mod tests {
             .iter()
             .find(|c| c.words.iter().any(|w| w.text == "push" || w.text == "land"))
             .expect("a push clause");
-        directory_for(&ctx, cmd)
+        directory_for(&context, cmd)
     }
 
     #[test]
@@ -735,7 +785,7 @@ mod tests {
             let got = directory_of(command);
             match want {
                 Ok(dir) => assert_eq!(got, Ok(PathBuf::from(dir)), "{command}"),
-                Err(shape) => assert_eq!(got, Err(*shape), "{command}"),
+                Err(shape) => assert_eq!(got.map_err(|e| e.shape()), Err(*shape), "{command}"),
             }
         }
     }

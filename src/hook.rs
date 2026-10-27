@@ -343,7 +343,7 @@ fn on_bash(bash: &Bash) -> Decision {
             None => (finding.reason.as_str(), None, finding.remedy.as_str()),
         };
         let text = decision::phrase(rule.id, reason, remedy);
-        let stance = final_stance(stance, floor, ceiling, parsed.fully_read(), rule.max_stance);
+        let stance = final_stance(stance, floor, ceiling, reading_of(&parsed), rule.max_stance);
         match stance {
             Stance::Observe => note_with(rule, "observe", "watched", bash, finding, excerpt),
             Stance::Advise => {
@@ -1682,6 +1682,21 @@ pub struct Checked {
     pub said: Option<(String, Option<String>)>,
 }
 
+/// How much of a command was read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    Whole,
+    Partial,
+}
+
+fn reading_of(parsed: &Parsed) -> Reading {
+    if parsed.fully_read() {
+        Reading::Whole
+    } else {
+        Reading::Partial
+    }
+}
+
 /// The stance a finding is acted on at: the resolved one, raised to the
 /// confirm's floor (only when it already advises, capped by the rule's
 /// maximum), held at advise on a half-read command so a partial reading never
@@ -1691,7 +1706,7 @@ pub fn final_stance(
     resolved: Stance,
     floor: Option<Stance>,
     ceiling: Option<Stance>,
-    fully_read: bool,
+    reading: Reading,
     max_stance: Stance,
 ) -> Stance {
     let mut stance = resolved;
@@ -1700,7 +1715,7 @@ pub fn final_stance(
             stance = stance.max(floor).min(max_stance);
         }
     }
-    if !fully_read {
+    if reading == Reading::Partial {
         stance = stance.min(Stance::Advise);
     }
     ceiling.map_or(stance, |c| stance.min(c))
@@ -1745,7 +1760,7 @@ pub fn confirmed_for_check(
         resolved,
         floor,
         ceiling,
-        parsed.fully_read(),
+        reading_of(parsed),
         rule.max_stance,
     );
     Ok(Checked {
