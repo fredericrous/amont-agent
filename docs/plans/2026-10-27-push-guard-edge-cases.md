@@ -120,3 +120,7 @@ Observed 2026-10-27 on `fix/push-guard-edge-cases` with the built binary (`./tar
   - `ctx` and `w` are renamed.
 - The relais worker also changed the lexer to read `do`/`then`/`else` as clause openers. That made every push rule judge pushes inside loop and `if` bodies, which this plan's non-goals rule out, so I reverted it. The `for` row is valid bash with a prior literal; a mutation of the `for` handling turns it red. Whether pushes inside `do … done` should be judged is a separate question for its own change.
 - Delta: approve-with-changes (94k tokens, 77 s). All five round-1 findings resolved. New finding A (high): an assignment or `unset` behind a shell keyword (`then S=/c`, `do unset S`) left the old literal. Fixed conservatively: a clause that opens or continues a compound command clears every variable read so far, and any `NAME=` word in a clause that is not assignment-only clears that name. `eval`, `source` and `.` are already refused by the lexer ('no opinion'). A mutation of the clear-all path turns the table red. Known over-caution: `env S=/c cmd` refuses rather than misreads.
+- Fresh round 1 on the delta fix: approve-with-changes (61k tokens, 83 s). Fixed:
+  - the `cd` target is renamed `cd_target`;
+  - a compound command now clears every name not assigned again, `HOME` included, and a mutation of that turns the `HOME` row red;
+  - only a clause's command word counts as a compound keyword, so `git add .` resolves (new row).
