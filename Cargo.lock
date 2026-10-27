@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "amont-agent"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "amont-agent-guard",
  "amont-agent-process",
@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "amont-agent-guard"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "amont-quiet",
  "serde",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "amont-agent-process"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "amont-agent-guard",
  "pulldown-cmark",
