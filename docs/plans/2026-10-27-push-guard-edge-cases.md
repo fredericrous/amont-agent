@@ -109,3 +109,13 @@ Observed 2026-10-27 on `fix/push-guard-edge-cases` with the built binary (`./tar
 ## Outcome
 
 (Filled when the plan closes.)
+
+## Implementation review
+
+- Round 1: approve-with-changes (71k tokens, 118 s). Fixed in the next commit:
+  - variables changed by `+=`, `unset`, `read`, `export`/`declare`/`local`/`typeset` or a `for` loop are no longer read as their earlier literal;
+  - push-preflight falls back to the clause directory except for the shell-variable shapes;
+  - the bare-stash-pop and stale-base remedy checks run in a temp repo;
+  - `final_stance` takes no bool;
+  - `ctx` and `w` are renamed.
+- The relais worker also changed the lexer to read `do`/`then`/`else` as clause openers. That made every push rule judge pushes inside loop and `if` bodies, which this plan's non-goals rule out, so I reverted it. The `for` row is valid bash with a prior literal; a mutation of the `for` handling turns it red. Whether pushes inside `do … done` should be judged is a separate question for its own change.
