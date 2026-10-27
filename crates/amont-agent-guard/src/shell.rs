@@ -192,6 +192,269 @@ impl Parsed {
     }
 }
 
+/// What a word is worth once the assignments the caller trusts are applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolved {
+    /// The word's literal value (`~` kept as written, `$HOME` read as `~`).
+    Text(String),
+    /// The word names a shell variable no same-line literal assignment sets.
+    Variable,
+    /// The word holds a command substitution or another expansion.
+    Substitution,
+}
+
+/// The literal value of `w`: its text when nothing is expanded, otherwise
+/// the result of reading its `raw` form with `lookup` answering each leading
+/// variable. A variable that is not leading, an escape beside an expansion
+/// and an unknown variable are [`Resolved::Variable`]; `$(…)`, backticks and
+/// `<(…)` are [`Resolved::Substitution`].
+pub fn resolve_word(word: &Word, lookup: &dyn Fn(&str) -> Option<String>) -> Resolved {
+    if !word.raw.contains('$') && !word.raw.contains('`') {
+        return if word.expanded {
+            Resolved::Substitution
+        } else {
+            Resolved::Text(word.text.clone())
+        };
+    }
+    read_raw(&word.raw, lookup)
+}
+
+/// [`resolve_word`] for the written form of a word.
+fn read_raw(raw: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Resolved {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::new();
+    let mut first = true;
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        i += 1;
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if q == c => quote = None,
+            (Some('\''), _) => {
+                out.push(c);
+                first = false;
+            }
+            (_, '`') => return Resolved::Substitution,
+            (_, '\\') => return Resolved::Variable,
+            (_, '$') => {
+                let name: String = match chars.get(i) {
+                    Some('(') => return Resolved::Substitution,
+                    Some('{') => {
+                        let Some(len) = chars[i..].iter().position(|&x| x == '}') else {
+                            return Resolved::Variable;
+                        };
+                        let inner: String = chars[i + 1..i + len].iter().collect();
+                        i += len + 1;
+                        inner
+                    }
+                    _ => {
+                        let len = chars[i..]
+                            .iter()
+                            .take_while(|x| x.is_ascii_alphanumeric() || **x == '_')
+                            .count();
+                        let inner: String = chars[i..i + len].iter().collect();
+                        i += len;
+                        inner
+                    }
+                };
+                let is_name = name
+                    .chars()
+                    .next()
+                    .is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+                    && name.chars().all(|x| x.is_ascii_alphanumeric() || x == '_');
+                if !first || !is_name {
+                    return Resolved::Variable;
+                }
+                match lookup(&name) {
+                    Some(value) => out.push_str(&value),
+                    None => return Resolved::Variable,
+                }
+                first = false;
+            }
+            _ => {
+                out.push(c);
+                first = false;
+            }
+        }
+    }
+    Resolved::Text(out)
+}
+
+/// `NAME=value` as one word: the name and the raw value.
+fn assignment_of(word: &Word) -> Option<(&str, &str)> {
+    let (name, value) = word.raw.split_once('=')?;
+    let mut chars = name.chars();
+    let head = chars.next()?;
+    let valid = (head.is_ascii_alphabetic() || head == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    valid.then_some((name, value))
+}
+
+/// What a clause that is not a plain assignment may do to the variables
+/// the guard has read so far.
+enum Clears<'a> {
+    /// These names may be set or unset: their earlier literal no longer holds.
+    Names(Vec<&'a str>),
+    /// Anything may have changed: a compound command (`if … then`, `do`,
+    /// `{ … }`), `eval`, `source` or `.` can set any variable, so no earlier
+    /// literal holds.
+    All,
+}
+
+/// Words that open or continue a compound command, or run code this guard
+/// does not read, wherever they stand in a clause.
+const CLEARS_ALL: &[&str] = &[
+    "if", "then", "elif", "else", "fi", "do", "done", "while", "until", "case", "esac", "function",
+    "{", "}", "(", ")", "eval", "source", ".",
+];
+
+/// The variables a clause that is not a plain assignment may set or unset:
+/// any `NAME=` or `NAME+=` word, the operands of `unset`, `read`, `export`,
+/// `declare`, `local` and `typeset`, and `for NAME in`. A value set this way
+/// is not a literal this guard reads. A compound command or code the guard
+/// does not read clears every variable.
+fn names_otherwise_set(words: &[Word]) -> Clears<'_> {
+    // Only the command word: a `;` already puts `then`, `do`, `fi` and
+    // `done` first in their clause, and `.` or `done` as an argument
+    // (`git add .`, `echo done`) runs nothing.
+    if words
+        .first()
+        .is_some_and(|word| !word.quoted && CLEARS_ALL.contains(&word.raw.as_str()))
+    {
+        return Clears::All;
+    }
+    let mut names = Vec::new();
+    for word in words {
+        if let Some((name, _)) = word.raw.split_once("+=") {
+            if is_variable_name(name) {
+                names.push(name);
+            }
+        } else if let Some((name, _)) = assignment_of(word) {
+            names.push(name);
+        }
+    }
+    let Some(command) = words.first() else {
+        return Clears::Names(names);
+    };
+    match command.raw.as_str() {
+        "unset" | "read" | "export" | "declare" | "local" | "typeset" => {
+            for word in &words[1..] {
+                let name = word.raw.split('=').next().unwrap_or("");
+                if is_variable_name(name) {
+                    names.push(name);
+                }
+            }
+        }
+        "for" => {
+            if let Some(word) = words.get(1) {
+                if is_variable_name(&word.raw) {
+                    names.push(&word.raw);
+                }
+            }
+        }
+        _ => {}
+    }
+    Clears::Names(names)
+}
+
+fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|head| head.is_ascii_alphabetic() || head == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// An unquoted `~` anywhere but the start of an assignment's value.
+fn has_inner_tilde(value: &str) -> bool {
+    let mut quote: Option<char> = None;
+    for (index, c) in value.chars().enumerate() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if q == c => quote = None,
+            (None, '~') if index > 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+pub(crate) fn home_only(name: &str) -> Option<String> {
+    (name == "HOME").then(|| "~".to_string())
+}
+
+impl Parsed {
+    /// The value of `asked`, a word of the clause starting at `clause_at`, with
+    /// the literal assignments an earlier assignment-only clause of the same
+    /// command line made. Only a clause that ran in the same shell counts
+    /// (same substitution, joined by `;` or `&&`, not behind `|` or `||`),
+    /// and only a value that is a literal, a quoted literal or a leading
+    /// `$HOME`; the last assignment wins, and one that cannot be read
+    /// unsets the variable.
+    pub fn word_value(&self, clause_at: usize, asked: &Word) -> Resolved {
+        if !asked.raw.contains('$') && !asked.raw.contains('`') {
+            return resolve_word(asked, &home_only);
+        }
+        let clauses = self.clauses();
+        let asking = clauses
+            .iter()
+            .find(|c| c.at == clause_at)
+            .and_then(|c| c.nested);
+        let mut bound: std::collections::HashMap<&str, Option<String>> =
+            std::collections::HashMap::new();
+        // Set by a compound command: after it, a name not assigned again
+        // (`HOME` included) has no value this guard trusts.
+        let mut cleared_all = false;
+        for clause in clauses {
+            let assigns_only = !clause.words.is_empty()
+                && clause.opaque.is_none()
+                && !clause.heredoc
+                && clause
+                    .words
+                    .iter()
+                    .all(|word| assignment_of(word).is_some());
+            if clause.at < clause_at && !assigns_only {
+                match names_otherwise_set(&clause.words) {
+                    Clears::Names(names) => {
+                        for name in names {
+                            bound.insert(name, None);
+                        }
+                    }
+                    Clears::All => {
+                        bound.clear();
+                        cleared_all = true;
+                    }
+                }
+            }
+            if clause.at >= clause_at
+                || !assigns_only
+                || clause.nested != asking
+                || !matches!(clause.next, Some(Connector::Semi | Connector::AndAnd))
+                || matches!(clause.prev, Some(Connector::Pipe | Connector::OrOr))
+            {
+                continue;
+            }
+            for word in &clause.words {
+                let Some((name, value)) = assignment_of(word) else {
+                    continue;
+                };
+                let read = match read_raw(value, &home_only) {
+                    Resolved::Text(text) if !has_inner_tilde(value) => Some(text),
+                    Resolved::Text(_) | Resolved::Variable | Resolved::Substitution => None,
+                };
+                bound.insert(name, read);
+            }
+        }
+        resolve_word(asked, &|name| match bound.get(name) {
+            Some(value) => value.clone(),
+            None if cleared_all => None,
+            None => home_only(name),
+        })
+    }
+}
+
 /// Commands whose arguments are themselves a program we would have to be a
 /// shell to read, and which run in THIS shell.
 ///

@@ -18,17 +18,44 @@
 
 use std::process::Command;
 
-fn check(command: &str) -> String {
+/// A directory this test owns and nothing else uses: not a repository, and not
+/// the crate root, so no assertion here depends on the git state of the
+/// checkout `cargo test` runs in.
+fn owned_directory() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("amont-precision-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the test directory is created");
+    dir
+}
+
+fn check_with(flags: &[&str], command: &str) -> String {
+    let dir = owned_directory();
     let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
-        .args(["check", command])
+        .arg("check")
+        .arg("--cwd")
+        .arg(&dir)
+        .args(flags)
+        .arg(command)
         .output()
         .expect("the binary runs");
     assert!(out.status.success(), "check exited {:?}", out.status.code());
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+fn check(command: &str) -> String {
+    check_with(&[], command)
+}
+
 fn fires_rule(command: &str, rule: &str) -> bool {
     check(command).lines().any(|l| l.starts_with(rule))
+}
+
+/// The rule's shape matched, whether or not its `confirm` found the fact in
+/// this directory: `--explain` prints a rule's id for a confirmed rule and for
+/// an unconfirmed one (`<id> not confirmed: <why>`).
+fn matches_shape(command: &str, rule: &str) -> bool {
+    check_with(&["--explain"], command)
+        .lines()
+        .any(|l| l.split_whitespace().next() == Some(rule))
 }
 
 /// Real commands that must produce silence. Each carries the family it belongs
@@ -196,8 +223,8 @@ fn what_cannot_be_read_gets_no_opinion() {
 
 #[test]
 fn the_smaller_rules_catch_their_own_shapes() {
-    assert!(fires_rule("git stash pop", "bare-stash-pop"));
-    assert!(fires_rule("git stash apply", "bare-stash-pop"));
+    assert!(matches_shape("git stash pop", "bare-stash-pop"));
+    assert!(matches_shape("git stash apply", "bare-stash-pop"));
     assert!(fires_rule(
         "gh pr merge 381 --squash --auto",
         "gh-pr-merge-auto"
@@ -205,10 +232,13 @@ fn the_smaller_rules_catch_their_own_shapes() {
     assert!(fires_rule("git commit --no-verify -m x", "no-verify"));
     assert!(fires_rule("git add -A", "git-add-broad"));
     assert!(fires_rule("git add .", "git-add-broad"));
-    assert!(fires_rule("git worktree add ../x -b feat/y", "stale-base"));
-    assert!(fires_rule("git worktree add ../x", "stale-base"));
-    assert!(fires_rule("git checkout -b feat/y", "stale-base"));
-    assert!(fires_rule("git switch -c feat/y main", "stale-base"));
+    assert!(matches_shape(
+        "git worktree add ../x -b feat/y",
+        "stale-base"
+    ));
+    assert!(matches_shape("git worktree add ../x", "stale-base"));
+    assert!(matches_shape("git checkout -b feat/y", "stale-base"));
+    assert!(matches_shape("git switch -c feat/y main", "stale-base"));
 
     // These two were collected as `remote-base` false positives of
     // `stale-base`, and that family's claim — "a branch started from the
@@ -223,7 +253,7 @@ fn the_smaller_rules_catch_their_own_shapes() {
         "git switch -c feat/y upstream/main",
     ] {
         assert!(
-            !fires_rule(benign_base, "stale-base"),
+            !matches_shape(benign_base, "stale-base"),
             "a remote start point is the remedy: {benign_base}"
         );
     }
@@ -236,20 +266,18 @@ fn the_smaller_rules_catch_their_own_shapes() {
         "cat notes.txt | git notes add -F - HEAD",
         "pipe-to-tail"
     ));
-    assert!(fires_rule("git push -u origin feat/y", "push-preflight"));
-    assert!(fires_rule("git push", "push-preflight"));
-    assert!(!fires_rule(
+    assert!(matches_shape("git push -u origin feat/y", "push-preflight"));
+    assert!(matches_shape("git push", "push-preflight"));
+    for negative in [
         "git push --dry-run origin main",
-        "push-preflight"
-    ));
-    assert!(!fires_rule(
         "git push --no-verify origin feat/y",
-        "push-preflight"
-    ));
-    assert!(!fires_rule(
         "git push origin refs/notes/amont-attest:refs/notes/amont-attest",
-        "push-preflight"
-    ));
+    ] {
+        assert!(
+            !matches_shape(negative, "push-preflight"),
+            "not a push-preflight shape: {negative}"
+        );
+    }
 }
 
 /// `-n` means `--no-verify` on `git commit` and `--dry-run` on `git push`.
@@ -267,8 +295,6 @@ fn the_short_flag_means_different_things_per_subcommand() {
 fn every_finding_carries_a_remedy() {
     for command in [
         "git push origin main | tail -5",
-        "git stash pop",
-        "git checkout -b feat/y",
         "gh pr merge 1 --auto",
         "git commit --no-verify -m x",
         "git add -A",

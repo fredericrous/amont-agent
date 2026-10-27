@@ -15,7 +15,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::shell::Simple;
+use crate::shell::{Resolved, Simple, Word};
+
+pub(crate) const VARIABLE_DIRECTORY: &str = "the -C directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)";
+pub const VARIABLE_CD: &str = "the cd directory is a shell variable this guard cannot resolve (assign it a literal on the same line, or write the path)";
 
 /// The destination kind decides whether a ref is judged: a tag is excluded,
 /// a branch is judged — including a tag's commit pushed onto a branch.
@@ -113,40 +116,25 @@ const UNRESOLVABLE: &[(&str, &str)] = &[
     ("--stdin", "refspecs come from stdin"),
 ];
 
-/// Read the push out of a `git … push …` clause. Pure.
+/// Read the push out of a `git … push …` clause, taking no assignment on
+/// trust. Pure.
 pub fn read(cmd: &Simple) -> Read {
+    read_with(cmd, &|w| {
+        crate::shell::resolve_word(w, &crate::shell::home_only)
+    })
+}
+
+/// [`read`], with the value of each `-C` word supplied by the caller, which
+/// owns the clauses that may have assigned it. Pure.
+pub fn read_with(cmd: &Simple, value_of: &dyn Fn(&Word) -> Resolved) -> Read {
     let Some(start) = cmd.program_index() else {
         return Read::Unresolvable("no program");
     };
     let words = &cmd.words[start + 1..];
-    let mut dirs = Vec::new();
-    let mut i = 0;
-    // Global options before the subcommand. `-C` is honoured; anything else
-    // that could move the repository is not guessed at.
-    loop {
-        let Some(w) = words.get(i) else {
-            return Read::Unresolvable("no push subcommand");
-        };
-        if w.expanded {
-            return Read::Unresolvable("a word comes from a substitution");
-        }
-        match w.text.as_str() {
-            "push" if !w.quoted => break,
-            "-C" => {
-                let Some(d) = words.get(i + 1) else {
-                    return Read::Unresolvable("-C without a directory");
-                };
-                if d.expanded {
-                    return Read::Unresolvable("a word comes from a substitution");
-                }
-                dirs.push(d.text.clone());
-                i += 2;
-            }
-            "-c" => i += 2,
-            "--no-pager" | "--no-replace-objects" | "--literal-pathspecs" => i += 1,
-            _ => return Read::Unresolvable("a git global option this guard does not read"),
-        }
-    }
+    let (dirs, i) = match global_dirs(words, value_of) {
+        Ok(found) => found,
+        Err(error) => return Read::Unresolvable(error.shape()),
+    };
     let mut operands: Vec<String> = Vec::new();
     let mut after_ddash = false;
     // `--delete` turns every refspec into a delete, wherever it stands.
@@ -251,7 +239,14 @@ pub fn read(cmd: &Simple) -> Read {
 /// Resolve a read push against the repository it runs in. `cwd` is the
 /// directory of the clause (`Context::cwd_at`).
 pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
-    let spec = match read(cmd) {
+    resolve_with(cwd, cmd, &|w| {
+        crate::shell::resolve_word(w, &crate::shell::home_only)
+    })
+}
+
+/// [`resolve`], with the value of each `-C` word supplied by the caller.
+pub fn resolve_with(cwd: &Path, cmd: &Simple, value_of: &dyn Fn(&Word) -> Resolved) -> Push {
+    let spec = match read_with(cmd, value_of) {
         Read::Spec(s) => s,
         Read::DryRun => return Push::DryRun,
         Read::DeleteOnly => return Push::DeleteOnly,
@@ -322,11 +317,114 @@ pub fn resolve(cwd: &Path, cmd: &Simple) -> Push {
     Push::Resolved { repo, targets }
 }
 
+/// The global options before `push`: each `-C` directory, in order, and the
+/// index of the `push` word. `-C` is honoured; anything else that could move
+/// the repository is not guessed at.
+fn global_dirs(
+    words: &[Word],
+    value_of: &dyn Fn(&Word) -> Resolved,
+) -> Result<(Vec<String>, usize), DirectoryError> {
+    let mut dirs = Vec::new();
+    let mut i = 0;
+    loop {
+        let Some(w) = words.get(i) else {
+            return Err(DirectoryError::Unreadable("no push subcommand"));
+        };
+        if w.expanded {
+            return Err(DirectoryError::Unreadable(
+                "a word comes from a substitution",
+            ));
+        }
+        match w.text.as_str() {
+            "push" if !w.quoted => return Ok((dirs, i)),
+            "-C" => {
+                let Some(d) = words.get(i + 1) else {
+                    return Err(DirectoryError::Unreadable("-C without a directory"));
+                };
+                match value_of(d) {
+                    Resolved::Text(text) => dirs.push(text),
+                    Resolved::Variable => return Err(DirectoryError::VariableDirectory),
+                    Resolved::Substitution => {
+                        return Err(DirectoryError::Unreadable(
+                            "a word comes from a substitution",
+                        ))
+                    }
+                }
+                i += 2;
+            }
+            "-c" => i += 2,
+            "--no-pager" | "--no-replace-objects" | "--literal-pathspecs" => i += 1,
+            _ => {
+                return Err(DirectoryError::Unreadable(
+                    "a git global option this guard does not read",
+                ))
+            }
+        }
+    }
+}
+
+/// Why [`directory_for`] cannot tell where a push runs.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DirectoryError {
+    /// A `-C` directory is a shell variable no same-line literal sets.
+    VariableDirectory,
+    /// A `cd` directory is a shell variable no same-line literal sets.
+    VariableCd,
+    /// Anything else this guard does not read; the text says what.
+    Unreadable(&'static str),
+}
+
+impl DirectoryError {
+    /// The shape a refusal names.
+    pub fn shape(&self) -> &'static str {
+        match self {
+            DirectoryError::VariableDirectory => VARIABLE_DIRECTORY,
+            DirectoryError::VariableCd => VARIABLE_CD,
+            DirectoryError::Unreadable(shape) => shape,
+        }
+    }
+}
+
+/// The directory a push or land runs in, for a rule that has the whole
+/// call: the clause's `cd`s followed, then each `git -C`, with variables a
+/// same-line literal assignment sets read. `Err` names why it cannot be
+/// told: a `cd` or `-C` that is still a shell variable, or a global option
+/// this guard does not read.
+pub fn directory_for(
+    context: &crate::rules::Context,
+    cmd: &Simple,
+) -> Result<PathBuf, DirectoryError> {
+    let cwd = match context.cwd_walk(cmd.at) {
+        crate::rules::Walk::Walked(dir) => dir,
+        crate::rules::Walk::VariableCd { .. } => return Err(DirectoryError::VariableCd),
+    };
+    if crate::land::is_land(cmd) {
+        return Ok(cwd);
+    }
+    let Some(start) = cmd.program_index() else {
+        return Err(DirectoryError::Unreadable("no program"));
+    };
+    let (dirs, _) = global_dirs(&cmd.words[start + 1..], &|w| {
+        context.parsed.word_value(cmd.at, w)
+    })?;
+    directory_from(&cwd, &dirs).map_err(DirectoryError::Unreadable)
+}
+
 /// The directory the push runs in: `cwd` moved by each `-C`.
 fn directory(cwd: &Path, spec: &Spec) -> Result<PathBuf, &'static str> {
+    directory_from(cwd, &spec.dirs)
+}
+
+/// `cwd` moved by each `-C` directory in `dirs`, `~` against `HOME`.
+fn directory_from(cwd: &Path, dirs: &[String]) -> Result<PathBuf, &'static str> {
     let mut dir = cwd.to_path_buf();
-    for d in &spec.dirs {
-        dir = if let Some(rest) = d.strip_prefix("~/") {
+    for d in dirs {
+        dir = if d == "~" {
+            match std::env::var_os("HOME") {
+                Some(h) => PathBuf::from(h),
+                None => return Err("-C names a home-relative path and HOME is unset"),
+            }
+        } else if let Some(rest) = d.strip_prefix("~/") {
             match std::env::var_os("HOME") {
                 Some(h) => PathBuf::from(h).join(rest),
                 None => return Err("-C names a home-relative path and HOME is unset"),
@@ -407,21 +505,36 @@ fn publishes(c: &Simple) -> bool {
 /// [`resolve`], for a guard that has the whole call: a command with more
 /// than one push or land is unresolvable (only the first would be judged),
 /// and an `amont land` is resolved by asking amont what it would push.
-pub fn resolve_for(ctx: &crate::rules::Context, cmd: &Simple) -> Push {
-    let cwd = ctx.cwd_at(cmd.at);
-    if ctx.parsed.clauses().iter().filter(|c| publishes(c)).count() > 1 {
+pub fn resolve_for(context: &crate::rules::Context, cmd: &Simple) -> Push {
+    let cwd = match context.cwd_walk(cmd.at) {
+        crate::rules::Walk::Walked(dir) => dir,
+        crate::rules::Walk::VariableCd { session_cwd } => {
+            return Push::Unresolvable {
+                repo: toplevel(&session_cwd),
+                shape: VARIABLE_CD,
+            };
+        }
+    };
+    if context
+        .parsed
+        .clauses()
+        .iter()
+        .filter(|c| publishes(c))
+        .count()
+        > 1
+    {
         return Push::Unresolvable {
             repo: toplevel(&cwd),
             shape: "more than one push or land in one command: push each in its own command",
         };
     }
     if !crate::land::is_land(cmd) {
-        return resolve(&cwd, cmd);
+        return resolve_with(&cwd, cmd, &|w| context.parsed.word_value(cmd.at, w));
     }
     if cmd.is_dry_run() {
         return Push::DryRun;
     }
-    if let Err(shape) = crate::land::shape(ctx.parsed, cmd, ctx.background) {
+    if let Err(shape) = crate::land::shape(context.parsed, cmd, context.background) {
         return Push::Unresolvable {
             repo: toplevel(&cwd),
             shape,
@@ -502,6 +615,63 @@ mod tests {
         );
     }
 
+    fn read_assigned(command: &str) -> Read {
+        let parsed = lex(command);
+        let cmd = find(&parsed).expect("a push clause");
+        read_with(cmd, &|w| parsed.word_value(cmd.at, w))
+    }
+
+    #[test]
+    fn a_variable_set_on_the_same_line_is_read() {
+        for (command, dir) in [
+            ("S=/a/b; git -C $S push -u origin feat/x", "/a/b"),
+            ("S='/a b'; git -C \"$S\" push origin feat/x", "/a b"),
+            ("S=/a && git -C ${S} push origin feat/x", "/a"),
+            ("S=/a; git add . && git -C $S push origin feat/x", "/a"),
+            ("git -C $HOME/wt push origin feat/x", "~/wt"),
+            ("S=/a; S=/c; git -C $S push origin feat/x", "/c"),
+            ("S=\"$HOME/x\"; git -C $S push origin feat/x", "~/x"),
+        ] {
+            assert_eq!(
+                read_assigned(command),
+                spec("origin", &["feat/x"], &[dir]),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_variable_nobody_set_names_the_variable() {
+        for command in [
+            "git -C $UNSET push origin feat/x",
+            "git -C $S push origin feat/x; S=/a",
+            "echo $(S=/a); git -C $S push origin feat/x",
+            "S=/a | cat; git -C $S push origin feat/x",
+            "S=/a || git -C $S push origin feat/x",
+            "S=$OTHER/x; git -C $S push origin feat/x",
+            "S=a~b; git -C $S push origin feat/x",
+            "S=/a; S=$(pwd); git -C $S push origin feat/x",
+            "S=/a; S+=/b; git -C $S push origin feat/x",
+            "S=/a; unset S; git -C $S push origin feat/x",
+            "S=/a; read S; git -C $S push origin feat/x",
+            "S=/a; export S=$(pwd); git -C $S push origin feat/x",
+            "S=/a; declare S=$(pwd); git -C $S push origin feat/x",
+            "S=/a; local S; git -C $S push origin feat/x",
+            "S=/a; typeset S; git -C $S push origin feat/x",
+            "S=/b; for S in /a; do :; done; git -C $S push origin feat/x",
+            "S=/a; if true; then S=/c; fi; git -C $S push origin feat/x",
+            "S=/a; for x in y; do unset S; done; git -C $S push origin feat/x",
+            "S=/a; env S=/c true; git -C $S push origin feat/x",
+            "if true; then HOME=/x; fi; git -C $HOME/wt push origin feat/x",
+        ] {
+            assert_eq!(
+                read_assigned(command),
+                Read::Unresolvable(VARIABLE_DIRECTORY),
+                "{command}"
+            );
+        }
+    }
+
     #[test]
     fn a_dry_run_is_not_judged() {
         assert_eq!(read_of("git push --dry-run origin main"), Read::DryRun);
@@ -576,5 +746,52 @@ mod tests {
             read_of("git push origin feat/x v1.2.0"),
             spec("origin", &["feat/x", "v1.2.0"], &[])
         );
+    }
+
+    /// The directory a push runs in, as `directory_for` reads it from a
+    /// whole command line.
+    fn directory_of(command: &str) -> Result<PathBuf, DirectoryError> {
+        let parsed = lex(command);
+        let context = crate::rules::Context {
+            platform: None,
+            cwd: Path::new("/session"),
+            parsed: &parsed,
+            background: false,
+            timeout_ms: None,
+            tool_use_id: "",
+            transcript: None,
+            agent_transcript: None,
+            command,
+            output: None,
+            session: "",
+            failed: false,
+        };
+        let cmd = parsed
+            .clauses()
+            .iter()
+            .find(|c| c.words.iter().any(|w| w.text == "push" || w.text == "land"))
+            .expect("a push clause");
+        directory_for(&context, cmd)
+    }
+
+    #[test]
+    fn a_push_runs_in_its_cd_and_c_directories_with_same_line_variables_read() {
+        let cases: &[(&str, Result<&str, &str>)] = &[
+            ("git push origin feat/x", Ok("/session")),
+            ("git -C /a push origin feat/x", Ok("/a")),
+            ("cd /b && git -C c push origin feat/x", Ok("/b/c")),
+            ("S=/a; git -C $S push origin feat/x", Ok("/a")),
+            ("S=/a && git -C \"$S\" push origin feat/x", Ok("/a")),
+            ("S=/b; cd $S && git push origin feat/x", Ok("/b")),
+            ("git -C $NOPE push origin feat/x", Err(VARIABLE_DIRECTORY)),
+            ("cd $NOPE && git push origin feat/x", Err(VARIABLE_CD)),
+        ];
+        for (command, want) in cases {
+            let got = directory_of(command);
+            match want {
+                Ok(dir) => assert_eq!(got, Ok(PathBuf::from(dir)), "{command}"),
+                Err(shape) => assert_eq!(got.map_err(|e| e.shape()), Err(*shape), "{command}"),
+            }
+        }
     }
 }
