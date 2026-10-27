@@ -85,7 +85,7 @@ directory it is run from.
 
 - [x] Phase 1 — `push_target` and `cwd_at` read same-line literal variables; the new unresolvable shape.
 - [x] Phase 2 — `amont-agent check` runs `confirm` in a context for `--cwd`.
-- [ ] Release amont-agent so the installed hook carries both.
+- [ ] Release amont-agent so the installed hook carries both (after this branch merges).
 
 ## Decision log
 
@@ -124,3 +124,5 @@ Observed 2026-10-27 on `fix/push-guard-edge-cases` with the built binary (`./tar
   - the `cd` target is renamed `cd_target`;
   - a compound command now clears every name not assigned again, `HOME` included, and a mutation of that turns the `HOME` row red;
   - only a clause's command word counts as a compound keyword, so `git add .` resolves (new row).
+- Delta on the round fixes: approve (67k tokens, 22 s). No new finding.
+- Known over-caution, refused rather than misread: `env S=/c cmd` clears `S`, and after any compound command on the same line `$HOME` is refused (for example `if …; fi; cd $HOME && git push`). A `cd`/`-C` written out in full is always read.
