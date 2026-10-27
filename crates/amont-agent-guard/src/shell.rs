@@ -292,20 +292,48 @@ fn assignment_of(word: &Word) -> Option<(&str, &str)> {
     valid.then_some((name, value))
 }
 
+/// What a clause that is not a plain assignment may do to the variables
+/// the guard has read so far.
+enum Clears<'a> {
+    /// These names may be set or unset: their earlier literal no longer holds.
+    Names(Vec<&'a str>),
+    /// Anything may have changed: a compound command (`if … then`, `do`,
+    /// `{ … }`), `eval`, `source` or `.` can set any variable, so no earlier
+    /// literal holds.
+    All,
+}
+
+/// Words that open or continue a compound command, or run code this guard
+/// does not read, wherever they stand in a clause.
+const CLEARS_ALL: &[&str] = &[
+    "if", "then", "elif", "else", "fi", "do", "done", "while", "until", "case", "esac", "function",
+    "{", "}", "(", ")", "eval", "source", ".",
+];
+
 /// The variables a clause that is not a plain assignment may set or unset:
-/// `NAME+=`, `unset`, `read`, `export`, `declare`, `local`, `typeset` and
-/// `for NAME in`. A value set this way is not a literal this guard reads.
-fn names_otherwise_set(words: &[Word]) -> Vec<&str> {
+/// any `NAME=` or `NAME+=` word, the operands of `unset`, `read`, `export`,
+/// `declare`, `local` and `typeset`, and `for NAME in`. A value set this way
+/// is not a literal this guard reads. A compound command or code the guard
+/// does not read clears every variable.
+fn names_otherwise_set(words: &[Word]) -> Clears<'_> {
+    if words
+        .iter()
+        .any(|word| !word.quoted && CLEARS_ALL.contains(&word.raw.as_str()))
+    {
+        return Clears::All;
+    }
     let mut names = Vec::new();
     for word in words {
         if let Some((name, _)) = word.raw.split_once("+=") {
             if is_variable_name(name) {
                 names.push(name);
             }
+        } else if let Some((name, _)) = assignment_of(word) {
+            names.push(name);
         }
     }
     let Some(command) = words.first() else {
-        return names;
+        return Clears::Names(names);
     };
     match command.raw.as_str() {
         "unset" | "read" | "export" | "declare" | "local" | "typeset" => {
@@ -325,7 +353,7 @@ fn names_otherwise_set(words: &[Word]) -> Vec<&str> {
         }
         _ => {}
     }
-    names
+    Clears::Names(names)
 }
 
 fn is_variable_name(name: &str) -> bool {
@@ -382,8 +410,17 @@ impl Parsed {
                     .iter()
                     .all(|word| assignment_of(word).is_some());
             if clause.at < clause_at && !assigns_only {
-                for name in names_otherwise_set(&clause.words) {
-                    bound.insert(name, None);
+                match names_otherwise_set(&clause.words) {
+                    Clears::Names(names) => {
+                        for name in names {
+                            bound.insert(name, None);
+                        }
+                    }
+                    Clears::All => {
+                        for value in bound.values_mut() {
+                            *value = None;
+                        }
+                    }
                 }
             }
             if clause.at >= clause_at

@@ -658,6 +658,9 @@ mod tests {
             "S=/a; local S; git -C $S push origin feat/x",
             "S=/a; typeset S; git -C $S push origin feat/x",
             "S=/b; for S in /a; do :; done; git -C $S push origin feat/x",
+            "S=/a; if true; then S=/c; fi; git -C $S push origin feat/x",
+            "S=/a; for x in y; do unset S; done; git -C $S push origin feat/x",
+            "S=/a; env S=/c true; git -C $S push origin feat/x",
         ] {
             assert_eq!(
                 read_assigned(command),
