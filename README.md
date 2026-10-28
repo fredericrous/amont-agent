@@ -67,6 +67,16 @@ git config --global amont.agent.pipe-to-tail.stance observe   # one rule
 AMONT_AGENT_OFF=1                                             # this shell
 ```
 
+## Runs alone
+
+`aval`, `adr-lint` and `amont` are optional. Without `aval`, `review-brief`
+prints the brief with a section saying the decided code rules were not read
+and exits 0 (`rules-sha` still exits 3, and the push check journals the
+rules as unknown). Without `adr-lint`, the brief marks its candidates
+unavailable and still exits 0. Without `amont`, the guard rules and the
+review commands run unchanged; amont's own commit and push gates are then
+simply not in play.
+
 ## Documentation
 
 The [book](https://fredericrous.github.io/amont-agent/), versioned with the

@@ -27,13 +27,21 @@ const RULES_ARGS: [&str; 7] = [
     "--full",
 ];
 
-/// What `aval` could not do: the command line and why.
+/// What `aval` could not do: it is not installed, or the command line and why
+/// it failed.
 #[derive(Debug, PartialEq, Eq)]
-pub struct AvalFailed(pub String);
+pub enum AvalFailed {
+    /// `AMONT_AGENT_AVAL` is unset and no PATH entry is named `aval` at all.
+    NotInstalled,
+    Failed(String),
+}
 
 impl std::fmt::Display for AvalFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        match self {
+            AvalFailed::NotInstalled => f.write_str("aval is not installed"),
+            AvalFailed::Failed(why) => f.write_str(why),
+        }
     }
 }
 
@@ -82,9 +90,40 @@ fn adr_lint_program() -> std::ffi::OsString {
         .unwrap_or_else(|| std::ffi::OsString::from("adr-lint"))
 }
 
+/// True only when no PATH entry holds anything named `aval` (with the
+/// platform's executable suffixes). A non-executable file, a dangling symlink
+/// or a lookup that fails for another reason is a candidate, not absence: the
+/// spawn then says what is wrong.
+fn no_aval_on_path() -> bool {
+    let mut names = vec![std::ffi::OsString::from("aval")];
+    if cfg!(windows) {
+        let suffixes = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        names.extend(
+            suffixes
+                .split(';')
+                .filter(|suffix| !suffix.is_empty())
+                .map(|suffix| std::ffi::OsString::from(format!("aval{suffix}"))),
+        );
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).all(|dir| {
+        names.iter().all(|name| {
+            matches!(
+                std::fs::symlink_metadata(dir.join(name)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound
+            )
+        })
+    })
+}
+
 /// Runs `aval` with a deadline: a hung `aval` is killed and reported, so the
 /// push check that calls it never waits on it for long.
 fn run_aval(dir: &Path, args: &[&str]) -> Result<AvalAnswer, AvalFailed> {
+    if std::env::var_os("AMONT_AGENT_AVAL").is_none_or(|program| program.is_empty())
+        && no_aval_on_path()
+    {
+        return Err(AvalFailed::NotInstalled);
+    }
     run_bounded(&aval_program(), "aval", dir, args)
 }
 
@@ -105,11 +144,11 @@ fn run_bounded(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| AvalFailed(format!("`{line}` could not run: {e}")))?;
+        .map_err(|e| AvalFailed::Failed(format!("`{line}` could not run: {e}")))?;
     let mut pipe = child
         .stdout
         .take()
-        .ok_or_else(|| AvalFailed(format!("`{line}` has no stdout")))?;
+        .ok_or_else(|| AvalFailed::Failed(format!("`{line}` has no stdout")))?;
     let reader = std::thread::spawn(move || {
         let mut printed = Vec::new();
         pipe.read_to_end(&mut printed).map(|_| printed)
@@ -118,7 +157,7 @@ fn run_bounded(
     let mut err_pipe = child
         .stderr
         .take()
-        .ok_or_else(|| AvalFailed(format!("`{line}` has no stderr")))?;
+        .ok_or_else(|| AvalFailed::Failed(format!("`{line}` has no stderr")))?;
     let err_reader = std::thread::spawn(move || {
         let mut said = Vec::new();
         err_pipe.read_to_end(&mut said).map(|_| said)
@@ -132,18 +171,22 @@ fn run_bounded(
             }
             Ok(None) => {
                 let killed = child.kill().and_then(|()| child.wait());
-                return Err(AvalFailed(format!(
+                return Err(AvalFailed::Failed(format!(
                     "`{line}` timed out after {} s (kill: {killed:?})",
                     AVAL_DEADLINE.as_secs()
                 )));
             }
-            Err(e) => return Err(AvalFailed(format!("`{line}` could not be waited on: {e}"))),
+            Err(e) => {
+                return Err(AvalFailed::Failed(format!(
+                    "`{line}` could not be waited on: {e}"
+                )))
+            }
         }
     };
     let stdout = reader
         .join()
-        .map_err(|_| AvalFailed(format!("`{line}` output reader panicked")))?
-        .map_err(|e| AvalFailed(format!("`{line}` output could not be read: {e}")))?;
+        .map_err(|_| AvalFailed::Failed(format!("`{line}` output reader panicked")))?
+        .map_err(|e| AvalFailed::Failed(format!("`{line}` output could not be read: {e}")))?;
     // What aval said goes into an error message only; an unreadable stderr says nothing.
     let stderr = err_reader
         .join()
@@ -167,7 +210,7 @@ fn aval(dir: &Path, args: &[&str]) -> Result<Vec<u8>, AvalFailed> {
         } else {
             format!(": {}", answer.stderr.lines().next().unwrap_or_default())
         };
-        return Err(AvalFailed(format!(
+        return Err(AvalFailed::Failed(format!(
             "`{line}` exited {}{said}",
             answer.status
         )));
@@ -316,7 +359,7 @@ fn candidates(repo: &Path, merge_base: &str) -> Candidates {
     let args = ["candidates", "--base", merge_base, "--json", "--max", "40"];
     let answer = match run_bounded(&adr_lint_program(), "adr-lint", repo, &args) {
         Ok(answer) => answer,
-        Err(why) => return Candidates::Unavailable(why.0),
+        Err(why) => return Candidates::Unavailable(why.to_string()),
     };
     if !answer.status.success() {
         let said = answer.stderr.lines().next().unwrap_or_default();
@@ -354,12 +397,23 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         ))
     })?;
     let has_corpus = repo.join(CORPUS_FILE).is_file();
+    let aval_missing;
     let code_rules = if has_corpus {
-        let code_rules = rules(&repo)?;
-        let text =
-            render_rules(&code_rules.json).map_err(|why| BriefError::Aval(AvalFailed(why)))?;
-        Some((code_rules.sha, text))
+        match rules(&repo) {
+            Ok(code_rules) => {
+                aval_missing = false;
+                let text = render_rules(&code_rules.json)
+                    .map_err(|why| BriefError::Aval(AvalFailed::Failed(why)))?;
+                Some((code_rules.sha, text))
+            }
+            Err(AvalFailed::NotInstalled) => {
+                aval_missing = true;
+                None
+            }
+            Err(failed) => return Err(failed.into()),
+        }
     } else {
+        aval_missing = false;
         None
     };
     let tree = crate::content_id::content_id(&repo, "HEAD").map_err(BriefError::Repository)?;
@@ -443,6 +497,15 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
 
             brief.push_str("# Decisions that apply to the changed paths\n\n");
             brief.push_str(&decisions(&repo, &range)?);
+        }
+        None if aval_missing => {
+            brief.push_str(
+                "# Code rules\n\nThis repository has an aval corpus (.adr.yaml), but aval is not installed, so its decided code rules were not read. Review against the plan; do not treat the code as unconstrained.\n",
+            );
+            notices.push(format!(
+                "{} has {CORPUS_FILE} but aval is not installed: the brief carries no decided code rules; install it (brew install fredericrous/tap/aval) or set AMONT_AGENT_AVAL",
+                repo.display()
+            ));
         }
         None => {
             brief.push_str(&format!(
@@ -531,7 +594,7 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
     }
     let relevant = aval(repo, &args)?;
     let relevance: serde_json::Value = serde_json::from_slice(&relevant).map_err(|e| {
-        BriefError::Aval(AvalFailed(format!(
+        BriefError::Aval(AvalFailed::Failed(format!(
             "`aval --json relevant` printed output that is not JSON: {e}"
         )))
     })?;
@@ -540,7 +603,7 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
         .get("keys")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            BriefError::Aval(AvalFailed(
+            BriefError::Aval(AvalFailed::Failed(
                 "`aval --json relevant` printed no `keys` array".to_string(),
             ))
         })?;
@@ -550,7 +613,7 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
             .get("key")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| {
-                BriefError::Aval(AvalFailed(format!(
+                BriefError::Aval(AvalFailed::Failed(format!(
                     "`aval --json relevant` row {index} of `keys` has no string `key`"
                 )))
             })?;
@@ -566,7 +629,7 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
                 .lines()
                 .next()
                 .unwrap_or("nothing on stderr");
-            return Err(BriefError::Aval(AvalFailed(format!(
+            return Err(BriefError::Aval(AvalFailed::Failed(format!(
                 "`aval resolve {key}` printed nothing ({}): {said}",
                 resolved.status
             ))));
@@ -616,7 +679,7 @@ mod tests {
             "review=rules-stale"
         );
         assert_eq!(rules_excerpt(Some(SHA), &now), "review=rules-current");
-        let failed: Result<String, AvalFailed> = Err(AvalFailed("x".into()));
+        let failed: Result<String, AvalFailed> = Err(AvalFailed::Failed("x".into()));
         assert_eq!(rules_excerpt(Some(SHA), &failed), "review=rules-unknown");
     }
 

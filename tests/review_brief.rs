@@ -487,3 +487,158 @@ fn an_aval_keys_row_without_a_string_key_is_an_error_naming_the_row() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("row 1") && err.contains("key"), "{err}");
 }
+
+/// Runs the binary with a PATH that holds only `dir` and a directory with a
+/// symlink to `git`, so the machine's own `aval` is never found.
+#[cfg(unix)]
+fn run_without_aval(args: &[&str], dir: &std::path::Path, aval: Option<&str>) -> Output {
+    let git_path = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let only = dir.join("only-git");
+    std::fs::create_dir_all(&only).unwrap();
+    let link = only.join("git");
+    if !link.exists() {
+        std::os::unix::fs::symlink(git_path.trim(), &link).unwrap();
+    }
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    cmd.args(args);
+    cmd.env("PATH", std::env::join_paths([dir, &only]).unwrap());
+    cmd.env("AMONT_AGENT_ADR_LINT", dir.join("adr-lint"));
+    cmd.env_remove("AMONT_AGENT_AVAL");
+    if let Some(program) = aval {
+        cmd.env("AMONT_AGENT_AVAL", program);
+    }
+    cmd.output().expect("amont-agent runs")
+}
+
+#[cfg(unix)]
+#[test]
+fn without_aval_the_brief_says_the_rules_were_not_read_and_exits_0() {
+    let bin = scratch("no-aval");
+    // The PATH here holds no coreutils, so this adr-lint uses shell builtins only.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = bin.join("adr-lint");
+        std::fs::write(
+            &path,
+            r#"#!/bin/sh
+printf '%s' '{"format":"adr-lint.candidates/1","base":"b","head":"h","candidates":[],"overflow":{}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let repo = two_commit_repo("no-aval-repo");
+    let out = run_without_aval(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+        ],
+        &bin,
+        None,
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let brief = String::from_utf8_lossy(&out.stdout);
+    assert!(!brief.contains("<<<RULES"), "{brief}");
+    assert!(brief.contains("# Code rules"), "{brief}");
+    assert!(
+        brief.contains("aval is not installed, so its decided code rules were not read"),
+        "{brief}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.trim().lines().count(), 1, "{err}");
+    assert!(
+        err.contains("has .adr.yaml but aval is not installed"),
+        "{err}"
+    );
+    let sha = run_without_aval(&["rules-sha", "-C", repo.to_str().unwrap()], &bin, None);
+    assert_eq!(sha.status.code(), Some(3), "{sha:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_aval_that_points_nowhere_exits_3() {
+    let bin = scratch("aval-nowhere");
+    let repo = two_commit_repo("aval-nowhere-repo");
+    let out = run_without_aval(
+        &["review-brief", "-C", repo.to_str().unwrap()],
+        &bin,
+        Some("/nonexistent/aval"),
+    );
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_executable_aval_on_path_exits_3() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = scratch("aval-not-executable");
+    let repo = two_commit_repo("aval-not-executable-repo");
+    std::fs::write(bin.join("aval"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(bin.join("aval"), std::fs::Permissions::from_mode(0o644)).unwrap();
+    let out = run_without_aval(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+        ],
+        &bin,
+        None,
+    );
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dangling_aval_symlink_on_path_exits_3() {
+    let bin = scratch("aval-dangling");
+    let repo = two_commit_repo("aval-dangling-repo");
+    std::os::unix::fs::symlink("/nonexistent/target", bin.join("aval")).unwrap();
+    let out = run_without_aval(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+        ],
+        &bin,
+        None,
+    );
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_aval_with_a_missing_interpreter_exits_3() {
+    let bin = scratch("aval-bad-shebang");
+    let repo = two_commit_repo("aval-bad-shebang-repo");
+    fake_aval(&bin, "#!/nonexistent/sh\nexit 0\n");
+    let out = run_without_aval(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+        ],
+        &bin,
+        None,
+    );
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+}
