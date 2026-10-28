@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Guard rule `cd-carries-over` now fires on the Bash call at risk, at
+  `advise`, instead of on the `cd` at `observe`: the call runs in a directory
+  that differs from where its parallel batch started, and an earlier
+  successful sibling of the same assistant message has a top-level `cd` or
+  `pushd`. The old shape matched about 424 per 1,000 Bash calls; this one about
+  7. The advice names both directories, the sibling's `cd`, and the remedy.
+
 ## v3.6.0
 
 ### Added

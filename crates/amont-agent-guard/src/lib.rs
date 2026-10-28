@@ -8,6 +8,7 @@ pub mod analysis;
 pub mod assertions;
 pub mod atomic;
 pub mod backtest;
+pub mod batch_cwd;
 pub mod civil;
 pub mod compliance;
 pub mod corpus;

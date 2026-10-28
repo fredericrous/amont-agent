@@ -1678,7 +1678,12 @@ fn run_check(args: &[OsString]) -> ExitCode {
         );
     }
     if printed == 0 {
-        println!("no rule fires");
+        // A live rule's `examine` lets an unreadable command through to its
+        // `confirm`; when nothing was confirmed, the verdict is the lexer's.
+        match &parsed {
+            shell::Parsed::Opaque(why) => println!("no opinion: {}", why.why()),
+            _ => println!("no rule fires"),
+        }
     }
     name_the_unread(src, &parsed);
     ExitCode::SUCCESS
