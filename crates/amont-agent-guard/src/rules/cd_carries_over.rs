@@ -51,7 +51,7 @@ pub const RULE: Rule = Rule {
         measured: "2026-10-27",
         trend: Trend::Rare,
     },
-    examine: Examine::Analysis(examine),
+    examine: Examine::Live(examine),
     confirm: Some(confirm),
 };
 
@@ -311,7 +311,7 @@ mod tests {
         std::fs::write(&path, lines.join("\n")).expect("write");
         let parsed = lex(command);
         let finding = RULE
-            .judge(&Input::new(command, Dialect::Zsh, &parsed))
+            .judge_live(&Input::new(command, Dialect::Zsh, &parsed))
             .ok_or("examine silent")?;
         let ctx = Context {
             platform: None,
@@ -366,11 +366,21 @@ mod tests {
     fn the_advice_names_the_remedy() {
         let parsed = lex("pwd");
         let finding = RULE
-            .judge(&Input::new("pwd", Dialect::Zsh, &parsed))
+            .judge_live(&Input::new("pwd", Dialect::Zsh, &parsed))
             .expect("fires");
         assert!(finding.remedy.contains("(cd X && …)"));
         assert!(finding.remedy.contains("git -C X"));
         assert!(finding.remedy.contains("absolute paths"));
+    }
+
+    #[test]
+    fn a_replay_never_fires_it() {
+        for command in ["pwd", "git status", "cd relative/dir && pwd"] {
+            let parsed = lex(command);
+            let input = Input::new(command, Dialect::Zsh, &parsed);
+            assert!(RULE.judge(&input).is_none(), "{command}");
+            assert!(RULE.judge_live(&input).is_some(), "{command}");
+        }
     }
 
     #[test]
@@ -406,7 +416,7 @@ mod tests {
     fn missing_or_unreadable_evidence_is_silence() {
         let parsed = lex("pwd");
         let finding = RULE
-            .judge(&Input::new("pwd", Dialect::Zsh, &parsed))
+            .judge_live(&Input::new("pwd", Dialect::Zsh, &parsed))
             .expect("fires");
         let mut ctx = Context {
             platform: None,

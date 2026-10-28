@@ -254,6 +254,13 @@ pub enum Examine {
     /// the command: a rule of this kind carries its own account of what it
     /// could not understand.
     Analysis(fn(&Input) -> Option<Finding>),
+    /// Reads the whole [`Input`] like `Analysis`, but the command's shape says
+    /// almost nothing: the verdict is `confirm`'s, from the session
+    /// (`cd-carries-over` reads the batch a call belongs to). [`Rule::judge`]
+    /// returns `None` for it, so a replay (backtest, mine, explain, corpus,
+    /// compliance) never counts a shape that only the live session decides;
+    /// [`evaluate`], which the hook and `check` call, runs it.
+    Live(fn(&Input) -> Option<Finding>),
 }
 
 /// Which shell the command will run in.
@@ -359,6 +366,16 @@ impl Rule {
                 parsed => f(parsed),
             },
             Examine::Analysis(f) => f(input),
+            Examine::Live(_) => None,
+        }
+    }
+
+    /// [`Rule::judge`], plus the [`Examine::Live`] rules a replay skips.
+    /// Only for a caller that will run `confirm` against the live session.
+    pub fn judge_live(&self, input: &Input) -> Option<Finding> {
+        match self.examine {
+            Examine::Live(f) => f(input),
+            _ => self.judge(input),
         }
     }
 }
@@ -541,7 +558,8 @@ pub fn by_id(rules: &'static [Rule], id: &str) -> Option<&'static Rule> {
 pub fn evaluate(rules: &'static [Rule], input: &Input) -> Vec<(&'static Rule, Finding)> {
     let mut out = Vec::new();
     for rule in rules {
-        let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rule.judge(input)));
+        let found =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rule.judge_live(input)));
         match found {
             Ok(Some(f)) => out.push((rule, f)),
             Ok(None) => {}

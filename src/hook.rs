@@ -1828,7 +1828,7 @@ fn note_with(
     // `bypassPermissions+zsh`. Folded into the mode token, which nothing
     // parses, so the journal format is unchanged.
     let mode = match rule.examine {
-        rules::Examine::Analysis(_) => format!(
+        rules::Examine::Analysis(_) | rules::Examine::Live(_) => format!(
             "{}+{}",
             bash.permission_mode,
             rules::tool_shell::dialect().as_str()

@@ -1,15 +1,12 @@
 # amont-agent-cases-v1
-# Reviewed judgements for cd-carries-over. The rule fires on the call at
-# risk and `confirm` decides from the transcript, so the cases are the
-# commands `examine` lets through (match) and the ones it never would (nomatch).
-match	pwd
-match	git status
-match	cd relative/dir && pwd
-match	(cd /repo && git status)
+# Reviewed judgements for cd-carries-over. The rule is `Examine::Live`: its
+# verdict is `confirm`'s, from the batch in the session transcript, so a
+# replay never fires it. These cases pin that, including the commands the
+# live rule would let through to `confirm`.
+nomatch	pwd
+nomatch	git status
+nomatch	cd relative/dir && pwd
+nomatch	(cd /repo && git status)
 nomatch	cd /repo && git status
-nomatch	cd /w/relais
 nomatch	pushd /repo && make
-nomatch	cd /w/relais && pwd
-nomatch	pushd /w/other
-nomatch	cd /usr/local && ls
 nomatch	cd /Users/me/work && git log
