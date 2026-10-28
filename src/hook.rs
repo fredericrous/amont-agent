@@ -320,8 +320,12 @@ fn on_bash(bash: &Bash) -> Decision {
                 // confirm say no" is the number that decides whether an observing
                 // rule may ever advise — a rule declined for `already in a linked
                 // worktree` a thousand times is a rule being obeyed, not one that
-                // is wrong.
-                note(rule, "unconfirmed", why, bash, finding);
+                // is wrong. A live rule's `examine` lets nearly every command
+                // through, so its declines are not a signal, only a line per
+                // Bash call.
+                if !matches!(rule.examine, rules::Examine::Live(_)) {
+                    note(rule, "unconfirmed", why, bash, finding);
+                }
                 continue;
             }
         };
