@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## v3.7.0
+
+### Added
+
+- `Examine::Live`: a rule whose verdict is its `confirm`'s, from the live
+  session. Only the hook and `check` run it; a replay (`backtest`, `mine`,
+  `explain`, `corpus check`, compliance) never counts it.
+
+### Fixed
+
+- `pulldown-cmark` 0.13.5, for RUSTSEC-2026-0414. `plan-sha` is unchanged on
+  782 real plans.
 
 ### Changed
 
