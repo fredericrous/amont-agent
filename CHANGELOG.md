@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `cd-carries-over` fires in a live session. 3.7.0 and 3.7.1 read the batch
+  from the transcript, but Claude Code writes a response's calls and results
+  there only once the whole batch has run, so neither ever confirmed (3.7.1's
+  "in flight" fix did not change that). The hook now keeps the batch itself:
+  the first call's directory, keyed by the response's `api-request` line, and
+  a later call whose directory differs was moved by a sibling. Checked live:
+  advice on a carried `cd`, silence when the siblings ran concurrently and on
+  the next response.
+- A live rule's unconfirmed verdicts are no longer journalled: its `examine`
+  passes nearly every command, so they are a line per Bash call, not a signal.
+
 ## v3.7.1
 
 ### Fixed
