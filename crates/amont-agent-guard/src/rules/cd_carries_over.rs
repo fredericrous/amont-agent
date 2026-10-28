@@ -291,6 +291,10 @@ mod tests {
         .to_string()
     }
 
+    fn api_request() -> String {
+        json!({"type":"api-request"}).to_string()
+    }
+
     fn prompt(cwd: &str) -> String {
         json!({"type":"user","cwd":cwd,"message":{"role":"user","content":"go"}}).to_string()
     }
@@ -436,9 +440,37 @@ mod tests {
         assert!(matches!(confirm(&ctx, &finding), Confirmed::No(_)));
         ctx.transcript = Some(Path::new("/nonexistent/amont-agent/transcript.jsonl"));
         assert!(matches!(confirm(&ctx, &finding), Confirmed::No(_)));
-        let lines = batch("cd /w/relais && pwd", false);
+        let mut lines = batch("cd /w/relais && pwd", false);
+        lines.push(api_request());
         assert!(confirm_with(&lines, "pwd", "/w/relais", "toolu_other").is_err());
         assert!(confirm_with(&["not json".to_string()], "pwd", "/w/relais", "toolu_b").is_err());
+    }
+
+    /// What the hook really sees: its own `tool_use` line is not written yet
+    /// (measured 2026-10-28), so the batch is the response in flight.
+    #[test]
+    fn a_call_whose_line_is_not_written_yet_reads_the_response_in_flight() {
+        let lines = vec![
+            api_request(),
+            prompt("/w"),
+            assistant("msg_1", "/w/relais", "toolu_a", "cd /w/relais && pwd"),
+            result("toolu_a", false, "/w/relais"),
+        ];
+        let reason = confirm_with(&lines, "pwd", "/w/relais", "toolu_b").expect("confirmed");
+        assert!(reason.contains("started in /w"));
+    }
+
+    /// An `api-request` after the last message means a new response started:
+    /// its lines are not written, and the previous one's `cd` was announced.
+    #[test]
+    fn a_finished_response_is_not_the_batch() {
+        let lines = vec![
+            prompt("/w"),
+            assistant("msg_1", "/w/relais", "toolu_a", "cd /w/relais && pwd"),
+            result("toolu_a", false, "/w/relais"),
+            api_request(),
+        ];
+        assert!(confirm_with(&lines, "pwd", "/w/relais", "toolu_b").is_err());
     }
 
     #[test]

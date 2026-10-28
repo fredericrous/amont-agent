@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `cd-carries-over` never confirmed in a live session: a `PreToolUse` hook
+  fires before its own `tool_use` line is written, so the call was never
+  found. The batch is now the response in flight: the last assistant message,
+  provided no `api-request` line follows it.
+
 ## v3.7.0
 
 ### Added

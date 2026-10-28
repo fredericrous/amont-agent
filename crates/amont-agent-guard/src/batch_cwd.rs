@@ -6,8 +6,9 @@
 //! each sibling's `tool_result` is a later `user` line. Every line's `cwd` is
 //! the shell's directory when the line was flushed, so the batch's start is
 //! read from the line before the message, never from the message's own.
-//! Measured 2026-10-27: when a sibling runs, its own `tool_use` line and the
-//! earlier siblings' results are already in the file.
+//! When a sibling's `PreToolUse` hook fires, the earlier siblings' lines and
+//! results are in the file but its own `tool_use` line is not yet: the batch
+//! is then the response in flight (see [`in_flight`]).
 //!
 //! Only the tail of the file is read ([`TAIL_BYTES`]): the call being asked
 //! about is the newest tool call, so its batch is at the end. A batch that
@@ -63,7 +64,7 @@ pub fn batch_of(mut file: impl Read + Seek, tool_use_id: &str) -> Option<Batch> 
         .filter(|text| !text.trim().is_empty())
         .collect();
 
-    let message_id = lines.iter().rev().find_map(|text| {
+    let own = lines.iter().rev().find_map(|text| {
         if !text.contains(tool_use_id) {
             return None;
         }
@@ -73,7 +74,11 @@ pub fn batch_of(mut file: impl Read + Seek, tool_use_id: &str) -> Option<Batch> 
             return None;
         }
         Some(entry.get("message")?.get("id")?.as_str()?.to_string())
-    })?;
+    });
+    let message_id = match own {
+        Some(id) => id,
+        None => in_flight(&lines)?,
+    };
 
     // A line's `cwd` is stamped when it is flushed, not when it is created:
     // on 2026-10-27 every line of a batch whose first call ran `cd …/relais`
@@ -167,6 +172,34 @@ pub fn batch_of(mut file: impl Read + Seek, tool_use_id: &str) -> Option<Batch> 
         }
     }
     Some(Batch { cwd, siblings })
+}
+
+/// The model response still being run: the last assistant message, provided
+/// no `api-request` line follows it. A `PreToolUse` hook fires before its own
+/// `tool_use` line is written (measured 2026-10-28: the second call of a batch
+/// was journalled at 12:09:16, its line stamped 12:09:16.436, while the first
+/// call's `tool_use` and result were already in the file). Every model
+/// response starts with an `api-request` line, so a message with one after it
+/// is finished, and the call belongs to a response whose lines are not
+/// written yet: no siblings to read.
+fn in_flight(lines: &[&str]) -> Option<String> {
+    for text in lines.iter().rev() {
+        let Ok(entry) = serde_json::from_str::<Value>(text) else {
+            continue;
+        };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("api-request") => return None,
+            Some("assistant") => {
+                return entry
+                    .get("message")
+                    .and_then(|m| m.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_assistant(text: &str) -> Option<Value> {
