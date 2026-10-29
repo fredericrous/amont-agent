@@ -194,7 +194,11 @@ fn clamp(text: &str) -> String {
 /// built to distrust, and text the model has been trained to be suspicious of
 /// is text it may surface to the user instead of acting on.
 pub fn phrase(rule_id: &str, reason: &str, remedy: &str) -> String {
-    format!("amont-agent/{rule_id}: {reason} {remedy}")
+    if remedy.is_empty() {
+        format!("amont-agent/{rule_id}: {reason}")
+    } else {
+        format!("amont-agent/{rule_id}: {reason} {remedy}")
+    }
 }
 
 #[cfg(test)]

@@ -45,6 +45,15 @@ enum Said {
     Assert(String),
 }
 
+/// The reviewer agents the guards need, as a Claude config dir carries them.
+fn install_agents(config: &Path) {
+    let agents = config.join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    for name in ["plan-review-backend.md", "implementation-review.md"] {
+        std::fs::write(agents.join(name), "---\nname: x\n---\n").unwrap();
+    }
+}
+
 impl World {
     fn new(name: &str) -> World {
         let root = std::env::temp_dir().join(format!(
@@ -55,6 +64,7 @@ impl World {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("claude")).unwrap();
         std::fs::write(root.join("global"), "").unwrap();
+        install_agents(&root.join("claude"));
         let world = World {
             root,
             ids: std::cell::Cell::new(0),
@@ -2457,4 +2467,81 @@ fn a_held_push_appends_no_ruling() {
     ));
     assert!(!rulings_file(&w).exists());
     assert!(candidates_notes(&w.journal()).is_empty());
+}
+
+#[test]
+fn no_implementation_review_agent_is_allowed_with_one_gap_line_unless_a_plugin_has_it() {
+    let w = World::new("gap");
+    let repo = w.repo("app");
+    let empty = w.transcript("empty", &Transcript::default());
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    let config = w.root.join("claude");
+    std::fs::remove_dir_all(config.join("agents")).unwrap();
+    let said = w.push(&repo, "s1", Some(&empty));
+    let text = advised(&said);
+    assert!(text.contains("grh install workflow"), "{text}");
+    assert!(w.last_line().contains("review=gap"), "{}", w.last_line());
+
+    let plugin = w.root.join("plugin-grh");
+    std::fs::create_dir_all(plugin.join("agents")).unwrap();
+    std::fs::write(plugin.join("agents").join("implementation-review.md"), "x").unwrap();
+    std::fs::create_dir_all(config.join("plugins")).unwrap();
+    std::fs::write(
+        config.join("plugins").join("installed_plugins.json"),
+        serde_json::json!({"version": 2, "plugins": {"grh@m": [{"installPath": plugin}]}})
+            .to_string(),
+    )
+    .unwrap();
+    assert!(matches!(w.push(&repo, "s1", Some(&empty)), Said::Deny(_)));
+}
+
+#[test]
+fn a_review_in_the_transcript_is_honoured_with_no_agent_installed() {
+    let w = World::new("gap-reviewed");
+    let repo = w.repo("app");
+    let plan_rel = "docs/plans/2026-09-29-x.md";
+    let plan = "---\nstatus: active\n---\n# X\n\n## Preview\n\nevidence: nothing visible is left to judge.\n";
+    git(&repo, &["reset", "-q", "--hard", "origin/main"]);
+    w.commit(&repo, &[(plan_rel, plan)]);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
+    git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("plan-sha")
+        .arg(repo.join(plan_rel))
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&shown.stdout).trim().to_string();
+    let approved = w.root.join("claude/amont-agent/plan-approved");
+    std::fs::create_dir_all(&approved).unwrap();
+    std::fs::write(approved.join(&sha), "s\tp\t1\n").unwrap();
+    std::fs::remove_dir_all(w.root.join("claude").join("agents")).unwrap();
+
+    let tree = w.tree(&repo);
+    let block = w.block(&repo);
+    let mut t = Transcript::default();
+    t.review(&w, AGENT, &block, "Verdict: approve", Done::Foreground);
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(w.pass_file("app", &tree).is_file(), "the pass was filed");
+    let l = lines_of(&w.provenance_dir().join("app").join(&head));
+    assert!(l.contains(&"preview evidence".to_string()), "{l:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_agents_dir_keeps_the_deny() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new("gap-unreadable");
+    let repo = w.repo("app");
+    let empty = w.transcript("empty", &Transcript::default());
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    let agents = w.root.join("claude").join("agents");
+    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::read_dir(&agents).is_ok(); // root reads anything
+    let said = w.push(&repo, "s1", Some(&empty));
+    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !readable {
+        assert!(matches!(said, Said::Deny(_)), "{said:?}");
+    }
 }

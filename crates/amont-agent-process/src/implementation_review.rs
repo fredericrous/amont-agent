@@ -473,6 +473,8 @@ pub enum Judged {
     Decline(&'static str),
     /// The rule speaks: the reason to say, and the journal excerpt.
     Say { reason: String, excerpt: String },
+    /// The agent the rule needs is not installed: said, never held.
+    Gap { reason: String, excerpt: String },
 }
 
 /// Judge the push in `cmd`, whose clause runs in `cwd`.
@@ -700,6 +702,16 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             excerpt: format!("tree={} review=stale verdict=-", short(&tree)),
         };
     }
+    if !crate::agents::carried(crate::agents::Need::ImplementationReview, &repo)
+        && !std::env::current_dir().is_ok_and(|cwd| {
+            crate::agents::carried(crate::agents::Need::ImplementationReview, &cwd)
+        })
+    {
+        return Judged::Gap {
+            reason: crate::agents::gap_line(crate::agents::Need::ImplementationReview),
+            excerpt: format!("tree={} review=gap verdict=-", short(&tree)),
+        };
+    }
     Judged::Say {
         reason: format!(
             "no implementation review of {name} tree {} is in this session.{unkeyed}",
@@ -821,6 +833,15 @@ pub fn confirm_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Confirmed {
             remedy: None,
             floor: None,
             ceiling: None,
+            reason,
+            excerpt,
+        },
+        // Said at most as advice: the review cannot be had here, so refusing
+        // the push would hold it for something nobody can supply.
+        Judged::Gap { reason, excerpt } => Confirmed::YesSaying {
+            remedy: Some(String::new()),
+            floor: None,
+            ceiling: Some(Stance::Advise),
             reason,
             excerpt,
         },

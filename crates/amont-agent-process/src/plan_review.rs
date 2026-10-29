@@ -1184,7 +1184,27 @@ enum Said {
 const REMEDY: &str = "run /plan-review then ExitPlanMode again";
 
 pub fn on_plan_exit(ev: &PlanExit, stance: Stance) -> Decision {
+    let project = std::env::current_dir().unwrap_or_default();
     let (said, repos, excerpt) = examine(ev);
+    // The working directory and every repository the plan names: an agent
+    // installed in any of them could still run the panel.
+    let carried_anywhere = crate::agents::carried(crate::agents::Need::PlanPanel, &project)
+        || root().is_some_and(|root| {
+            repos
+                .split(',')
+                .filter(|name| !name.is_empty() && *name != "-")
+                .any(|name| {
+                    crate::agents::carried(crate::agents::Need::PlanPanel, &locate(&root, name))
+                })
+        });
+    if matches!(said, Said::Refuse(_)) && !carried_anywhere {
+        // No panel agent can run here, so a refusal could never be satisfied.
+        return plan_gap(
+            ev,
+            stance,
+            &crate::agents::gap_line(crate::agents::Need::PlanPanel),
+        );
+    }
     let path_key = ev
         .plan_file
         .as_deref()
@@ -1233,6 +1253,28 @@ pub fn on_plan_exit(ev: &PlanExit, stance: Stance) -> Decision {
         (Said::Refuse(why), Stance::Deny) => Decision::Deny(phrase(&why, REMEDY)),
         (Said::Ask(why), Stance::Deny) => Decision::Ask(phrase(&why, "")),
         (Said::Refuse(why) | Said::Ask(why), Stance::Advise) => Decision::Advise(phrase(&why, "")),
+    }
+}
+
+/// The panel cannot run here: said as advice, never held.
+fn plan_gap(ev: &PlanExit, stance: Stance, gap: &str) -> Decision {
+    journal::record(&journal::Entry {
+        rule: RULE.id,
+        stance: stance.as_str(),
+        outcome: if stance == Stance::Observe {
+            "watched"
+        } else {
+            "advised"
+        },
+        session: &ev.session,
+        repo: "-",
+        mode: &ev.permission_mode,
+        excerpt: "panel=gap",
+    });
+    if stance == Stance::Observe {
+        Decision::Silent
+    } else {
+        Decision::Advise(decision::phrase(RULE.id, gap, ""))
     }
 }
 
