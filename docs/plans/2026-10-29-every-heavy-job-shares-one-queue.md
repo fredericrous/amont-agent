@@ -38,3 +38,8 @@ before it is tightened (phase 5).
 - The rule's own `amont slot run -- cargo test` dogfood exited 75 after 600 s (one holder, 3 waiting, load ≥ cores): the queue worked; the commit gate's run was the test proof.
 
 ## Implementation review
+
+approve-with-changes, round 1 (91k tokens, 102 s): 3 blocking (discard reasons off-line, `ctx`, a process-wide `OnceLock`) and 1 medium (a timed-out probe silenced the session) fixed in 98f4b80; plan rows tightened.
+- deliberate: the advice names `amont slots` rather than listing holders (Decision log).
+- Delta: approve (95k, 18 s). Carried: a slow probe is not cached, so on a loaded host each heavy Bash call may wait up to 1.5 s for `amont --version`, accepted over silencing the rule for the session.
+- Next: release, then phase 5 (14-day measure) in the canonical plan.
