@@ -58,7 +58,7 @@ fn is_runner(cmd: &Simple) -> bool {
 
 /// `is_runner` over a program and its argument words, so a wrapper can match
 /// the words it was given without rebuilding a command line from them.
-fn runner_words(program: &str, words: &[Word]) -> bool {
+pub(crate) fn runner_words(program: &str, words: &[Word]) -> bool {
     let args: Vec<&str> = words
         .iter()
         .filter(|w| !w.quoted)
@@ -124,7 +124,13 @@ pub(crate) fn is_check_run(cmd: &Simple) -> bool {
 }
 
 fn exempt(cmd: &Simple) -> bool {
-    cmd.args()
+    exempt_words(cmd.args())
+}
+
+/// `exempt` over argument words: a help, version or listing request is not a
+/// real run.
+pub(crate) fn exempt_words(words: &[Word]) -> bool {
+    words
         .iter()
         .any(|w| !w.quoted && EXEMPT_ARGS.contains(&w.text.as_str()))
 }

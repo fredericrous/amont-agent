@@ -50,6 +50,7 @@ pub const RULES: &[Rule] = &[
     crate::rules::adr_lint_written::RULE,
     crate::rules::test_output_trimmed::RULE,
     crate::rules::workspace_root_write::RULE,
+    crate::rules::heavy_build_unqueued::RULE,
 ];
 
 /// The tests that read the whole table live here, where the whole table is:
@@ -160,7 +161,7 @@ mod tests {
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 44, "{ids:?}");
+        assert_eq!(ids.len(), 45, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)

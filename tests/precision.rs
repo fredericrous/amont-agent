@@ -33,6 +33,9 @@ fn check_with(flags: &[&str], command: &str) -> String {
         .arg("check")
         .arg("--cwd")
         .arg(&dir)
+        // Inside a host slot, so `heavy-build-unqueued` stays silent whatever
+        // amont this machine has; its shape is asserted with `matches_shape`.
+        .env("AMONT_HOST_SLOT", "held")
         .args(flags)
         .arg(command)
         .output()
@@ -56,6 +59,38 @@ fn matches_shape(command: &str, rule: &str) -> bool {
     check_with(&["--explain"], command)
         .lines()
         .any(|l| l.split_whitespace().next() == Some(rule))
+}
+
+/// `heavy-build-unqueued` matches a heavy run outside the host slot queue,
+/// and never a queued, light or help-only one.
+#[test]
+fn a_heavy_run_matches_only_outside_the_slot_queue() {
+    for c in [
+        "cargo test",
+        "cd x && pnpm test",
+        "xcodebuild -scheme App build",
+        "cargo build --release",
+        "amont slot run --on-timeout=run -- cargo test",
+    ] {
+        assert!(
+            matches_shape(c, "heavy-build-unqueued"),
+            "should match: {c}"
+        );
+    }
+    for c in [
+        "amont slot run -- cargo test",
+        "amont slot run --weight 2 -- cargo test",
+        "amont run cargo-test",
+        "amont rehearse --wait",
+        "cargo fmt",
+        "cargo test --help",
+        "git status",
+    ] {
+        assert!(
+            !matches_shape(c, "heavy-build-unqueued"),
+            "should not match: {c}"
+        );
+    }
 }
 
 /// Real commands that must produce silence. Each carries the family it belongs

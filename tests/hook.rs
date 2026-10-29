@@ -64,7 +64,7 @@ fn send(payload: &str) -> Reply {
 
 /// As [`send`], with `PATH` replaced entirely by `bin_dir`.
 fn send_with_path_only(payload: &str, bin_dir: &std::path::Path) -> Reply {
-    send_inner(payload, bin_dir.display().to_string())
+    send_inner(payload, bin_dir.display().to_string(), false)
 }
 
 /// As [`send`], with `bin_dir` prepended to `PATH`.
@@ -80,11 +80,20 @@ fn send_with_path(payload: &str, bin_dir: Option<&std::path::Path>) -> Reply {
         }
         None => std::env::var("PATH").unwrap_or_default(),
     };
-    send_inner(payload, path)
+    send_inner(payload, path, false)
 }
 
-fn send_inner(payload: &str, path: String) -> Reply {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+/// `held` runs the hook as `amont slot run` would: inside a host slot. Off,
+/// the variable is removed, so a test run under amont's own gate (which holds
+/// a slot) sees what a session sees.
+fn send_inner(payload: &str, path: String, held: bool) -> Reply {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    if held {
+        command.env("AMONT_HOST_SLOT", "held");
+    } else {
+        command.env_remove("AMONT_HOST_SLOT");
+    }
+    let mut child = command
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", home())
         .env("PATH", path)
@@ -146,12 +155,75 @@ fn stdout_is_empty_when_nothing_fires() {
     for command in [
         "git status --short",
         "git tag --sort=-v:refname | head -5",
-        "cargo test --workspace",
+        "cargo fmt --check",
     ] {
         let r = send(&bash(command));
         assert_eq!(r.stdout, "", "expected silence for {command:?}");
         assert_eq!(r.code, 0);
     }
+}
+
+/// A stub `amont` that answers `--version` with `version`, in its own dir.
+#[cfg(unix)]
+fn amont_stub(version: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = home().join("amont-version-stub");
+    std::fs::create_dir_all(&bin).unwrap();
+    let stub = bin.join("amont");
+    std::fs::write(&stub, format!("#!/bin/sh\necho 'amont {version}'\n")).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // macOS can hold the first exec of a fresh script past the probe's
+    // deadline; run it once so the hook's call is not the first.
+    let primed = Command::new(&stub).output().expect("the stub runs");
+    assert!(primed.status.success());
+    bin
+}
+
+/// A bare `cargo test` with an amont that can queue it is advised toward
+/// `amont slot run`, and the firing lands in the journal.
+#[cfg(unix)]
+#[test]
+fn an_unqueued_test_run_is_advised_toward_the_slot_queue() {
+    let bin = amont_stub("1.63.0");
+    let r = send_with_path(&bash("cargo test --workspace"), Some(&bin));
+    assert_eq!(r.code, 0);
+    assert_eq!(r.decision(), None, "advise never decides: {}", r.stdout);
+    let advice = r.reason();
+    assert!(
+        advice.contains("amont slot run -- cargo test --workspace"),
+        "{advice}"
+    );
+    assert!(advice.contains("exit 75"), "{advice}");
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        journal.lines().any(|l| l.contains("heavy-build-unqueued")),
+        "no heavy-build-unqueued row in:\n{journal}"
+    );
+}
+
+/// Inside a host slot (`amont slot run` set the variable), or with an amont
+/// too old to have `slot run`, the same command is left alone.
+#[cfg(unix)]
+#[test]
+fn a_test_run_that_cannot_queue_is_left_alone() {
+    let bin = amont_stub("1.63.0");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let held = send_inner(&bash("cargo test --workspace"), path, true);
+    assert!(
+        !held.stdout.contains("heavy-build-unqueued") && !held.reason().contains("slot run"),
+        "{}",
+        held.stdout
+    );
+
+    // The held call never asked amont, so this session has no cached answer.
+    let old = amont_stub("1.61.1");
+    let r = send_with_path(&bash("cargo test --workspace"), Some(&old));
+    assert!(!r.reason().contains("slot run"), "{}", r.stdout);
 }
 
 /// A `Stop` outside any repository is answered with nothing.
