@@ -25,4 +25,14 @@ before it is tightened (phase 5).
 
 ## Verification
 
+- amont pre-commit gate on 03ccdd6 (fmt, clippy -D warnings, cargo test with the new unit, precision, corpus and hook tests) → 25 checks passed.
+- `amont-agent check --cwd /tmp "cargo test"` (built binary, `AMONT_HOST_SLOT` unset, amont 1.63.0 on PATH) → `heavy-build-unqueued [advise]`, remedy `amont slot run -- cargo test`, 90 s, exit 75, `amont slots`.
+- `… "amont slot run -- cargo test"` → silent; `… "amont slot run --on-timeout=run -- cargo build"` → fires.
+- `AMONT_HOST_SLOT=held … "cargo test"` → silent.
+
+## Decision log
+
+- relais run run-65efedd17f79f-a762 wrote the rule, corpus, table entry and docs, then hit its wall time at load ~100; salvaged: the parent added the hook and precision tests and the clippy/fmt fixes.
+- The rule's own `amont slot run -- cargo test` dogfood exited 75 after 600 s (one holder, 3 waiting, load ≥ cores): the queue worked; the commit gate's run was the test proof.
+
 ## Implementation review
