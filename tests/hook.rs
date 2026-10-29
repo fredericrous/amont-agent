@@ -64,7 +64,7 @@ fn send(payload: &str) -> Reply {
 
 /// As [`send`], with `PATH` replaced entirely by `bin_dir`.
 fn send_with_path_only(payload: &str, bin_dir: &std::path::Path) -> Reply {
-    send_inner(payload, bin_dir.display().to_string(), false)
+    send_inner(payload, bin_dir.display().to_string(), HostSlot::Free)
 }
 
 /// As [`send`], with `bin_dir` prepended to `PATH`.
@@ -80,19 +80,23 @@ fn send_with_path(payload: &str, bin_dir: Option<&std::path::Path>) -> Reply {
         }
         None => std::env::var("PATH").unwrap_or_default(),
     };
-    send_inner(payload, path, false)
+    send_inner(payload, path, HostSlot::Free)
 }
 
-/// `held` runs the hook as `amont slot run` would: inside a host slot. Off,
-/// the variable is removed, so a test run under amont's own gate (which holds
-/// a slot) sees what a session sees.
-fn send_inner(payload: &str, path: String, held: bool) -> Reply {
+/// Whether the hook runs inside a host slot, as under `amont slot run`.
+enum HostSlot {
+    Held,
+    /// The variable is removed, so a test run under amont's own gate (which
+    /// holds a slot) sees what a session sees.
+    Free,
+}
+
+fn send_inner(payload: &str, path: String, slot: HostSlot) -> Reply {
     let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
-    if held {
-        command.env("AMONT_HOST_SLOT", "held");
-    } else {
-        command.env_remove("AMONT_HOST_SLOT");
-    }
+    match slot {
+        HostSlot::Held => command.env("AMONT_HOST_SLOT", "held"),
+        HostSlot::Free => command.env_remove("AMONT_HOST_SLOT"),
+    };
     let mut child = command
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", home())
@@ -213,7 +217,7 @@ fn a_test_run_that_cannot_queue_is_left_alone() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let held = send_inner(&bash("cargo test --workspace"), path, true);
+    let held = send_inner(&bash("cargo test --workspace"), path, HostSlot::Held);
     assert!(
         !held.stdout.contains("heavy-build-unqueued") && !held.reason().contains("slot run"),
         "{}",
