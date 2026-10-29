@@ -37,11 +37,21 @@ struct World {
 #[derive(Debug, PartialEq)]
 enum Said {
     Silent,
+    Advise(String),
     Deny(String),
     Ask(String),
 }
 
 const BODY: &str = "# Plan\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nThe work.\n\n## Phases\n\n- [ ] one\n";
+
+/// The reviewer agents the guards need, as a Claude config dir carries them.
+fn install_agents(config: &Path) {
+    let agents = config.join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    for name in ["plan-review-backend.md", "implementation-review.md"] {
+        std::fs::write(agents.join(name), "---\nname: x\n---\n").unwrap();
+    }
+}
 
 impl World {
     fn new(name: &str) -> World {
@@ -55,6 +65,7 @@ impl World {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         std::fs::write(root.join("global"), "").unwrap();
+        install_agents(&root.join("claude"));
         World {
             root,
             ids: std::cell::Cell::new(0),
@@ -179,6 +190,9 @@ impl World {
         }
         let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         let o = &v["hookSpecificOutput"];
+        if let Some(text) = o["additionalContext"].as_str() {
+            return Said::Advise(text.to_string());
+        }
         let reason = o["permissionDecisionReason"]
             .as_str()
             .unwrap_or("")
@@ -1127,4 +1141,52 @@ fn a_review_bound_before_2_25_still_passes_and_is_journalled() {
     assert!(
         String::from_utf8_lossy(&both.stderr).contains("--legacy only prints a sha; drop --block")
     );
+}
+
+#[test]
+fn no_panel_agent_anywhere_is_allowed_with_one_gap_line() {
+    let w = World::new("gap");
+    rust_cli(&w);
+    std::fs::remove_dir_all(w.root.join("claude").join("agents")).unwrap();
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let said = w.present(&plan, &Transcript::default());
+    let Said::Advise(text) = &said else {
+        panic!("{said:?}")
+    };
+    assert!(text.contains("grh install workflow"), "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
+}
+
+#[test]
+fn a_plugins_panel_agent_keeps_the_refusal() {
+    let w = World::new("plugin");
+    rust_cli(&w);
+    let config = w.root.join("claude");
+    std::fs::remove_dir_all(config.join("agents")).unwrap();
+    let plugin = w.root.join("plugin-grh");
+    std::fs::create_dir_all(plugin.join("agents")).unwrap();
+    std::fs::write(plugin.join("agents").join("plan-review-backend.md"), "x").unwrap();
+    std::fs::create_dir_all(config.join("plugins")).unwrap();
+    std::fs::write(
+        config.join("plugins").join("installed_plugins.json"),
+        serde_json::json!({"version": 2, "plugins": {"grh@m": [{"installPath": plugin}]}})
+            .to_string(),
+    )
+    .unwrap();
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    assert!(matches!(
+        w.present(&plan, &Transcript::default()),
+        Said::Deny(_)
+    ));
+}
+
+#[test]
+fn a_valid_review_passes_silently_with_no_panel_agent_installed() {
+    let w = World::new("gap-reviewed");
+    rust_cli(&w);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let mut t = Transcript::default();
+    full_panel(&w, &mut t, &plan);
+    std::fs::remove_dir_all(w.root.join("claude").join("agents")).unwrap();
+    assert!(matches!(w.present(&plan, &t), Said::Silent));
 }

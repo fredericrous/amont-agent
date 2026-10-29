@@ -4,6 +4,7 @@
 //! ADR-0039). It builds on the guard (`amont-agent-guard`) and never names the
 //! binary.
 
+pub mod agents;
 pub mod attestations;
 pub mod candidates_block;
 pub mod content_id;

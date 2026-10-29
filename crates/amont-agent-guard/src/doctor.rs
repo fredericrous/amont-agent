@@ -79,13 +79,13 @@ impl Finding {
 
 /// Every check, in order. `table` is the rule table; `extra` is the line the
 /// work process contributes (the attestations store), last.
-pub fn run(table: &[rules::Rule], extra: Option<Finding>) -> Vec<Finding> {
+pub fn run(table: &[rules::Rule], extra: Option<Finding>, found: &Scan) -> Vec<Finding> {
     let mut out = Vec::new();
-    let installs = installed_in();
-    out.push(configured(&installs));
-    out.push(executable(&installs));
+    let installs = &found.installs;
+    out.push(configured(installs));
+    out.push(executable(installs));
     out.push(self_test());
-    out.push(liveness(&installs));
+    out.push(liveness(installs));
     out.push(stances(table));
     out.push(journal_span());
     out.push(lsp_rules());
@@ -174,10 +174,19 @@ fn lsp_rules() -> Finding {
     }
 }
 
+/// What a scan of the settings files found: our entries, and the files that
+/// exist but could not be read or parsed, which may hold more of them.
+pub struct Scan {
+    installs: Vec<Install>,
+    unreadable: Vec<PathBuf>,
+}
+
 /// Every settings file that names us, and the command each one points at.
-fn installed_in() -> Vec<Install> {
+/// Read once per invocation: the findings and the integration share it.
+pub fn scan() -> Scan {
     let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut found: Vec<Install> = Vec::new();
+    let mut unreadable: Vec<PathBuf> = Vec::new();
     for scope in [
         settings::Scope::User,
         settings::Scope::Project,
@@ -186,10 +195,16 @@ fn installed_in() -> Vec<Install> {
         let Some(path) = scope.path(&project) else {
             continue;
         };
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                unreadable.push(path);
+                continue;
+            }
         };
         let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            unreadable.push(path);
             continue;
         };
         // Each event once: TARGETS names PreToolUse several times, and
@@ -232,7 +247,141 @@ fn installed_in() -> Vec<Install> {
             }
         }
     }
-    found
+    Scan {
+        installs: found,
+        unreadable,
+    }
+}
+
+/// The hook entries (event, matcher) this version installs that `installs`
+/// does not carry.
+fn missing_entries(installs: &[Install]) -> Vec<String> {
+    settings::TARGETS
+        .iter()
+        .filter(|(event, matcher)| {
+            !installs
+                .iter()
+                .any(|i| i.event == *event && i.matcher.as_deref() == *matcher)
+        })
+        .map(|(event, matcher)| match matcher {
+            Some(m) => format!("{event} {m}"),
+            None => (*event).to_string(),
+        })
+        .collect()
+}
+
+/// Whether the hook integration is in place, apart from whether it is healthy.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Integration {
+    /// Every hook entry this version installs is there.
+    Present {
+        settings_file: PathBuf,
+        /// The command the entries reference.
+        binary: String,
+    },
+    Partial {
+        settings_file: PathBuf,
+        binary: String,
+        missing: Vec<String>,
+    },
+    Absent {
+        missing: Vec<String>,
+    },
+    /// No entry found, and a settings file that may hold some could not be read.
+    Unknown {
+        unreadable: PathBuf,
+    },
+}
+
+impl Integration {
+    /// The wire value: `present`, `partial`, `absent` or `unknown`.
+    pub fn state(&self) -> &'static str {
+        match self {
+            Integration::Present { .. } => "present",
+            Integration::Partial { .. } => "partial",
+            Integration::Absent { .. } => "absent",
+            Integration::Unknown { .. } => "unknown",
+        }
+    }
+
+    fn settings_file(&self) -> Option<&Path> {
+        match self {
+            Integration::Present { settings_file, .. }
+            | Integration::Partial { settings_file, .. } => Some(settings_file),
+            Integration::Unknown { unreadable } => Some(unreadable),
+            Integration::Absent { .. } => None,
+        }
+    }
+
+    fn binary(&self) -> Option<&str> {
+        match self {
+            Integration::Present { binary, .. } | Integration::Partial { binary, .. } => {
+                Some(binary)
+            }
+            Integration::Absent { .. } | Integration::Unknown { .. } => None,
+        }
+    }
+
+    fn missing(&self) -> &[String] {
+        match self {
+            Integration::Partial { missing, .. } | Integration::Absent { missing } => missing,
+            Integration::Present { .. } | Integration::Unknown { .. } => &[],
+        }
+    }
+}
+
+pub fn integration(found: &Scan) -> Integration {
+    let Some(first) = found.installs.first() else {
+        return match found.unreadable.first() {
+            Some(path) => Integration::Unknown {
+                unreadable: path.clone(),
+            },
+            None => Integration::Absent {
+                missing: missing_entries(&[]),
+            },
+        };
+    };
+    let missing = missing_entries(&found.installs);
+    let settings_file = first.path.clone();
+    let binary = first.command.clone();
+    if missing.is_empty() {
+        Integration::Present {
+            settings_file,
+            binary,
+        }
+    } else {
+        Integration::Partial {
+            settings_file,
+            binary,
+            missing,
+        }
+    }
+}
+
+/// Whether no finding is a failure; advisories do not count.
+pub fn healthy(findings: &[Finding]) -> bool {
+    findings.iter().all(|f| f.ok || f.advisory)
+}
+
+/// The `doctor --json` document: the findings as `report` prints them, and
+/// the integration state beside them, not folded into health.
+pub fn json(findings: &[Finding], integration: &Integration) -> String {
+    serde_json::json!({
+        "healthy": healthy(findings),
+        "findings": findings.iter().map(|f| serde_json::json!({
+            "ok": f.ok,
+            "advisory": f.advisory,
+            "line": f.line,
+            "detail": f.detail,
+        })).collect::<Vec<_>>(),
+        "integration": {
+            "state": integration.state(),
+            "settings_file": integration.settings_file().map(|p| p.display().to_string()),
+            "binary": integration.binary(),
+            "missing": integration.missing(),
+        },
+    })
+    .to_string()
 }
 
 fn configured(installs: &[Install]) -> Finding {
@@ -266,18 +415,7 @@ fn configured(installs: &[Install]) -> Finding {
     // Each (event, matcher) pair, not each event: a release that adds a
     // matcher to an event already installed (PreToolUse Grep, 2.32.0) would
     // otherwise count as complete.
-    let missing: Vec<String> = settings::TARGETS
-        .iter()
-        .filter(|(event, matcher)| {
-            !installs
-                .iter()
-                .any(|i| i.event == *event && i.matcher.as_deref() == *matcher)
-        })
-        .map(|(event, matcher)| match matcher {
-            Some(m) => format!("{event} {m}"),
-            None => (*event).to_string(),
-        })
-        .collect();
+    let missing = missing_entries(installs);
     if !missing.is_empty() {
         let want = settings::TARGETS.len();
         return Finding::warn(

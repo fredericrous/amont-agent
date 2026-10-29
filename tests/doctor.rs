@@ -508,3 +508,112 @@ fn doctor_says_whether_the_lsp_rules_can_speak_here() {
     assert!(off.contains("LSP rules are silent here"), "{off}");
     assert!(off.contains("the fleet-lsp plugin is not enabled"), "{off}");
 }
+
+fn integration(h: &Home) -> (i32, serde_json::Value) {
+    let (code, out) = h.run(&["doctor", "--json"]);
+    let start = out.find('{').expect("a JSON document");
+    let doc = serde_json::from_str(out[start..].lines().next().unwrap()).expect("JSON");
+    (code, doc)
+}
+
+#[test]
+fn json_reports_an_absent_integration_apart_from_health() {
+    let h = Home::new("json-absent");
+    let (code, doc) = integration(&h);
+    assert_ne!(code, 0);
+    assert_eq!(doc["healthy"], false);
+    assert_eq!(doc["integration"]["state"], "absent");
+    assert!(doc["integration"]["settings_file"].is_null());
+}
+
+#[test]
+fn json_reports_present_but_unhealthy_with_file_and_binary() {
+    let h = Home::new("json-present");
+    let missing = h.0.join("nowhere").join("amont-agent");
+    let mut hooks = serde_json::Map::new();
+    for (event, matcher) in amont_agent_guard::settings::TARGETS {
+        let mut block = serde_json::json!({"hooks": [
+            {"type": "command", "command": missing, "args": ["hook"]}]});
+        if let Some(matcher) = matcher {
+            block["matcher"] = serde_json::json!(matcher);
+        }
+        hooks
+            .entry(*event)
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .unwrap()
+            .push(block);
+    }
+    std::fs::write(
+        h.settings(),
+        serde_json::json!({ "hooks": hooks }).to_string(),
+    )
+    .unwrap();
+    let (code, doc) = integration(&h);
+    assert_ne!(code, 0, "a missing binary is unhealthy");
+    assert_eq!(doc["integration"]["state"], "present", "{doc}");
+    assert!(doc["integration"]["missing"].as_array().unwrap().is_empty());
+    assert_eq!(
+        doc["integration"]["binary"],
+        serde_json::json!(missing.display().to_string())
+    );
+    assert!(doc["integration"]["settings_file"]
+        .as_str()
+        .unwrap()
+        .ends_with("settings.json"));
+}
+
+#[test]
+fn json_reports_a_partial_integration_naming_what_is_missing() {
+    let h = Home::new("json-partial");
+    let bin = h.0.join("amont-agent");
+    std::fs::write(
+        h.settings(),
+        serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": bin, "args": ["hook"]}]}]}})
+        .to_string(),
+    )
+    .unwrap();
+    let (_, doc) = integration(&h);
+    assert_eq!(doc["integration"]["state"], "partial");
+    assert!(!doc["integration"]["missing"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn json_reports_unknown_for_unparsable_settings() {
+    let h = Home::new("json-unknown");
+    std::fs::write(h.settings(), "{ not json").unwrap();
+    let (_, doc) = integration(&h);
+    assert_eq!(doc["integration"]["state"], "unknown");
+    assert!(doc["integration"]["settings_file"]
+        .as_str()
+        .unwrap()
+        .ends_with("settings.json"));
+}
+
+#[test]
+fn doctor_help_prints_usage_on_stdout_and_exits_zero() {
+    let h = Home::new("doctor-help");
+    for flag in ["--help", "-h"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .args(["doctor", flag])
+            .env("CLAUDE_CONFIG_DIR", &h.0)
+            .output()
+            .expect("the binary runs");
+        assert_eq!(out.status.code(), Some(0), "{flag}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("usage: amont-agent doctor [--json]"),
+            "{stdout}"
+        );
+    }
+}
+
+#[test]
+fn doctor_rejects_an_unknown_flag_and_help_documents_json() {
+    let h = Home::new("json-usage");
+    let (code, _) = h.run(&["doctor", "--bogus"]);
+    assert_eq!(code, 2);
+    let (_, help) = h.run(&["--help"]);
+    assert!(help.contains("doctor [--json]"), "{help}");
+}

@@ -76,7 +76,9 @@ usage: amont-agent <command>
   install [--write]     add the hook to settings.json (prints it by default)
   uninstall [--write]   remove exactly what install added
   status                every rule, its stance, and what it has seen
-  doctor                is the guard installed, runnable, and actually firing?
+  doctor [--json]       is the guard installed, runnable, and actually firing?
+                        --json prints the findings and, apart from health, the
+                        hook integration: present, absent, partial or unknown
   corpus check          replay every reviewed judgement through the rules
   graduate <rule> --to advise|deny
   demote <rule>         back to observing, no questions asked
@@ -357,10 +359,33 @@ fn main() -> ExitCode {
                 // Non-zero when the guard is not doing anything, so this is
                 // usable from a cron job or a SessionStart check without
                 // anybody having to read the text.
-                if doctor::report(&doctor::run(
-                    rule_table::RULES,
-                    attestations::doctor_finding(),
-                )) {
+                if args.iter().any(|a| a == "--help" || a == "-h") {
+                    println!("usage: amont-agent doctor [--json]");
+                    println!();
+                    println!("Check that the guard is installed and alive; exit 0 when it is.");
+                    println!("  --json  print one JSON document: healthy, findings, integration");
+                    return ExitCode::SUCCESS;
+                }
+                if let Some(bad) = args.iter().find(|a| *a != "--json") {
+                    eprintln!(
+                        "amont-agent: doctor takes only --json, not {}",
+                        bad.to_string_lossy()
+                    );
+                    return ExitCode::from(2);
+                }
+                let scanned = doctor::scan();
+                let findings =
+                    doctor::run(rule_table::RULES, attestations::doctor_finding(), &scanned);
+                let healthy = if args.iter().any(|a| a == "--json") {
+                    println!(
+                        "{}",
+                        doctor::json(&findings, &doctor::integration(&scanned))
+                    );
+                    doctor::healthy(&findings)
+                } else {
+                    doctor::report(&findings)
+                };
+                if healthy {
                     ExitCode::SUCCESS
                 } else {
                     ExitCode::FAILURE

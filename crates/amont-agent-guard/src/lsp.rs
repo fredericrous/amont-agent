@@ -203,15 +203,37 @@ fn fleet_lsp_enabled_in(text: &str) -> Option<bool> {
         .and_then(|(_, on)| on.as_bool())
 }
 
-/// Where `~/.claude/plugins/installed_plugins.json` says a plugin is
-/// installed: the last entry of the first key named `<plugin>@…`.
-fn plugin_install_path(plugin: &str) -> Option<PathBuf> {
-    let file = crate::settings::config_dir()?.join("plugins/installed_plugins.json");
-    install_path_in(&std::fs::read_to_string(file).ok()?, plugin)
+/// What `<config>/plugins/installed_plugins.json` holds.
+pub enum InstalledPlugins {
+    /// No such file: nothing is installed through the manifest.
+    Missing,
+    /// The file exists and cannot be read or parsed.
+    Unreadable,
+    Document(serde_json::Value),
 }
 
-fn install_path_in(installed: &str, plugin: &str) -> Option<PathBuf> {
-    let v: serde_json::Value = serde_json::from_str(installed).ok()?;
+/// The one reader of the installed-plugins manifest, for every consumer.
+pub fn installed_plugins(config: &Path) -> InstalledPlugins {
+    match std::fs::read_to_string(config.join("plugins/installed_plugins.json")) {
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(doc) => InstalledPlugins::Document(doc),
+            Err(_) => InstalledPlugins::Unreadable,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => InstalledPlugins::Missing,
+        Err(_) => InstalledPlugins::Unreadable,
+    }
+}
+
+/// Where the manifest says a plugin is installed: the last entry of the
+/// first key named `<plugin>@…`.
+fn plugin_install_path(plugin: &str) -> Option<PathBuf> {
+    match installed_plugins(&crate::settings::config_dir()?) {
+        InstalledPlugins::Document(doc) => install_path_in(&doc, plugin),
+        InstalledPlugins::Missing | InstalledPlugins::Unreadable => None,
+    }
+}
+
+fn install_path_in(v: &serde_json::Value, plugin: &str) -> Option<PathBuf> {
     let prefix = format!("{plugin}@");
     let (_, entries) = v
         .get("plugins")?
@@ -724,23 +746,27 @@ mod tests {
         assert_eq!(fleet_lsp_enabled_in(""), None);
     }
 
+    fn install_path_in_text(text: &str, plugin: &str) -> Option<PathBuf> {
+        install_path_in(&serde_json::from_str(text).ok()?, plugin)
+    }
+
     #[test]
     fn a_plugin_is_found_where_it_was_installed() {
         let installed = r#"{"version":2,"plugins":{
             "relais@relais-local":[{"installPath":"/old"},{"installPath":"/p/relais/0.12.0"}],
             "relaisx@other":[{"installPath":"/wrong"}]}}"#;
         assert_eq!(
-            install_path_in(installed, "relais"),
+            install_path_in_text(installed, "relais"),
             Some(PathBuf::from("/p/relais/0.12.0")),
             "the last entry"
         );
-        assert_eq!(install_path_in(installed, "fleet-lsp"), None);
+        assert_eq!(install_path_in_text(installed, "fleet-lsp"), None);
         assert_eq!(
-            install_path_in(r#"{"plugins":{"relais@x":[]}}"#, "relais"),
+            install_path_in_text(r#"{"plugins":{"relais@x":[]}}"#, "relais"),
             None
         );
         assert_eq!(
-            install_path_in(r#"{"plugins":"#, "relais"),
+            install_path_in_text(r#"{"plugins":"#, "relais"),
             None,
             "malformed"
         );
