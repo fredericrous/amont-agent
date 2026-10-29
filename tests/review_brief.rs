@@ -520,20 +520,9 @@ fn run_without_aval(args: &[&str], dir: &std::path::Path, aval: Option<&str>) ->
 #[cfg(unix)]
 #[test]
 fn without_aval_the_brief_says_the_rules_were_not_read_and_exits_0() {
+    // No adr-lint either: its candidates are unavailable at once, so no stub
+    // can outlast the 30 s deadline on a loaded machine.
     let bin = scratch("no-aval");
-    // The PATH here holds no coreutils, so this adr-lint uses shell builtins only.
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let path = bin.join("adr-lint");
-        std::fs::write(
-            &path,
-            r#"#!/bin/sh
-printf '%s' '{"format":"adr-lint.candidates/1","base":"b","head":"h","candidates":[],"overflow":{}}'
-"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
     let repo = two_commit_repo("no-aval-repo");
     let out = run_without_aval(
         &[
@@ -555,10 +544,15 @@ printf '%s' '{"format":"adr-lint.candidates/1","base":"b","head":"h","candidates
         "{brief}"
     );
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(err.trim().lines().count(), 1, "{err}");
-    assert!(
-        err.contains("has .adr.yaml but aval is not installed"),
-        "{err}"
+    let aval_notices = err
+        .lines()
+        .filter(|line| line.contains("has .adr.yaml but aval is not installed"))
+        .count();
+    assert_eq!(aval_notices, 1, "{err}");
+    assert_eq!(
+        err.trim().lines().count(),
+        2,
+        "the aval and adr-lint notices: {err}"
     );
     let sha = run_without_aval(&["rules-sha", "-C", repo.to_str().unwrap()], &bin, None);
     assert_eq!(sha.status.code(), Some(3), "{sha:?}");
