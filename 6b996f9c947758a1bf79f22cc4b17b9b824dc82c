@@ -1,0 +1,16 @@
+amont-provenance-v1
+commit 93ec526eebbd1d4b1eb6a0f599e8d1c48b9dabc5
+tree 6b996f9c947758a1bf79f22cc4b17b9b824dc82c
+canon fdb0c42212adceb2113ff83e4b82f70d2a8e0ac2
+patch 4be649bcfef9b56d9649a600dc0b2ba48952659a
+plan docs/plans/2026-10-28-each-harness-tool-runs-alone.md aba7d8253b4c6641e987723d338f6500d43862ff398864f016236e90b57e94e3
+review reviewed eb6e874257eea4d869e9ef71e3e26243302f7232453567f0eecae6b10421f6f8
+preview not-required
+producer amont-agent 3.7.2
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAECJKE6rVl+zNnbV0H8YCyFjQc93+/6LthIxDT6O5R+Ikv17Gh
+BKBVLiGn2xdWyo0FQ0fSgME2xI+XCZOrSU2ckL
+-----END SSH SIGNATURE-----
