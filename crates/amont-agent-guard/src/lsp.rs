@@ -233,9 +233,9 @@ fn plugin_install_path(plugin: &str) -> Option<PathBuf> {
     }
 }
 
-fn install_path_in(v: &serde_json::Value, plugin: &str) -> Option<PathBuf> {
+fn install_path_in(manifest: &serde_json::Value, plugin: &str) -> Option<PathBuf> {
     let prefix = format!("{plugin}@");
-    let (_, entries) = v
+    let (_, entries) = manifest
         .get("plugins")?
         .as_object()?
         .iter()

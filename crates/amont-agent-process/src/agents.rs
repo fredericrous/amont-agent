@@ -86,9 +86,29 @@ fn dir_has(dir: &Path, need: Need) -> bool {
         Ok(entries) => entries,
         Err(e) => return e.kind() != std::io::ErrorKind::NotFound,
     };
-    entries
-        .flatten()
-        .any(|e| e.file_name().to_str().is_some_and(|n| need.matches(n)))
+    // An entry that cannot be read may be the agent: it counts as carried.
+    entries.into_iter().any(|e| match e {
+        Ok(e) => e.file_name().to_str().is_some_and(|n| need.matches(n)),
+        Err(_) => true,
+    })
+}
+
+/// The directories inside `dir`, or `None` when `dir` exists and cannot be
+/// listed: a cache level that cannot be read may hold the agents.
+fn subdirs(dir: &Path) -> Option<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(_) => return None,
+    };
+    let mut out = Vec::new();
+    for e in entries {
+        let path = e.ok()?.path();
+        if path.is_dir() {
+            out.push(path);
+        }
+    }
+    Some(out)
 }
 
 /// The install directory of every plugin: those `installed_plugins.json`
@@ -114,12 +134,11 @@ fn plugin_roots(config: &Path) -> Option<Vec<PathBuf>> {
     // cache/<marketplace>/<plugin>/<version>
     let mut layer = vec![config.join("plugins").join("cache")];
     for _ in 0..3 {
-        layer = layer
-            .iter()
-            .filter_map(|d| std::fs::read_dir(d).ok())
-            .flat_map(|rd| rd.flatten().map(|e| e.path()))
-            .filter(|p| p.is_dir())
-            .collect();
+        let mut next = Vec::new();
+        for dir in &layer {
+            next.extend(subdirs(dir)?);
+        }
+        layer = next;
     }
     roots.extend(layer);
     Some(roots)
@@ -214,6 +233,20 @@ mod tests {
         let readable = std::fs::read_dir(&agents).is_ok(); // root reads anything
         let held = carried_in(Need::PlanPanel, Some(&dir), &dir);
         std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(readable || held);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_plugin_cache_keeps_the_hold() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("unreadable-cache");
+        let cache = dir.join("plugins").join("cache");
+        std::fs::create_dir_all(cache.join("market")).unwrap();
+        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(&cache).is_ok(); // root reads anything
+        let held = carried_in(Need::PlanPanel, Some(&dir), &dir);
+        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(readable || held);
     }
 

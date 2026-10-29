@@ -509,11 +509,17 @@ fn doctor_says_whether_the_lsp_rules_can_speak_here() {
     assert!(off.contains("the fleet-lsp plugin is not enabled"), "{off}");
 }
 
+/// `doctor --json`, with stdout parsed whole: anything else there fails.
 fn integration(h: &Home) -> (i32, serde_json::Value) {
-    let (code, out) = h.run(&["doctor", "--json"]);
-    let start = out.find('{').expect("a JSON document");
-    let doc = serde_json::from_str(out[start..].lines().next().unwrap()).expect("JSON");
-    (code, doc)
+    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .args(["doctor", "--json"])
+        .env("CLAUDE_CONFIG_DIR", &h.0)
+        .env_remove("AMONT_AGENT_OFF")
+        .output()
+        .expect("the binary runs");
+    let stdout = String::from_utf8(out.stdout).expect("UTF-8");
+    let doc = serde_json::from_str(&stdout).expect("stdout is one JSON document");
+    (out.status.code().unwrap_or(-1), doc)
 }
 
 #[test]
