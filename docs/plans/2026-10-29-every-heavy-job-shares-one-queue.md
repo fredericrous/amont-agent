@@ -25,7 +25,7 @@ before it is tightened (phase 5).
 
 ## Verification
 
-- amont pre-commit gate on 03ccdd6 (fmt, clippy -D warnings, cargo test with the new unit, precision, corpus and hook tests) → 25 checks passed.
+- `tests/hook.rs` `an_unqueued_test_run_is_advised_toward_the_slot_queue` (stub amont 1.63.0, `AMONT_HOST_SLOT` removed) → advice carries `amont slot run -- cargo test --workspace` and `exit 75`, journal holds a `heavy-build-unqueued` row; `a_test_run_that_cannot_queue_is_left_alone` (held, then stub 1.61.1) → silent; both ran in the amont pre-commit gate (cargo test, 25 checks passed).
 - `amont-agent check --cwd /tmp "cargo test"` (built binary, `AMONT_HOST_SLOT` unset, amont 1.63.0 on PATH) → `heavy-build-unqueued [advise]`, remedy `amont slot run -- cargo test`, 90 s, exit 75, `amont slots`.
 - `… "amont slot run -- cargo test"` → silent; `… "amont slot run --on-timeout=run -- cargo build"` → fires.
 - `AMONT_HOST_SLOT=held … "cargo test"` → silent.
@@ -33,6 +33,8 @@ before it is tightened (phase 5).
 ## Decision log
 
 - relais run run-65efedd17f79f-a762 wrote the rule, corpus, table entry and docs, then hit its wall time at load ~100; salvaged: the parent added the hook and precision tests and the clippy/fmt fixes.
+- Deviation: the advice does not list the current holders. Spawning `amont slots --json` on every heavy Bash call adds a second process to the hook under exactly the load it warns about; the remedy names `amont slots` instead, and the queued wrapper itself prints whom it waits behind.
+- The fleet pack was re-vendored at the branch start (worktree-task Start step) so the brief cites ADR-0049; it also brings ADR-0047/48/50, unrelated to this phase.
 - The rule's own `amont slot run -- cargo test` dogfood exited 75 after 600 s (one holder, 3 waiting, load ≥ cores): the queue worked; the commit gate's run was the test proof.
 
 ## Implementation review

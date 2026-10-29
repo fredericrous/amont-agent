@@ -21,11 +21,10 @@
 //! The rule speaks only when queueing is possible: the hook's environment has
 //! no `AMONT_HOST_SLOT` (the command already holds a slot otherwise), and
 //! `amont --version` on `PATH` is 1.62.0 or newer (the first with `slot run`).
-//! The version is asked once per process and once per session, under a short
-//! deadline. Amont's slot files are never read: `amont slots` is the query.
+//! A version that was read is remembered for the session; the probe has a
+//! short deadline. Amont's slot files are never read: `amont slots` is the query.
 
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::rules::test_output_trimmed::{exempt_words, runner_words};
@@ -156,34 +155,35 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     None
 }
 
-fn confirm(ctx: &Context, _finding: &Finding) -> Confirmed {
+fn confirm(context: &Context, _finding: &Finding) -> Confirmed {
     if std::env::var_os(HELD_SLOT_VARIABLE).is_some() {
         return Confirmed::No("the hook runs inside a host slot already");
     }
-    if !amont_has_slots(ctx.session) {
-        return Confirmed::No("amont on PATH is missing or older than 1.62.0");
+    if !amont_has_slots(context.session) {
+        return Confirmed::No("amont on PATH is missing, unanswering or older than 1.62.0");
     }
     Confirmed::Yes
 }
 
-/// Whether `amont` on `PATH` has `slot run`: probed once per process, and
-/// remembered on the session's record so the next hook process does not ask.
+/// Whether `amont` on `PATH` has `slot run`, remembered on the session's
+/// record so the next hook process does not ask. Only a version that was read
+/// is remembered: a missing, failing or slow amont (a loaded host is when the
+/// probe times out) is asked again next time, never recorded as too old.
 fn amont_has_slots(session: &str) -> bool {
-    static PROCESS: OnceLock<bool> = OnceLock::new();
-    *PROCESS.get_or_init(|| {
-        const CAPABLE: &str = "heavy-build-unqueued amont-has-slots";
-        const INCAPABLE: &str = "heavy-build-unqueued amont-lacks-slots";
-        if crate::lsp::was_told(session, CAPABLE) {
-            return true;
-        }
-        if crate::lsp::was_told(session, INCAPABLE) {
-            return false;
-        }
-        let capable = probe_version().is_some_and(|v| v >= FIRST_VERSION_WITH_SLOTS);
-        // An unrecorded answer only means the next hook process asks again.
-        let _ = crate::lsp::told(session, if capable { CAPABLE } else { INCAPABLE });
-        capable
-    })
+    const CAPABLE: &str = "heavy-build-unqueued amont-has-slots";
+    const INCAPABLE: &str = "heavy-build-unqueued amont-lacks-slots";
+    if crate::lsp::was_told(session, CAPABLE) {
+        return true;
+    }
+    if crate::lsp::was_told(session, INCAPABLE) {
+        return false;
+    }
+    let Some(version) = probe_version() else {
+        return false;
+    };
+    let capable = version >= FIRST_VERSION_WITH_SLOTS;
+    let _ = crate::lsp::told(session, if capable { CAPABLE } else { INCAPABLE }); // unrecorded: the next hook process asks again
+    capable
 }
 
 /// `amont --version`, killed at [`PROBE_DEADLINE`]; `None` when amont is
@@ -203,10 +203,8 @@ fn probe_version() -> Option<(u64, u64, u64)> {
             Ok(Some(_)) | Err(_) => return None,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
-                // Past the deadline the answer is already "unknown"; a kill or
-                // reap that fails leaves nothing more to report.
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.kill(); // past the deadline the answer is already unknown
+                let _ = child.wait(); // a reap that fails leaves nothing more to report
                 return None;
             }
         }
