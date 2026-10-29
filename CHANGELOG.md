@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.8.0
+
+### Changed
+
+- `review-brief` runs without aval installed (ADR-0047). In a repository with
+  `.adr.yaml` and no `aval` anywhere on PATH (and `AMONT_AGENT_AVAL` unset),
+  the brief is printed with a `# Code rules` section saying the decided rules
+  were not read, no RULES line, one stderr notice naming the fix, and exit 0.
+  An installed aval that fails, a non-executable or dangling `aval` on PATH,
+  or `AMONT_AGENT_AVAL` pointing nowhere still exits 3; `rules-sha` still
+  exits 3. The README's "Runs alone" section says what each optional sibling's
+  absence does.
+
 ## v3.7.2
 
 ### Fixed
