@@ -1,0 +1,16 @@
+amont-provenance-v1
+commit 9f750013dea9309001987488a9b947105b51efdb
+tree adc2af2a27e3d349ebe0b0ec9adc660eeb6abf2f
+canon ef7bba6b9068184354acba4c79291ccddb172123
+patch 6a7ba07d30bff82ec52af9bad4ff2110a4e65001
+plan docs/plans/2026-10-29-every-heavy-job-shares-one-queue.md ece90fa817d7d063d70142e88ae76a2fcfb4913eaee94482a8939ba84fba66e4
+review reviewed 461a98f83becd1ce955e0f824185405bbb14b37aa9201ce0e97d378a7fcf2e08
+preview not-required
+producer amont-agent 3.8.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAECqcWDwu/EsYuzUfOke1n3Jup9paKAtT0IiWsBgbbJ9dU/hk0
+odzDogkKPn+ag2aT1voz4613nUHAW58exP+EIJ
+-----END SSH SIGNATURE-----
