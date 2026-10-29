@@ -272,6 +272,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         "test-output-trimmed",
         include_str!("../tests/corpus/test-output-trimmed.cases"),
     ),
+    (
+        "heavy-build-unqueued",
+        include_str!("../tests/corpus/heavy-build-unqueued.cases"),
+    ),
 ];
 
 /// The compiled-in corpus for a rule, if the table has one.

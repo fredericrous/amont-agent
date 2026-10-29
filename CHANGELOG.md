@@ -9,6 +9,11 @@
   `absent` or `unknown`, plus `settings_file`, `binary` and `missing`).
   `doctor --help` and `-h` print the usage and exit 0; an unknown doctor flag
   exits 2.
+- `heavy-build-unqueued` (advise, ceiling advise). A heavy build or test run
+  (the `test-output-trimmed` runners, `cargo build`, `cargo check`,
+  `xcodebuild`, `swift build`) outside the host slot queue is advised to run
+  as `amont slot run -- <cmd>`. Silent inside a slot (`AMONT_HOST_SLOT` set)
+  and when `amont --version` on PATH is older than 1.62.0 or missing.
 
 ### Changed
 

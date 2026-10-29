@@ -45,6 +45,7 @@ pub mod git_add_broad;
 pub mod glob_in_flag_value;
 pub mod glob_no_match;
 pub mod gui_open_unbounded;
+pub mod heavy_build_unqueued;
 pub mod kubectl_gitops;
 pub mod lint_suppression_added;
 pub mod no_verify;
