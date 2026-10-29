@@ -2527,3 +2527,21 @@ fn a_review_in_the_transcript_is_honoured_with_no_agent_installed() {
     let l = lines_of(&w.provenance_dir().join("app").join(&head));
     assert!(l.contains(&"preview evidence".to_string()), "{l:?}");
 }
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_agents_dir_keeps_the_deny() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new("gap-unreadable");
+    let repo = w.repo("app");
+    let empty = w.transcript("empty", &Transcript::default());
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    let agents = w.root.join("claude").join("agents");
+    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::read_dir(&agents).is_ok(); // root reads anything
+    let said = w.push(&repo, "s1", Some(&empty));
+    std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !readable {
+        assert!(matches!(said, Said::Deny(_)), "{said:?}");
+    }
+}

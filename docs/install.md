@@ -92,6 +92,22 @@ non-zero when the guard is inert, so it can run from cron:
 ✓ acting on pipe-to-tail
 ```
 
+`amont-agent doctor --json` prints one JSON document on stdout instead:
+`healthy` (the same verdict as the exit status), `findings` (a list of `ok`,
+`advisory`, `line` and `detail`), and `integration`, which is reported apart
+from health: `state` is `present`, `partial`, `absent` or `unknown` (a settings
+file exists and could not be read), with `settings_file` and `binary` (null
+when no entry was found) and `missing`, the hook entries this version installs
+that are not there. `doctor --help` prints its usage and exits 0.
+
+Where no `plan-review-*` or `implementation-review` agent is installed (not in
+the Claude config `agents/`, the repository's `.claude/agents/`, or any
+installed plugin), the plan-panel and implementation-review rules cannot be
+satisfied. They then say so once, with `grh install workflow` as the remedy,
+instead of holding the call, and only where they would otherwise have refused:
+a review found in the transcript or already remembered is honoured as before.
+An agents directory or plugin manifest that cannot be read counts as installed.
+
 ## Turning it off
 
 ```sh

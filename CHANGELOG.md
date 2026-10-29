@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `amont-agent doctor --json` prints `healthy`, `findings` (`ok`, `advisory`,
+  `line`, `detail`) and `integration` (`state` of `present`, `partial`,
+  `absent` or `unknown`, plus `settings_file`, `binary` and `missing`).
+  `doctor --help` and `-h` print the usage and exit 0; an unknown doctor flag
+  exits 2.
+
+### Changed
+
+- The plan panel and the implementation review no longer hold a call when the
+  reviewer agent they need is installed nowhere (Claude config `agents/`,
+  `.claude/agents/`, installed plugins): they say once to run
+  `grh install workflow`. A found or remembered review is honoured first, and
+  an unreadable agents directory, plugin manifest or config directory keeps the
+  hold.
+
 ## v3.8.0
 
 ### Changed
