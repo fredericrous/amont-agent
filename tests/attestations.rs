@@ -495,3 +495,21 @@ fn doctor_warns_on_a_failed_scan_and_on_a_stale_stamp() {
     assert!(out.contains(&gone.display().to_string()), "{out}");
     assert!(out.contains("`amont-agent attestations`"), "{out}");
 }
+
+#[test]
+fn an_unset_plan_root_removes_nothing_and_says_so() {
+    let w = World::new("unset-root");
+    w.dir("old", 40);
+    let o = w
+        .cmd()
+        .env_remove("AMONT_AGENT_PLAN_ROOT")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["attestations", "--apply"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("unset"), "{err}");
+    assert!(err.contains("AMONT_AGENT_PLAN_ROOT"), "{err}");
+    assert!(w.names().contains(&"old".to_string()));
+}

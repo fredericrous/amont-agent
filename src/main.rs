@@ -374,8 +374,9 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
                 let scanned = doctor::scan();
-                let findings =
+                let mut findings =
                     doctor::run(rule_table::RULES, attestations::doctor_finding(), &scanned);
+                findings.push(plan_root_finding());
                 let healthy = if args.iter().any(|a| a == "--json") {
                     println!(
                         "{}",
@@ -1967,6 +1968,26 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
 /// fires a few times a week to show a shape; short enough that a rule fixed a
 /// month ago stops being judged on what it did before.
 const SEEN_WINDOW: u64 = 30 * 24 * 60 * 60;
+
+/// The plan root in use and where it came from.
+fn plan_root_finding() -> doctor::Finding {
+    use plan_review::{RootSource, ROOT_REMEDY};
+    match plan_review::resolved_root() {
+        Some((path, RootSource::CwdFallback)) => doctor::Finding::warn(
+            format!("plan root: {} (cwd fallback)", path.display()),
+            format!("plan review falls back to the working directory and the attestations sweep removes nothing; {ROOT_REMEDY}"),
+        ),
+        Some((path, source)) => doctor::Finding::good(format!(
+            "plan root: {} ({})",
+            path.display(),
+            source.label()
+        )),
+        None => doctor::Finding::warn(
+            "plan root: unset",
+            format!("plan review cannot resolve repos= and the attestations sweep removes nothing; {ROOT_REMEDY}"),
+        ),
+    }
+}
 
 fn run_status() -> ExitCode {
     let w = ui::id_column(rule_table::RULES);

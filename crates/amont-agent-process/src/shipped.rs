@@ -633,7 +633,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
         return ExitCode::from(2);
     };
     let Some(root) = crate::plan_review::root() else {
-        eprintln!("amont-agent: no home directory to resolve repositories under");
+        eprintln!(
+            "amont-agent: no plan root to resolve repositories under; {}",
+            crate::plan_review::ROOT_REMEDY
+        );
         return ExitCode::from(1);
     };
     let (mut rows, mut read, mut lines, mut fetch_failed) = (Vec::new(), 0, Vec::new(), false);
