@@ -1933,6 +1933,14 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     };
 
     if !f.write {
+        if matches!(plan.change, settings::Change::RemoveFile) {
+            println!(
+                "{} would be removed: nothing else is left in it.",
+                plan.path.display()
+            );
+            println!("Nothing written. Re-run with --write to apply.");
+            return ExitCode::SUCCESS;
+        }
         println!("{}", plan.change.describe(&plan.path));
         println!("Nothing written. Re-run with --write to apply:\n");
         print!("{}", plan.after);

@@ -264,3 +264,97 @@ fn uninstall_leaves_an_empty_block_the_author_wrote() {
         "the author's empty block was rewritten"
     );
 }
+
+fn project_settings(root: &Path) -> PathBuf {
+    root.join(".claude").join("settings.json")
+}
+
+fn run_in(root: &Path, args: &[&str]) -> (i32, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("the binary runs");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+fn install_project(root: &Path) {
+    let (code, _, err) = run_in(root, &["install", "--project", "--write"]);
+    assert_eq!(code, 0, "install failed: {err}");
+}
+
+#[test]
+fn uninstall_removes_the_file_and_dir_install_created() {
+    let h = Home::new("remove-file");
+    install_project(&h.0);
+    assert!(project_settings(&h.0).exists());
+    let (code, out, err) = run_in(&h.0, &["uninstall", "--project"]);
+    assert_eq!(code, 0, "dry run failed: {err}");
+    assert!(out.contains("would be removed"), "dry run said: {out}");
+    assert!(project_settings(&h.0).exists());
+    let (code, _, err) = run_in(&h.0, &["uninstall", "--project", "--write"]);
+    assert_eq!(code, 0, "uninstall failed: {err}");
+    assert!(!project_settings(&h.0).exists());
+    assert!(!h.0.join(".claude").exists());
+}
+
+#[test]
+fn uninstall_rewrites_a_file_with_another_key_left() {
+    let h = Home::new("keeps-key");
+    install_project(&h.0);
+    let path = project_settings(&h.0);
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    doc["permissions"] = serde_json::json!({"allow": []});
+    std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap() + "\n").unwrap();
+    let (code, _, err) = run_in(&h.0, &["uninstall", "--project", "--write"]);
+    assert_eq!(code, 0, "uninstall failed: {err}");
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(after.get("permissions").is_some());
+    assert!(after.get("hooks").is_none());
+}
+
+#[test]
+fn uninstall_keeps_a_claude_dir_holding_other_files() {
+    let h = Home::new("keeps-dir");
+    install_project(&h.0);
+    std::fs::write(h.0.join(".claude").join("notes.md"), "keep").unwrap();
+    let (code, _, err) = run_in(&h.0, &["uninstall", "--project", "--write"]);
+    assert_eq!(code, 0, "uninstall failed: {err}");
+    assert!(!project_settings(&h.0).exists());
+    assert!(h.0.join(".claude").join("notes.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn uninstall_unlinks_a_symlinked_file_and_spares_its_target() {
+    let h = Home::new("symlink");
+    install_project(&h.0);
+    let path = project_settings(&h.0);
+    let target = h.0.join("real-settings.json");
+    std::fs::rename(&path, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    let (code, _, err) = run_in(&h.0, &["uninstall", "--project", "--write"]);
+    assert_eq!(code, 0, "uninstall failed: {err}");
+    assert!(path.symlink_metadata().is_err(), "the link is gone");
+    assert!(target.exists(), "the target is untouched");
+}
+
+#[test]
+fn uninstall_leaves_an_authors_empty_object_alone() {
+    let h = Home::new("empty-object");
+    std::fs::create_dir_all(h.0.join(".claude")).unwrap();
+    std::fs::write(project_settings(&h.0), "{}\n").unwrap();
+    let (code, out, err) = run_in(&h.0, &["uninstall", "--project", "--write"]);
+    assert_eq!(code, 0, "uninstall failed: {err}");
+    assert!(out.contains("nothing written"), "said: {out}");
+    assert_eq!(
+        std::fs::read_to_string(project_settings(&h.0)).unwrap(),
+        "{}\n"
+    );
+}

@@ -72,6 +72,9 @@ pub enum Change {
     Update,
     AlreadyCurrent,
     Remove,
+    /// Removing our hooks left the document as exactly `{}`: the file is
+    /// deleted rather than written back empty. Decided from content alone.
+    RemoveFile,
     NothingToRemove,
     /// The file uses formatting this program cannot reproduce, so writing it
     /// back would reformat parts we were not asked to touch. See
@@ -87,6 +90,9 @@ impl Change {
             Change::Update => format!("updated our hooks in {p}"),
             Change::AlreadyCurrent => format!("{p} is already current — nothing written"),
             Change::Remove => format!("removed our hooks from {p}"),
+            Change::RemoveFile => format!(
+                "removed our hooks from {p} — nothing else was left, so the file was removed"
+            ),
             Change::NothingToRemove => format!("no amont-agent hook in {p} — nothing written"),
             Change::WouldReformat => format!(
                 "{p} uses formatting this program cannot reproduce — writing it back would \
@@ -456,6 +462,13 @@ pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
             change: Change::NothingToRemove,
         });
     }
+    if doc.as_object().is_some_and(|root| root.is_empty()) {
+        return Ok(Plan {
+            path: path.into(),
+            after: String::new(),
+            change: Change::RemoveFile,
+        });
+    }
     Ok(Plan {
         path: path.into(),
         after: render(&doc, &indent, nl),
@@ -463,14 +476,26 @@ pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
     })
 }
 
-/// Write the plan, atomically. Staged to a temp file next to the destination,
-/// then renamed — so a symlinked `settings.json` is replaced rather than
-/// written through, and a crash mid-write cannot leave a half-file.
+/// Write the plan, atomically, or delete the file for `RemoveFile`. Staged to
+/// a temp file next to the destination, then renamed — so a symlinked
+/// `settings.json` is replaced rather than written through, and a crash
+/// mid-write cannot leave a half-file.
 pub fn apply(plan: &Plan) -> std::io::Result<()> {
     if matches!(
         plan.change,
         Change::AlreadyCurrent | Change::NothingToRemove | Change::WouldReformat
     ) {
+        return Ok(());
+    }
+    if matches!(plan.change, Change::RemoveFile) {
+        // `remove_file` unlinks a symlink itself and never follows it.
+        std::fs::remove_file(&plan.path)?;
+        if let Some(parent) = plan.path.parent() {
+            if parent.file_name().is_some_and(|name| name == ".claude") {
+                // Non-recursive: fails when the directory holds anything else.
+                let _ = std::fs::remove_dir(parent); // a non-empty directory stays
+            }
+        }
         return Ok(());
     }
     if let Some(parent) = plan.path.parent() {

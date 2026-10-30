@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `amont-agent uninstall` deletes a `settings.json` that is exactly `{}` once
+  its hooks are removed, and the `.claude/` directory when that leaves it
+  empty, instead of writing `{}` back. A file with any other key left is
+  rewritten as before; a symlinked file is unlinked, never its target. The
+  dry run says the file would be removed.
+
 ## v3.9.0
 
 ### Added
