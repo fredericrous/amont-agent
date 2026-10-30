@@ -42,7 +42,7 @@ you downloading it:
 ```sh
 amont-agent install          # prints the settings block, writes nothing
 amont-agent install --write  # merges it into ~/.claude/settings.json
-amont-agent doctor           # installed, runnable, and actually firing?
+amont-agent doctor           # installed, runnable, firing? plan root in use
 ```
 
 ## It measures before it blocks

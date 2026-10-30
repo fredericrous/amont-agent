@@ -8,7 +8,9 @@ for the head of a GitHub squash.
 
 For each repository in the plan's front matter `repos:` list (resolved as
 `plan-panel` resolves them: git config `amont.agent.plan-review.<name>.path`,
-else `~/Developer/Perso/<name>`), it looks for `docs/plans/<the plan's file
+else `<plan root>/<name>`, the plan root resolving exactly as plan review's
+does, working-directory fallback included: see
+[plan-review.md](plan-review.md)), it looks for `docs/plans/<the plan's file
 name>` on `origin/main` (the plan or a pointer file). A repository without it
 is reported as `no plan file`.
 

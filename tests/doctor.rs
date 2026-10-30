@@ -623,3 +623,93 @@ fn doctor_rejects_an_unknown_flag_and_help_documents_json() {
     let (_, help) = h.run(&["--help"]);
     assert!(help.contains("doctor [--json]"), "{help}");
 }
+
+/// A doctor run whose HOME and git config belong to the test: its stdout.
+fn plan_root_doctor(
+    w: &Home,
+    name: &str,
+    env: Option<&str>,
+    git: Option<&str>,
+    cwd: &std::path::Path,
+    json: bool,
+) -> String {
+    let home = w.0.join(format!("home-{name}"));
+    std::fs::create_dir_all(&home).unwrap();
+    let gitconfig = home.join("gitconfig");
+    std::fs::write(&gitconfig, "").unwrap();
+    if let Some(v) = git {
+        let ok = Command::new("git")
+            .args(["config", "--file"])
+            .arg(&gitconfig)
+            .args(["amont.agent.plan-review.root", v])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+    }
+    let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    c.arg("doctor")
+        .args(json.then_some("--json"))
+        .current_dir(cwd)
+        .env("CLAUDE_CONFIG_DIR", &w.0)
+        .env("HOME", &home)
+        .env("GIT_CONFIG_GLOBAL", &gitconfig)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("AMONT_AGENT_OFF")
+        .env_remove("AMONT_AGENT_PLAN_ROOT");
+    if let Some(v) = env {
+        c.env("AMONT_AGENT_PLAN_ROOT", v);
+    }
+    let out = c.output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The text report's plan root line.
+fn plan_root_line(
+    w: &Home,
+    name: &str,
+    env: Option<&str>,
+    git: Option<&str>,
+    cwd: &std::path::Path,
+) -> String {
+    plan_root_doctor(w, name, env, git, cwd, false)
+        .lines()
+        .find(|l| l.contains("plan root:"))
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn doctor_reports_the_plan_root_and_its_source() {
+    let w = Home::new("planroot");
+    let plain = w.0.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let env = plan_root_line(&w, "env", Some("/from/env"), Some("/from/git"), &plain);
+    assert!(env.contains("/from/env (env)"), "{env}");
+    let git = plan_root_line(&w, "git", None, Some("/from/git"), &plain);
+    assert!(git.contains("/from/git (git-config)"), "{git}");
+    let tilde = plan_root_line(&w, "tilde", None, Some("~/plans"), &plain);
+    let expected = w.0.join("home-tilde/plans");
+    assert!(
+        tilde.contains(&format!("{} (git-config)", expected.display())),
+        "{tilde}"
+    );
+    let cwd = plan_root_line(&w, "cwd", None, None, &plain);
+    assert!(cwd.contains("(cwd fallback)"), "{cwd}");
+    assert!(cwd.contains("plain"), "{cwd}");
+}
+
+#[test]
+fn doctor_json_carries_the_plan_root() {
+    let w = Home::new("planroot-json");
+    let plain = w.0.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let out = plan_root_doctor(&w, "json", None, Some("/from/git"), &plain, true);
+    let doc: serde_json::Value = serde_json::from_str(&out).expect("doctor --json is JSON");
+    let line = doc["findings"]
+        .as_array()
+        .expect("a findings array")
+        .iter()
+        .filter_map(|f| f["line"].as_str())
+        .find(|l| l.starts_with("plan root:"));
+    assert_eq!(line, Some("plan root: /from/git (git-config)"), "{out}");
+}

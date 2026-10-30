@@ -78,7 +78,14 @@ impl Env {
         let state = journal::dir()?;
         Some(Env {
             store: state.join("attestations"),
-            plan_root: crate::plan_review::root().ok_or_else(|| "no home directory".to_string()),
+            plan_root: crate::plan_review::explicit_root()
+                .map(|(path, _)| path)
+                .ok_or_else(|| {
+                    format!(
+                        "the plan root is unset; {}",
+                        crate::plan_review::ROOT_REMEDY
+                    )
+                }),
             claude_plans: amont_agent_guard::settings::config_dir()?.join("plans"),
             state,
             git: None,
@@ -1103,6 +1110,21 @@ mod tests {
         want.sort();
         assert_eq!(s.names(), want);
         assert!(outside.is_dir());
+    }
+
+    #[test]
+    fn an_unset_plan_root_removes_nothing() {
+        let s = Scratch::new();
+        s.dir("old", 40);
+        let mut env = s.env();
+        env.plan_root = Err("the plan root is unset; set AMONT_AGENT_PLAN_ROOT".into());
+        let r = run(&env, NOW, true);
+        let f = r.failure.expect("scan failed");
+        assert_eq!(f.path, "plan root");
+        assert!(f.err.contains("unset"), "{f:?}");
+        assert!(r.removed.is_empty());
+        assert!(s.store().join("old").is_dir());
+        assert!(!r.rows[0].remove);
     }
 
     #[test]

@@ -9,6 +9,17 @@
   empty, instead of writing `{}` back. A file with any other key left is
   rewritten as before; a symlinked file is unlinked, never its target. The
   dry run says the file would be removed.
+- The plan root no longer defaults to `~/Developer/Perso`. It is
+  `$AMONT_AGENT_PLAN_ROOT`, else `git config --global amont.agent.plan-review.root`
+  (a leading `~/` is expanded). Name resolution (plan review, `shipped`)
+  falls back to the session's working directory outside a git repository, else the
+  parent of the repository's main worktree; with nothing determinable it names
+  both settings. The attestations sweep uses only the explicit setting and
+  removes nothing, saying the root is unset, when neither is set.
+  Migration: `git config --global amont.agent.plan-review.root ~/Developer/Perso`
+  keeps the old behaviour.
+- `doctor` (text and `--json` findings) reports the plan root in use and its
+  source: env, git-config, cwd fallback or unset.
 
 ## v3.9.0
 

@@ -61,10 +61,52 @@ const REFUSALS_BEFORE_ASK: u32 = 2;
 const LARGE: usize = 500;
 /// Blobs read to classify one repository.
 const MAX_BLOBS: usize = 200;
+// The two names, spelled once: `concat!` takes literals, not constants.
+macro_rules! env_root {
+    () => {
+        "AMONT_AGENT_PLAN_ROOT"
+    };
+}
+macro_rules! git_key_root {
+    () => {
+        "amont.agent.plan-review.root"
+    };
+}
 /// Where `repos=` names resolve: `git config amont.agent.plan-review.<name>.path`
 /// for a repository kept elsewhere (dotfiles under `~/.local/share/chezmoi`),
-/// else `$AMONT_AGENT_PLAN_ROOT/<name>`, else `~/Developer/Perso/<name>`.
-pub const ENV_ROOT: &str = "AMONT_AGENT_PLAN_ROOT";
+/// else `<plan root>/<name>`. The plan root is `$AMONT_AGENT_PLAN_ROOT`, else
+/// `git config --global amont.agent.plan-review.root`. Name resolution
+/// (plan review, `shipped`) then falls back to the working directory (see
+/// [`fallback_root`]); the attestations sweep never does.
+pub const ENV_ROOT: &str = env_root!();
+/// The global git config key that sets the plan root.
+pub const GIT_KEY_ROOT: &str = git_key_root!();
+/// What to set, named wherever no plan root could be determined.
+pub const ROOT_REMEDY: &str = concat!(
+    "set ",
+    env_root!(),
+    " or `git config --global ",
+    git_key_root!(),
+    " <dir>`"
+);
+
+/// Where the plan root came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootSource {
+    Env,
+    GitConfig,
+    CwdFallback,
+}
+
+impl RootSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            RootSource::Env => "env",
+            RootSource::GitConfig => "git-config",
+            RootSource::CwdFallback => "cwd fallback",
+        }
+    }
+}
 
 /// Whether a review or a baseline at `seen` is of this body.
 fn of_body(seen: &str, sha: &str, legacy: &str) -> bool {
@@ -253,13 +295,59 @@ pub fn locate(root: &Path, name: &str) -> PathBuf {
     }
 }
 
+/// The explicitly set plan root: `$AMONT_AGENT_PLAN_ROOT` when non-empty, else
+/// the global git config key (a leading `~/` expanded by git). Nothing else.
+pub fn explicit_root() -> Option<(PathBuf, RootSource)> {
+    pick_explicit(std::env::var_os(ENV_ROOT), || {
+        let key = GIT_KEY_ROOT;
+        amont_agent_guard::git::output(&["config", "--global", "--get", "--type=path", key])
+            .filter(|o| o.code == 0 && !o.stdout.is_empty())
+            .map(|o| o.stdout)
+    })
+}
+
+fn pick_explicit(
+    env: Option<std::ffi::OsString>,
+    git_config: impl FnOnce() -> Option<String>,
+) -> Option<(PathBuf, RootSource)> {
+    if let Some(r) = env.filter(|r| !r.is_empty()) {
+        return Some((PathBuf::from(r), RootSource::Env));
+    }
+    git_config().map(|v| (PathBuf::from(v), RootSource::GitConfig))
+}
+
+/// With nothing set: `cwd` itself when it is outside a git repository, else
+/// the parent of the repository's main worktree, so a linked worktree
+/// resolves to its main checkout's parent.
+pub fn fallback_root(cwd: &Path) -> Option<PathBuf> {
+    use amont_agent_guard::git;
+    let Some(common) = git::stdout_in(
+        cwd,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) else {
+        return Some(cwd.to_path_buf()).filter(|c| !c.as_os_str().is_empty());
+    };
+    let common = PathBuf::from(common);
+    let top = if common.file_name().is_some_and(|n| n == ".git") {
+        common.parent()?.to_path_buf()
+    } else {
+        common
+    };
+    top.parent().map(Path::to_path_buf)
+}
+
+/// The directory `repos=` names resolve under, and where it came from: the
+/// explicit setting, else the working-directory fallback.
+pub fn resolved_root() -> Option<(PathBuf, RootSource)> {
+    explicit_root().or_else(|| {
+        let cwd = std::env::current_dir().ok()?;
+        fallback_root(&cwd).map(|r| (r, RootSource::CwdFallback))
+    })
+}
+
 /// The directory `repos=` names resolve under.
 pub fn root() -> Option<PathBuf> {
-    if let Some(r) = std::env::var_os(ENV_ROOT).filter(|r| !r.is_empty()) {
-        return Some(PathBuf::from(r));
-    }
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join("Developer").join("Perso"))
+    resolved_root().map(|(path, _)| path)
 }
 
 /// One repository's areas. `Ok(None)`: no repository there yet — a plan
@@ -1473,9 +1561,9 @@ fn list(s: &BTreeSet<String>) -> String {
 /// `Err` carries the answer the hook gives instead.
 fn classes_of(m: &Meta) -> Result<BTreeSet<String>, Said> {
     let Some(root) = root() else {
-        return Err(Said::Ask(
-            "no home directory, so repos= cannot be resolved.".into(),
-        ));
+        return Err(Said::Ask(format!(
+            "no plan root could be determined, so repos= cannot be resolved; {ROOT_REMEDY}."
+        )));
     };
     let mut classes: BTreeSet<String> = m.adds.iter().cloned().collect();
     for name in &m.repos {
@@ -1550,6 +1638,74 @@ pub fn agent_for(role: &str) -> (String, Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn env_outranks_git_config_and_empty_env_is_unset() {
+        use super::{pick_explicit, RootSource};
+        let git = || Some("/from/git".to_string());
+        assert_eq!(
+            pick_explicit(Some("/from/env".into()), git),
+            Some(("/from/env".into(), RootSource::Env))
+        );
+        assert_eq!(
+            pick_explicit(Some("".into()), git),
+            Some(("/from/git".into(), RootSource::GitConfig))
+        );
+        assert_eq!(
+            pick_explicit(None, git),
+            Some(("/from/git".into(), RootSource::GitConfig))
+        );
+        assert_eq!(pick_explicit(None, || None), None);
+    }
+
+    #[test]
+    fn fallback_is_cwd_outside_a_repository_and_the_main_checkouts_parent_inside() {
+        use super::fallback_root;
+        use std::process::Command;
+        let top = std::env::temp_dir().join(format!("amont-agent-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&top); // a leftover of an earlier run, or none
+        let plain = top.join("plain");
+        let main = top.join("ws").join("main");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+        };
+        git(&main, &["init", "-q"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let linked = top.join("elsewhere").join("linked");
+        git(
+            &main,
+            &["worktree", "add", "-q", "-b", "b", linked.to_str().unwrap()],
+        );
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        // A scratch directory under the system temp dir is outside any repository.
+        assert_eq!(fallback_root(&plain).map(|p| real(&p)), Some(real(&plain)));
+        assert_eq!(
+            fallback_root(&main).map(|p| real(&p)),
+            Some(real(&top.join("ws")))
+        );
+        assert_eq!(
+            fallback_root(&linked).map(|p| real(&p)),
+            Some(real(&top.join("ws")))
+        );
+        let _ = std::fs::remove_dir_all(&top); // scratch under the temp dir: the OS reclaims it
+    }
     use super::*;
     use crate::plan_text::{body_sha, guarded, legacy_sha, ShaError};
 

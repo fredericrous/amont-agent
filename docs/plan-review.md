@@ -46,8 +46,12 @@ past its `upstream`, and a shallow clone is judged on files alone.
 
 `repos=` names each repository. A name resolves to
 `git config amont.agent.plan-review.<name>.path` when that is set, for a
-repository kept elsewhere; otherwise to `$AMONT_AGENT_PLAN_ROOT/<name>`, and
-by default to `~/Developer/Perso/<name>`. `adds=` declares areas the plan
+repository kept elsewhere; otherwise to `<plan root>/<name>`. The plan root is
+`$AMONT_AGENT_PLAN_ROOT`, else `git config --global amont.agent.plan-review.root`
+(`git config --global amont.agent.plan-review.root ~/Developer/Perso` keeps the
+old default); with neither, the session's directory when it is not in a git
+repository, else the parent of the repository's main worktree. The attestations
+sweep uses only the explicit setting. `adds=` declares areas the plan
 creates: `cli`, `ui`, `ops`, `large`, or `lang:<language>`. A repository
 that does not exist yet needs a `lang:` entry.
 
