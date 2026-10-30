@@ -687,10 +687,11 @@ fn doctor_reports_the_plan_root_and_its_source() {
     assert!(env.contains("/from/env (env)"), "{env}");
     let git = plan_root_line(&w, "git", None, Some("/from/git"), &plain);
     assert!(git.contains("/from/git (git-config)"), "{git}");
-    let tilde = plan_root_line(&w, "tilde", None, Some("~/plans"), &plain);
-    let expected = w.0.join("home-tilde/plans");
+    // git expands `~/` with forward slashes, Windows included, and may print
+    // the temp dir under its short name: compare the expanded tail only.
+    let tilde = plan_root_line(&w, "tilde", None, Some("~/plans"), &plain).replace('\\', "/");
     assert!(
-        tilde.contains(&format!("{} (git-config)", expected.display())),
+        tilde.contains("home-tilde/plans (git-config)") && !tilde.contains("~/plans"),
         "{tilde}"
     );
     let cwd = plan_root_line(&w, "cwd", None, None, &plain);
