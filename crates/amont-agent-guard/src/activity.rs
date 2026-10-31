@@ -230,34 +230,56 @@ fn cut_back(file: &Path, text: &str) {
     let _ = std::fs::write(file, newest.join("\n")); // a failed cut only leaves the file longer until the next call
 }
 
-/// Every other session whose latest line names `repo_identity`, freshest
-/// first. A superseded line of another session never matches: only the last
-/// line of each file is read.
-pub fn peers_in(session: &str, repo_identity: &Path) -> Vec<Peer> {
+/// A session's latest line, with the session's last-seen time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seen {
+    pub session: String,
+    pub repo_identity: PathBuf,
+    pub worktree: PathBuf,
+    pub branch: String,
+    pub last_seen: SystemTime,
+}
+
+/// The latest line of every session's activity file. A superseded line never
+/// appears: only the last line of each file is read. Read-only.
+pub fn latest_all() -> Vec<Seen> {
     let Some(dir) = sessions_dir() else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
     };
-    let want = path_field(repo_identity);
-    let mut found: Vec<Peer> = entries
+    entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let other = name.strip_suffix(".activity")?;
-            if other == session {
-                return None;
-            }
+            let session = name.strip_suffix(".activity")?;
             let last_seen = entry.metadata().ok()?.modified().ok()?;
             let text = std::fs::read_to_string(entry.path()).ok()?;
             let [repo, worktree, branch] = last_fields(&text)?;
-            (repo == want).then(|| Peer {
-                session: other.to_string(),
+            Some(Seen {
+                session: session.to_string(),
+                repo_identity: PathBuf::from(decode(repo)),
                 worktree: PathBuf::from(decode(worktree)),
                 branch: decode(branch),
                 last_seen,
             })
+        })
+        .collect()
+}
+
+/// Every other session whose latest line names `repo_identity`, freshest
+/// first.
+pub fn peers_in(session: &str, repo_identity: &Path) -> Vec<Peer> {
+    let want = path_field(repo_identity);
+    let mut found: Vec<Peer> = latest_all()
+        .into_iter()
+        .filter(|seen| seen.session != session && path_field(&seen.repo_identity) == want)
+        .map(|seen| Peer {
+            session: seen.session,
+            worktree: seen.worktree,
+            branch: seen.branch,
+            last_seen: seen.last_seen,
         })
         .collect();
     found.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));

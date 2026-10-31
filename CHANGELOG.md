@@ -4,6 +4,11 @@
 
 ### Added
 
+- `amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]`: a
+  read-only list, per repository, of the worktrees and live unmerged branches
+  in flight, their active plan, the sessions whose activity record names each
+  worktree, and what landed recently, derived from git and the activity files
+  (see `docs/board.md`).
 - Each session's activity is recorded in
   `<journal dir>/sessions/<session>.activity` (repository, worktree, branch;
   see `docs/board.md`) on an Edit, Write, MultiEdit or NotebookEdit and on a

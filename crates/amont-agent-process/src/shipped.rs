@@ -102,7 +102,7 @@ fn blocks(text: &str) -> Vec<Block> {
 
 /// The repository names of the plan: its front matter `repos:` list, else
 /// the machine comment's `repos=`.
-fn plan_repos(text: &str) -> Result<Vec<String>, String> {
+pub(crate) fn plan_repos(text: &str) -> Result<Vec<String>, String> {
     let mut names = Vec::new();
     let mut lines = text.lines();
     if lines.next().map(str::trim) == Some("---") {

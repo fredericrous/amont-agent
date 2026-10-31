@@ -2,7 +2,7 @@
 
 Every session records which repository, worktree and branch it edits, so that
 another session can tell whether somebody else is working in the same place.
-`work-overlap` reads it; `amont-agent board --repo <repo>` lists it.
+`work-overlap` reads it, and `amont-agent board` lists it (see below).
 
 ## The activity file
 
@@ -71,3 +71,49 @@ points to `amont-agent board --repo <repo name>`, then to a message to that
 session (SendMessage) or to the person. It is silent when the only matching
 activity is the session's own, and fires when another live session works in
 the very same worktree.
+
+## `amont-agent board`
+
+```text
+amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]
+```
+
+Read-only. It lists, per repository, the work in flight and what landed
+recently, derived from git and the activity files on every call. It reads the
+activity files through the same reader as `work-overlap` and never writes
+them.
+
+Repositories: those named with `--repo` (resolved like plan-review `repos=`
+names: `git config amont.agent.plan-review.<name>.path`, else
+`<plan root>/<name>`), else the working directory's repository, else every git
+repository directly under the plan root.
+
+**In flight**: each worktree of `git worktree list --porcelain` (the main
+checkout on the default branch with no session is not listed), and each local
+or `origin/` branch not merged into the default branch whose tip commit is
+newer than `--since` (default 48h), or that carries an active plan, or that a
+session's latest line names. A squash-merged branch older than `--since` with
+no plan and no session is left out. Each entry shows:
+
+- the path (if checked out) and the branch;
+- the title of the active plan: a plan file under `docs/plans` that the branch
+  adds relative to the default branch and whose `status` is `active`. A plan
+  whose `repos:` names several repositories is listed under each of them: in
+  another repository's block it appears as a branch-only entry labelled
+  `<repository>:<branch>`, found by scanning the other repositories directly
+  under the plan root, unless that repository carries the same file itself;
+- `programme <slug> ticket <id>` for a `prog/<slug>/<id>` branch;
+- the sessions whose latest activity line names that worktree, with the full
+  session id and the age of the activity file's modification time.
+
+**Just landed**: `git log --first-parent <default> --since <dur>`, with short
+sha, subject and age. `--fetch` first runs `git fetch origin -q` on the
+selected repositories (a failure is one line on stderr).
+
+A repository with nothing in flight and nothing landed prints nothing unless
+it was named with `--repo`. `--json` prints an array of `{repo, path,
+worktrees: [{path, branch, plans, programme_ticket, sessions: [{id,
+last_seen_secs}]}], landed: [{sha, subject, age_secs}]}`; `plans` is an array of titles (empty when none); `path` is null for a
+branch with no worktree, `programme_ticket` is `<slug>/<id>` or null. Exit 0
+unless the command itself fails; an unreadable repository is reported on
+stderr and skipped.

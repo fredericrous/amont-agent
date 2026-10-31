@@ -6,6 +6,7 @@
 
 pub mod agents;
 pub mod attestations;
+pub mod board;
 pub mod candidates_block;
 pub mod content_id;
 pub mod guide;
