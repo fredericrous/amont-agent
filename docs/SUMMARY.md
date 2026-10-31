@@ -14,6 +14,7 @@
 - [What shipped under a plan](shipped.md)
 - [The implementation review](implementation-review.md)
 - [The session notice](session-notice.md)
+- [The board: session activity](board.md)
 - [Configuration](configuration.md)
 
 # Design

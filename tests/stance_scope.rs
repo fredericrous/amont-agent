@@ -333,6 +333,18 @@ fn a_ceiling_holds_against_both_keys() {
     assert_eq!(f.stance_of("pipe-to-tail"), "deny");
 }
 
+/// `work-overlap` ships at advise with an advise ceiling, as
+/// `agent-guidance-written` does.
+#[test]
+fn work_overlap_is_capped_at_advise() {
+    let f = Fixture::new("ceiling-work-overlap");
+    assert_eq!(f.stance_of("work-overlap"), "advise");
+    f.set("--global", "amont.agent.work-overlap.stance", "observe");
+    assert_eq!(f.stance_of("work-overlap"), "observe");
+    f.set("--global", "amont.agent.work-overlap.stance", "deny");
+    assert_eq!(f.stance_of("work-overlap"), "advise");
+}
+
 /// `rules` shows the stance in force, not only what the rule ships as — and
 /// names the shipped default exactly when a key on this machine moved it.
 #[test]

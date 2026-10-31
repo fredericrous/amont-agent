@@ -4,6 +4,34 @@
 
 ### Changed
 
+- `amont-agent board` scans only primary checkouts as siblings (never a linked
+  worktree directory, one scan per git common dir) and reads each sibling with
+  one `git for-each-ref` call: a sibling with no live branch costs one git call.
+- `amont-agent board` reads plans only for live branches (tip within
+  `--since`, checked out, or named by a session), in the selected repository
+  and in sibling plans; stale unmerged branches cost no git call beyond the
+  listing, so a root of ~100 repositories is fast (see `docs/board.md`).
+
+### Added
+
+- `amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]`: a
+  read-only list, per repository, of the worktrees and live unmerged branches
+  in flight, their active plan, the sessions whose activity record names each
+  worktree, and what landed recently, derived from git and the activity files
+  (see `docs/board.md`).
+- Each session's activity is recorded in
+  `<journal dir>/sessions/<session>.activity` (repository, worktree, branch;
+  see `docs/board.md`) on an Edit, Write, MultiEdit or NotebookEdit and on a
+  Bash `git commit`, `push`, `tag`, `worktree add`, `checkout -b` or
+  `switch -c`.
+- Rule `work-overlap` (advise, ceiling advise): a session's first write in a
+  repository is told once when another session was seen working there within
+  `git config amont.agent.work-overlap.window` (default 2h). The advice
+  names that session's worktree, branch and active plan; the telling is
+  used up only once a live peer is found.
+
+### Changed
+
 - `amont-agent uninstall` deletes a `settings.json` that is exactly `{}` once
   its hooks are removed, and the `.claude/` directory when that leaves it
   empty, instead of writing `{}` back. A file with any other key left is

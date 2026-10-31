@@ -115,7 +115,7 @@ fn of_body(seen: &str, sha: &str, legacy: &str) -> bool {
 
 /// The plan's H1 outside any fence, which names it across sessions: the
 /// same plan presented from a new session gets a new random file name.
-fn title(text: &str) -> Option<String> {
+pub(crate) fn title(text: &str) -> Option<String> {
     let mut fence = Fence::default();
     canonical(text).lines().find_map(|l| {
         fence.h2(l);

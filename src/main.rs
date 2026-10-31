@@ -18,6 +18,7 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
+use amont_agent_guard::activity;
 use amont_agent_guard::analysis;
 use amont_agent_guard::assertions;
 use amont_agent_guard::backtest;
@@ -63,6 +64,7 @@ use amont_agent_guard::stale;
 use amont_agent_guard::stance;
 use amont_agent_guard::transcript;
 use amont_agent_guard::ui;
+use amont_agent_process::board;
 use amont_agent_process::shipped;
 
 use std::ffi::OsString;
@@ -138,6 +140,11 @@ usage: amont-agent <command>
                         what shipped under a plan, derived from git: per
                         repository its merge commits, PRs, releases, and
                         signed provenance
+  board [--repo <name>...] [--since <dur>] [--fetch] [--json]
+                        the work in flight per repository (worktrees, live
+                        unmerged branches, their active plan, the sessions
+                        working there) and what landed recently, from git
+                        and the session activity files
   quiet [--max-bytes N[k]] -- <cmd…>
                         run a command with its output in a log file: one line
                         on a pass, the failure on a fail, the real exit code.
@@ -201,9 +208,10 @@ enum Sub {
     Attestations,
     Quiet,
     Shipped,
+    Board,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 27] = [
+const SUBCOMMANDS: [(&str, Sub); 28] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -231,6 +239,7 @@ const SUBCOMMANDS: [(&str, Sub); 27] = [
     ("attestations", Sub::Attestations),
     ("quiet", Sub::Quiet),
     ("shipped", Sub::Shipped),
+    ("board", Sub::Board),
 ];
 
 enum Invocation {
@@ -405,6 +414,7 @@ fn main() -> ExitCode {
             Sub::Preview => run_preview(&args),
             Sub::PlanSha => run_plan_sha(&args),
             Sub::Shipped => shipped::run(&args),
+            Sub::Board => board::run(&args),
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);
