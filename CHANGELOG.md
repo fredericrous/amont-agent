@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- `amont-agent plan-panel --code-review <plan.md>` prints the code-review
+  profiles proposed for each repository of the plan's machine comment, from
+  its areas (`<repo>\t<profiles|none>`). Without the flag the output is
+  unchanged; a plan with no `## Code review` section gets a warning on
+  stderr, and a section that does not parse exits 1 (ADR-0052).
+- `amont-agent review-brief --profile <role>` adds a `Profile: <role>` line
+  and a `## Judge rules for <role>` section with the judge-only code rules
+  whose `Reviewed by:` names the role. Without it the plan section carries
+  a `Declared code review for <repo>: …` line.
+
 ### Fixed
 
 - `amont-agent --bogus --help` prints the help and exits 0: help wins over a

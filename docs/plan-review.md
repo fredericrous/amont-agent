@@ -296,3 +296,25 @@ closed approve-with-changes or rework yet have 0 parsed findings, and a
 `--json` prints one array of objects instead (the skipped plans as extra
 `record_skipped` objects), `--model` keeps one model. Exit
 0, or 1 when a ledger cannot be read, 2 on a usage error.
+
+## The plan's code reviewers
+
+A plan declares who reviews its code in a `## Code review` section (after
+`## Non-goals`), one line per repository:
+
+```
+- <repo>: backend, lang:rust, unix (tui: no screens)
+- <repo>: none — <reason>
+```
+
+A profile is `backend`, `platform`, `unix`, `tui`, `react`, `ui-design`,
+`architect` or `lang:<x>`; a parenthesised reason for the profiles left out
+is kept as text. `amont-agent plan-panel --code-review <plan.md>` proposes
+the list: one line `<repo>\t<profiles comma-separated|none>` per repository
+of the machine comment, from its areas (`backend` and each `lang:<x>`; `ops`
+adds `platform`, `cli` adds `unix` and `tui`, `ui` adds `react` and
+`ui-design`, `large` adds `architect`; a repository with no language is
+proposed `none`). Plain `plan-panel` prints what it always did; if the plan
+has no `## Code review` section it says so on stderr and still exits 0. A
+section that does not parse (unknown profile, no colon, empty list, `none`
+without a reason, a repository twice) exits 1 with or without the flag.

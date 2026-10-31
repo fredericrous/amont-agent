@@ -1190,3 +1190,69 @@ fn a_valid_review_passes_silently_with_no_panel_agent_installed() {
     std::fs::remove_dir_all(w.root.join("claude").join("agents")).unwrap();
     assert!(matches!(w.present(&plan, &t), Said::Silent));
 }
+#[test]
+fn plan_panel_code_review_proposes_each_repositorys_profiles() {
+    let w = World::new("code-review-proposal");
+    rust_cli(&w);
+    w.repo("notes", &[("README.md", "words\n")]);
+    let plan = w.plan("p.md", BODY, "repos=tool,notes");
+    let out = w
+        .bin()
+        .args(["plan-panel", "--code-review"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "tool\tbackend,lang:rust,unix,tui\nnotes\tnone\n"
+    );
+}
+
+#[test]
+fn a_plan_without_a_code_review_section_warns_and_keeps_its_stdout() {
+    let w = World::new("code-review-warning");
+    rust_cli(&w);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let out = w.bin().arg("plan-panel").arg(&plan).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with(&format!(
+            "repos=tool areas=cli,lang:rust body={} panel=full\n",
+            w.short(&plan)
+        )),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Code review"), "{stdout}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr).trim(),
+        "amont-agent: plan-panel: no ## Code review section; run plan-panel --code-review and add it after ## Non-goals"
+    );
+
+    let declared = format!("{BODY}\n## Code review\n\n- tool: backend, unix\n");
+    let plan = w.plan("q.md", &declared, "repos=tool");
+    let out = w.bin().arg("plan-panel").arg(&plan).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+}
+
+#[test]
+fn a_code_review_section_that_does_not_parse_exits_1_with_or_without_the_flag() {
+    let w = World::new("code-review-bad");
+    rust_cli(&w);
+    let bad = format!("{BODY}\n## Code review\n\n- tool: wizard\n");
+    let plan = w.plan("p.md", &bad, "repos=tool");
+    for flag in [None, Some("--code-review")] {
+        let mut command = w.bin();
+        command.arg("plan-panel");
+        command.args(flag);
+        let out = command.arg(&plan).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{flag:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{flag:?}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("wizard"),
+            "{flag:?}: {out:?}"
+        );
+    }
+}

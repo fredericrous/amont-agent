@@ -319,3 +319,17 @@ goes to stderr. The command writes only `outcomes.jsonl`
 and its lock file, never a pass file. `amont-agent plan-review stats` reads
 this ledger and reports it as role `implementation-review`, `fixed` counting as
 accepted.
+
+## Per-profile briefs
+
+`amont-agent review-brief --profile <role>` (`backend`, `platform`, `unix`,
+`tui`, `react`, `ui-design`, `architect` or `lang:<x>`) adds a
+`Profile: <role>` line after the TREE, RULES and CANDIDATES lines and, after
+the code rules, a `## Judge rules for <role>` section: the full text of each
+active code rule whose `**Checked by:**` classes are all `judge` and whose
+`**Reviewed by:**` line names the role (`language` matches any `lang:<x>`).
+A `Reviewed by:` name outside that set makes the command exit 1 naming the
+rule and the name; an unknown `--profile` exits 2. Without `--profile` the
+brief is unchanged except for one line in the plan section, `Declared code
+review for <repo>: <profiles|none — reason|not declared>`, read from the
+plan (the canonical file of a pointer plan, under the plan root).

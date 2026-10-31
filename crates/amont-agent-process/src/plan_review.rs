@@ -205,7 +205,7 @@ pub(crate) fn valid_name(n: &str) -> bool {
         && !n.contains(['/', '\\', '\0', '\n', '\r'])
 }
 
-fn valid_class(c: &str) -> bool {
+pub(crate) fn valid_class(c: &str) -> bool {
     match c.strip_prefix("lang:") {
         Some(l) => {
             !l.is_empty()

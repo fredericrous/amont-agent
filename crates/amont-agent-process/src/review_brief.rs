@@ -386,6 +386,9 @@ pub struct BriefRequest {
     pub dir: PathBuf,
     pub plan: Option<PathBuf>,
     pub base: Option<String>,
+    /// A code-review profile (`backend`, `lang:rust`, …): adds the judge
+    /// rules that role reviews.
+    pub profile: Option<String>,
 }
 
 /// The brief, whole, or why it could not be built. Nothing is partial.
@@ -398,12 +401,19 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
     })?;
     let has_corpus = repo.join(CORPUS_FILE).is_file();
     let aval_missing;
+    let mut judge_section = None;
     let code_rules = if has_corpus {
         match rules(&repo) {
             Ok(code_rules) => {
                 aval_missing = false;
                 let text = render_rules(&code_rules.json)
                     .map_err(|why| BriefError::Aval(AvalFailed::Failed(why)))?;
+                if let Some(profile) = &request.profile {
+                    judge_section = Some(
+                        crate::code_review::judge_section(&code_rules.json, profile)
+                            .map_err(BriefError::Repository)?,
+                    );
+                }
                 Some((code_rules.sha, text))
             }
             Err(AvalFailed::NotInstalled) => {
@@ -445,9 +455,19 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         Candidates::Unavailable(_) => brief.push_str(crate::candidates_block::UNAVAILABLE),
     }
     brief.push_str("\n\n");
+    if let Some(profile) = &request.profile {
+        brief.push_str(&format!("Profile: {profile}\n\n"));
+    }
 
     let (plan_label, plan_text) = plan_of(&repo, request.plan.as_deref(), &merge_base)?;
     brief.push_str(&format!("## Plan\n\n{plan_label}\n\n"));
+    if request.profile.is_none() {
+        brief.push_str(&crate::code_review::declared_line(
+            &name,
+            plan_text.as_deref(),
+        ));
+        brief.push_str("\n\n");
+    }
     let verification = plan_text
         .as_deref()
         .and_then(|t| section(t, "Verification"))
@@ -488,6 +508,9 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
     match &code_rules {
         Some((_, rules_text)) => {
             brief.push_str(&format!("# Code rules (in full)\n\n{rules_text}\n"));
+            if let Some(section) = &judge_section {
+                brief.push_str(&format!("\n{section}\n"));
+            }
 
             let index = aval(&repo, &["rules", "--level", "constraint"])?;
             brief.push_str(&format!(
@@ -499,6 +522,11 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
             brief.push_str(&decisions(&repo, &range)?);
         }
         None if aval_missing => {
+            if let Some(profile) = &request.profile {
+                brief.push_str(&format!(
+                    "## Judge rules for {profile}\n\nNot read: aval is not installed.\n\n"
+                ));
+            }
             brief.push_str(
                 "# Code rules\n\nThis repository has an aval corpus (.adr.yaml), but aval is not installed, so its decided code rules were not read. Review against the plan; do not treat the code as unconstrained.\n",
             );
@@ -508,6 +536,11 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
             ));
         }
         None => {
+            if let Some(profile) = &request.profile {
+                brief.push_str(&format!(
+                    "## Judge rules for {profile}\n\nNone: this repository has no aval corpus.\n\n"
+                ));
+            }
             brief.push_str(&format!(
                 "# Code rules\n\nThis repository has no aval corpus (no {CORPUS_FILE}), so no decided code rules apply.\n"
             ));

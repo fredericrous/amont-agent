@@ -636,3 +636,180 @@ fn an_aval_with_a_missing_interpreter_exits_3() {
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
 }
+
+/// An `aval` whose code rules carry `Reviewed by:` lines.
+#[cfg(unix)]
+const PROFILE_AVAL: &str = r#"#!/bin/sh
+case "$*" in
+  "--json rules --level constraint --governs code --full")
+    printf '%s' '{"rules":[{"id":"cli.unix-only","level":"constraint","statement":"S1.","body":"UNIX-RULE-TEXT\n\n**Checked by:** judge.\n\n**Reviewed by:** unix, tui.","active":true},{"id":"errors.backend-only","level":"constraint","statement":"S2.","body":"BACKEND-RULE-TEXT\n\n**Checked by:** judge.\n\n**Reviewed by:** backend.","active":true},{"id":"types.mixed","level":"constraint","statement":"S3.","body":"MIXED-RULE-TEXT\n\n**Checked by:** exact (a lint), judge (the rest).\n\n**Reviewed by:** unix.","active":true},{"id":"errors.typed","level":"constraint","statement":"S4.","body":"LANGUAGE-RULE-TEXT\n\n**Checked by:** judge.\n\n**Reviewed by:** language.","active":true}]}' ;;
+  "rules --level constraint") printf 'constraint x\n' ;;
+  "--json relevant"*) printf '{"keys":[]}' ;;
+  *) exit 1 ;;
+esac
+"#;
+
+#[cfg(unix)]
+fn profile_brief(name: &str, profile: &str, aval: &str) -> (Output, String) {
+    let bin = scratch(name);
+    fake_aval(&bin, aval);
+    let repo = two_commit_repo(&format!("{name}-repo"));
+    let out = run(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+            "--profile",
+            profile,
+        ],
+        &bin,
+    );
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    (out, text)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_unix_profile_holds_the_judge_rules_unix_reviews() {
+    let (out, brief) = profile_brief("profile-unix", "unix", PROFILE_AVAL);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(brief.contains("## Judge rules for unix"), "{brief}");
+    assert!(brief.contains("Profile: unix\n"), "{brief}");
+    let judge = &brief[brief.find("## Judge rules for unix").unwrap()..];
+    let judge = &judge[..judge.find("# Constraint rules").unwrap()];
+    assert!(judge.contains("UNIX-RULE-TEXT"), "{judge}");
+    assert!(!judge.contains("BACKEND-RULE-TEXT"), "{judge}");
+    assert!(!judge.contains("MIXED-RULE-TEXT"), "{judge}");
+    assert!(!judge.contains("LANGUAGE-RULE-TEXT"), "{judge}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_lang_profile_holds_the_language_rules() {
+    let (out, brief) = profile_brief("profile-lang", "lang:rust", PROFILE_AVAL);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(brief.contains("## Judge rules for lang:rust"), "{brief}");
+    let judge = &brief[brief.find("## Judge rules for lang:rust").unwrap()..];
+    assert!(judge.contains("LANGUAGE-RULE-TEXT"), "{judge}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unknown_reviewed_by_name_exits_1_and_an_unknown_profile_exits_2() {
+    let aval = PROFILE_AVAL.replace("**Reviewed by:** backend.", "**Reviewed by:** wizard.");
+    let (out, _) = profile_brief("profile-bad-name", "unix", &aval);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("errors.backend-only") && err.contains("wizard"),
+        "{err}"
+    );
+    let (out, _) = profile_brief("profile-unknown", "wizard", PROFILE_AVAL);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_plan_section_carries_the_declared_code_review() {
+    let bin = scratch("declared");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo("declared-repo");
+    let name = repo.file_name().unwrap().to_str().unwrap();
+    let plan = repo.join("plan.md");
+    std::fs::write(
+        &plan,
+        format!("# P\n\n## Code review\n\n- {name}: none — docs only\n"),
+    )
+    .unwrap();
+    let args = |plan: &PathBuf| {
+        run(
+            &[
+                "review-brief",
+                "-C",
+                repo.to_str().unwrap(),
+                "--base",
+                "HEAD~1",
+                "--plan",
+                plan.to_str().unwrap(),
+            ],
+            &bin,
+        )
+    };
+    let out = args(&plan);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let brief = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        brief.contains(&format!(
+            "Declared code review for {name}: none — docs only"
+        )),
+        "{brief}"
+    );
+    std::fs::write(&plan, "# P\n").unwrap();
+    let brief = String::from_utf8_lossy(&args(&plan).stdout).to_string();
+    assert!(
+        brief.contains(&format!("Declared code review for {name}: not declared")),
+        "{brief}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_declaration_that_does_not_parse_is_said_not_hidden() {
+    let bin = scratch("declared-bad");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo("declared-bad-repo");
+    let name = repo.file_name().unwrap().to_str().unwrap();
+    let plan = repo.join("plan.md");
+    std::fs::write(
+        &plan,
+        format!("# P\n\n## Code review\n\n- {name}: wizard\n"),
+    )
+    .unwrap();
+    let out = run(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+            "--plan",
+            plan.to_str().unwrap(),
+        ],
+        &bin,
+    );
+    let brief = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        brief.contains(&format!("Declared code review for {name}: unreadable ("))
+            && brief.contains("wizard"),
+        "{brief}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_profile_without_a_corpus_says_it_has_no_rules() {
+    let bin = scratch("profile-nocorpus");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo_with("profile-nocorpus-repo", &[]);
+    let out = run(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+            "--profile",
+            "unix",
+        ],
+        &bin,
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let brief = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        brief.contains("## Judge rules for unix\n\nNone: this repository has no aval corpus."),
+        "{brief}"
+    );
+}
