@@ -51,14 +51,14 @@ pub const RULE: Rule = Rule {
 };
 
 /// Words that may open a clause without being its command.
-const OPENERS: &[&str] = &[
+pub(crate) const OPENERS: &[&str] = &[
     "do", "then", "else", "elif", "if", "while", "until", "!", "{", "(", "time",
 ];
 
 /// `$name` and nothing else: a scalar parameter whose value we cannot know.
 /// `$@`, `$*`, `$1`, `$?` and friends are not names, and a name with a suffix
 /// (`$dir/x`) is a path, not a list.
-fn scalar_param(w: &Word) -> bool {
+pub(crate) fn scalar_param(w: &Word) -> bool {
     if w.quoted || w.expanded {
         return false;
     }

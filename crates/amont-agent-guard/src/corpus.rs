@@ -137,6 +137,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/unsplit-expansion.cases"),
     ),
     (
+        "zsh-unquoted-word-split",
+        include_str!("../tests/corpus/zsh-unquoted-word-split.cases"),
+    ),
+    (
         "equals-separator",
         include_str!("../tests/corpus/equals-separator.cases"),
     ),
