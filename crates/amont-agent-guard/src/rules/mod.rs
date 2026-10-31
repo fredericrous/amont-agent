@@ -73,6 +73,7 @@ pub mod work_overlap;
 pub mod workspace_root_write;
 pub mod worktree_isolation;
 pub mod worktree_remove_force;
+pub mod zsh_unquoted_word_split;
 
 // A `fish-glob` rule was written and removed before the first commit, on the
 // argument that a zero-match glob "aborts the command loudly and names the

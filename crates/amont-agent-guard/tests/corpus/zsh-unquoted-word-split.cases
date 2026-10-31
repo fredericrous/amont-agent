@@ -1,0 +1,16 @@
+# amont-agent-cases-v1
+# Reviewed judgements for this rule: an unquoted `$var` used as a word list
+# after the same call assigned `var` a space-separated literal.
+
+# --- the rule should fire ---
+match	ids="1 2 3"; for id in $ids; do echo $id; done
+match	pr="a/b 385"; set -- $pr
+match	pair="sre-agent 41" && set $pair; echo "$1 $2"
+
+# --- the rule must stay silent ---
+nomatch	ids=(1 2 3); for id in "${ids[@]}"; do echo $id; done
+nomatch	for f in $HOME; do :; done
+nomatch	ids="1 2 3"; for id in "$ids"; do echo $id; done
+nomatch	one=single; for x in $one; do echo $x; done
+nomatch	for x in $unknown; do echo $x; done
+nomatch	ids="1 2 3"; ids=$(seq 3); for id in $ids; do echo $id; done
