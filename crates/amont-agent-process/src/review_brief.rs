@@ -408,6 +408,8 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
                 aval_missing = false;
                 let text = render_rules(&code_rules.json)
                     .map_err(|why| BriefError::Aval(AvalFailed::Failed(why)))?;
+                crate::code_review::check_reviewed_by(&code_rules.json)
+                    .map_err(BriefError::Repository)?;
                 if let Some(profile) = &request.profile {
                     judge_section = Some(
                         crate::code_review::judge_section(&code_rules.json, profile)
@@ -447,14 +449,23 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         brief.push_str(&rules_line(sha));
         brief.push('\n');
     }
-    let found = candidates(&repo, &merge_base);
+    // Candidates are implementation-review's alone (ADR-0052): one ruling
+    // per id, so a profile's brief carries neither the block nor the list.
+    let found = match &request.profile {
+        None => Some(candidates(&repo, &merge_base)),
+        Some(_) => None,
+    };
     match &found {
-        Candidates::Answered(document) => {
+        Some(Candidates::Answered(document)) => {
             brief.push_str(&crate::candidates_block::block(document));
+            brief.push_str("\n\n");
         }
-        Candidates::Unavailable(_) => brief.push_str(crate::candidates_block::UNAVAILABLE),
+        Some(Candidates::Unavailable(_)) => {
+            brief.push_str(crate::candidates_block::UNAVAILABLE);
+            brief.push_str("\n\n");
+        }
+        None => brief.push('\n'),
     }
-    brief.push_str("\n\n");
     if let Some(profile) = &request.profile {
         brief.push_str(&format!("Profile: {profile}\n\n"));
     }
@@ -462,10 +473,10 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
     let (plan_label, plan_text) = plan_of(&repo, request.plan.as_deref(), &merge_base)?;
     brief.push_str(&format!("## Plan\n\n{plan_label}\n\n"));
     if request.profile.is_none() {
-        brief.push_str(&crate::code_review::declared_line(
-            &name,
-            plan_text.as_deref(),
-        ));
+        brief.push_str(
+            &crate::code_review::declared_line(&name, plan_text.as_deref())
+                .map_err(BriefError::Repository)?,
+        );
         brief.push_str("\n\n");
     }
     let verification = plan_text
@@ -496,13 +507,18 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
     }
 
     let section_text = match &found {
-        Candidates::Answered(document) => crate::candidates_block::section(document),
-        Candidates::Unavailable(cause) => crate::candidates_block::unavailable_section(cause),
+        Some(Candidates::Answered(document)) => Some(crate::candidates_block::section(document)),
+        Some(Candidates::Unavailable(cause)) => {
+            Some(crate::candidates_block::unavailable_section(cause))
+        }
+        None => None,
     };
-    brief.push_str(&format!("{section_text}\n"));
+    if let Some(section_text) = section_text {
+        brief.push_str(&format!("{section_text}\n"));
+    }
 
     let mut notices = Vec::new();
-    if let Candidates::Unavailable(cause) = &found {
+    if let Some(Candidates::Unavailable(cause)) = &found {
         notices.push(format!("adr-lint's candidates are unavailable: {cause}"));
     }
     match &code_rules {

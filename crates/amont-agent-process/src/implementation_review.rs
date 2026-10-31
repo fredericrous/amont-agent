@@ -467,7 +467,7 @@ fn remember_patch(
     Some(())
 }
 
-// ---------------------------------------------------------------- the profiles
+// The code-review profiles (ADR-0052).
 
 /// A completed review by one code-review profile's agent (ADR-0052), bound
 /// to the profile its launch prompt named.

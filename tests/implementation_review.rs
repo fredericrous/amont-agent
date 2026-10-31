@@ -2551,7 +2551,7 @@ fn an_unreadable_agents_dir_keeps_the_deny() {
     }
 }
 
-// ---------------------------------------------------------------- code-review profiles
+// Code-review profiles (ADR-0052).
 
 const PLAN_REL: &str = "docs/plans/2026-09-29-x.md";
 
@@ -3112,7 +3112,7 @@ fn the_person_may_overrule_a_profile_rework() {
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
 }
 
-// ---------------------------------------------------------------- carried profile passes
+// Carried profile passes (`work.code-review-delta`).
 
 /// `feat/x` declares `backend`, and is pushed at commit A with the
 /// implementation review's `approve` and the backend profile's `profile_verdict`.

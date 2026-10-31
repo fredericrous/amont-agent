@@ -192,16 +192,16 @@ pub fn parse(plan_text: &str) -> Result<Option<BTreeMap<String, Declared>>, Stri
     Ok(found.then_some(declared))
 }
 
-fn parse_line(item: &str) -> Result<(String, Declared), String> {
-    let (repo, value) = item
+fn parse_line(entry: &str) -> Result<(String, Declared), String> {
+    let (repo, declaration) = entry
         .split_once(':')
         .ok_or("expected `- <repo>: <profiles>` or `- <repo>: none — <reason>`")?;
     let repo = repo.trim();
     if !crate::plan_review::valid_name(repo) {
         return Err(format!("`{repo}` is not a repository name"));
     }
-    let value = value.trim();
-    let none_rest = value.strip_prefix("none").filter(|rest| {
+    let declaration = declaration.trim();
+    let none_rest = declaration.strip_prefix("none").filter(|rest| {
         rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == '—')
     });
     if let Some(rest) = none_rest {
@@ -219,12 +219,12 @@ fn parse_line(item: &str) -> Result<(String, Declared), String> {
             },
         ));
     }
-    let (list, left_out) = match (value.strip_suffix(')'), value.find('(')) {
+    let (list, left_out) = match (declaration.strip_suffix(')'), declaration.find('(')) {
         (Some(inner), Some(open)) => (
-            &value[..open],
+            &declaration[..open],
             Some(inner[open + 1..].trim().to_string()).filter(|r| !r.is_empty()),
         ),
-        _ => (value, None),
+        _ => (declaration, None),
     };
     let mut profiles: Vec<String> = Vec::new();
     for profile in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -266,17 +266,25 @@ pub(crate) fn declared_text(plan_text: &str) -> Result<String, String> {
 }
 
 /// `Declared code review for <repo>: …` for the brief's plan section. A
-/// declaration that cannot be read or parsed is said, not shown as absent.
-pub fn declared_line(repo: &str, plan_text: Option<&str>) -> String {
+/// declaration that cannot be read or parsed is an error, so the brief exits
+/// 1 as `plan-panel` does, rather than describing a review nobody declared.
+pub fn declared_line(repo: &str, plan_text: Option<&str>) -> Result<String, String> {
     let shown = match plan_text.map(|text| declared_text(text).and_then(|t| parse(&t))) {
         None | Some(Ok(None)) => "not declared".to_string(),
         Some(Ok(Some(map))) => map
             .get(repo)
             .map(Declared::describe)
             .unwrap_or_else(|| "not declared".to_string()),
-        Some(Err(why)) => format!("unreadable ({why})"),
+        Some(Err(why)) => return Err(format!("the plan's ## Code review section: {why}")),
     };
-    format!("Declared code review for {repo}: {shown}")
+    Ok(format!("Declared code review for {repo}: {shown}"))
+}
+
+/// Every active rule's `Reviewed by:` names are code-review profiles: the
+/// drift guard between the rule bodies and [`REVIEWER_NAMES`], run on every
+/// brief, not only a profile's.
+pub fn check_reviewed_by(json: &[u8]) -> Result<(), String> {
+    judge_rules(json, "").map(|_| ())
 }
 
 /// The text after `marker` on its line and the lines that continue it, up to

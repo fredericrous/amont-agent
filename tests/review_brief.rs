@@ -711,6 +711,47 @@ fn an_unknown_reviewed_by_name_exits_1_and_an_unknown_profile_exits_2() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
 
+/// The drift guard runs on implementation-review's brief too, not only a
+/// profile's: an unknown `Reviewed by:` name exits 1 without `--profile`.
+#[cfg(unix)]
+#[test]
+fn an_unknown_reviewed_by_name_fails_the_brief_without_a_profile() {
+    let bin = scratch("generic-bad-name");
+    fake_aval(
+        &bin,
+        &PROFILE_AVAL.replace("**Reviewed by:** backend.", "**Reviewed by:** wizard."),
+    );
+    let repo = two_commit_repo("generic-bad-name-repo");
+    let out = run(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+        ],
+        &bin,
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("errors.backend-only") && err.contains("wizard"),
+        "{err}"
+    );
+}
+
+/// Candidates are implementation-review's alone: a profile's brief carries
+/// neither the CANDIDATES block nor the candidates section.
+#[cfg(unix)]
+#[test]
+fn a_profile_brief_carries_no_candidates() {
+    let (out, brief) = profile_brief("profile-no-candidates", "unix", PROFILE_AVAL);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(!brief.contains("<<<CANDIDATES"), "{brief}");
+    assert!(!brief.contains("## Candidates"), "{brief}");
+    assert!(brief.contains("Profile: unix\n"), "{brief}");
+}
+
 #[cfg(unix)]
 #[test]
 fn the_plan_section_carries_the_declared_code_review() {
@@ -757,7 +798,7 @@ fn the_plan_section_carries_the_declared_code_review() {
 
 #[cfg(unix)]
 #[test]
-fn a_declaration_that_does_not_parse_is_said_not_hidden() {
+fn a_declaration_that_does_not_parse_exits_1() {
     let bin = scratch("declared-bad");
     fake_aval(&bin, BRIEF_AVAL);
     let repo = two_commit_repo("declared-bad-repo");
@@ -780,11 +821,15 @@ fn a_declaration_that_does_not_parse_is_said_not_hidden() {
         ],
         &bin,
     );
-    let brief = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(
-        brief.contains(&format!("Declared code review for {name}: unreadable ("))
-            && brief.contains("wizard"),
-        "{brief}"
+        out.stdout.is_empty(),
+        "nothing on stdout when the brief fails"
+    );
+    assert!(
+        stderr.contains("## Code review") && stderr.contains("wizard"),
+        "{stderr}"
     );
 }
 
