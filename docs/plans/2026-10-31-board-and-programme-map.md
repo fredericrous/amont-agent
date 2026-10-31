@@ -29,4 +29,5 @@ board`, and the advisory `work-overlap` rule.
 ## Implementation review
 
 - Round 1 approve-with-changes (110k tokens, 111 s). Fixed: the advice names the plan title; the telling is spent only on a live peer; the `Resolved` match is exhaustive; the help text states the live-branch rule; the 3 h test case completed; the latency bench and branch counts recorded.
-- Deliberate: a stale branch with an active plan is not listed (live-branch rule; the canonical Decision log records it); the whole-root listing skips the sibling scan; p95 +1.0 to +1.5 ms against a 1 ms budget.
+- Deliberate: a stale branch with an active plan is not listed (live-branch rule; recorded in the canonical Decision log by the decisions closing PR); the whole-root listing skips the sibling scan; p95 +1.0 to +1.5 ms against a 1 ms budget.
+- Delta approve-with-changes (125k tokens, 44 s). Fixed: this plan's wording on the Decision log. Deliberate (follow-up, next amont-agent change): the help text says "no --repo" where the whole-root listing also needs a cwd outside any repository; the advice names the first active plan in the peer's worktree, which can be an unrelated plan for a peer on the default branch.
