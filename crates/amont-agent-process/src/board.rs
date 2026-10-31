@@ -161,6 +161,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let Some(selected) = select(&options.repos, root.as_deref()) else {
         return ExitCode::from(1);
     };
+    // Listing the whole root already shows every repository, so the
+    // per-repository scan of the others for plans that name it is skipped.
+    let whole_root = !named && selected.len() > 1;
+    let sibling_root = if whole_root { None } else { root.as_deref() };
     let sessions = activity::latest_all();
     let now = SystemTime::now();
     let mut reports = Vec::new();
@@ -178,7 +182,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 dir.display()
             );
         }
-        reports.push(report(&dir, &options, &sessions, now, root.as_deref()));
+        reports.push(report(&dir, &options, &sessions, now, sibling_root));
     }
     if !named {
         reports.retain(|r| !r.entries.is_empty() || !r.landed.is_empty());
@@ -235,7 +239,7 @@ fn select(names: &[String], root: Option<&Path>) -> Option<Vec<PathBuf>> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.join(".git").exists())
+        .filter(|p| p.join(".git").is_dir())
         .collect();
     dirs.sort();
     Some(dirs)

@@ -395,3 +395,23 @@ fn siblings_cost_one_call_and_linked_worktrees_are_not_scanned() {
         assert!(calls <= 1, "{calls} git calls for {sibling}:\n{log}");
     }
 }
+
+#[test]
+fn the_whole_root_lists_each_repository_once_without_sibling_scans() {
+    let world = World::new("whole");
+    let a = world.repo("a");
+    let path = world.root.join("a-wt-x").display().to_string();
+    git(&a, &["worktree", "add", "-q", "-b", "feat/x", &path]);
+    commit_file(&world.root.join("a-wt-x"), "x.txt", "x\n", 60);
+    for name in ["s1", "s2", "s3", "s4"] {
+        world.repo(name);
+    }
+    let (out, log) = world.board_with_git_log(&[]);
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(text.matches("a (").count(), 1, "{text}");
+    assert!(!text.contains("a-wt-x ("), "{text}");
+    assert!(text.contains("[feat/x]"), "{text}");
+    let calls = log.lines().count();
+    assert!(calls < 45, "{calls} git calls:\n{log}");
+}

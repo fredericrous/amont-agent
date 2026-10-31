@@ -106,6 +106,8 @@ unmerged branch, with or without a plan, costs no git call beyond the single
   repositories directly under the plan root (primary checkouts only: a linked
   worktree directory is never scanned, and a repository is scanned once),
   unless that repository carries the same file itself.
+  This scan runs when one repository is selected (`--repo`, or the cwd);
+  listing the whole root skips it, since every repository is listed anyway.
   For such a repository a branch is live when its tip is within `--since` or
   it is checked out; its sessions are not read here (ask `--repo` for that
   repository). It costs one `git for-each-ref` call (default branch, branch
