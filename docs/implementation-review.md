@@ -371,3 +371,30 @@ missing code review of <repo> tree <12 hex>: <agent> [--lang <x>], … (declared
 The person's Overrule of a profile's `rework` uses
 `[implementation-review <repo>@<sha64> profile=<role>]` and writes that
 profile's pass only.
+
+### A profile's `approve` carries to a fix
+
+After a fix the implementation review always reads the new tree, and a
+profile whose verdict was `rework` or `approve-with-changes` reviews again.
+A profile that said `approve` keeps its pass on a later pushed tree when the
+hook can check it (`work.code-review-delta`, ADR-0052). A profile pass
+records the commit the review read (the newest commit of
+`git rev-list <pushed> ^<merge-base>` whose content id is the reviewed tree),
+the plan that declared the profile, and a digest of this repository's parsed
+`## Code review` declaration. When a declared profile has no pass on the
+pushed tree, and the implementation review has passed it, the hook accepts the
+pass of an earlier commit C only when all hold:
+
+- its verdict is `approve` (not `approve-with-changes`, `rework` or
+  `overruled`);
+- C is in `git rev-list <pushed> ^<merge-base>`: an ancestor of the pushed
+  commit and strictly after the current merge-base, so a rebased branch (the
+  old commit is no longer an ancestor) and a review from a plan already merged
+  carry nothing; a rebase keeps a pass only by patch, as before;
+- its plan path and declaration digest equal the current ones;
+- the pass has all three fields; one written without them never carries.
+
+The carry writes a pass for the pushed tree (`how` is `carried-from <12 hex
+of the reviewed content id>`) and journals `profile-carried` with
+`carried-from <12 hex>` and the `git diff --shortstat C <pushed>`. Otherwise
+the profile is missing and must review the new tree.

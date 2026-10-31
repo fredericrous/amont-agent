@@ -572,25 +572,52 @@ fn write_profile_pass(file: &Path, body: &serde_json::Value) -> Option<()> {
     Some(())
 }
 
-fn remembered_profile(profile: &str, repo: &str, sha: &str) -> Option<String> {
+fn profile_record(profile: &str, repo: &str, sha: &str) -> Option<serde_json::Value> {
     let file = profile_pass_file(profile, repo, sha)?;
-    let record: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
-    Some(record.get("verdict")?.as_str()?.to_string())
+    serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()
 }
 
-fn remember_profile(profile: &str, repo: &str, sha: &str, verdict: &str, how: &str) -> Option<()> {
-    write_profile_pass(
-        &profile_pass_file(profile, repo, sha)?,
-        &serde_json::json!({
-            "repo": repo,
-            "tree": sha,
-            "profile": profile,
-            "verdict": verdict,
-            "agent": crate::code_review::agent_for(profile)?.0,
-            "how": how,
-        }),
+fn remembered_profile(profile: &str, repo: &str, sha: &str) -> Option<String> {
+    Some(
+        profile_record(profile, repo, sha)?
+            .get("verdict")?
+            .as_str()?
+            .to_string(),
     )
+}
+
+/// What a profile pass recorded about the review beyond its tree, so that a
+/// later push can check whether it carries (ADR-0052): the commit the review
+/// read, the plan that declared the profile and a digest of the repository's
+/// parsed `## Code review` declaration. A pass without them never carries.
+struct Basis {
+    commit: String,
+    plan: String,
+    declaration: String,
+}
+
+fn remember_profile(
+    profile: &str,
+    repo: &str,
+    sha: &str,
+    verdict: &str,
+    how: &str,
+    basis: Option<&Basis>,
+) -> Option<()> {
+    let mut body = serde_json::json!({
+        "repo": repo,
+        "tree": sha,
+        "profile": profile,
+        "verdict": verdict,
+        "agent": crate::code_review::agent_for(profile)?.0,
+        "how": how,
+    });
+    if let Some(basis) = basis {
+        body["commit"] = basis.commit.clone().into();
+        body["plan"] = basis.plan.clone().into();
+        body["declaration"] = basis.declaration.clone().into();
+    }
+    write_profile_pass(&profile_pass_file(profile, repo, sha)?, &body)
 }
 
 fn remembered_profile_patch(profile: &str, repo: &str, key: &PatchKey) -> Option<(String, String)> {
@@ -645,6 +672,8 @@ struct Declaration {
     plan: String,
     /// Whether any plan has a `## Code review` section.
     any_section: bool,
+    /// The sha256 of this repository's parsed declarations, in plan order.
+    digest: String,
 }
 
 /// The per-profile half of the push judgement: every code-review profile
@@ -657,6 +686,7 @@ struct ProfileGate<'a> {
     key: Option<&'a PatchKey>,
     plans: &'a [String],
     pushed: &'a str,
+    merge_base: &'a str,
     transcript: Option<&'a Path>,
     stance: Stance,
 }
@@ -667,7 +697,9 @@ impl ProfileGate<'_> {
             profiles: Vec::new(),
             plan: String::new(),
             any_section: false,
+            digest: String::new(),
         };
+        let mut described = String::new();
         for path in self.plans {
             // A plan deleted on the branch is not there to declare anything.
             let Some(text) =
@@ -682,6 +714,10 @@ impl ProfileGate<'_> {
                 })?;
             let Some(declared) = declared else { continue };
             found.any_section = true;
+            if let Some(line) = declared.get(self.name) {
+                described.push_str(&line.describe());
+                described.push('\n');
+            }
             if let Some(crate::code_review::Declared::Profiles { profiles, .. }) =
                 declared.get(self.name)
             {
@@ -695,10 +731,97 @@ impl ProfileGate<'_> {
                 }
             }
         }
+        found.digest = hex(&sha256(described.as_bytes()));
         Ok(found)
     }
 
-    fn standing<'r>(&self, profile: &str, reviews: &dyn Fn() -> &'r [ProfileReview]) -> Standing {
+    /// The commits of the branch after the merge-base, newest first, each
+    /// with its content id. Computed once per push and shared by every
+    /// profile.
+    fn branch(&self) -> Vec<(String, String)> {
+        git::stdout_in(
+            self.repo,
+            &["rev-list", self.pushed, &format!("^{}", self.merge_base)],
+        )
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter_map(|commit| {
+                    let id = content_id(self.repo, commit).ok()?;
+                    Some((commit.to_string(), id))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// The basis a pass for the pushed tree records: the newest branch
+    /// commit whose content id is the pushed tree, with the plan and
+    /// declaration digest now in force. `None` when the commit cannot be
+    /// found, so the pass cannot carry.
+    fn basis(&self, declared: &Declaration, branch: &[(String, String)]) -> Option<Basis> {
+        let (commit, _) = branch.iter().find(|(_, id)| id == self.tree)?;
+        Some(Basis {
+            commit: commit.clone(),
+            plan: declared.plan.clone(),
+            declaration: declared.digest.clone(),
+        })
+    }
+
+    /// An `approve` this profile gave an earlier commit of the branch that
+    /// still stands: the commit is in `pushed ^merge-base` (an ancestor of
+    /// the pushed commit, strictly after the current merge-base, so a
+    /// rebased branch or a merged plan's review never matches), and the
+    /// pass recorded the same plan and declaration digest. Returns the
+    /// content id the review read and the basis the carried pass keeps.
+    fn carried(
+        &self,
+        profile: &str,
+        declared: &Declaration,
+        branch: &[(String, String)],
+    ) -> Option<(String, Basis)> {
+        for (_, id) in branch {
+            if id == self.tree {
+                continue;
+            }
+            let Some(record) = profile_record(profile, self.name, id) else {
+                continue;
+            };
+            let field = |key: &str| record.get(key).and_then(serde_json::Value::as_str);
+            let (Some("approve"), Some(reviewed), Some(plan), Some(digest)) = (
+                field("verdict"),
+                field("commit"),
+                field("plan"),
+                field("declaration"),
+            ) else {
+                continue;
+            };
+            let Some((_, reviewed_id)) = branch.iter().find(|(commit, _)| commit == reviewed)
+            else {
+                continue;
+            };
+            if plan == declared.plan && digest == declared.digest {
+                return Some((
+                    reviewed_id.clone(),
+                    Basis {
+                        commit: reviewed.to_string(),
+                        plan: plan.to_string(),
+                        declaration: digest.to_string(),
+                    },
+                ));
+            }
+        }
+        None
+    }
+
+    fn standing<'r>(
+        &self,
+        profile: &str,
+        declared: &Declaration,
+        basis: Option<&Basis>,
+        branch: &[(String, String)],
+        reviews: &dyn Fn() -> &'r [ProfileReview],
+    ) -> Standing {
         let (name, tree) = (self.name, self.tree);
         if let Some(verdict) = remembered_profile(profile, name, tree) {
             if let Some(key) = self.key {
@@ -718,6 +841,9 @@ impl ProfileGate<'_> {
                 tree,
                 &verdict,
                 &format!("patch {}", short(&old_tree)),
+                // The review read `old_tree`, not this one: no commit here
+                // is what it read, so this pass cannot carry.
+                None,
             );
             return Standing::Passed;
         }
@@ -726,11 +852,37 @@ impl ProfileGate<'_> {
             .rev()
             .find(|r| r.repo == name && r.sha == tree && r.profile == profile)
         else {
+            if let Some((reviewed_id, kept)) = self.carried(profile, declared, branch) {
+                let stat = git::stdout_in(
+                    self.repo,
+                    &["diff", "--shortstat", &kept.commit, self.pushed],
+                )
+                .unwrap_or_default();
+                remember_profile(
+                    profile,
+                    name,
+                    tree,
+                    "approve",
+                    &format!("carried-from {}", &reviewed_id[..12]),
+                    Some(&kept),
+                );
+                note(
+                    "profile-carried",
+                    "-",
+                    name,
+                    &format!(
+                        "tree={} profile={profile} carried-from {} {stat}",
+                        short(tree),
+                        &reviewed_id[..12]
+                    ),
+                );
+                return Standing::Passed;
+            }
             return Standing::Missing;
         };
         match latest.verdict {
             Some(verdict @ (Verdict::Approve | Verdict::ApproveWithChanges)) => {
-                remember_profile(profile, name, tree, verdict.as_str(), "transcript");
+                remember_profile(profile, name, tree, verdict.as_str(), "transcript", basis);
                 if let Some(key) = self.key {
                     remember_profile_patch(
                         profile,
@@ -790,10 +942,12 @@ impl ProfileGate<'_> {
                     .unwrap_or_default()
             })
         };
+        let branch = self.branch();
+        let basis = self.basis(&declared, &branch);
         let mut missing: Vec<String> = Vec::new();
         let mut reworked: Vec<String> = Vec::new();
         for profile in &declared.profiles {
-            match self.standing(profile, &reviews) {
+            match self.standing(profile, &declared, basis.as_ref(), &branch, &reviews) {
                 Standing::Passed => {}
                 Standing::Missing => {
                     missing.push(match crate::code_review::agent_for(profile) {
@@ -948,6 +1102,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         key: key.as_ref(),
         plans: &plans,
         pushed,
+        merge_base: &merge_base,
         transcript: ctx.transcript,
         stance,
     };
@@ -1532,7 +1687,7 @@ pub fn on_post_ask(ask: &amont_agent_guard::payload::Ask) -> Option<String> {
                 );
             }
             Some(profile) => {
-                remember_profile(profile, &repo, &sha, "overruled", "person");
+                remember_profile(profile, &repo, &sha, "overruled", "person", None);
             }
         }
         note(

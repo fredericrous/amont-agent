@@ -4,6 +4,15 @@
 
 ### Added
 
+- A code-review profile that said `approve` keeps its pass on a later pushed
+  tree of the same branch when the hook can check it: the same landed plan
+  and `## Code review` declaration, the reviewed commit an ancestor of the
+  pushed one strictly after the merge-base, and the implementation review
+  passed the pushed tree. The hook journals `profile-carried` with
+  `carried-from <12 hex>` and the shortstat since the reviewed commit. A
+  pass written without the reviewed commit, plan and declaration digest, an
+  `approve-with-changes`, and a rebased branch carry nothing (ADR-0052,
+  `work.code-review-delta`).
 - The implementation-review push hook also requires, for each code-review
   profile the branch's plan declares for the repository (`## Code review`,
   read from the plan changed under `docs/plans/`, or from the canonical plan

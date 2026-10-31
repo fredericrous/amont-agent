@@ -3076,3 +3076,232 @@ fn the_person_may_overrule_a_profile_rework() {
     );
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
 }
+
+// ---------------------------------------------------------------- carried profile passes
+
+/// `feat/x` declares `backend`, and is pushed at commit A with the
+/// implementation review's `approve` and the backend profile's `profile_verdict`.
+/// Returns A's tree.
+fn pushed_at_a(w: &World, repo: &Path, profile_verdict: &str) -> String {
+    declare(w, repo, "- app: backend");
+    let tree = w.tree(repo);
+    let mut t = Transcript::default();
+    t.review(
+        w,
+        AGENT,
+        &w.block(repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        w,
+        "code-review-backend",
+        &profile_prompt(w, repo, "Profile: backend"),
+        profile_verdict,
+    );
+    let transcript = w.transcript("a", &t);
+    assert_eq!(w.push(repo, "s1", Some(&transcript)), Said::Silent);
+    tree
+}
+
+/// Whether the implementation review of B's tree is in the transcript.
+#[derive(Clone, Copy)]
+enum ImplementationReview {
+    Passed,
+    Absent,
+}
+
+/// A fix commit B on top, and a push of it judged on a transcript that holds
+/// the implementation review of B's tree when it is `Passed`.
+fn pushed_at_b(w: &World, repo: &Path, implementation_review: ImplementationReview) -> Said {
+    w.commit(repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 1; }\n")]);
+    let mut t = Transcript::default();
+    if matches!(implementation_review, ImplementationReview::Passed) {
+        t.review(
+            w,
+            AGENT,
+            &w.block(repo),
+            "Verdict: approve",
+            Done::Foreground,
+        );
+    }
+    let transcript = w.transcript("b", &t);
+    w.push(repo, "s2", Some(&transcript))
+}
+
+fn carried_lines(w: &World) -> Vec<String> {
+    w.journal()
+        .into_iter()
+        .filter(|l| l.contains("carried-from"))
+        .collect()
+}
+
+#[test]
+fn an_approved_profile_carries_to_a_fix_commit_the_implementation_review_passed() {
+    let w = World::new("carry-approve");
+    let repo = w.repo("app");
+    let tree_a = pushed_at_a(&w, &repo, "Verdict: approve");
+    let commit_a = git(&repo, &["rev-parse", "HEAD"]);
+    let record_a: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(profile_pass_file(&w, "backend", "app", &tree_a)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record_a["commit"], commit_a.as_str());
+    assert_eq!(record_a["plan"], PLAN_REL);
+    assert!(
+        record_a["declaration"]
+            .as_str()
+            .is_some_and(|d| d.len() == 64),
+        "{record_a}"
+    );
+    assert_eq!(
+        pushed_at_b(&w, &repo, ImplementationReview::Passed),
+        Said::Silent
+    );
+    let tree_b = w.tree(&repo);
+    let lines = carried_lines(&w);
+    assert_eq!(lines.len(), 1, "{:?}", w.journal());
+    assert!(
+        lines[0].contains(&format!("carried-from {}", &tree_a[..12])),
+        "{lines:?}"
+    );
+    assert!(lines[0].contains("1 file changed"), "{lines:?}");
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(profile_pass_file(&w, "backend", "app", &tree_b)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["verdict"], "approve");
+    assert_eq!(
+        record["how"],
+        format!("carried-from {}", &tree_a[..12]).as_str()
+    );
+}
+
+#[test]
+fn an_approve_with_changes_profile_does_not_carry() {
+    let w = World::new("carry-awc");
+    let repo = w.repo("app");
+    pushed_at_a(&w, &repo, "Verdict: approve-with-changes");
+    let said = pushed_at_b(&w, &repo, ImplementationReview::Passed);
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn a_carry_needs_the_implementation_review_to_pass_the_new_tree() {
+    let w = World::new("carry-no-impl");
+    let repo = w.repo("app");
+    pushed_at_a(&w, &repo, "Verdict: approve");
+    let said = pushed_at_b(&w, &repo, ImplementationReview::Absent);
+    assert!(
+        advised(&said).contains("no implementation review of app tree"),
+        "{said:?}"
+    );
+    assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn a_changed_declaration_does_not_carry() {
+    let w = World::new("carry-declaration");
+    let repo = w.repo("app");
+    pushed_at_a(&w, &repo, "Verdict: approve");
+    declare(&w, &repo, "- app: backend, unix");
+    let said = pushed_at_b(&w, &repo, ImplementationReview::Passed);
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn a_rebased_branch_does_not_carry_by_ancestry() {
+    let w = World::new("carry-rebase");
+    let repo = w.repo("app");
+    pushed_at_a(&w, &repo, "Verdict: approve");
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 1; }\n")]);
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("b", &t);
+    let said = w.push(&repo, "s2", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn an_approval_from_a_plan_already_merged_does_not_carry() {
+    let w = World::new("carry-merged");
+    let repo = w.repo("app");
+    pushed_at_a(&w, &repo, "Verdict: approve");
+    git(&repo, &["push", "-q", "origin", "feat/x:main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    let plan = "---\nstatus: active\n---\n# Y\n\n## Code review\n\n- app: backend\n";
+    w.commit(
+        &repo,
+        &[
+            ("docs/plans/2026-09-30-y.md", plan),
+            ("src/lib.rs", "fn a() { b() }\nfn b() { 1; }\n"),
+        ],
+    );
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("b", &t);
+    let said = w.push(&repo, "s2", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn a_chained_carry_names_the_commit_the_shortstat_is_taken_from() {
+    let w = World::new("carry-chain");
+    let repo = w.repo("app");
+    let tree_a = pushed_at_a(&w, &repo, "Verdict: approve");
+    assert_eq!(
+        pushed_at_b(&w, &repo, ImplementationReview::Passed),
+        Said::Silent
+    );
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 2; }\n")]);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("c", &t);
+    assert_eq!(w.push(&repo, "s3", Some(&transcript)), Said::Silent);
+    let lines = carried_lines(&w);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    // C carries from A's review, the one B's carried pass kept, and the
+    // shortstat is taken from that same commit.
+    assert!(
+        lines[1].contains(&format!("carried-from {}", &tree_a[..12])),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_pass_replayed_by_patch_after_a_rebase_records_no_commit() {
+    let w = World::new("carry-patch-basis");
+    let repo = w.repo("app");
+    pushed_at_a(&w, &repo, "Verdict: approve");
+    advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
+    let tree = w.tree(&repo);
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(profile_pass_file(&w, "backend", "app", &tree)).unwrap(),
+    )
+    .unwrap();
+    assert!(record.get("commit").is_none(), "{record}");
+}
