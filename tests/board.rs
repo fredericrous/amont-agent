@@ -1,5 +1,9 @@
 //! `amont-agent board` through the real binary, on scratch repositories and a
 //! scratch CLAUDE_CONFIG_DIR (never the real ~/.claude).
+//!
+//! Unix only: the fixtures count git calls through a `#!/bin/sh` shim and
+//! compare unix paths word for word.
+#![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
