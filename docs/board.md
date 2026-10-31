@@ -54,6 +54,12 @@ repository A and then moved to B is not in A any more, whatever its earlier
 lines say. A session is live in that place while its file's modification time
 is less than the window old.
 
+`work-overlap` looks for peers in two passes, so a write that meets nobody
+spawns nothing. The first pass reads only files modified within the last week
+(the sweep's horizon; older files are skipped from their metadata), and only
+their last line. Only when one of them is in the same repository is the
+window read from git config, and the second pass keeps the live ones.
+
 A changed-place append to a file longer than 256 KiB first trims it to the
 newest complete lines that fit in 128 KiB, the new line included (a new line
 that alone exceeds 128 KiB is kept alone); a call that finds the same place

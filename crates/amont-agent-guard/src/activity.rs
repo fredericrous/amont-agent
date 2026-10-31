@@ -564,6 +564,11 @@ pub fn bash_targets(command: &str, cwd: &Path) -> Vec<PathBuf> {
 /// The default window a peer counts as live for.
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(2 * 3600);
 
+/// No activity file is older than this: the session sweep deletes it after a
+/// week. A peer lookup can use it as its cutoff before the configured window
+/// is known, which needs a `git config` read.
+pub const HORIZON: Duration = Duration::from_secs(7 * 24 * 3600);
+
 #[cfg(test)]
 mod tests {
     use super::*;

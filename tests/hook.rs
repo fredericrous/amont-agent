@@ -3301,9 +3301,12 @@ fn a_told_session_never_opens_a_peers_recent_fifo() {
     assert!(!again.reason().contains("work-overlap"), "{}", again.stdout);
 }
 
+/// The first pass is bounded by the sweep horizon (a week), so a peer file
+/// older than that is never opened; one between the window and the horizon is
+/// read only for its last line.
 #[cfg(unix)]
 #[test]
-fn a_peer_fifo_older_than_the_window_is_never_opened() {
+fn a_peer_fifo_older_than_the_horizon_is_never_opened() {
     let scene = Overlap::new("act-fifo-old");
     scene.call("Edit", "fto-old1", &scene.first_repo, 0);
     scene.replace_with_fifo("fto-old1");

@@ -232,15 +232,19 @@ fn work_overlap(
     if crate::lsp::was_told(&op.session, &key) {
         return Decision::Silent;
     }
+    // The horizon, not the configured window, bounds this first pass: the
+    // window is a `git config` read, paid only once a peer is in the repository.
+    let horizon = now
+        .checked_sub(crate::activity::HORIZON)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let candidates = crate::activity::peers_in(&op.session, &place.repo_identity, horizon);
+    if candidates.is_empty() {
+        return Decision::Silent;
+    }
     let window = amont_agent_guard::gitconfig::duration_or(
         "amont.agent.work-overlap.window",
         crate::activity::DEFAULT_WINDOW,
     );
-    let cutoff = now.checked_sub(window).unwrap_or(std::time::UNIX_EPOCH);
-    let candidates = crate::activity::peers_in(&op.session, &place.repo_identity, cutoff);
-    if candidates.is_empty() {
-        return Decision::Silent;
-    }
     let live: Vec<crate::activity::Peer> = candidates
         .into_iter()
         .filter(|peer| peer.is_live(now, window))
