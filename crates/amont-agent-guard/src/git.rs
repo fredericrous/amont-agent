@@ -307,16 +307,14 @@ pub fn bytes_bounded(
     if let (Some(bytes), Some(mut stdin)) = (input, stdin) {
         let bytes = bytes.to_vec();
         std::thread::spawn(move || {
-            // A broken pipe means git stopped reading; its exit status is the answer.
-            let _ = stdin.write_all(&bytes);
+            let _ = stdin.write_all(&bytes); // a broken pipe means git stopped reading; its exit status is the answer
         });
     }
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = Vec::new();
         let read = stdout.read_to_end(&mut buffer).map(|_| buffer);
-        // The receiver is gone once the deadline passed; nobody wants the bytes.
-        let _ = sender.send(read);
+        let _ = sender.send(read); // the receiver is gone once the deadline passed; nobody wants the bytes
     });
     let bytes = match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(Ok(bytes)) => bytes,

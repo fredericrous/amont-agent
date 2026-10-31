@@ -418,11 +418,16 @@ pub fn latest_all() -> Vec<Seen> {
 /// `.activity`, it is a regular file and its modification time, read without
 /// opening it, is after `cutoff`.
 pub fn peers_in(session: &str, repo_identity: &Path, cutoff: SystemTime) -> Vec<Peer> {
+    match sessions_dir() {
+        Some(dir) => peers_in_dir(&dir, session, repo_identity, cutoff),
+        None => Vec::new(),
+    }
+}
+
+/// [`peers_in`] over the sessions directory `dir`.
+fn peers_in_dir(dir: &Path, session: &str, repo_identity: &Path, cutoff: SystemTime) -> Vec<Peer> {
     let want = path_field(repo_identity);
-    let Some(dir) = sessions_dir() else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let own = format!("{session}.activity");
@@ -572,6 +577,28 @@ pub const HORIZON: Duration = Duration::from_secs(7 * 24 * 3600);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_peer_file_last_written_before_the_cutoff_is_not_a_peer() {
+        let dir = std::env::temp_dir().join(format!("amont-peers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // a missing directory is the normal first run
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let repo = Path::new("/r/a/.git");
+        let line = "1 /r/a/.git /r/a main\n";
+        for (name, seconds) in [("old", 1_000), ("new", 9_000)] {
+            let file = dir.join(format!("{name}.activity"));
+            std::fs::write(&file, line).expect("write");
+            let handle = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .expect("open");
+            handle.set_modified(at(seconds)).expect("mtime");
+        }
+        let peers = peers_in_dir(&dir, "me", repo, at(5_000));
+        let names: Vec<&str> = peers.iter().map(|peer| peer.session.as_str()).collect();
+        assert_eq!(names, ["new"]);
+        let _ = std::fs::remove_dir_all(&dir); // cleanup only; a leftover temp dir is harmless
+    }
 
     #[test]
     fn an_unterminated_tail_is_not_a_line() {

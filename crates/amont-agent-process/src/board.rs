@@ -310,8 +310,7 @@ fn fetch_all(dirs: &[PathBuf]) {
                 let fetched =
                     git::bytes_bounded(dir, &["fetch", "--prune", "origin", "-q"], None, deadline)
                         .is_some();
-                // Each index is claimed by exactly one worker.
-                let _ = outcomes[index].set(fetched);
+                let _ = outcomes[index].set(fetched); // each index is claimed by exactly one worker, so it is never set twice
             });
         }
     });
