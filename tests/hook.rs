@@ -3063,6 +3063,9 @@ fn a_target_outside_any_repository_records_nothing() {
     assert!(scene.lines("act-none-s1").is_empty());
 }
 
+// Unix only: a Windows path (`C:\\…`) inside a POSIX shell command is read
+// as backslash escapes, so the command names no directory.
+#[cfg(unix)]
 #[test]
 fn a_git_commit_in_a_subshell_records_the_repository_it_runs_in() {
     let scene = Overlap::new("act-bash");
