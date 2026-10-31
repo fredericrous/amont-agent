@@ -54,10 +54,15 @@ repository A and then moved to B is not in A any more, whatever its earlier
 lines say. A session is live in that place while its file's modification time
 is less than the window old.
 
-The file is cut back to its newest 2000 lines when it passes 4000, and the
-session sweep deletes it after a week. The record is written after the
-decision and never changes it; a failure to write is journalled once per
-session and then ignored.
+A changed-place append to a file longer than 256 KiB first trims it to the
+newest complete lines that fit in 128 KiB, the new line included (a new line
+that alone exceeds 128 KiB is kept alone); a call that finds the same place
+never trims. The trim writes `<file>.tmp.<pid>` (mode 0600) and renames it
+over the file, so a reader sees the old or the new file whole. A line another
+process appends during a trim may be lost. The session sweep deletes it after
+a week. The record is written after the decision and never changes it; a
+failure to write, and a trim that fails (the line is then appended to the
+untrimmed file), are each journalled once per session and then ignored.
 
 ## `work-overlap`
 

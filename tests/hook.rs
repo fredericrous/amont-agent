@@ -2868,9 +2868,15 @@ fn bug_nudge_is_silent_without_a_transcript_path() {
 
 /// As [`send`], with the hook's clock set to `now` (epoch seconds).
 fn send_clocked(payload: &str, now: u64) -> Reply {
+    send_clocked_in(&home(), payload, now)
+}
+
+/// As [`send_clocked`], with the scratch home given: `home()` is per thread,
+/// so a worker thread passes its test's home in.
+fn send_clocked_in(config_dir: &std::path::Path, payload: &str, now: u64) -> Reply {
     let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
         .arg("hook")
-        .env("CLAUDE_CONFIG_DIR", home())
+        .env("CLAUDE_CONFIG_DIR", config_dir)
         .env("AMONT_AGENT_TEST_NOW", now.to_string())
         .env("GIT_CONFIG_GLOBAL", home().join("no-global-gitconfig"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -3205,5 +3211,202 @@ fn work_overlap_window_is_read_from_git_config() {
         default_window.reason().contains("ovw-s1"),
         "{}",
         default_window.stdout
+    );
+}
+
+// Activity record cost: told check first, mtime-filtered peers, tail reads,
+// size-based trim.
+
+const SEED_LINE_BYTES: usize = 150;
+
+impl Overlap {
+    /// A line of exactly `SEED_LINE_BYTES` bytes naming a place of its own.
+    fn seed_line(number: usize) -> String {
+        let head = format!("{number} /seed/repo /seed/worktree ");
+        let pad = SEED_LINE_BYTES - head.len() - 1;
+        format!("{head}{}\n", "b".repeat(pad))
+    }
+
+    fn seed(&self, session: &str, bytes: usize) -> usize {
+        let count = bytes / SEED_LINE_BYTES + 1;
+        let text: String = (0..count).map(|n| Self::seed_line(100_000 + n)).collect();
+        std::fs::create_dir_all(self.activity_file(session).parent().expect("dir")).expect("dir");
+        std::fs::write(self.activity_file(session), text).expect("seed");
+        count
+    }
+
+    fn size(&self, session: &str) -> u64 {
+        std::fs::metadata(self.activity_file(session))
+            .expect("an activity file")
+            .len()
+    }
+
+    fn edit_payload(&self, session: &str, repo: &std::path::Path) -> String {
+        let file = serde_json::Value::String(repo.join("f.txt").display().to_string());
+        let cwd = serde_json::Value::String(repo.display().to_string());
+        format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default",
+                 "tool_input":{{"file_path":{file},"old_string":"a","new_string":"b"}}}}"#
+        )
+    }
+
+    /// The edit, run on a thread: a hook that blocks on a FIFO fails the test
+    /// instead of hanging it.
+    fn edit_within_timeout(&self, session: &str, repo: &std::path::Path, later: u64) -> Reply {
+        let payload = self.edit_payload(session, repo);
+        let now = self.start + later;
+        let config_dir = home();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(send_clocked_in(&config_dir, &payload, now)); // the receiver is gone after a timeout
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the hook returned: it must not open the peer's FIFO")
+    }
+
+    #[cfg(unix)]
+    fn replace_with_fifo(&self, session: &str) {
+        let path = self.activity_file(session);
+        std::fs::remove_file(&path).expect("remove the activity file");
+        let made = Command::new("mkfifo").arg(&path).status().expect("mkfifo");
+        assert!(made.success());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_told_session_never_opens_a_peers_recent_fifo() {
+    let scene = Overlap::new("act-fifo-told");
+    scene.call("Edit", "fto-s1", &scene.first_repo, 0);
+    let told = scene.call("Edit", "fto-s2", &scene.first_repo, 10);
+    assert!(told.reason().contains("work-overlap"), "{}", told.stdout);
+    scene.replace_with_fifo("fto-s1");
+    let again = scene.edit_within_timeout("fto-s2", &scene.first_repo, 20);
+    assert!(!again.reason().contains("work-overlap"), "{}", again.stdout);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_peer_fifo_older_than_the_window_is_never_opened() {
+    let scene = Overlap::new("act-fifo-old");
+    scene.call("Edit", "fto-old1", &scene.first_repo, 0);
+    scene.replace_with_fifo("fto-old1");
+    let touched = Command::new("touch")
+        .args(["-t", "200001010000"])
+        .arg(scene.activity_file("fto-old1"))
+        .status()
+        .expect("touch");
+    assert!(touched.success());
+    let quiet = scene.edit_within_timeout("fto-old2", &scene.first_repo, 10);
+    assert!(!quiet.reason().contains("work-overlap"), "{}", quiet.stdout);
+}
+
+#[test]
+fn record_reads_the_last_line_of_a_file_whose_head_is_not_utf8() {
+    let scene = Overlap::new("act-tail-utf8");
+    let place = format!(
+        "{} {} {} main\n",
+        scene.start,
+        scene.first_repo.join(".git").display(),
+        scene.first_repo.display()
+    );
+    let mut bytes = vec![0xFF_u8; 10];
+    bytes.push(b'\n');
+    while bytes.len() < 200 * 1024 {
+        bytes.extend_from_slice(Overlap::seed_line(7).as_bytes());
+    }
+    bytes.extend_from_slice(place.as_bytes());
+    std::fs::create_dir_all(scene.activity_file("tu8").parent().expect("dir")).expect("dir");
+    std::fs::write(scene.activity_file("tu8"), &bytes).expect("seed");
+    scene.call("Edit", "tu8", &scene.first_repo, 5);
+    assert_eq!(scene.size("tu8"), bytes.len() as u64, "nothing appended");
+}
+
+#[test]
+fn a_changed_place_append_trims_once_to_the_byte_target() {
+    let scene = Overlap::new("act-trim");
+    let count = scene.seed("trm", 300 * 1024);
+    scene.call("Edit", "trm", &scene.first_repo, 5);
+    assert!(scene.size("trm") <= 128 * 1024, "{}", scene.size("trm"));
+    let lines = scene.lines("trm");
+    let last = lines.last().expect("a last line");
+    assert!(
+        last.contains(&scene.first_repo.display().to_string()),
+        "{last}"
+    );
+    assert_eq!(
+        lines[lines.len() - 2],
+        Overlap::seed_line(100_000 + count - 1).trim_end(),
+        "the newest seed line is kept"
+    );
+    let first_kept = lines[0].clone();
+    for step in 0..100 {
+        let repo = if step % 2 == 0 {
+            &scene.second_repo
+        } else {
+            &scene.first_repo
+        };
+        scene.call("Edit", "trm", repo, 10 + step);
+    }
+    let after = scene.lines("trm");
+    assert_eq!(after.len(), lines.len() + 100);
+    assert_eq!(after[0], first_kept, "no further trim");
+}
+
+#[test]
+fn a_new_line_over_the_target_is_kept_alone_and_an_unchanged_call_does_not_trim() {
+    let scene = Overlap::new("act-trim-big");
+    let head = scene.second_repo.join(".git").join("HEAD");
+    std::fs::write(
+        &head,
+        format!("ref: refs/heads/{}\n", "z".repeat(300 * 1024)),
+    )
+    .expect("HEAD");
+    scene.seed("trb", 300 * 1024);
+    scene.call("Edit", "trb", &scene.second_repo, 5);
+    assert_eq!(scene.lines("trb").len(), 1);
+    let size = scene.size("trb");
+    assert!(size > 256 * 1024);
+    scene.call("Edit", "trb", &scene.second_repo, 10);
+    assert_eq!(scene.lines("trb").len(), 1);
+    assert_eq!(scene.size("trb"), size);
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_records_during_a_trim_leave_only_whole_lines() {
+    let scene = Overlap::new("act-trim-race");
+    scene.seed("trr", 300 * 1024);
+    let payloads: Vec<String> = [&scene.first_repo, &scene.second_repo]
+        .iter()
+        .cycle()
+        .take(8)
+        .map(|repo| scene.edit_payload("trr", repo))
+        .collect();
+    let now = scene.start + 5;
+    let config_dir = home();
+    let workers: Vec<_> = payloads
+        .into_iter()
+        .map(|payload| {
+            let config_dir = config_dir.clone();
+            std::thread::spawn(move || send_clocked_in(&config_dir, &payload, now))
+        })
+        .collect();
+    for worker in workers {
+        worker.join().expect("the hook ran");
+    }
+    let lines = scene.lines("trr");
+    for line in &lines {
+        assert_eq!(line.split_whitespace().count(), 4, "{line}");
+    }
+    let last = lines.last().expect("a last line");
+    let places = [&scene.first_repo, &scene.second_repo];
+    assert!(
+        places
+            .iter()
+            .any(|repo| last.contains(&repo.display().to_string())),
+        "{last}"
     );
 }

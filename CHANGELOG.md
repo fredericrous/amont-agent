@@ -60,6 +60,16 @@
 - `amont-agent --bogus --help` prints the help and exits 0: help wins over a
   word it does not know (cli.help.help-and-version). An unknown flag alone
   still exits 2.
+### Changed
+
+- The session activity record and `work-overlap` cost less per write:
+  `work-overlap` checks its read-only told record before looking for peers,
+  peers are chosen by file modification time without opening stale files, the
+  last line is read from the final 4 KiB, and a file over 256 KiB is trimmed
+  atomically (temp file and rename) to the newest lines within 128 KiB instead
+  of by line count. A line another process appends during a trim may be lost.
+  Percent-decoding of activity fields is one pass with the same result. A
+  failed trim is journalled once per session.
 
 ## v3.10.0
 
