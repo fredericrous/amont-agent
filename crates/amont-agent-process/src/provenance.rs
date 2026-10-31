@@ -33,6 +33,36 @@ impl Review {
     }
 }
 
+/// How one code-review profile's verdict bound to the pushed tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileHow {
+    Reviewed,
+    ByPatch,
+    Carried,
+    Overruled,
+}
+
+impl ProfileHow {
+    fn word(self) -> &'static str {
+        match self {
+            ProfileHow::Reviewed => "reviewed",
+            ProfileHow::ByPatch => "by-patch",
+            ProfileHow::Carried => "carried",
+            ProfileHow::Overruled => "overruled",
+        }
+    }
+}
+
+/// One declared code-review profile's verdict the push was judged with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileVerdict {
+    /// The profile as the plan declares it (`backend`, `lang:rust`).
+    pub role: String,
+    pub how: ProfileHow,
+    /// The content id that profile's review read.
+    pub content: String,
+}
+
 /// Everything a record states.
 pub struct Record<'a> {
     pub commit: &'a str,
@@ -43,6 +73,9 @@ pub struct Record<'a> {
     pub review: Review,
     /// The content id the review read (attest SPEC, "Content id").
     pub review_content: &'a str,
+    /// The declared profiles' verdicts, in profile order; empty when the plan
+    /// declares none.
+    pub profiles: &'a [ProfileVerdict],
     pub preview: crate::preview::Outcome,
     pub version: &'a str,
 }
@@ -54,11 +87,22 @@ pub fn payload(r: &Record) -> String {
         out.push_str(&format!("patch {p}\n"));
     }
     out.push_str(&format!(
-        "plan {} {}\nreview {} {}\npreview {}\nproducer amont-agent {}\n",
+        "plan {} {}\nreview {} {}\n",
         r.plan_path,
         r.plan_sha,
         r.review.word(),
         r.review_content,
+    ));
+    for profile in r.profiles {
+        out.push_str(&format!(
+            "code-review {} {} {}\n",
+            profile.role,
+            profile.how.word(),
+            profile.content
+        ));
+    }
+    out.push_str(&format!(
+        "preview {}\nproducer amont-agent {}\n",
         r.preview.word(),
         r.version
     ));
@@ -145,6 +189,7 @@ pub fn write(
     p: &Push,
     review: Review,
     review_content: &str,
+    profiles: &[ProfileVerdict],
     preview: crate::preview::Outcome,
 ) -> Result<Filed, String> {
     let commit = git::stdout_in(
@@ -182,6 +227,7 @@ pub fn write(
         plan_sha: &plan_sha,
         review,
         review_content,
+        profiles,
         preview,
         version: env!("CARGO_PKG_VERSION"),
     });
@@ -206,11 +252,16 @@ pub enum Filing {
 /// Files the provenance record of a pass, asking the preview rule what it
 /// knew about the push. The caller journals the result; a failure never
 /// changes its judgment.
-pub fn file(push: &Push, review: Review, review_content: &str) -> Filing {
+pub fn file(
+    push: &Push,
+    review: Review,
+    review_content: &str,
+    profiles: &[ProfileVerdict],
+) -> Filing {
     let Some(preview) = crate::preview::outcome(push.repo, push.target) else {
         return Filing::Deferred;
     };
-    match write(push, review, review_content, preview) {
+    match write(push, review, review_content, profiles, preview) {
         Ok(Filed::Written(f)) => Filing::Written(f),
         Ok(Filed::Kept(f)) => Filing::Kept(f),
         Err(why) => Filing::Failed(why),
@@ -230,6 +281,7 @@ mod tests {
             plan_sha: "s0",
             review: Review::ByPatch,
             review_content: "k1",
+            profiles: &[],
             preview: crate::preview::Outcome::NotRequired,
             version: "1.2.3",
         }
@@ -246,6 +298,35 @@ mod tests {
     #[test]
     fn payload_omits_patch_without_one() {
         assert!(!payload(&rec(None)).lines().any(|l| l.starts_with("patch ")));
+    }
+
+    #[test]
+    fn payload_lists_each_profile_after_review_in_order() {
+        let profiles = [
+            ProfileVerdict {
+                role: "backend".into(),
+                how: ProfileHow::Reviewed,
+                content: "t0".into(),
+            },
+            ProfileVerdict {
+                role: "lang:rust".into(),
+                how: ProfileHow::Carried,
+                content: "t9".into(),
+            },
+        ];
+        let record = Record {
+            profiles: &profiles,
+            ..rec(Some("p0"))
+        };
+        assert_eq!(
+            payload(&record),
+            "amont-provenance-v1\ncommit c0\ntree t0\npatch p0\nplan docs/plans/p.md s0\nreview by-patch k1\ncode-review backend reviewed t0\ncode-review lang:rust carried t9\npreview not-required\nproducer amont-agent 1.2.3\n"
+        );
+    }
+
+    #[test]
+    fn payload_without_profiles_has_no_code_review_line() {
+        assert!(!payload(&rec(None)).contains("code-review"));
     }
 
     #[test]

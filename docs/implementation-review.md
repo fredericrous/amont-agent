@@ -178,6 +178,15 @@ under `docs/plans/` changed on the branch, read from the pushed tree),
 amont-agent does not own, and the signer, amont, computes it and inserts it
 before signing. A payload that carries one is refused by the signer.
 
+After the `review` line, one `code-review <role> <how> <content id>` line
+records each code-review profile the plan declares for the repository, in
+declaration order: `how` is `reviewed`, `by-patch`, `carried` or `overruled`,
+and the content id is the tree that profile's review read. A push with no
+declared profile writes no such line. `amont-agent doctor` (and `doctor
+--json`) reports one gap for each code-review agent file
+(`code-review-<role>.md`, `code-review-language.md`, `interface-review.md`)
+that no agents directory carries, and says nothing when all eight are there.
+
 It is written on `reviewed`, `reviewed-by-patch`, `overruled`,
 `overruled-by-patch` and on a transcript pass; never for a held push or a push
 declined as no-plan, no-branch, dry-run or nothing-new. A write that fails is

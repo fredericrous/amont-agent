@@ -392,6 +392,9 @@ fn main() -> ExitCode {
                 let mut findings =
                     doctor::run(rule_table::RULES, attestations::doctor_finding(), &scanned);
                 findings.push(plan_root_finding());
+                if let Ok(project) = std::env::current_dir() {
+                    findings.extend(amont_agent_process::agents::review_gaps(&project));
+                }
                 let healthy = if args.iter().any(|a| a == "--json") {
                     println!(
                         "{}",

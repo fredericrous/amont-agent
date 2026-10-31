@@ -20,7 +20,23 @@ pub enum Need {
     PlanPanel,
     /// The `implementation-review` agent.
     ImplementationReview,
+    /// One code-review profile's agent, by file stem (see [`CODE_REVIEW_AGENTS`]).
+    CodeReview(&'static str),
 }
+
+/// The agent file stem of each code-review profile a plan may declare
+/// (`lang:<x>` all map to `code-review-language`, `ui-design` to
+/// `interface-review`); `code_review::agent_for` is the mapping this lists.
+const CODE_REVIEW_AGENTS: [&str; 8] = [
+    "code-review-backend",
+    "code-review-language",
+    "code-review-platform",
+    "code-review-unix",
+    "code-review-tui",
+    "code-review-react",
+    "code-review-architect",
+    "interface-review",
+];
 
 impl Need {
     fn matches(self, file_name: &str) -> bool {
@@ -30,6 +46,7 @@ impl Need {
         match self {
             Need::PlanPanel => stem.starts_with("plan-review-"),
             Need::ImplementationReview => stem == "implementation-review",
+            Need::CodeReview(agent) => stem == agent,
         }
     }
 }
@@ -37,13 +54,38 @@ impl Need {
 /// The one line a guard says when the agents are not installed.
 pub fn gap_line(need: Need) -> String {
     let what = match need {
-        Need::PlanPanel => "no `plan-review-*` agent",
-        Need::ImplementationReview => "no `implementation-review` agent",
+        Need::PlanPanel => "no `plan-review-*` agent".to_string(),
+        Need::ImplementationReview => "no `implementation-review` agent".to_string(),
+        Need::CodeReview(agent) => format!("no `{agent}` agent"),
     };
     format!(
         "{what} is installed (looked in the Claude config agents/, .claude/agents/ and installed \
          plugins), so this check cannot be satisfied here: run `grh install workflow`."
     )
+}
+
+/// One doctor gap per review agent no source carries (the implementation
+/// review, then each code-review profile's), for the repository holding
+/// `project`; none when all are installed.
+pub fn review_gaps(project: &Path) -> Vec<amont_agent_guard::doctor::Finding> {
+    let needs = std::iter::once(Need::ImplementationReview).chain(
+        CODE_REVIEW_AGENTS
+            .iter()
+            .map(|agent| Need::CodeReview(agent)),
+    );
+    needs
+        .filter(|need| !carried(*need, project))
+        .map(|need| {
+            let line = gap_line(need);
+            amont_agent_guard::doctor::Finding::warn(
+                line.split(" is installed")
+                    .next()
+                    .unwrap_or(&line)
+                    .to_string(),
+                line,
+            )
+        })
+        .collect()
 }
 
 /// Whether any source carries an agent `need` names. Evidence that cannot be
@@ -248,6 +290,40 @@ mod tests {
         let held = carried_in(Need::PlanPanel, Some(&dir), &dir);
         std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(readable || held);
+    }
+
+    #[test]
+    fn every_profile_agent_is_listed() {
+        for profile in [
+            "backend",
+            "platform",
+            "unix",
+            "tui",
+            "react",
+            "architect",
+            "ui-design",
+            "lang:rust",
+        ] {
+            let (agent, _) = crate::code_review::agent_for(profile).unwrap();
+            assert!(CODE_REVIEW_AGENTS.contains(&agent.as_str()), "{agent}");
+        }
+    }
+
+    #[test]
+    fn a_code_review_agent_is_found_by_its_file() {
+        let dir = scratch("code-review");
+        let config = dir.join("config");
+        let project = dir.join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let backend = Need::CodeReview("code-review-backend");
+        assert!(!carried_in(backend, Some(&config), &project));
+        touch(&config.join("agents/code-review-backend.md"));
+        assert!(carried_in(backend, Some(&config), &project));
+        assert!(!carried_in(
+            Need::CodeReview("code-review-unix"),
+            Some(&config),
+            &project
+        ));
     }
 
     #[test]

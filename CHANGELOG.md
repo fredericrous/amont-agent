@@ -4,6 +4,13 @@
 
 ### Added
 
+- The provenance payload records one line per declared code-review profile,
+  after the `review` line and in declaration order:
+  `code-review <role> <reviewed|by-patch|carried|overruled> <content id>`.
+  A push with no declared profile writes none, so its payload is unchanged.
+  `amont-agent doctor` reports a gap for each code-review agent file
+  (`code-review-<role>`, `code-review-language`, `interface-review`) that is
+  not installed (ADR-0052).
 - A code-review profile that said `approve` keeps its pass on a later pushed
   tree of the same branch when the hook can check it: the same landed plan
   and `## Code review` declaration, the reviewed commit an ancestor of the

@@ -2778,6 +2778,41 @@ fn a_declared_profile_needs_its_own_review_and_the_two_never_stand_for_each_othe
 }
 
 #[test]
+fn a_push_gated_by_a_declared_profile_records_its_verdict_in_the_provenance() {
+    let w = World::new("profile-provenance");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let tree = w.tree(&repo);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &profile_prompt(&w, &repo, "Profile: backend"),
+        "Verdict: approve",
+    );
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let lines = lines_of(&w.provenance_dir().join("app").join(&head));
+    let review = lines
+        .iter()
+        .position(|l| l.starts_with("review "))
+        .expect("a review line");
+    assert_eq!(
+        lines[review + 1],
+        format!("code-review backend reviewed {tree}")
+    );
+    assert_eq!(lines[review + 2], "preview not-required");
+}
+
+#[test]
 fn a_profile_pass_is_remembered_but_does_not_make_an_unreviewed_tree_reviewed() {
     let w = World::new("profile-alone");
     let repo = w.repo("app");

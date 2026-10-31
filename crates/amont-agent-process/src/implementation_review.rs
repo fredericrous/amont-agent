@@ -51,6 +51,7 @@ use crate::candidates_block::Reviewed;
 use crate::content_id::content_id;
 use crate::plan_review::{completed_agents_resumable, Completed};
 use crate::provenance::Review as Bound;
+use crate::provenance::{ProfileHow, ProfileVerdict};
 use amont_agent_guard::git;
 use amont_agent_guard::journal;
 use amont_agent_guard::rules::{Confirmed, Context, Stance};
@@ -586,6 +587,37 @@ fn remembered_profile(profile: &str, repo: &str, sha: &str) -> Option<String> {
     )
 }
 
+/// How a remembered profile pass bound, from what it recorded.
+fn remembered_how(profile: &str, repo: &str, sha: &str) -> ProfileHow {
+    let record = profile_record(profile, repo, sha);
+    let field = |key: &str| {
+        record
+            .as_ref()
+            .and_then(|r| r.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let how = field("how");
+    if field("verdict") == "overruled" {
+        ProfileHow::Overruled
+    } else if how.starts_with("carried-from") {
+        ProfileHow::Carried
+    } else if how.starts_with("patch") {
+        ProfileHow::ByPatch
+    } else {
+        ProfileHow::Reviewed
+    }
+}
+
+/// The content id a remembered profile pass read: what it recorded, else the
+/// tree (a pass from before `read` was stored).
+fn remembered_read(profile: &str, repo: &str, sha: &str) -> String {
+    profile_record(profile, repo, sha)
+        .and_then(|r| r.get("read")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| sha.to_string())
+}
+
 /// What a profile pass recorded about the review beyond its tree, so that a
 /// later push can check whether it carries (ADR-0052): the commit the review
 /// read, the plan that declared the profile and a digest of the repository's
@@ -602,6 +634,7 @@ fn remember_profile(
     sha: &str,
     verdict: &str,
     how: &str,
+    read: &str,
     basis: Option<&Basis>,
 ) -> Option<()> {
     let mut body = serde_json::json!({
@@ -611,6 +644,7 @@ fn remember_profile(
         "verdict": verdict,
         "agent": crate::code_review::agent_for(profile)?.0,
         "how": how,
+        "read": read,
     });
     if let Some(basis) = basis {
         body["commit"] = basis.commit.clone().into();
@@ -658,7 +692,8 @@ fn remember_profile_patch(
 
 /// Where a declared profile stands on the pushed tree.
 enum Standing {
-    Passed,
+    /// How the pass bound, and the content id its review read.
+    Passed(ProfileHow, String),
     /// The latest review of the tree said this (`rework`, or nothing the
     /// contract reads).
     Reworked(String, String),
@@ -829,7 +864,10 @@ impl ProfileGate<'_> {
                     remember_profile_patch(profile, name, key, tree, &verdict, "tree");
                 }
             }
-            return Standing::Passed;
+            return Standing::Passed(
+                remembered_how(profile, name, tree),
+                remembered_read(profile, name, tree),
+            );
         }
         if let Some((verdict, old_tree)) = self
             .key
@@ -843,9 +881,15 @@ impl ProfileGate<'_> {
                 &format!("patch {}", short(&old_tree)),
                 // The review read `old_tree`, not this one: no commit here
                 // is what it read, so this pass cannot carry.
+                &old_tree,
                 None,
             );
-            return Standing::Passed;
+            let how = if verdict == "overruled" {
+                ProfileHow::Overruled
+            } else {
+                ProfileHow::ByPatch
+            };
+            return Standing::Passed(how, old_tree);
         }
         let Some(latest) = reviews()
             .iter()
@@ -864,6 +908,7 @@ impl ProfileGate<'_> {
                     tree,
                     "approve",
                     &format!("carried-from {}", &reviewed_id[..12]),
+                    &reviewed_id,
                     Some(&kept),
                 );
                 note(
@@ -876,13 +921,21 @@ impl ProfileGate<'_> {
                         &reviewed_id[..12]
                     ),
                 );
-                return Standing::Passed;
+                return Standing::Passed(ProfileHow::Carried, reviewed_id);
             }
             return Standing::Missing;
         };
         match latest.verdict {
             Some(verdict @ (Verdict::Approve | Verdict::ApproveWithChanges)) => {
-                remember_profile(profile, name, tree, verdict.as_str(), "transcript", basis);
+                remember_profile(
+                    profile,
+                    name,
+                    tree,
+                    verdict.as_str(),
+                    "transcript",
+                    tree,
+                    basis,
+                );
                 if let Some(key) = self.key {
                     remember_profile_patch(
                         profile,
@@ -893,7 +946,7 @@ impl ProfileGate<'_> {
                         "transcript",
                     );
                 }
-                Standing::Passed
+                Standing::Passed(ProfileHow::Reviewed, tree.to_string())
             }
             other => Standing::Reworked(
                 latest.agent.clone(),
@@ -905,13 +958,14 @@ impl ProfileGate<'_> {
         }
     }
 
-    /// What holds the push, when the implementation review has passed:
-    /// `None` when every declared profile has a pass (or none is declared).
-    fn hold(&self) -> Option<Judged> {
+    /// What holds the push, when the implementation review has passed: the
+    /// verdict of every declared profile, in declaration order, when each has
+    /// a pass (empty when none is declared).
+    fn hold(&self) -> Result<Vec<ProfileVerdict>, Judged> {
         let declared = match self.declaration() {
             Ok(declared) => declared,
             Err(why) if self.stance == Stance::Deny => {
-                return Some(unknown(Some(self.tree), &why));
+                return Err(unknown(Some(self.tree), &why));
             }
             Err(why) => {
                 note(
@@ -920,7 +974,7 @@ impl ProfileGate<'_> {
                     self.name,
                     &format!("tree={} {why}", short(self.tree)),
                 );
-                return None;
+                return Ok(Vec::new());
             }
         };
         if declared.profiles.is_empty() {
@@ -932,7 +986,7 @@ impl ProfileGate<'_> {
                     &format!("tree={}", short(self.tree)),
                 );
             }
-            return None;
+            return Ok(Vec::new());
         }
         let loaded: std::cell::OnceCell<Vec<ProfileReview>> = std::cell::OnceCell::new();
         let reviews = || -> &[ProfileReview] {
@@ -946,9 +1000,14 @@ impl ProfileGate<'_> {
         let basis = self.basis(&declared, &branch);
         let mut missing: Vec<String> = Vec::new();
         let mut reworked: Vec<String> = Vec::new();
+        let mut passed: Vec<ProfileVerdict> = Vec::new();
         for profile in &declared.profiles {
             match self.standing(profile, &declared, basis.as_ref(), &branch, &reviews) {
-                Standing::Passed => {}
+                Standing::Passed(how, content) => passed.push(ProfileVerdict {
+                    role: profile.clone(),
+                    how,
+                    content,
+                }),
                 Standing::Missing => {
                     missing.push(match crate::code_review::agent_for(profile) {
                         Some((agent, Some(language))) => format!("{agent} --lang {language}"),
@@ -964,7 +1023,7 @@ impl ProfileGate<'_> {
             }
         }
         if missing.is_empty() && reworked.is_empty() {
-            return None;
+            return Ok(passed);
         }
         let mut reason = reworked.join(" ");
         if !missing.is_empty() {
@@ -979,7 +1038,7 @@ impl ProfileGate<'_> {
                 declared.plan
             ));
         }
-        Some(Judged::Profiles {
+        Err(Judged::Profiles {
             reason,
             excerpt: format!(
                 "tree={} review={} verdict=-",
@@ -1125,9 +1184,10 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                 );
             }
         }
-        if let Some(held) = gate.hold() {
-            return held;
-        }
+        let profiles = match gate.hold() {
+            Ok(profiles) => profiles,
+            Err(held) => return held,
+        };
         let overruled = verdict == "overruled";
         provenance(
             &push,
@@ -1137,6 +1197,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                 Bound::Reviewed
             },
             &tree,
+            &profiles,
         );
         if !overruled {
             check_remembered_rules(&repo, &name, &tree, &prompt_rules);
@@ -1158,9 +1219,10 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &prompt_rules,
             &candidates,
         );
-        if let Some(held) = gate.hold() {
-            return held;
-        }
+        let profiles = match gate.hold() {
+            Ok(profiles) => profiles,
+            Err(held) => return held,
+        };
         let overruled = verdict == "overruled";
         provenance(
             &push,
@@ -1170,6 +1232,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                 Bound::ByPatch
             },
             &old_tree,
+            &profiles,
         );
         if !overruled {
             check_remembered_rules(&repo, &name, &tree, &prompt_rules);
@@ -1236,10 +1299,11 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                         candidates,
                     );
                 }
-                if let Some(held) = gate.hold() {
-                    return held;
-                }
-                provenance(&push, Bound::Reviewed, &tree);
+                let profiles = match gate.hold() {
+                    Ok(profiles) => profiles,
+                    Err(held) => return held,
+                };
+                provenance(&push, Bound::Reviewed, &tree, &profiles);
                 check_remembered_rules(&repo, &name, &tree, &prompt_rules);
                 check_candidates(&name, &tree, candidates);
                 Judged::Decline("reviewed")
@@ -1319,9 +1383,14 @@ fn check_candidates(name: &str, tree: &str, candidates: &Reviewed) {
 
 /// Files the provenance record of a pass and journals what came of it. A
 /// failure never changes the judgment.
-fn provenance(push: &crate::provenance::Push, review: Bound, review_content: &str) {
+fn provenance(
+    push: &crate::provenance::Push,
+    review: Bound,
+    review_content: &str,
+    profiles: &[ProfileVerdict],
+) {
     use crate::provenance::Filing;
-    match crate::provenance::file(push, review, review_content) {
+    match crate::provenance::file(push, review, review_content, profiles) {
         Filing::Deferred => note(
             "provenance-deferred",
             "-",
@@ -1687,7 +1756,7 @@ pub fn on_post_ask(ask: &amont_agent_guard::payload::Ask) -> Option<String> {
                 );
             }
             Some(profile) => {
-                remember_profile(profile, &repo, &sha, "overruled", "person", None);
+                remember_profile(profile, &repo, &sha, "overruled", "person", &sha, None);
             }
         }
         note(

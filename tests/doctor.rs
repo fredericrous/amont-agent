@@ -32,6 +32,7 @@ impl Home {
     fn run(&self, args: &[&str]) -> (i32, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
             .args(args)
+            .current_dir(&self.0)
             .env("CLAUDE_CONFIG_DIR", &self.0)
             .env_remove("AMONT_AGENT_OFF")
             .output()
@@ -726,4 +727,50 @@ fn doctor_json_carries_the_plan_root() {
         .filter_map(|f| f["line"].as_str())
         .find(|l| l.starts_with("plan root:"));
     assert_eq!(line, Some("plan root: /from/git (git-config)"), "{out}");
+}
+
+fn install_code_review_agents(home: &Home, names: &[&str]) {
+    let agents = home.0.join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    for name in names {
+        std::fs::write(agents.join(format!("{name}.md")), "---\nname: x\n---\n").unwrap();
+    }
+}
+
+const CODE_REVIEW_AGENTS: [&str; 8] = [
+    "code-review-backend",
+    "code-review-language",
+    "code-review-platform",
+    "code-review-unix",
+    "code-review-tui",
+    "code-review-react",
+    "code-review-architect",
+    "interface-review",
+];
+
+#[test]
+fn a_missing_code_review_agent_is_a_reported_gap() {
+    let h = Home::new("agent-gap");
+    let present: Vec<&str> = CODE_REVIEW_AGENTS
+        .iter()
+        .copied()
+        .filter(|a| *a != "code-review-backend")
+        .collect();
+    install_code_review_agents(&h, &present);
+    let (_, out) = h.run(&["doctor"]);
+    assert!(out.contains("no `code-review-backend` agent"), "{out}");
+    assert!(!out.contains("no `code-review-unix` agent"), "{out}");
+    let (_, json) = h.run(&["doctor", "--json"]);
+    assert!(json.contains("code-review-backend"), "{json}");
+}
+
+#[test]
+fn a_full_set_of_code_review_agents_reports_no_gap() {
+    let h = Home::new("agent-full");
+    install_code_review_agents(&h, &CODE_REVIEW_AGENTS);
+    install_code_review_agents(&h, &["implementation-review"]);
+    let (_, out) = h.run(&["doctor"]);
+    assert!(!out.contains("no `code-review-"), "{out}");
+    assert!(!out.contains("no `interface-review` agent"), "{out}");
+    assert!(!out.contains("no `implementation-review` agent"), "{out}");
 }
