@@ -39,3 +39,14 @@ This repository carries Phase 2 (`code_roles()`, the `## Code review` parser, `p
   - doctor reports each missing code-review agent.
 
   Full suite: every binary ok.
+
+## Implementation review
+
+- Phases 2 and 3: approve-with-changes, then approve on the delta (131k + 146k tokens, 165 s + 44 s).
+- Fixed:
+  - the verification record;
+  - 3 banner comments and 2 placeholder names (the candidate violations);
+  - `review-brief` exits 1 on an unparsable section;
+  - the `Reviewed by:` check runs on every brief;
+  - a profile's brief carries no candidates.
+- Deliberate: the canonical plan is read from the checkout (Decision log).
