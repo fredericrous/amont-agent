@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `amont-agent --bogus --help` prints the help and exits 0: help wins over a
+  word it does not know (cli.help.help-and-version). An unknown flag alone
+  still exits 2.
+
 ## v3.10.0
 
 ### Changed
