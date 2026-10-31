@@ -102,12 +102,16 @@ unmerged branch, with or without a plan, costs no git call beyond the single
   adds relative to the default branch and whose `status` is `active`. A plan
   whose `repos:` names several repositories is listed under each of them: in
   another repository's block it appears as a branch-only entry labelled
-  `<repository>:<branch>`, found by scanning the other repositories directly
-  under the plan root, unless that repository carries the same file itself.
+  `<repository>:<branch>` (in branch-name order), found by scanning the other
+  repositories directly under the plan root (primary checkouts only: a linked
+  worktree directory is never scanned, and a repository is scanned once),
+  unless that repository carries the same file itself.
   For such a repository a branch is live when its tip is within `--since` or
   it is checked out; its sessions are not read here (ask `--repo` for that
-  repository). It costs the default-branch probes, one `for-each-ref` and one
-  `worktree list`, then plans only for its live branches;
+  repository). It costs one `git for-each-ref` call (default branch, branch
+  tips and checked-out branches), so a sibling with no live branch costs
+  exactly one git call; a live branch adds one merged-ness listing, then
+  plans for it;
 - `programme <slug> ticket <id>` for a `prog/<slug>/<id>` branch;
 - the sessions whose latest activity line names that worktree, with the full
   session id and the age of the activity file's modification time.

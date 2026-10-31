@@ -580,7 +580,7 @@ fn report(
         }
     }
     entries.extend(sibling_plans(
-        dir,
+        identity.clone().unwrap_or_else(|| real(&dir.join(".git"))),
         &name,
         &own_plan_files,
         plan_root,
@@ -600,18 +600,98 @@ fn report(
     }
 }
 
+/// What one `for-each-ref` call reads of a sibling repository.
+struct SiblingRefs {
+    default_ref_name: String,
+    /// Non-default branches: name, freshest tip, checked out in a worktree.
+    branches: Vec<(String, u64, bool)>,
+}
+
+/// The default branch and the branches of a primary checkout from a single
+/// `git for-each-ref` over `refs/heads` and `refs/remotes/origin`: the default
+/// is origin/HEAD's target, else main, else master (the remote ref when it
+/// exists, else the local one). Branches are every non-default name with its
+/// freshest tip and whether a worktree holds it.
+fn sibling_refs(dir: &Path) -> Option<SiblingRefs> {
+    let listing = git::stdout_in(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)\t%(symref)\t%(committerdate:unix)\t%(worktreepath)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+    )?;
+    let mut refs: Vec<(String, u64, bool)> = Vec::new();
+    let mut origin_head: Option<String> = None;
+    for line in listing.lines() {
+        let mut fields = line.split('\t');
+        let (Some(reference), Some(symref), Some(tip)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let worktree = fields.next().unwrap_or("");
+        if reference == "refs/remotes/origin/HEAD" {
+            origin_head = symref
+                .strip_prefix("refs/remotes/origin/")
+                .map(str::to_string);
+            continue;
+        }
+        refs.push((
+            reference.to_string(),
+            tip.parse().unwrap_or(0),
+            !worktree.is_empty(),
+        ));
+    }
+    let has = |reference: &str| refs.iter().any(|(r, _, _)| r == reference);
+    let mut names: Vec<String> = origin_head.into_iter().collect();
+    names.extend(["main", "master"].map(str::to_string));
+    let (default_ref_name, default_name) = names.into_iter().find_map(|name| {
+        if has(&format!("refs/remotes/origin/{name}")) {
+            Some((format!("origin/{name}"), name))
+        } else if has(&format!("refs/heads/{name}")) {
+            Some((name.clone(), name))
+        } else {
+            None
+        }
+    })?;
+    let mut branches: Vec<(String, u64, bool)> = Vec::new();
+    for (reference, tip, checked_out) in &refs {
+        let branch = reference
+            .strip_prefix("refs/heads/")
+            .or_else(|| reference.strip_prefix("refs/remotes/origin/"))
+            .unwrap_or(reference);
+        if branch == default_name {
+            continue;
+        }
+        match branches.iter_mut().find(|(name, _, _)| name == branch) {
+            Some(existing) => {
+                existing.1 = existing.1.max(*tip);
+                existing.2 |= *checked_out;
+            }
+            None => branches.push((branch.to_string(), *tip, *checked_out)),
+        }
+    }
+    Some(SiblingRefs {
+        default_ref_name,
+        branches,
+    })
+}
+
 /// Active plans that live in another repository under the plan root but name
 /// `name` in their `repos:`, as branch-only entries labelled
 /// `<repository>:<branch>`; a plan whose file `name` already carries is left
 /// out.
 ///
-/// Only a live branch is read: a tip within `since` or a checked-out
-/// worktree. Sessions are not consulted here: a sibling's sessions show when
-/// the board is asked about that repository. A sibling with no live branch
-/// costs its default-branch probes and two listings.
-// holds-until: ~100 repositories under the plan root — four to seven git calls per sibling per call (default-branch probes, `for-each-ref`, `worktree list`); cache per repository after
+/// Only primary checkouts are scanned (a `.git` directory, deduplicated by it;
+/// a linked worktree's `.git` is a file) and only a live branch is read: a tip
+/// within `since` or a checked-out worktree. Sessions are not consulted here:
+/// a sibling's sessions show when the board is asked about that repository.
+/// A sibling with no live branch costs one git call.
+// holds-until: ~100 repositories under the plan root — one git call per sibling with no live branch per call; cache per repository after
 fn sibling_plans(
-    dir: &Path,
+    own_common_dir: PathBuf,
     name: &str,
     own_plan_files: &[String],
     plan_root: Option<&Path>,
@@ -621,40 +701,66 @@ fn sibling_plans(
     let Some(root) = plan_root else {
         return Vec::new();
     };
-    let mut siblings: Vec<PathBuf> = std::fs::read_dir(root)
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(root)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.join(".git").exists() && real(p) != real(dir))
+        .filter(|p| p.join(".git").is_dir())
         .collect();
-    siblings.sort();
+    candidates.sort();
+    let mut seen: Vec<PathBuf> = vec![own_common_dir];
+    let siblings: Vec<PathBuf> = candidates
+        .into_iter()
+        .filter(|p| {
+            let common = real(&p.join(".git"));
+            let fresh = !seen.contains(&common);
+            seen.push(common);
+            fresh
+        })
+        .collect();
     let mut found = Vec::new();
     for sibling in siblings {
-        let Some((default_ref_name, default_name)) = default_ref(&sibling) else {
+        let Some(refs) = sibling_refs(&sibling) else {
             continue;
         };
+        let live: Vec<&(String, u64, bool)> = refs
+            .branches
+            .iter()
+            .filter(|(_, tip, checked_out)| {
+                *checked_out || now_epoch.saturating_sub(*tip) <= since.as_secs()
+            })
+            .collect();
+        if live.is_empty() {
+            continue;
+        }
         let sibling_name = sibling
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let listed = unmerged_branches(&sibling, &default_ref_name, &default_name);
-        let mut branches: Vec<String> = worktrees(&sibling)
-            .into_iter()
-            .filter_map(|tree| tree.branch)
-            .filter(|b| *b != default_name)
-            .collect();
-        for fresh in listed
-            .iter()
-            .filter(|b| now_epoch.saturating_sub(b.tip) <= since.as_secs())
-        {
-            if !branches.contains(&fresh.name) {
-                branches.push(fresh.name.clone());
-            }
+        let mut command: Vec<String> = vec![
+            "for-each-ref".into(),
+            "--no-merged".into(),
+            refs.default_ref_name.clone(),
+            "--format=%(refname)".into(),
+        ];
+        for (branch, _, _) in &live {
+            command.push(format!("refs/heads/{branch}"));
+            command.push(format!("refs/remotes/origin/{branch}"));
         }
-        for branch in branches {
-            let reference = reference_of(&listed, &branch);
-            let titles: Vec<String> = active_plans(&sibling, &default_ref_name, &reference)
+        let command: Vec<&str> = command.iter().map(String::as_str).collect();
+        let unmerged = git::stdout_in(&sibling, &command).unwrap_or_default();
+        for (branch, _, _) in live {
+            let local = format!("refs/heads/{branch}");
+            let remote = format!("refs/remotes/origin/{branch}");
+            let reference = if unmerged.lines().any(|l| l == local) {
+                local
+            } else if unmerged.lines().any(|l| l == remote) {
+                remote
+            } else {
+                continue;
+            };
+            let titles: Vec<String> = active_plans(&sibling, &refs.default_ref_name, &reference)
                 .into_iter()
                 .filter(|p| p.repos.iter().any(|r| r == name) && !own_plan_files.contains(&p.file))
                 .map(|p| p.title)

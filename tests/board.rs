@@ -119,6 +119,44 @@ impl World {
             .expect("runs")
     }
 
+    /// Runs `board` with a `git` shim first on PATH; returns the output and
+    /// the log of every git invocation's arguments.
+    fn board_with_git_log(&self, args: &[&str]) -> (Output, String) {
+        let real_git = Command::new("which").arg("git").output().unwrap().stdout;
+        let real_git = String::from_utf8(real_git).unwrap().trim().to_string();
+        let shim_dir = self.top.join("shim");
+        std::fs::create_dir_all(&shim_dir).unwrap();
+        let log = self.top.join("git-calls.log");
+        let shim = shim_dir.join("git");
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{real_git}' \"$@\"\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            shim_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new(BIN)
+            .current_dir(&self.top)
+            .arg("board")
+            .args(args)
+            .env("PATH", path)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("CLAUDE_CONFIG_DIR", &self.config)
+            .env("AMONT_AGENT_PLAN_ROOT", &self.root)
+            .output()
+            .expect("runs");
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        (out, calls)
+    }
+
     fn stdout(&self, args: &[&str]) -> String {
         let out = self.board(&self.top, args);
         assert!(
@@ -319,43 +357,41 @@ fn stale_branches_cost_no_git_call_beyond_the_listing() {
     commit_file(&a, "docs/plans/2026-10-31-live.md", PLAN, 60);
     git(&a, &["checkout", "-q", "main"]);
 
-    let real_git = Command::new("which").arg("git").output().unwrap().stdout;
-    let real_git = String::from_utf8(real_git).unwrap().trim().to_string();
-    let shim_dir = world.top.join("shim");
-    std::fs::create_dir_all(&shim_dir).unwrap();
-    let log = world.top.join("git-calls.log");
-    let shim = shim_dir.join("git");
-    std::fs::write(
-        &shim,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{real_git}' \"$@\"\n",
-            log.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    let path = format!(
-        "{}:{}",
-        shim_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let out = Command::new(BIN)
-        .current_dir(&world.top)
-        .args(["board", "--repo", "a"])
-        .env("PATH", path)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("CLAUDE_CONFIG_DIR", &world.config)
-        .env("AMONT_AGENT_PLAN_ROOT", &world.root)
-        .output()
-        .expect("runs");
+    let (out, log) = world.board_with_git_log(&["--repo", "a"]);
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(text.contains("[feat/live]"), "{text}");
     assert!(text.contains("plan: Board plan"), "{text}");
     assert!(!text.contains("stale/"), "{text}");
     assert!(!text.contains("b:"), "{text}");
-    let calls = std::fs::read_to_string(&log).unwrap().lines().count();
-    assert!(calls < 40, "{calls} git calls");
+    let calls = log.lines().count();
+    assert!(calls < 30, "{calls} git calls");
+}
+
+#[test]
+fn siblings_cost_one_call_and_linked_worktrees_are_not_scanned() {
+    let world = World::new("siblings");
+    let a = world.repo("a");
+    for name in ["a-wt-a", "a-wt-b"] {
+        let path = world.root.join(name).display().to_string();
+        git(&a, &["worktree", "add", "-q", "-b", name, &path]);
+    }
+    for name in ["s1", "s2", "s3"] {
+        let sibling = world.repo(name);
+        stale_branches(&sibling, 9 * 86_400);
+    }
+    let (out, log) = world.board_with_git_log(&["--repo", "a"]);
+    assert!(out.status.success());
+    for worktree in ["a-wt-a", "a-wt-b"] {
+        let inside = world.root.join(worktree).display().to_string();
+        assert!(
+            !log.lines().any(|l| l.contains(&inside)),
+            "scanned {worktree}:\n{log}"
+        );
+    }
+    for sibling in ["s1", "s2", "s3"] {
+        let inside = world.root.join(sibling).display().to_string();
+        let calls = log.lines().filter(|l| l.contains(&inside)).count();
+        assert!(calls <= 1, "{calls} git calls for {sibling}:\n{log}");
+    }
 }

@@ -4,6 +4,9 @@
 
 ### Changed
 
+- `amont-agent board` scans only primary checkouts as siblings (never a linked
+  worktree directory, one scan per git common dir) and reads each sibling with
+  one `git for-each-ref` call: a sibling with no live branch costs one git call.
 - `amont-agent board` reads plans only for live branches (tip within
   `--since`, checked out, or named by a session), in the selected repository
   and in sibling plans; stale unmerged branches cost no git call beyond the
