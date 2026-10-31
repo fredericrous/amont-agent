@@ -104,6 +104,39 @@ pub fn valid_profile(profile: &str) -> bool {
         || (profile.starts_with("lang:") && crate::plan_review::valid_class(profile))
 }
 
+/// The agent that reviews `profile` and the language it is told to read
+/// (`--lang <x>`): `lang:<x>` is `code-review-language`, `ui-design` is
+/// `interface-review`, every other profile `code-review-<role>`. `None` for
+/// a name that is not a profile.
+pub fn agent_for(profile: &str) -> Option<(String, Option<String>)> {
+    if !valid_profile(profile) {
+        return None;
+    }
+    Some(match profile.strip_prefix("lang:") {
+        Some(language) => (
+            "code-review-language".to_string(),
+            Some(language.to_string()),
+        ),
+        None if profile == "ui-design" => ("interface-review".to_string(), None),
+        None => (format!("code-review-{profile}"), None),
+    })
+}
+
+/// The directory name a profile's passes are filed under (`lang:rust` is
+/// `lang-rust`); `None` for a name that is not a profile.
+pub fn slug(profile: &str) -> Option<String> {
+    valid_profile(profile).then(|| profile.replace(':', "-"))
+}
+
+/// The value of each `Profile:` line of a review prompt, in order.
+pub fn profile_lines(prompt: &str) -> Vec<&str> {
+    prompt
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Profile:"))
+        .map(str::trim)
+        .collect()
+}
+
 /// The proposal for every repository of the plan's machine comment, one
 /// `<repo>\t<profiles|none>` line each.
 pub fn proposal(plan_text: &str) -> Result<String, String> {
@@ -213,7 +246,7 @@ fn parse_line(item: &str) -> Result<(String, Declared), String> {
 /// A plan's declaration text for the brief: the plan itself, or the
 /// canonical file a pointer plan names, read under the plan root. `Err`
 /// names a canonical file that cannot be read.
-fn declared_text(plan_text: &str) -> Result<String, String> {
+pub(crate) fn declared_text(plan_text: &str) -> Result<String, String> {
     let (front, _) = crate::plans::split_front_matter(plan_text);
     let Some(canonical) = crate::plans::field(front, "canonical").filter(|c| !c.is_empty()) else {
         return Ok(plan_text.to_string());
@@ -453,6 +486,31 @@ mod tests {
         let no_colon = parse(&plan("- a backend")).unwrap_err();
         assert!(no_colon.contains("a backend"), "{no_colon}");
         assert!(parse(&plan("- a: ")).is_err());
+    }
+
+    #[test]
+    fn each_profile_maps_to_its_agent() {
+        let agent = agent_for;
+        assert_eq!(agent("backend"), Some(("code-review-backend".into(), None)));
+        assert_eq!(
+            agent("lang:rust"),
+            Some(("code-review-language".into(), Some("rust".into())))
+        );
+        assert_eq!(agent("ui-design"), Some(("interface-review".into(), None)));
+        for role in ["platform", "unix", "tui", "react", "architect"] {
+            assert_eq!(agent(role).unwrap().0, format!("code-review-{role}"));
+        }
+        assert_eq!(agent("wizard"), None);
+        assert_eq!(slug("lang:rust").as_deref(), Some("lang-rust"));
+        assert_eq!(slug("../x"), None);
+    }
+
+    #[test]
+    fn profile_lines_are_read_in_order() {
+        assert_eq!(
+            profile_lines("<<<TREE>>>\nProfile: lang:ts\n  Profile: backend \nnot Profile: x"),
+            ["lang:ts", "backend"]
+        );
     }
 
     #[test]

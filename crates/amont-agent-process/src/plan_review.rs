@@ -645,6 +645,9 @@ pub struct Completed {
     pub tokens: Option<u64>,
     /// Wall time: `totalDurationMs`, or `<duration_ms>`.
     pub duration_ms: Option<u64>,
+    /// Whether this is a round of a resumed agent (its `prompt` is the
+    /// `SendMessage` text) and not the agent's launch.
+    pub resumed: bool,
 }
 
 /// What a launch's result and notification say about the agent itself.
@@ -908,6 +911,7 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
             }
             let (agent, prompt) = launched.remove(&id)?;
             let f = facts.remove(&id).unwrap_or_default();
+            let resumed = rounds.contains_key(&id);
             Some(Completed {
                 agent,
                 prompt,
@@ -916,6 +920,7 @@ fn scan(reader: impl BufRead, prefix: &str, resumable: bool) -> Vec<Completed> {
                 model: f.model,
                 tokens: f.tokens,
                 duration_ms: f.duration_ms,
+                resumed,
             })
         })
         .collect()

@@ -4,6 +4,17 @@
 
 ### Added
 
+- The implementation-review push hook also requires, for each code-review
+  profile the branch's plan declares for the repository (`## Code review`,
+  read from the plan changed under `docs/plans/`, or from the canonical plan
+  of a pointer plan), a completed review of the pushed tree by that
+  profile's agent (`code-review-<role>`, `code-review-language` for
+  `lang:<x>`, `interface-review` for `ui-design`), bound by the prompt's one
+  `Profile: <role>` line. Passes are kept under
+  `implementation-review/by-profile/<slug>/`, by tree and by patch. A plan
+  with no section keeps today's behaviour and journals
+  `undeclared-profiles`. The Overrule marker takes
+  `[implementation-review <repo>@<sha64> profile=<role>]` (ADR-0052).
 - `amont-agent plan-panel --code-review <plan.md>` prints the code-review
   profiles proposed for each repository of the plan's machine comment, from
   its areas (`<repo>\t<profiles|none>`). Without the flag the output is

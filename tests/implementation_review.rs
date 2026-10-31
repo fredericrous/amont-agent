@@ -130,6 +130,7 @@ impl World {
         dirs.extend(std::env::split_paths(&path));
         c.env("PATH", std::env::join_paths(dirs).unwrap());
         c.env("AMONT_AGENT_AVAL", self.aval_path());
+        c.env_remove("AMONT_AGENT_PLAN_ROOT");
         c.env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("GIT_CONFIG_GLOBAL", self.root.join("global"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -545,7 +546,11 @@ fn a_reviewed_tree_passes_and_recording_the_review_keeps_it_reviewed() {
     );
     // One decision line, and the rules and candidates lines beside it (ADR-0044).
     let journal = w.journal();
-    assert_eq!(journal.len(), 3, "{journal:?}");
+    assert_eq!(journal.len(), 4, "{journal:?}");
+    assert!(
+        journal.iter().any(|l| l.contains(" undeclared-profiles ")),
+        "{journal:?}"
+    );
     assert!(
         journal
             .iter()
@@ -2544,4 +2549,530 @@ fn an_unreadable_agents_dir_keeps_the_deny() {
     if !readable {
         assert!(matches!(said, Said::Deny(_)), "{said:?}");
     }
+}
+
+// ---------------------------------------------------------------- code-review profiles
+
+const PLAN_REL: &str = "docs/plans/2026-09-29-x.md";
+
+/// The branch's plan, with `section` as its `## Code review` body (none
+/// when empty), committed on top: the content id ignores `docs/plans/`.
+fn declare(w: &World, repo: &Path, section: &str) {
+    let mut plan = "---\nstatus: active\n---\n# X\n".to_string();
+    if !section.is_empty() {
+        plan.push_str(&format!("\n## Code review\n\n{section}\n"));
+    }
+    w.commit(repo, &[(PLAN_REL, &plan)]);
+}
+
+impl Transcript {
+    /// A completed foreground launch of `agent` with `prompt`.
+    fn profile_review(&mut self, w: &World, agent: &str, prompt: &str, verdict: &str) -> &mut Self {
+        let id = w.id();
+        self.launch(&id, agent, prompt);
+        self.lines.push(
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": id,
+                    "content": [{"type": "text", "text": format!("{verdict}\nFindings:\n")}]
+                }]},
+                "toolUseResult": {"status": "completed", "agentType": agent, "content": []}
+            })
+            .to_string(),
+        );
+        self
+    }
+
+    /// A background launch of `agent`, notified complete: it has an agent id
+    /// a `SendMessage` can resume. Returns the launch's tool-use id.
+    fn resumable(&mut self, w: &World, agent: &str, prompt: &str, verdict: &str) -> String {
+        let id = w.id();
+        self.launch(&id, agent, prompt);
+        self.lines.push(
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": id,
+                    "content": [{"type": "text", "text": "launched"}]
+                }]},
+                "toolUseResult": {
+                    "status": "async_launched", "isAsync": true, "agentId": Self::agent_id(&id)
+                }
+            })
+            .to_string(),
+        );
+        self.notify(&id, verdict);
+        id
+    }
+
+    fn notify(&mut self, id: &str, verdict: &str) {
+        self.lines.push(
+            serde_json::json!({
+                "type": "user", "origin": {"kind": "task-notification"},
+                "message": {"role": "user", "content": Self::notification(id, "completed", verdict)}
+            })
+            .to_string(),
+        );
+    }
+
+    /// A round: `SendMessage` to the agent launched as `launch`, answered
+    /// as a resume, and notified complete.
+    fn resume(&mut self, w: &World, launch: &str, message: &str, verdict: &str) {
+        let id = w.id();
+        let agent_id = Self::agent_id(launch);
+        self.lines.push(
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": id, "name": "SendMessage",
+                    "input": {"to": agent_id, "message": message}
+                }]}
+            })
+            .to_string(),
+        );
+        self.lines.push(
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": id,
+                    "content": [{"type": "text", "text": "resumed"}]
+                }]},
+                "toolUseResult": {"resumedAgentId": agent_id}
+            })
+            .to_string(),
+        );
+        self.lines.push(
+            serde_json::json!({
+                "type": "user", "origin": {"kind": "task-notification"},
+                "message": {"role": "user", "content": format!(
+                    "<task-notification>\n<task-id>{agent_id}</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n<result>{verdict}</result>\n</task-notification>"
+                )}
+            })
+            .to_string(),
+        );
+    }
+}
+
+fn profile_prompt(w: &World, repo: &Path, profile_lines: &str) -> String {
+    format!("{}\n{profile_lines}\nRound 1.\nbrief\n", w.block(repo))
+}
+
+fn profile_pass_file(w: &World, slug: &str, repo: &str, tree: &str) -> PathBuf {
+    w.store()
+        .join("by-profile")
+        .join(slug)
+        .join("by-tree")
+        .join(repo)
+        .join(format!("{tree}.json"))
+}
+
+#[test]
+fn a_plan_with_no_code_review_section_needs_the_implementation_review_alone() {
+    let w = World::new("profile-none");
+    let repo = w.repo("app");
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(
+        w.journal()
+            .iter()
+            .any(|l| l.contains(" undeclared-profiles ")),
+        "{:?}",
+        w.journal()
+    );
+
+    // A repository line `none — …` requires the same and journals nothing.
+    let w = World::new("profile-none-reason");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: none — prose only");
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(!w
+        .journal()
+        .iter()
+        .any(|l| l.contains("undeclared-profiles")));
+}
+
+#[test]
+fn a_declared_profile_needs_its_own_review_and_the_two_never_stand_for_each_other() {
+    let w = World::new("profile-backend");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let tree = w.tree(&repo);
+
+    // The profile review alone is not an implementation review.
+    let mut t = Transcript::default();
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &profile_prompt(&w, &repo, "Profile: backend"),
+        "Verdict: approve",
+    );
+    let profile_only = w.transcript("profile", &t);
+    let said = w.push(&repo, "s1", Some(&profile_only));
+    assert!(
+        advised(&said).contains("no implementation review of app tree"),
+        "{said:?}"
+    );
+    assert!(!profile_pass_file(&w, "backend", "app", &tree).exists());
+
+    // The implementation review alone is not the profile's.
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let implementation_only = w.transcript("impl", &t);
+    let said = w.push(&repo, "s2", Some(&implementation_only));
+    let text = advised(&said);
+    assert!(
+        text.contains(&format!(
+            "missing code review of app tree {}: code-review-backend (declared in {PLAN_REL}). Launch them on this tree, or narrow ## Code review with a reason.",
+            &tree[..12]
+        )),
+        "{text}"
+    );
+    assert!(!profile_pass_file(&w, "backend", "app", &tree).exists());
+
+    // Both: allowed, and the profile's pass is filed under its own key.
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &profile_prompt(&w, &repo, "Profile: backend"),
+        "Verdict: approve-with-changes",
+    );
+    let both = w.transcript("both", &t);
+    assert_eq!(w.push(&repo, "s3", Some(&both)), Said::Silent);
+    assert!(profile_pass_file(&w, "backend", "app", &tree).is_file());
+    assert!(w.pass_file("app", &tree).is_file());
+
+    // A new session with no transcript: the remembered passes answer.
+    assert_eq!(w.push(&repo, "s4", None), Said::Silent);
+}
+
+#[test]
+fn a_profile_pass_is_remembered_but_does_not_make_an_unreviewed_tree_reviewed() {
+    let w = World::new("profile-alone");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let tree = w.tree(&repo);
+    let mut t = Transcript::default();
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &profile_prompt(&w, &repo, "Profile: backend"),
+        "Verdict: approve",
+    );
+    let transcript = w.transcript("t", &t);
+    assert!(matches!(
+        w.push(&repo, "s1", Some(&transcript)),
+        Said::Advise(_)
+    ));
+    assert!(!profile_pass_file(&w, "backend", "app", &tree).exists());
+}
+
+#[test]
+fn a_language_profile_needs_the_language_agent_with_that_language() {
+    let w = World::new("profile-lang");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: lang:rust");
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        &w,
+        "code-review-language",
+        &profile_prompt(&w, &repo, "Profile: lang:ts"),
+        "Verdict: approve",
+    );
+    let wrong_language = w.transcript("ts", &t);
+    let said = w.push(&repo, "s1", Some(&wrong_language));
+    assert!(
+        advised(&said).contains("code-review-language --lang rust"),
+        "{said:?}"
+    );
+
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        &w,
+        "code-review-language",
+        &profile_prompt(&w, &repo, "Profile: lang:rust"),
+        "Verdict: approve",
+    );
+    let right = w.transcript("rust", &t);
+    assert_eq!(w.push(&repo, "s2", Some(&right)), Said::Silent);
+}
+
+#[test]
+fn an_agent_labelled_with_another_profile_or_two_labels_count_for_nothing() {
+    let w = World::new("profile-label");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: lang:rust");
+    let prompts = [
+        // the backend agent, labelled as the language profile
+        ("code-review-backend", "Profile: lang:rust"),
+        // two Profile lines
+        (
+            "code-review-language",
+            "Profile: lang:rust\nProfile: lang:rust",
+        ),
+        (
+            "code-review-language",
+            "Profile: lang:rust\nProfile: lang:ts",
+        ),
+        // no Profile line on a launch
+        ("code-review-language", ""),
+    ];
+    for (n, (agent, lines)) in prompts.iter().enumerate() {
+        let mut t = Transcript::default();
+        t.review(
+            &w,
+            AGENT,
+            &w.block(&repo),
+            "Verdict: approve",
+            Done::Foreground,
+        );
+        t.profile_review(
+            &w,
+            agent,
+            &profile_prompt(&w, &repo, lines),
+            "Verdict: approve",
+        );
+        let transcript = w.transcript(&format!("label{n}"), &t);
+        let said = w.push(&repo, &format!("s{n}"), Some(&transcript));
+        assert!(
+            advised(&said).contains("missing code review of app tree"),
+            "{agent} / {lines}: {said:?}"
+        );
+    }
+}
+
+#[test]
+fn a_profile_that_said_rework_is_not_a_pass() {
+    let w = World::new("profile-rework");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &profile_prompt(&w, &repo, "Profile: backend"),
+        "Verdict: rework",
+    );
+    let transcript = w.transcript("t", &t);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    let text = advised(&said);
+    assert!(
+        text.contains("by code-review-backend said rework"),
+        "{text}"
+    );
+
+    // A delta that approves the same tree passes it.
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &profile_prompt(&w, &repo, "Profile: backend"),
+        "Verdict: approve",
+    );
+    let transcript = w.transcript("t2", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+}
+
+#[test]
+fn a_resumed_round_binds_under_its_launchs_profile() {
+    let w = World::new("profile-resumed");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let launched_on = w.tree(&repo);
+    w.commit(
+        &repo,
+        &[("src/lib.rs", "fn a() { b() }\nfn b() { c() }\nfn c() {}\n")],
+    );
+    let now = w.tree(&repo);
+    assert_ne!(launched_on, now);
+    let launch_prompt = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(&w, &repo, &launched_on)
+    );
+    let round_two = format!("{}\nRound 2.\n", crate_block(&w, &repo, &now));
+    let wrong_profile = format!(
+        "{}\nProfile: unix\nRound 2.\n",
+        crate_block(&w, &repo, &now)
+    );
+
+    let build = |message: &str| {
+        let mut t = Transcript::default();
+        t.review(
+            &w,
+            AGENT,
+            &w.block(&repo),
+            "Verdict: approve",
+            Done::Foreground,
+        );
+        let launch = t.resumable(
+            &w,
+            "code-review-backend",
+            &launch_prompt,
+            "Verdict: approve",
+        );
+        t.resume(&w, &launch, message, "Verdict: approve");
+        t
+    };
+    let t = w.transcript("named", &build(&wrong_profile));
+    assert!(matches!(w.push(&repo, "s1", Some(&t)), Said::Advise(_)));
+    let t = w.transcript("inherit", &build(&round_two));
+    assert_eq!(w.push(&repo, "s2", Some(&t)), Said::Silent);
+    assert!(profile_pass_file(&w, "backend", "app", &now).is_file());
+}
+
+fn crate_block(_w: &World, repo: &Path, sha: &str) -> String {
+    let name = repo.file_name().unwrap().to_string_lossy();
+    format!("<<<TREE repo={name} sha={sha}>>>\n<<<RULES sha={ABC_SHA}>>>")
+}
+
+#[test]
+fn a_pointer_plan_declares_through_its_canonical_plan() {
+    let w = World::new("profile-pointer");
+    let repo = w.repo("app");
+    let canonical = w.root.join("decisions/docs/plans");
+    std::fs::create_dir_all(&canonical).unwrap();
+    std::fs::write(
+        canonical.join("p.md"),
+        "# P\n\n## Code review\n\n- app: backend\n",
+    )
+    .unwrap();
+    w.set_global(
+        "amont.agent.plan-review.root",
+        &w.root.display().to_string(),
+    );
+    w.commit(
+        &repo,
+        &[(
+            PLAN_REL,
+            "---\ncanonical: decisions:docs/plans/p.md\nstatus: active\n---\n# X (pointer)\n",
+        )],
+    );
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(
+        advised(&said).contains("code-review-backend (declared in docs/plans/"),
+        "{said:?}"
+    );
+
+    // A canonical plan that cannot be read: journalled and passed on advise,
+    // held under deny.
+    std::fs::remove_file(canonical.join("p.md")).unwrap();
+    assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
+    assert!(
+        w.journal()
+            .iter()
+            .any(|l| l.contains(" profiles-unreadable ")),
+        "{:?}",
+        w.journal()
+    );
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    match w.push(&repo, "s3", Some(&transcript)) {
+        Said::Deny(text) => assert!(text.contains("cannot be read"), "{text}"),
+        other => panic!("expected a hold, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_person_may_overrule_a_profile_rework() {
+    let w = World::new("profile-overrule");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let tree = w.tree(&repo);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &profile_prompt(&w, &repo, "Profile: backend"),
+        "Verdict: rework",
+    );
+    let transcript = w.transcript("t", &t);
+    let q = format!("[implementation-review app@{tree} profile=backend] Overrule?");
+    w.ask("PreToolUse", "s1", "q1", &q, None, false, Some(&transcript));
+    assert_eq!(
+        w.ask(
+            "PostToolUse",
+            "s1",
+            "q1",
+            &q,
+            Some("Overrule"),
+            false,
+            Some(&transcript)
+        ),
+        Said::Silent
+    );
+    let pass = profile_pass_file(&w, "backend", "app", &tree);
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pass).unwrap()).unwrap();
+    assert_eq!(record["verdict"], "overruled");
+    assert!(
+        !w.pass_file("app", &tree).exists(),
+        "a profile overrule is not the implementation review's"
+    );
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
 }

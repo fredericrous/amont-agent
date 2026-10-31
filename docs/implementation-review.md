@@ -333,3 +333,41 @@ rule and the name; an unknown `--profile` exits 2. Without `--profile` the
 brief is unchanged except for one line in the plan section, `Declared code
 review for <repo>: <profiles|none — reason|not declared>`, read from the
 plan (the canonical file of a pointer plan, under the plan root).
+
+## The declared profiles at a push
+
+When the plan declares code-review profiles for the repository, the push
+needs a pass for each of them on the pushed tree, beside the implementation
+review (ADR-0052). The hook reads the declaration from the plan(s) changed
+under `docs/plans/` between the merge base and the pushed commit, as that
+commit holds them; a pointer plan (`canonical: <repo>:<path>`) is read
+through its canonical file under the plan root. A canonical file or a
+`## Code review` section that cannot be read is held under `deny` and
+journalled (`profiles-unreadable`) otherwise. A plan with no section, or a
+repository line `none — …`, requires the implementation review alone; a
+plan with no section journals `undeclared-profiles`.
+
+A completed launch counts for a profile only when its agent is the one the
+profile maps to (`lang:<x>` to `code-review-language`, `ui-design` to
+`interface-review`, any other role to `code-review-<role>`) and its prompt
+carries exactly one `Profile: <role>` line naming that profile. Two lines, or
+a line naming another profile, count for nothing. A resumed round
+(`SendMessage`) inherits its launch's profile and may omit the line; one that
+names another profile counts for nothing. A profile review never satisfies
+the implementation review, nor the reverse. A profile's verdict is read like
+the implementation review's: `rework` is not a pass.
+
+A pass is a completed review in this session's transcript whose `TREE`
+block names this repository and the pushed content id, or a remembered pass:
+`by-profile/<slug>/by-tree/<repo>/<sha>.json`, and
+`by-profile/<slug>/by-patch/<repo>/<patch>.json` for a tree with the same
+branch patch and rule files (`lang:rust` is `lang-rust`). The implementation
+review's own `by-tree/` files are unchanged. A missing profile is refused:
+
+```
+missing code review of <repo> tree <12 hex>: <agent> [--lang <x>], … (declared in <plan path>). Launch them on this tree, or narrow ## Code review with a reason.
+```
+
+The person's Overrule of a profile's `rework` uses
+`[implementation-review <repo>@<sha64> profile=<role>]` and writes that
+profile's pass only.
