@@ -624,6 +624,19 @@ fn doctor_rejects_an_unknown_flag_and_help_documents_json() {
     assert!(help.contains("doctor [--json]"), "{help}");
 }
 
+#[test]
+fn help_wins_over_an_unknown_flag_and_the_flag_alone_is_a_usage_error() {
+    let h = Home::new("help-wins");
+    let (code, help) = h.run(&["--bogus", "--help"]);
+    assert_eq!(code, 0);
+    assert!(help.contains("doctor [--json]"), "{help}");
+    let (code, _) = h.run(&["--bogus", "-h"]);
+    assert_eq!(code, 0);
+    let (code, alone) = h.run(&["--bogus-flag-for-probe"]);
+    assert_eq!(code, 2);
+    assert!(alone.contains("unknown command"), "{alone}");
+}
+
 /// A doctor run whose HOME and git config belong to the test: its stdout.
 fn plan_root_doctor(
     w: &Home,

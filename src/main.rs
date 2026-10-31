@@ -268,6 +268,11 @@ fn parse(argv: Vec<OsString>) -> Invocation {
             };
         }
     }
+    // Help wins over a word we do not know (cli.help.help-and-version):
+    // `amont-agent --bogus --help` is someone asking how to use us.
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        return Invocation::Help;
+    }
     Invocation::Usage(format!("unknown command `{head}`"))
 }
 
