@@ -90,10 +90,12 @@ repository directly under the plan root.
 
 **In flight**: each worktree of `git worktree list --porcelain` (the main
 checkout on the default branch with no session is not listed), and each local
-or `origin/` branch not merged into the default branch whose tip commit is
-newer than `--since` (default 48h), or that carries an active plan, or that a
-session's latest line names. A squash-merged branch older than `--since` with
-no plan and no session is left out. Each entry shows:
+or `origin/` branch not merged into the default branch that is live. A branch
+is live when its tip commit is newer than `--since` (default 48h), when it is
+checked out in a worktree, or when a session's latest activity line names it.
+Plans are read (`git diff`, `git show`) only for live branches: a stale
+unmerged branch, with or without a plan, costs no git call beyond the single
+`for-each-ref` listing and is not listed. Each entry shows:
 
 - the path (if checked out) and the branch;
 - the title of the active plan: a plan file under `docs/plans` that the branch
@@ -101,7 +103,11 @@ no plan and no session is left out. Each entry shows:
   whose `repos:` names several repositories is listed under each of them: in
   another repository's block it appears as a branch-only entry labelled
   `<repository>:<branch>`, found by scanning the other repositories directly
-  under the plan root, unless that repository carries the same file itself;
+  under the plan root, unless that repository carries the same file itself.
+  For such a repository a branch is live when its tip is within `--since` or
+  it is checked out; its sessions are not read here (ask `--repo` for that
+  repository). It costs the default-branch probes, one `for-each-ref` and one
+  `worktree list`, then plans only for its live branches;
 - `programme <slug> ticket <id>` for a `prog/<slug>/<id>` branch;
 - the sessions whose latest activity line names that worktree, with the full
   session id and the age of the activity file's modification time.

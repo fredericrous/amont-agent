@@ -356,9 +356,24 @@ fn worktrees(dir: &Path) -> Vec<Worktree> {
     found
 }
 
+/// A branch the listing found, with its tip time and the full ref to read.
+struct Unmerged {
+    name: String,
+    tip: u64,
+    reference: String,
+}
+
+/// The ref to read for `branch`: the listed one, else the local branch.
+fn reference_of(listed: &[Unmerged], branch: &str) -> String {
+    listed
+        .iter()
+        .find(|b| b.name == branch)
+        .map_or_else(|| format!("refs/heads/{branch}"), |b| b.reference.clone())
+}
+
 /// Branches not merged into `default`, with their tip commit time in epoch
 /// seconds, freshest first. A local branch and its `origin/` twin are one.
-fn unmerged_branches(dir: &Path, default: &str, default_name: &str) -> Vec<(String, u64)> {
+fn unmerged_branches(dir: &Path, default: &str, default_name: &str) -> Vec<Unmerged> {
     let listing = git::stdout_in(
         dir,
         &[
@@ -371,7 +386,7 @@ fn unmerged_branches(dir: &Path, default: &str, default_name: &str) -> Vec<(Stri
         ],
     )
     .unwrap_or_default();
-    let mut found: Vec<(String, u64)> = Vec::new();
+    let mut found: Vec<Unmerged> = Vec::new();
     for line in listing.lines() {
         let Some((reference, tip)) = line.split_once('\t') else {
             continue;
@@ -384,12 +399,21 @@ fn unmerged_branches(dir: &Path, default: &str, default_name: &str) -> Vec<(Stri
             continue;
         }
         let tip: u64 = tip.parse().unwrap_or(0);
-        match found.iter_mut().find(|(b, _)| b == branch) {
-            Some(existing) => existing.1 = existing.1.max(tip),
-            None => found.push((branch.to_string(), tip)),
+        match found.iter_mut().find(|b| b.name == branch) {
+            Some(existing) => {
+                existing.tip = existing.tip.max(tip);
+                if reference.starts_with("refs/heads/") {
+                    existing.reference = reference.to_string();
+                }
+            }
+            None => found.push(Unmerged {
+                name: branch.to_string(),
+                tip,
+                reference: reference.to_string(),
+            }),
         }
     }
-    found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    found.sort_by(|a, b| b.tip.cmp(&a.tip).then_with(|| a.name.cmp(&b.name)));
     found
 }
 
@@ -400,17 +424,9 @@ struct PlanRef {
     repos: Vec<String>,
 }
 
-/// The active plans `branch` adds under docs/plans, relative to `default`.
-fn active_plans(dir: &Path, default: &str, branch: &str) -> Vec<PlanRef> {
-    let reference = [
-        format!("refs/heads/{branch}"),
-        format!("refs/remotes/origin/{branch}"),
-    ]
-    .into_iter()
-    .find(|r| git::stdout_in(dir, &["rev-parse", "--verify", "--quiet", r]).is_some());
-    let Some(reference) = reference else {
-        return Vec::new();
-    };
+/// The active plans the branch at `reference` adds under docs/plans,
+/// relative to `default`.
+fn active_plans(dir: &Path, default: &str, reference: &str) -> Vec<PlanRef> {
     let range = format!("{default}...{reference}");
     let added = git::stdout_in(
         dir,
@@ -495,9 +511,14 @@ fn report(
             })
             .collect()
     };
+    let listed = if default.is_some() {
+        unmerged_branches(dir, &default_ref_name, &default_name)
+    } else {
+        Vec::new()
+    };
     let plans_of = |branch: &str| {
         if default.is_some() {
-            active_plans(dir, &default_ref_name, branch)
+            active_plans(dir, &default_ref_name, &reference_of(&listed, branch))
         } else {
             Vec::new()
         }
@@ -535,16 +556,20 @@ fn report(
     }
     if default.is_some() {
         let window = options.since.as_secs();
-        for (branch, tip) in unmerged_branches(dir, &default_ref_name, &default_name) {
+        for Unmerged {
+            name: branch, tip, ..
+        } in &listed
+        {
+            let branch = branch.clone();
             if checked_out.contains(&branch) {
                 continue;
             }
-            let plan_refs = plans_of(&branch);
-            own_plan_files.extend(plan_refs.iter().map(|p| p.file.clone()));
-            let plans: Vec<String> = plan_refs.into_iter().map(|p| p.title).collect();
             let named = sessions_of(&|s| s.branch == branch);
-            let recent = now_epoch.saturating_sub(tip) <= window;
-            if recent || !plans.is_empty() || !named.is_empty() {
+            let recent = now_epoch.saturating_sub(*tip) <= window;
+            if recent || !named.is_empty() {
+                let plan_refs = plans_of(&branch);
+                own_plan_files.extend(plan_refs.iter().map(|p| p.file.clone()));
+                let plans: Vec<String> = plan_refs.into_iter().map(|p| p.title).collect();
                 entries.push(Entry {
                     path: None,
                     branch,
@@ -554,7 +579,14 @@ fn report(
             }
         }
     }
-    entries.extend(sibling_plans(dir, &name, &own_plan_files, plan_root));
+    entries.extend(sibling_plans(
+        dir,
+        &name,
+        &own_plan_files,
+        plan_root,
+        options.since,
+        now_epoch,
+    ));
     let landed = if default.is_some() {
         landed(dir, &default_ref_name, options.since, now_epoch)
     } else {
@@ -572,12 +604,19 @@ fn report(
 /// `name` in their `repos:`, as branch-only entries labelled
 /// `<repository>:<branch>`; a plan whose file `name` already carries is left
 /// out.
-// holds-until: ~50 repositories under the plan root — one set of git calls per sibling per call; cache per repository after
+///
+/// Only a live branch is read: a tip within `since` or a checked-out
+/// worktree. Sessions are not consulted here: a sibling's sessions show when
+/// the board is asked about that repository. A sibling with no live branch
+/// costs its default-branch probes and two listings.
+// holds-until: ~100 repositories under the plan root — four to seven git calls per sibling per call (default-branch probes, `for-each-ref`, `worktree list`); cache per repository after
 fn sibling_plans(
     dir: &Path,
     name: &str,
     own_plan_files: &[String],
     plan_root: Option<&Path>,
+    since: Duration,
+    now_epoch: u64,
 ) -> Vec<Entry> {
     let Some(root) = plan_root else {
         return Vec::new();
@@ -599,18 +638,23 @@ fn sibling_plans(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let listed = unmerged_branches(&sibling, &default_ref_name, &default_name);
         let mut branches: Vec<String> = worktrees(&sibling)
             .into_iter()
             .filter_map(|tree| tree.branch)
             .filter(|b| *b != default_name)
             .collect();
-        for (branch, _) in unmerged_branches(&sibling, &default_ref_name, &default_name) {
-            if !branches.contains(&branch) {
-                branches.push(branch);
+        for fresh in listed
+            .iter()
+            .filter(|b| now_epoch.saturating_sub(b.tip) <= since.as_secs())
+        {
+            if !branches.contains(&fresh.name) {
+                branches.push(fresh.name.clone());
             }
         }
         for branch in branches {
-            let titles: Vec<String> = active_plans(&sibling, &default_ref_name, &branch)
+            let reference = reference_of(&listed, &branch);
+            let titles: Vec<String> = active_plans(&sibling, &default_ref_name, &reference)
                 .into_iter()
                 .filter(|p| p.repos.iter().any(|r| r == name) && !own_plan_files.contains(&p.file))
                 .map(|p| p.title)

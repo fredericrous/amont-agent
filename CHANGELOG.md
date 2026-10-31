@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- `amont-agent board` reads plans only for live branches (tip within
+  `--since`, checked out, or named by a session), in the selected repository
+  and in sibling plans; stale unmerged branches cost no git call beyond the
+  listing, so a root of ~100 repositories is fast (see `docs/board.md`).
+
 ### Added
 
 - `amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]`: a
