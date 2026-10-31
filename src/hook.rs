@@ -217,7 +217,8 @@ fn record_activity(
 }
 
 /// The session's first write in a repository, while another session was last
-/// seen working there within the window: told once per session and repository.
+/// seen working there within the window: told once per session and repository,
+/// counted from the first write that finds a live peer.
 fn work_overlap(
     op: &crate::payload::FileOp,
     place: &crate::activity::Place,
@@ -225,13 +226,6 @@ fn work_overlap(
 ) -> Decision {
     let rule = &rules::work_overlap::RULE;
     let key = format!("work-overlap {}", place.repo_identity.display());
-    let first = !matches!(
-        crate::lsp::told(&op.session, &key),
-        crate::lsp::Told::Before
-    );
-    if !first {
-        return Decision::Silent;
-    }
     let candidates = crate::activity::peers_in(&op.session, &place.repo_identity);
     if candidates.is_empty() {
         return Decision::Silent;
@@ -247,6 +241,14 @@ fn work_overlap(
     let Some(freshest) = live.first() else {
         return Decision::Silent;
     };
+    // Consumed only here, once a live peer is found: a session that met no
+    // peer is told when one appears.
+    if matches!(
+        crate::lsp::told(&op.session, &key),
+        crate::lsp::Told::Before
+    ) {
+        return Decision::Silent;
+    }
     let stance = crate::stance::resolve(rule);
     note_file(
         rule,

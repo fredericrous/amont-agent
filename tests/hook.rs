@@ -3018,6 +3018,15 @@ fn activity_is_appended_only_when_the_place_changes() {
     scene.call("Write", "act-s1", &scene.second_repo, 3 * HOUR);
     assert_eq!(scene.lines("act-s1").len(), 2, "same place, no new line");
     assert_eq!(scene.mtime("act-s1"), scene.start + 3 * HOUR);
+
+    let live = scene.call("Edit", "act-s2", &scene.second_repo, 3 * HOUR + 60);
+    assert!(live.reason().contains("work-overlap"), "{}", live.stdout);
+    let superseded = scene.call("Edit", "act-s3", &scene.first_repo, 3 * HOUR + 60);
+    assert!(
+        !superseded.reason().contains("work-overlap"),
+        "{}",
+        superseded.stdout
+    );
 }
 
 #[test]
@@ -3070,6 +3079,13 @@ fn a_git_commit_in_a_subshell_records_the_repository_it_runs_in() {
 #[test]
 fn work_overlap_tells_a_session_once_about_a_live_peer_in_its_repository() {
     let scene = Overlap::new("overlap-flow");
+    let plans = scene.second_repo.join("docs").join("plans");
+    std::fs::create_dir_all(&plans).expect("plans dir");
+    std::fs::write(
+        plans.join("2026-10-31-x.md"),
+        "---\nstatus: active\n---\n# Overlap Plan Title\n",
+    )
+    .expect("plan");
     // Session 1 ends in the second repository: its first line is superseded.
     scene.call("Edit", "ov-s1", &scene.first_repo, 0);
     scene.call("Edit", "ov-s1", &scene.second_repo, 60);
@@ -3087,6 +3103,7 @@ fn work_overlap_tells_a_session_once_about_a_live_peer_in_its_repository() {
         "1m",
         "amont-agent board --repo second",
         "SendMessage",
+        "Overlap Plan Title",
     ] {
         assert!(reason.contains(part), "{part}: {}", told.stdout);
     }
@@ -3100,6 +3117,18 @@ fn work_overlap_tells_a_session_once_about_a_live_peer_in_its_repository() {
         "{}",
         superseded.stdout
     );
+}
+
+#[test]
+fn work_overlap_is_told_when_a_peer_appears_after_a_silent_first_edit() {
+    let scene = Overlap::new("overlap-late");
+    let quiet = scene.call("Edit", "ovl-s2", &scene.second_repo, 0);
+    assert!(!quiet.reason().contains("work-overlap"), "{}", quiet.stdout);
+    scene.call("Edit", "ovl-s1", &scene.second_repo, 60);
+    let told = scene.call("Edit", "ovl-s2", &scene.second_repo, 120);
+    assert!(told.reason().contains("work-overlap"), "{}", told.stdout);
+    let again = scene.call("Edit", "ovl-s2", &scene.second_repo, 180);
+    assert!(!again.reason().contains("work-overlap"), "{}", again.stdout);
 }
 
 #[test]

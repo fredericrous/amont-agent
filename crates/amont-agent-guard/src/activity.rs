@@ -375,7 +375,7 @@ pub fn bash_targets(command: &str, cwd: &Path) -> Vec<PathBuf> {
             if text == "-C" {
                 match args.get(index + 1).map(|w| parsed.word_value(clause.at, w)) {
                     Some(Resolved::Text(path)) => dir = crate::rules::resolve(&dir, &path),
-                    _ => readable = false,
+                    Some(Resolved::Variable | Resolved::Substitution) | None => readable = false,
                 }
             }
             index += if valued { 2 } else { 1 };

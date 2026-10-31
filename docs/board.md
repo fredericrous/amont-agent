@@ -66,11 +66,17 @@ NotebookEdit in a repository, it advises once when another session's latest
 line names the same repository and that session is live. The window is 2 h
 and is set with `git config --global amont.agent.work-overlap.window`
 (`90m`, `3h`, `2d`; a bare number is seconds). The message names the other
-session, its worktree, its branch and how long ago it was last seen, and
-points to `amont-agent board --repo <repo name>`, then to a message to that
-session (SendMessage) or to the person. It is silent when the only matching
-activity is the session's own, and fires when another live session works in
-the very same worktree.
+session, its worktree, its branch, the title of the active plan in its
+worktree (read from `docs/plans` on disk, only when the rule fires) and how
+long ago it was last seen, and points to `amont-agent board --repo <repo
+name>`, then to a message to that session (SendMessage) or to the person. It
+is silent when the only matching activity is the session's own, and fires
+when another live session works in the very same worktree.
+
+The once-per-repository telling is used up only when a live peer is found:
+a session whose first write meets nobody is told on a later write, once a
+peer appears. Under `observe` the journalled firing counts as the telling,
+so the journal holds one line per session and repository.
 
 ## `amont-agent board`
 

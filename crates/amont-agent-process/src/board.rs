@@ -23,13 +23,13 @@ The work in flight per repository, and what landed recently, derived from git
 and the session activity files on every call. Read-only.
 
 In flight: each worktree; each local or origin branch not merged into the
-default branch whose tip commit is newer than --since, or that carries an
-active plan (a plan file under docs/plans the branch adds), or that a
-session's latest activity line names. Per entry: the path, the branch, the
+default branch that is live: its tip commit is newer than --since, it is
+checked out in a worktree, or a session's latest activity line names it. Per entry: the path, the branch, the
 active plan's title, `programme <slug> ticket <id>` for a prog/<slug>/<id>
 branch, and the sessions whose latest activity line names that worktree, each
-with its last-seen age. A squash-merged branch older than --since with no plan
-and no session is left out.
+with its last-seen age. A squash-merged branch older than --since that is not
+checked out and that no session names is left out. Listing the whole plan root
+(no --repo) skips the scan of sibling repositories for plans that name one.
 
 Just landed: the first-parent commits of the default branch within --since.
 

@@ -26,7 +26,9 @@
   `switch -c`.
 - Rule `work-overlap` (advise, ceiling advise): a session's first write in a
   repository is told once when another session was seen working there within
-  `git config amont.agent.work-overlap.window` (default 2h).
+  `git config amont.agent.work-overlap.window` (default 2h). The advice
+  names that session's worktree, branch and active plan; the telling is
+  used up only once a live peer is found.
 
 ### Changed
 
