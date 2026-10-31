@@ -417,5 +417,142 @@ fn the_whole_root_lists_each_repository_once_without_sibling_scans() {
     assert!(!text.contains("a-wt-x ("), "{text}");
     assert!(text.contains("[feat/x]"), "{text}");
     let calls = log.lines().count();
-    assert!(calls < 45, "{calls} git calls:\n{log}");
+    // The one live branch costs 5 more calls than before (merge-base, diff and
+    // patch-id for it, log and patch-id for the default branch): bound 50.
+    assert!(calls < 50, "{calls} git calls:\n{log}");
+}
+
+/// A branch `name` off main with one commit adding `file`, squash-merged into
+/// main as a single commit; the branch is left.
+fn squash_merged(repo: &Path, name: &str, file: &str) {
+    git(repo, &["checkout", "-q", "-b", name]);
+    commit_file(repo, file, "squashed\n", 3600);
+    git(repo, &["checkout", "-q", "main"]);
+    git(repo, &["merge", "--squash", "-q", name]);
+    git_at(repo, &["commit", "-q", "-m", "land work"], 1800);
+}
+
+fn json_entries(world: &World, repo: &str) -> Vec<serde_json::Value> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(&world.stdout(&["--repo", repo, "--json"])).expect("json");
+    parsed[0]["worktrees"].as_array().unwrap().clone()
+}
+
+#[test]
+fn a_squash_merged_branch_is_absent_and_stays_absent_after_main_moves_on() {
+    let world = World::new("squash");
+    let a = world.repo("a");
+    squash_merged(&a, "feat/squashed", "squashed.txt");
+    let got = world.stdout(&["--repo", "a"]);
+    assert!(!got.contains("feat/squashed"), "{got}");
+    commit_file(&a, "README.md", "x\nbumped\n", 600);
+    let got = world.stdout(&["--repo", "a"]);
+    assert!(!got.contains("feat/squashed"), "{got}");
+}
+
+#[test]
+fn a_merged_branch_in_a_worktree_is_labelled_and_flagged_in_the_json() {
+    let world = World::new("merged-tree");
+    let a = world.repo("a");
+    squash_merged(&a, "feat/squashed", "squashed.txt");
+    let tree = world.top.join("a-squashed");
+    git(
+        &a,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            tree.to_str().unwrap(),
+            "feat/squashed",
+        ],
+    );
+    let empty = world.top.join("a-empty");
+    git(
+        &a,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/empty",
+            empty.to_str().unwrap(),
+        ],
+    );
+    git(&a, &["checkout", "-q", "-b", "feat/cancel"]);
+    commit_file(&a, "tmp.txt", "t\n", 300);
+    git(&a, &["rm", "-q", "tmp.txt"]);
+    git_at(&a, &["commit", "-q", "-m", "remove tmp.txt"], 200);
+    git(&a, &["checkout", "-q", "-b", "feat/open", "main"]);
+    commit_file(&a, "open.txt", "o\n", 100);
+    git(&a, &["checkout", "-q", "main"]);
+
+    let text = world.stdout(&["--repo", "a"]);
+    let label = format!(
+        "[feat/squashed] (merged: git worktree remove {})",
+        tree.display()
+    );
+    assert!(text.contains(&label), "{text}");
+    assert!(text.contains("[feat/empty]\n"), "{text}");
+    assert!(text.contains("[feat/cancel]"), "{text}");
+    assert!(text.contains("[feat/open]"), "{text}");
+
+    let entries = json_entries(&world, "a");
+    for entry in &entries {
+        let branch = entry["branch"].as_str().unwrap();
+        assert_eq!(
+            entry["merged"],
+            serde_json::Value::Bool(branch == "feat/squashed"),
+            "{branch}"
+        );
+    }
+    assert_eq!(entries.len(), 4, "{entries:?}");
+}
+
+fn with_remote(world: &World, name: &str) -> (PathBuf, PathBuf) {
+    let repo = world.repo(name);
+    let remote = world.top.join(format!("{name}-remote.git"));
+    git(
+        &world.top,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&repo, &["push", "-q", "origin", "main"]);
+    (repo, remote)
+}
+
+#[test]
+fn fetch_prunes_in_parallel_and_names_only_the_failing_repository() {
+    let world = World::new("fetch");
+    let (a, a_remote) = with_remote(&world, "a");
+    let (_b, b_remote) = with_remote(&world, "b");
+    let (_c, _c_remote) = with_remote(&world, "c");
+    git(&a, &["checkout", "-q", "-b", "feat/gone"]);
+    commit_file(&a, "gone.txt", "g\n", 60);
+    git(&a, &["push", "-q", "origin", "feat/gone"]);
+    git(&a, &["checkout", "-q", "main"]);
+    git(&a, &["branch", "-q", "-D", "feat/gone"]);
+    assert!(world.stdout(&["--repo", "a"]).contains("[feat/gone]"));
+    git(&a_remote, &["branch", "-q", "-D", "feat/gone"]);
+    std::fs::remove_dir_all(&b_remote).unwrap();
+
+    let out = world.board(
+        &world.top,
+        &["--repo", "a", "--repo", "b", "--repo", "c", "--fetch"],
+    );
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(lines[0].starts_with("b:"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("feat/gone"));
 }

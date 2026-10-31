@@ -62,6 +62,21 @@
   still exits 2.
 ### Changed
 
+- `amont-agent board` reads a squash-merged branch as merged: a live branch
+  whose whole change has the same `git patch-id --stable` as one non-merge
+  commit on the default branch is left out, or, when a worktree holds it,
+  listed with `(merged: git worktree remove <path>)`; every worktree entry in
+  `--json` carries `"merged"`. Limits are in `docs/board.md`.
+- `work-overlap` names the active plan that the peer's branch added (read in
+  the peer's worktree, one 2 s budget for all named peers), and none for a peer
+  on the default branch; it no longer reads the worktree's `docs/plans` from
+  disk.
+- `amont-agent board --fetch` runs `git fetch --prune origin -q` for up to 4
+  repositories at once, finishes all fetches before reporting, and prints each
+  failure as one stderr line starting `<repo>:` in repository order.
+- The board's git lookups (default branch, added plans, merged-ness, fetch) run
+  on a bounded runner in `amont-agent-guard`: deadline, null stdin and stderr,
+  no prompts or optional locks, own process group killed at the deadline.
 - The session activity record and `work-overlap` cost less per write:
   `work-overlap` checks its read-only told record before looking for peers,
   peers are chosen by file modification time without opening stale files, the
