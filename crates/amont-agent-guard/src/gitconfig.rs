@@ -374,9 +374,59 @@ pub fn enumerated_or(key: &str, allowed: &[&'static str], default: &'static str)
     }
 }
 
+/// A length of time written as whole numbers with a unit: `45s`, `90m`, `3h`,
+/// `2d`. A bare number is seconds.
+pub fn parse_duration(text: &str) -> Option<std::time::Duration> {
+    let text = text.trim();
+    let digits = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    let count: u64 = text[..digits].parse().ok()?;
+    let unit: u64 = match &text[digits..] {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return None,
+    };
+    Some(std::time::Duration::from_secs(count.checked_mul(unit)?))
+}
+
+/// A duration setting (see [`parse_duration`]); a value that does not parse
+/// is reported once and the default is used.
+pub fn duration_or(key: &str, default: std::time::Duration) -> std::time::Duration {
+    match read(key, None) {
+        Value::Set(text) => parse_duration(&text).unwrap_or_else(|| {
+            complain(
+                key,
+                &format!("{:?} is not a duration such as 90m or 3h", text.trim()),
+                "the default",
+            );
+            default
+        }),
+        Value::Unset => default,
+        Value::Bad { why } => {
+            complain(key, &why, "the default");
+            default
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_take_a_unit_or_mean_seconds() {
+        use std::time::Duration;
+        assert_eq!(parse_duration("90m"), Some(Duration::from_secs(5400)));
+        assert_eq!(parse_duration(" 3h "), Some(Duration::from_secs(10_800)));
+        assert_eq!(parse_duration("45"), Some(Duration::from_secs(45)));
+        assert_eq!(parse_duration("2d"), Some(Duration::from_secs(172_800)));
+        for bad in ["", "h", "1.5h", "3x", "-1m"] {
+            assert_eq!(parse_duration(bad), None, "{bad}");
+        }
+    }
 
     /// The normalisation contract, without spawning git: whatever git hands
     /// back for `--type=bool` is one of exactly two strings, and anything

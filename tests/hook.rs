@@ -2863,3 +2863,315 @@ fn bug_nudge_is_silent_without_a_transcript_path() {
     assert_eq!(advisory_count(&r), 0, "{}", r.stdout);
     assert_ne!(r.decision().as_deref(), Some("deny"), "{}", r.stdout);
 }
+
+// The session activity record and work-overlap.
+
+/// As [`send`], with the hook's clock set to `now` (epoch seconds).
+fn send_clocked(payload: &str, now: u64) -> Reply {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("hook")
+        .env("CLAUDE_CONFIG_DIR", home())
+        .env("AMONT_AGENT_TEST_NOW", now.to_string())
+        .env("GIT_CONFIG_GLOBAL", home().join("no-global-gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("AMONT_AGENT_OFF")
+        .env_remove("AMONT_HOST_SLOT")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write the payload");
+    let out = child.wait_with_output().expect("the hook exits");
+    Reply {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+    }
+}
+
+/// Two repositories on `main` in a scratch dir, and the real clock's second.
+struct Overlap {
+    first_repo: PathBuf,
+    second_repo: PathBuf,
+    start: u64,
+}
+
+const HOUR: u64 = 3600;
+
+impl Overlap {
+    fn new(name: &str) -> Overlap {
+        let root = home().join(name).canonicalize_or_create();
+        let make = |repo: &str| {
+            let path = root.join(repo);
+            std::fs::create_dir_all(path.join(".git")).expect("a repository");
+            std::fs::write(path.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+            path
+        };
+        let start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_secs();
+        Overlap {
+            first_repo: make("first"),
+            second_repo: make("second"),
+            start,
+        }
+    }
+
+    fn activity_file(&self, session: &str) -> PathBuf {
+        home()
+            .join("amont-agent")
+            .join("sessions")
+            .join(format!("{session}.activity"))
+    }
+
+    fn lines(&self, session: &str) -> Vec<String> {
+        std::fs::read_to_string(self.activity_file(session))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn mtime(&self, session: &str) -> u64 {
+        std::fs::metadata(self.activity_file(session))
+            .expect("an activity file")
+            .modified()
+            .expect("mtime")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_secs()
+    }
+
+    fn call(&self, tool: &str, session: &str, repo: &std::path::Path, later: u64) -> Reply {
+        let file = serde_json::Value::String(repo.join("f.txt").display().to_string());
+        let cwd = serde_json::Value::String(repo.display().to_string());
+        let input = match tool {
+            "Edit" => format!(r#"{{"file_path":{file},"old_string":"a","new_string":"b"}}"#),
+            "Write" => format!(r#"{{"file_path":{file},"content":"b"}}"#),
+            _ => format!(r#"{{"file_path":{file}}}"#),
+        };
+        send_clocked(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"{tool}","cwd":{cwd},
+                     "session_id":"{session}","permission_mode":"default","tool_input":{input}}}"#
+            ),
+            self.start + later,
+        )
+    }
+
+    fn bash(&self, session: &str, command: &str, later: u64) -> Reply {
+        send_clocked(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/tmp",
+                     "session_id":"{session}","tool_use_id":"t1","permission_mode":"default",
+                     "tool_input":{{"command":{}}}}}"#,
+                serde_json::Value::String(command.to_string())
+            ),
+            self.start + later,
+        )
+    }
+}
+
+trait CanonicalizeOrCreate {
+    fn canonicalize_or_create(self) -> PathBuf;
+}
+
+impl CanonicalizeOrCreate for PathBuf {
+    fn canonicalize_or_create(self) -> PathBuf {
+        let _ = std::fs::remove_dir_all(&self); // a scratch dir a test may already have removed
+        std::fs::create_dir_all(&self).expect("scratch dir");
+        self.canonicalize().expect("canonical scratch dir")
+    }
+}
+
+#[test]
+fn activity_is_appended_only_when_the_place_changes() {
+    let scene = Overlap::new("act-lines");
+    scene.call("Edit", "act-s1", &scene.first_repo, 0);
+    scene.call("Edit", "act-s1", &scene.first_repo, 10);
+    let lines = scene.lines("act-s1");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let fields: Vec<&str> = lines[0].split_whitespace().collect();
+    assert_eq!(fields.len(), 4, "{lines:?}");
+    assert_eq!(fields[0], scene.start.to_string());
+    assert_eq!(
+        fields[1],
+        scene.first_repo.join(".git").display().to_string()
+    );
+    assert_eq!(fields[2], scene.first_repo.display().to_string());
+    assert_eq!(fields[3], "main");
+    assert_eq!(scene.mtime("act-s1"), scene.start + 10);
+
+    scene.call("Edit", "act-s1", &scene.second_repo, 20);
+    assert_eq!(scene.lines("act-s1").len(), 2);
+
+    scene.call("Read", "act-s1", &scene.first_repo, 30);
+    assert_eq!(scene.lines("act-s1").len(), 2, "a Read records nothing");
+    assert_eq!(scene.mtime("act-s1"), scene.start + 20);
+
+    scene.call("Write", "act-s1", &scene.second_repo, 3 * HOUR);
+    assert_eq!(scene.lines("act-s1").len(), 2, "same place, no new line");
+    assert_eq!(scene.mtime("act-s1"), scene.start + 3 * HOUR);
+}
+
+#[test]
+fn activity_follows_a_linked_worktree_to_its_repository_and_branch() {
+    let scene = Overlap::new("act-linked");
+    let git_dir = scene.first_repo.join(".git").join("worktrees").join("feat");
+    std::fs::create_dir_all(&git_dir).expect("worktree admin dir");
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feat/x\n").expect("HEAD");
+    std::fs::write(git_dir.join("commondir"), "../..\n").expect("commondir");
+    let linked = scene.first_repo.parent().expect("parent").join("linked");
+    std::fs::create_dir_all(&linked).expect("linked worktree");
+    std::fs::write(
+        linked.join(".git"),
+        format!("gitdir: {}\n", git_dir.display()),
+    )
+    .expect("gitdir file");
+    scene.call("Edit", "act-linked-s1", &linked, 0);
+    let line = scene.lines("act-linked-s1").remove(0);
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(
+        fields[1],
+        scene.first_repo.join(".git").display().to_string(),
+        "{line}"
+    );
+    assert_eq!(fields[2], linked.display().to_string(), "{line}");
+    assert_eq!(fields[3], "feat/x", "{line}");
+}
+
+#[test]
+fn a_target_outside_any_repository_records_nothing() {
+    let scene = Overlap::new("act-none");
+    let outside = home().join("act-none-outside").canonicalize_or_create();
+    scene.call("Edit", "act-none-s1", &outside, 0);
+    assert!(scene.lines("act-none-s1").is_empty());
+}
+
+#[test]
+fn a_git_commit_in_a_subshell_records_the_repository_it_runs_in() {
+    let scene = Overlap::new("act-bash");
+    let repo = scene.second_repo.display();
+    scene.bash("act-bash-s1", &format!("(cd {repo} && git commit -m x)"), 0);
+    let lines = scene.lines("act-bash-s1");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains(&format!("{repo}/.git")), "{lines:?}");
+    scene.bash("act-bash-s1", "git status", 5);
+    scene.bash("act-bash-s1", &format!("cd {repo} && ls"), 6);
+    assert_eq!(scene.mtime("act-bash-s1"), scene.start);
+}
+
+#[test]
+fn work_overlap_tells_a_session_once_about_a_live_peer_in_its_repository() {
+    let scene = Overlap::new("overlap-flow");
+    // Session 1 ends in the second repository: its first line is superseded.
+    scene.call("Edit", "ov-s1", &scene.first_repo, 0);
+    scene.call("Edit", "ov-s1", &scene.second_repo, 60);
+
+    let own = scene.call("Edit", "ov-s1", &scene.second_repo, 120);
+    assert!(!own.reason().contains("work-overlap"), "{}", own.stdout);
+
+    let told = scene.call("Edit", "ov-s2", &scene.second_repo, 180);
+    let reason = told.reason();
+    for part in [
+        "work-overlap",
+        "ov-s1",
+        &scene.second_repo.display().to_string(),
+        "main",
+        "1m",
+        "amont-agent board --repo second",
+        "SendMessage",
+    ] {
+        assert!(reason.contains(part), "{part}: {}", told.stdout);
+    }
+    assert_eq!(told.decision(), None, "advice, not a refusal");
+    let again = scene.call("Edit", "ov-s2", &scene.second_repo, 240);
+    assert!(!again.reason().contains("work-overlap"), "{}", again.stdout);
+
+    let superseded = scene.call("Edit", "ov-s2", &scene.first_repo, 300);
+    assert!(
+        !superseded.reason().contains("work-overlap"),
+        "{}",
+        superseded.stdout
+    );
+}
+
+#[test]
+fn work_overlap_fires_for_a_third_session_in_the_very_same_worktree() {
+    let scene = Overlap::new("overlap-same");
+    scene.call("Edit", "ovs-s1", &scene.first_repo, 0);
+    let told = scene.call("Write", "ovs-s3", &scene.first_repo, 30);
+    assert!(told.reason().contains("ovs-s1"), "{}", told.stdout);
+    let read = scene.call("Read", "ovs-s4", &scene.first_repo, 40);
+    assert!(!read.reason().contains("work-overlap"), "{}", read.stdout);
+}
+
+#[test]
+fn work_overlap_ignores_a_session_not_seen_inside_the_window() {
+    let scene = Overlap::new("overlap-stale");
+    scene.call("Edit", "ovo-s1", &scene.first_repo, 0);
+    // A recent line, but the session was last seen three hours ago.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(scene.activity_file("ovo-s1"))
+        .expect("the activity file");
+    file.set_modified(
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(scene.start - 3 * HOUR),
+    )
+    .expect("set the mtime back");
+    let quiet = scene.call("Edit", "ovo-s2", &scene.first_repo, 0);
+    assert!(!quiet.reason().contains("work-overlap"), "{}", quiet.stdout);
+}
+
+#[test]
+fn work_overlap_window_is_read_from_git_config() {
+    let scene = Overlap::new("overlap-window");
+    scene.call("Edit", "ovw-s1", &scene.first_repo, 0);
+    let window_config = home().join("window.gitconfig");
+    std::fs::write(
+        &window_config,
+        "[amont \"agent.work-overlap\"]\n\twindow = 90m\n",
+    )
+    .expect("config");
+    let edit = |session: &str, later: u64| {
+        let file = serde_json::Value::String(scene.first_repo.join("f.txt").display().to_string());
+        let cwd = serde_json::Value::String(scene.first_repo.display().to_string());
+        let payload = format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default",
+                 "tool_input":{{"file_path":{file},"old_string":"a","new_string":"b"}}}}"#
+        );
+        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("hook")
+            .env("CLAUDE_CONFIG_DIR", home())
+            .env("AMONT_AGENT_TEST_NOW", (scene.start + later).to_string())
+            .env("GIT_CONFIG_GLOBAL", &window_config)
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env_remove("AMONT_AGENT_OFF")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("the binary runs");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(payload.as_bytes())
+            .expect("payload");
+        String::from_utf8_lossy(&child.wait_with_output().expect("exits").stdout).into_owned()
+    };
+    // The default window (2 h) would still hold the peer; 90 m does not.
+    assert!(!edit("ovw-s2", 100 * 60).contains("work-overlap"));
+    let default_window = scene.call("Edit", "ovw-s3", &scene.first_repo, 100 * 60);
+    assert!(
+        default_window.reason().contains("ovw-s1"),
+        "{}",
+        default_window.stdout
+    );
+}

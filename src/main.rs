@@ -18,6 +18,7 @@
 //! git remote named `install` once ran the installer mid-push; the same class
 //! of accident is available to anything that scans argv for a verb.
 
+use amont_agent_guard::activity;
 use amont_agent_guard::analysis;
 use amont_agent_guard::assertions;
 use amont_agent_guard::backtest;

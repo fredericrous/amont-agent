@@ -47,6 +47,7 @@ pub const RULES: &[Rule] = &[
     crate::rules::lint_suppression_added::RULE,
     crate::rules::agent_guidance_written::RULE,
     crate::rules::agent_guidance_shape::RULE,
+    crate::rules::work_overlap::RULE,
     crate::rules::adr_lint_written::RULE,
     crate::rules::test_output_trimmed::RULE,
     crate::rules::workspace_root_write::RULE,
@@ -154,14 +155,15 @@ mod tests {
         }
     }
 
-    /// The table holds every rule, in its place: 45 on main before the
-    /// workspace split (42 after three observe rules were retired), with `push-preview` between `push-preflight` and
+    /// The table holds every rule, in its place: 46 rules, which are the 45
+    /// left after the workspace split and the observe-rule retirements, plus
+    /// `work-overlap`, with `push-preview` between `push-preflight` and
     /// `plan-review-panel`, and `implementation-review` after
     /// `plan-phases-open`. A rule a crate stopped listing would vanish here.
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 45, "{ids:?}");
+        assert_eq!(ids.len(), 46, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)

@@ -193,6 +193,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/agent-guidance-shape.cases"),
     ),
     (
+        "work-overlap",
+        include_str!("../tests/corpus/work-overlap.cases"),
+    ),
+    (
         "git-add-broad",
         include_str!("../tests/corpus/git-add-broad.cases"),
     ),

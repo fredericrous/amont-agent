@@ -4,6 +4,7 @@
 //! or the binary: the crate graph keeps it that way (decisions ADR-0039;
 //! plan `docs/plans/2026-10-19-guard-and-work-process-components.md`).
 
+pub mod activity;
 pub mod analysis;
 pub mod assertions;
 pub mod atomic;

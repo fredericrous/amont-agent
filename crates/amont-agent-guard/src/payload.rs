@@ -550,15 +550,21 @@ pub fn parse(raw: &str) -> Event {
             if matches!(
                 v.get("tool_name").and_then(|x| x.as_str()),
                 Some("Read" | "Edit" | "Write" | "MultiEdit")
-            ) =>
+            ) || (stage == "PreToolUse"
+                && v.get("tool_name").and_then(|x| x.as_str()) == Some("NotebookEdit")) =>
         {
             let tool = v
                 .get("tool_name")
                 .and_then(|x| x.as_str())
                 .unwrap_or_default();
             let input = v.get("tool_input");
+            let path_key = if tool == "NotebookEdit" {
+                "notebook_path"
+            } else {
+                "file_path"
+            };
             let Some(path) = input
-                .and_then(|i| i.get("file_path"))
+                .and_then(|i| i.get(path_key))
                 .and_then(|p| p.as_str())
                 .filter(|p| !p.trim().is_empty())
             else {

@@ -129,14 +129,137 @@ fn decide(raw: &str) -> Decision {
         Event::Stop(stop) => crate::plan_phases::on_stop(&stop, || {
             crate::stance::resolve(&rules::plan_phases_open::RULE)
         }),
-        Event::PreFile(op) => on_file(&op),
+        Event::PreFile(op) => on_pre_file(&op),
         Event::PreGrep(op) => on_grep(&op),
         Event::PostLsp(call) => on_post_lsp(&call),
         Event::PostFile(op) => on_post_file(&op),
         Event::PostWrite(op) => on_post_write(&op),
-        Event::PreBash(bash) => on_bash(&bash),
+        Event::PreBash(bash) => {
+            let decision = on_bash(&bash);
+            record_bash_activity(&bash);
+            decision
+        }
         Event::PostBash(bash) => on_post_bash(&bash),
         Event::PostBashFailure(bash) => on_post_bash_failure(&bash),
+    }
+}
+
+/// The environment variable that replaces the clock the activity record and
+/// `work-overlap` read, as epoch seconds. For tests: the hook is a process per
+/// call, so a test cannot pass a clock any other way.
+const ENV_NOW: &str = "AMONT_AGENT_TEST_NOW";
+
+fn clock() -> std::time::SystemTime {
+    std::env::var(ENV_NOW)
+        .ok()
+        .and_then(|seconds| seconds.trim().parse::<u64>().ok())
+        .map_or_else(std::time::SystemTime::now, |seconds| {
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+        })
+}
+
+/// A Read, Edit, Write, MultiEdit or NotebookEdit about to run. A write also
+/// asks `work-overlap` and then records where the session works; the record
+/// comes after the decision and never changes it.
+fn on_pre_file(op: &crate::payload::FileOp) -> Decision {
+    let decision = on_file(op);
+    if !op.writes || crate::stance::switched_off() {
+        return decision;
+    }
+    let Some(place) = op.path.parent().and_then(crate::activity::resolve) else {
+        return decision;
+    };
+    let now = clock();
+    let overlap = work_overlap(op, &place, now);
+    record_activity(&op.session, &place, now, &op.permission_mode, &op.cwd);
+    combine([decision, overlap])
+}
+
+/// A git command that changes where the session works records its place.
+fn record_bash_activity(bash: &Bash) {
+    if crate::stance::switched_off() {
+        return;
+    }
+    let now = clock();
+    for target in crate::activity::bash_targets(&bash.command, &bash.cwd) {
+        if let Some(place) = crate::activity::resolve(&target) {
+            record_activity(&bash.session, &place, now, &bash.permission_mode, &bash.cwd);
+        }
+    }
+}
+
+/// Keep the session's activity; a failure is journalled once per session and
+/// then ignored.
+fn record_activity(
+    session: &str,
+    place: &crate::activity::Place,
+    now: std::time::SystemTime,
+    mode: &str,
+    cwd: &std::path::Path,
+) {
+    let Err(failure) = crate::activity::record(session, place, now) else {
+        return;
+    };
+    if matches!(
+        crate::lsp::told(session, "activity-unrecorded"),
+        crate::lsp::Told::First
+    ) {
+        journal::record(&journal::Entry {
+            rule: rules::work_overlap::RULE.id,
+            stance: "-",
+            outcome: "unrecorded",
+            session,
+            repo: &repo_name(cwd),
+            mode,
+            excerpt: failure.as_str(),
+        });
+    }
+}
+
+/// The session's first write in a repository, while another session was last
+/// seen working there within the window: told once per session and repository.
+fn work_overlap(
+    op: &crate::payload::FileOp,
+    place: &crate::activity::Place,
+    now: std::time::SystemTime,
+) -> Decision {
+    let rule = &rules::work_overlap::RULE;
+    let key = format!("work-overlap {}", place.repo_identity.display());
+    let first = !matches!(
+        crate::lsp::told(&op.session, &key),
+        crate::lsp::Told::Before
+    );
+    if !first {
+        return Decision::Silent;
+    }
+    let candidates = crate::activity::peers_in(&op.session, &place.repo_identity);
+    if candidates.is_empty() {
+        return Decision::Silent;
+    }
+    let window = amont_agent_guard::gitconfig::duration_or(
+        "amont.agent.work-overlap.window",
+        crate::activity::DEFAULT_WINDOW,
+    );
+    let live: Vec<crate::activity::Peer> = candidates
+        .into_iter()
+        .filter(|peer| peer.is_live(now, window))
+        .collect();
+    let Some(freshest) = live.first() else {
+        return Decision::Silent;
+    };
+    let stance = crate::stance::resolve(rule);
+    note_file(
+        rule,
+        stance,
+        op,
+        &format!("{} in {}", freshest.session, freshest.worktree.display()),
+    );
+    match stance {
+        Stance::Observe => Decision::Silent,
+        // The ceiling is advise (`max_stance`); a deny stance still advises.
+        Stance::Advise | Stance::Deny => {
+            Decision::Advise(rules::work_overlap::phrase(&place.repo_name(), &live, now))
+        }
     }
 }
 

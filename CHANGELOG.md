@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- Each session's activity is recorded in
+  `<journal dir>/sessions/<session>.activity` (repository, worktree, branch;
+  see `docs/board.md`) on an Edit, Write, MultiEdit or NotebookEdit and on a
+  Bash `git commit`, `push`, `tag`, `worktree add`, `checkout -b` or
+  `switch -c`.
+- Rule `work-overlap` (advise, ceiling advise): a session's first write in a
+  repository is told once when another session was seen working there within
+  `git config amont.agent.work-overlap.window` (default 2h).
+
 ### Changed
 
 - `amont-agent uninstall` deletes a `settings.json` that is exactly `{}` once
