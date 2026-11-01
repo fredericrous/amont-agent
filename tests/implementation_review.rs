@@ -1712,12 +1712,14 @@ fn a_patch_id_that_cannot_be_computed_holds_the_push() {
 /// A diff larger than a pipe's buffer is still being written when the
 /// failing `git patch-id` exits: the write must fail, not kill the hook
 /// (SIGPIPE), on every run rather than when the race goes that way.
+#[cfg(unix)]
 #[test]
 fn a_patch_id_that_exits_before_reading_holds_the_push() {
     let past_pipe_buffer = "x\n".repeat(100 * 1024);
     patch_id_failure_holds_the_push("bypatch-noread", Some(&past_pipe_buffer));
 }
 
+#[cfg(unix)]
 fn patch_id_failure_holds_the_push(name: &str, oversized_file: Option<&str>) {
     let w = World::new(name);
     let repo = w.repo("app");
