@@ -41,6 +41,7 @@ use amont_agent_guard::payload;
 use amont_agent_guard::push_target;
 #[cfg(unix)]
 use amont_agent_guard::quiet;
+use amont_agent_process::code_review;
 use amont_agent_process::impl_review_outcomes;
 use amont_agent_process::implementation_review;
 use amont_agent_process::implementation_review_rule;
@@ -391,6 +392,9 @@ fn main() -> ExitCode {
                 let mut findings =
                     doctor::run(rule_table::RULES, attestations::doctor_finding(), &scanned);
                 findings.push(plan_root_finding());
+                if let Ok(project) = std::env::current_dir() {
+                    findings.extend(amont_agent_process::agents::review_gaps(&project));
+                }
                 let healthy = if args.iter().any(|a| a == "--json") {
                     println!(
                         "{}",
@@ -1224,7 +1228,7 @@ command on stderr, nothing on stdout); 2 on a usage error.
 ";
 
 const REVIEW_BRIEF_USAGE: &str = "\
-usage: amont-agent review-brief [-C <dir>] [--plan <path>] [--base <ref>]
+usage: amont-agent review-brief [-C <dir>] [--plan <path>] [--base <ref>] [--profile <role>]
 
 The markdown brief an implementation reviewer is launched with: the
 <<<TREE ...>>> block, the <<<RULES sha=...>>> line and adr-lint's
@@ -1241,6 +1245,12 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
                   since the merge-base; the brief says when there is none
                   or several)
   --base <ref>    the base ref (default: the remote's default branch)
+  --profile <role>
+                  a code-review profile (backend, platform, unix, tui,
+                  react, ui-design, architect or lang:<x>): adds a `Profile:
+                  <role>` line and, after the code rules, the judge rules
+                  whose `Reviewed by:` names that role. Without it the plan
+                  section carries the plan's declared code review.
 
 Exit 0; 1 when the repository or its base cannot be read; 3 when aval is missing or fails (nothing on
 stdout); 2 on a usage error.
@@ -1251,6 +1261,7 @@ struct BriefFlags {
     dir: std::path::PathBuf,
     plan: Option<std::path::PathBuf>,
     base: Option<String>,
+    profile: Option<String>,
 }
 
 /// One subcommand's name, usage and accepted flags, kept together.
@@ -1270,7 +1281,7 @@ const RULES_SHA_COMMAND: BriefCommand = BriefCommand {
 const REVIEW_BRIEF_COMMAND: BriefCommand = BriefCommand {
     name: "review-brief",
     usage: REVIEW_BRIEF_USAGE,
-    flags: &["-C", "--plan", "--base"],
+    flags: &["-C", "--plan", "--base", "--profile"],
 };
 
 fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, ExitCode> {
@@ -1291,6 +1302,7 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
         dir: std::path::PathBuf::from("."),
         plan: None,
         base: None,
+        profile: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -1340,7 +1352,16 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
             "-C" => flags.dir = std::path::PathBuf::from(value),
             "--plan" => flags.plan = Some(std::path::PathBuf::from(value)),
             "--base" => flags.base = Some(value),
-            _ => unreachable!("`accepted` holds only -C, --plan and --base"),
+            "--profile" => {
+                if !code_review::valid_profile(&value) {
+                    eprintln!(
+                        "amont-agent: {name}: unknown profile `{value}`; try `amont-agent {name} --help`"
+                    );
+                    return Err(ExitCode::from(2));
+                }
+                flags.profile = Some(value);
+            }
+            _ => unreachable!("`accepted` holds only -C, --plan, --base and --profile"),
         }
     }
     Ok(flags)
@@ -1372,6 +1393,7 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
         dir: flags.dir,
         plan: flags.plan,
         base: flags.base,
+        profile: flags.profile,
     };
     match review_brief::build(&request) {
         Ok(brief) => {
@@ -1393,7 +1415,7 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
 }
 
 const PLAN_PANEL_USAGE: &str = "\
-usage: amont-agent plan-panel <plan.md>
+usage: amont-agent plan-panel [--code-review] <plan.md>
 
 The review agents a plan still needs, computed as the plan-review-panel
 hook will judge it at ExitPlanMode: the areas of every repository in the
@@ -1404,8 +1426,16 @@ First line: repos=<names> areas=<areas> body=<12 hex> panel=full|delta|current
 Then one line per agent to launch: `plan-review-<role>`, and `--lang <l>`
 for a language review (the flag its `plan-sha --block` call takes).
 
-Exit 0, 1 when the plan cannot be read or its comment is wrong (the reason
-on stderr), 2 on a usage error.
+--code-review prints, instead, the code-review profiles proposed for each
+repository of the machine comment, from its areas: one line
+`<repo>\t<profiles comma-separated|none>` (none: no language, nothing to
+read). A plan's `## Code review` section (`- <repo>: <profiles>` or
+`- <repo>: none — <reason>`, after Non-goals) declares them; without the
+flag a plan with no such section is warned about on stderr and the
+output above is unchanged.
+
+Exit 0, 1 when the plan cannot be read, its comment is wrong or its Code
+review section does not parse (the reason on stderr), 2 on a usage error.
 ";
 
 fn run_plan_panel(args: &[OsString]) -> ExitCode {
@@ -1417,10 +1447,41 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
         print!("{PLAN_PANEL_USAGE}");
         return ExitCode::SUCCESS;
     }
-    let [file] = args.as_slice() else {
+    let proposing = args.iter().any(|a| a == "--code-review");
+    let operands: Vec<&String> = args.iter().filter(|a| *a != "--code-review").collect();
+    let [file] = operands.as_slice() else {
         eprint!("amont-agent: plan-panel takes one plan file\n\n{PLAN_PANEL_USAGE}");
         return ExitCode::from(2);
     };
+    let text = match code_review::read_plan(std::path::Path::new(file)) {
+        Ok(text) => text,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            return ExitCode::from(1);
+        }
+    };
+    match code_review::parse(&text) {
+        Err(why) => {
+            eprintln!("amont-agent: plan-panel: ## Code review: {why}");
+            return ExitCode::from(1);
+        }
+        Ok(None) if !proposing => eprintln!(
+            "amont-agent: plan-panel: no ## Code review section; run plan-panel --code-review and add it after ## Non-goals"
+        ),
+        Ok(_) => {}
+    }
+    if proposing {
+        return match code_review::proposal(&text) {
+            Ok(lines) => {
+                print!("{lines}");
+                ExitCode::SUCCESS
+            }
+            Err(why) => {
+                eprintln!("amont-agent: {why}");
+                ExitCode::from(1)
+            }
+        };
+    }
     match plan_review::panel(std::path::Path::new(file)) {
         Ok(p) => {
             let areas = p.classes.iter().cloned().collect::<Vec<_>>().join(",");

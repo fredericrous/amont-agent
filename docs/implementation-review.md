@@ -178,6 +178,15 @@ under `docs/plans/` changed on the branch, read from the pushed tree),
 amont-agent does not own, and the signer, amont, computes it and inserts it
 before signing. A payload that carries one is refused by the signer.
 
+After the `review` line, one `code-review <role> <how> <content id>` line
+records each code-review profile the plan declares for the repository, in
+declaration order: `how` is `reviewed`, `by-patch`, `carried` or `overruled`,
+and the content id is the tree that profile's review read. A push with no
+declared profile writes no such line. `amont-agent doctor` (and `doctor
+--json`) reports one gap for each code-review agent file
+(`code-review-<role>.md`, `code-review-language.md`, `interface-review.md`)
+that no agents directory carries, and says nothing when all eight are there.
+
 It is written on `reviewed`, `reviewed-by-patch`, `overruled`,
 `overruled-by-patch` and on a transcript pass; never for a held push or a push
 declined as no-plan, no-branch, dry-run or nothing-new. A write that fails is
@@ -319,3 +328,82 @@ goes to stderr. The command writes only `outcomes.jsonl`
 and its lock file, never a pass file. `amont-agent plan-review stats` reads
 this ledger and reports it as role `implementation-review`, `fixed` counting as
 accepted.
+
+## Per-profile briefs
+
+`amont-agent review-brief --profile <role>` (`backend`, `platform`, `unix`,
+`tui`, `react`, `ui-design`, `architect` or `lang:<x>`) adds a
+`Profile: <role>` line after the TREE, RULES and CANDIDATES lines and, after
+the code rules, a `## Judge rules for <role>` section: the full text of each
+active code rule whose `**Checked by:**` classes are all `judge` and whose
+`**Reviewed by:**` line names the role (`language` matches any `lang:<x>`).
+A `Reviewed by:` name outside that set makes the command exit 1 naming the
+rule and the name; an unknown `--profile` exits 2. Without `--profile` the
+brief is unchanged except for one line in the plan section, `Declared code
+review for <repo>: <profiles|none — reason|not declared>`, read from the
+plan (the canonical file of a pointer plan, under the plan root).
+
+## The declared profiles at a push
+
+When the plan declares code-review profiles for the repository, the push
+needs a pass for each of them on the pushed tree, beside the implementation
+review (ADR-0052). The hook reads the declaration from the plan(s) changed
+under `docs/plans/` between the merge base and the pushed commit, as that
+commit holds them; a pointer plan (`canonical: <repo>:<path>`) is read
+through its canonical file under the plan root. A canonical file or a
+`## Code review` section that cannot be read is held under `deny` and
+journalled (`profiles-unreadable`) otherwise. A plan with no section, or a
+repository line `none — …`, requires the implementation review alone; a
+plan with no section journals `undeclared-profiles`.
+
+A completed launch counts for a profile only when its agent is the one the
+profile maps to (`lang:<x>` to `code-review-language`, `ui-design` to
+`interface-review`, any other role to `code-review-<role>`) and its prompt
+carries exactly one `Profile: <role>` line naming that profile. Two lines, or
+a line naming another profile, count for nothing. A resumed round
+(`SendMessage`) inherits its launch's profile and may omit the line; one that
+names another profile counts for nothing. A profile review never satisfies
+the implementation review, nor the reverse. A profile's verdict is read like
+the implementation review's: `rework` is not a pass.
+
+A pass is a completed review in this session's transcript whose `TREE`
+block names this repository and the pushed content id, or a remembered pass:
+`by-profile/<slug>/by-tree/<repo>/<sha>.json`, and
+`by-profile/<slug>/by-patch/<repo>/<patch>.json` for a tree with the same
+branch patch and rule files (`lang:rust` is `lang-rust`). The implementation
+review's own `by-tree/` files are unchanged. A missing profile is refused:
+
+```
+missing code review of <repo> tree <12 hex>: <agent> [--lang <x>], … (declared in <plan path>). Launch them on this tree, or narrow ## Code review with a reason.
+```
+
+The person's Overrule of a profile's `rework` uses
+`[implementation-review <repo>@<sha64> profile=<role>]` and writes that
+profile's pass only.
+
+### A profile's `approve` carries to a fix
+
+After a fix the implementation review always reads the new tree, and a
+profile whose verdict was `rework` or `approve-with-changes` reviews again.
+A profile that said `approve` keeps its pass on a later pushed tree when the
+hook can check it (`work.code-review-delta`, ADR-0052). A profile pass
+records the commit the review read (the newest commit of
+`git rev-list <pushed> ^<merge-base>` whose content id is the reviewed tree),
+the plan that declared the profile, and a digest of this repository's parsed
+`## Code review` declaration. When a declared profile has no pass on the
+pushed tree, and the implementation review has passed it, the hook accepts the
+pass of an earlier commit C only when all hold:
+
+- its verdict is `approve` (not `approve-with-changes`, `rework` or
+  `overruled`);
+- C is in `git rev-list <pushed> ^<merge-base>`: an ancestor of the pushed
+  commit and strictly after the current merge-base, so a rebased branch (the
+  old commit is no longer an ancestor) and a review from a plan already merged
+  carry nothing; a rebase keeps a pass only by patch, as before;
+- its plan path and declaration digest equal the current ones;
+- the pass has all three fields; one written without them never carries.
+
+The carry writes a pass for the pushed tree (`how` is `carried-from <12 hex
+of the reviewed content id>`) and journals `profile-carried` with
+`carried-from <12 hex>` and the `git diff --shortstat C <pushed>`. Otherwise
+the profile is missing and must review the new tree.

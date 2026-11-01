@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Added
+
+- The provenance payload records one line per declared code-review profile,
+  after the `review` line and in declaration order:
+  `code-review <role> <reviewed|by-patch|carried|overruled> <content id>`.
+  A push with no declared profile writes none, so its payload is unchanged.
+  `amont-agent doctor` reports a gap for each code-review agent file
+  (`code-review-<role>`, `code-review-language`, `interface-review`) that is
+  not installed (ADR-0052).
+- A code-review profile that said `approve` keeps its pass on a later pushed
+  tree of the same branch when the hook can check it: the same landed plan
+  and `## Code review` declaration, the reviewed commit an ancestor of the
+  pushed one strictly after the merge-base, and the implementation review
+  passed the pushed tree. The hook journals `profile-carried` with
+  `carried-from <12 hex>` and the shortstat since the reviewed commit. A
+  pass written without the reviewed commit, plan and declaration digest, an
+  `approve-with-changes`, and a rebased branch carry nothing (ADR-0052,
+  `work.code-review-delta`).
+- The implementation-review push hook also requires, for each code-review
+  profile the branch's plan declares for the repository (`## Code review`,
+  read from the plan changed under `docs/plans/`, or from the canonical plan
+  of a pointer plan), a completed review of the pushed tree by that
+  profile's agent (`code-review-<role>`, `code-review-language` for
+  `lang:<x>`, `interface-review` for `ui-design`), bound by the prompt's one
+  `Profile: <role>` line. Passes are kept under
+  `implementation-review/by-profile/<slug>/`, by tree and by patch. A plan
+  with no section keeps today's behaviour and journals
+  `undeclared-profiles`. The Overrule marker takes
+  `[implementation-review <repo>@<sha64> profile=<role>]` (ADR-0052).
+- `amont-agent plan-panel --code-review <plan.md>` prints the code-review
+  profiles proposed for each repository of the plan's machine comment, from
+  its areas (`<repo>\t<profiles|none>`). Without the flag the output is
+  unchanged; a plan with no `## Code review` section gets a warning on
+  stderr, and a section that does not parse exits 1 (ADR-0052).
+- `amont-agent review-brief --profile <role>` adds a `Profile: <role>` line
+  and a `## Judge rules for <role>` section with the judge-only code rules
+  whose `Reviewed by:` names the role. Without it the plan section carries
+  a `Declared code review for <repo>: …` line.
+
 ### Fixed
 
 - `amont-agent --bogus --help` prints the help and exits 0: help wins over a
