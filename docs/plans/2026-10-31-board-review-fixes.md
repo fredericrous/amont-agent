@@ -1,5 +1,5 @@
 ---
-canonical: github:fredericrous/decisions/docs/plans/2026-10-31-board-review-fixes.md
+canonical: decisions:docs/plans/2026-10-31-board-review-fixes.md
 phases: [2]
 status: active
 branch: fix/board-review
