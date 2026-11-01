@@ -26,7 +26,7 @@ The fix belongs in the hook, so the rule holds whatever the author pastes.
 
 ## Goal
 
-The hook counts only the `Profile:` lines in the prompt's header. The header is the lines before the first Markdown heading or the first code fence. An inlined brief, which starts with `# … review brief`, and an inlined diff, which sits in a fenced block, can no longer add a Profile line.
+The hook counts only the `Profile:` lines in the prompt's header. The header is the lines before the first Markdown heading, the first code fence (backticks or tildes), or an unfenced diff. An inlined brief, which starts with `# … review brief`, and an inlined diff, which sits in a fenced block, can no longer add a Profile line.
 
 ## Non-goals
 
@@ -39,7 +39,7 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
 
 ## Behaviour
 
-- `profile_lines(prompt)` scans the prompt from its first line. It stops at the first line whose trimmed text is a Markdown heading (`#{1,6}` then a space), starts with three backticks (a fence), or starts with `diff --git` or `@@` (an unfenced diff). It returns the `Profile:` values of the lines before that point, as today.
+- `profile_lines(prompt)` scans the prompt from its first line. It stops at the first line whose trimmed text is a Markdown heading (`#{1,6}` then a space), starts with three or more backticks or tildes (a fence), or starts with `diff --git` or `@@` (an unfenced diff). It returns the `Profile:` values of the lines before that point, as today.
 - A prompt with `TREE`, `Round 1.`, `RULES`, the `CANDIDATES` block and `Profile: unix`, then an inlined brief → one Profile line (`unix`). The brief's own `Profile: unix` comes after its `# Implementation review brief` heading and is not read.
 - A Delta message holding the block, `Delta.` and a fenced diff with a `+Profile: x` or ` Profile: x` line → no Profile line from the diff, so the round inherits its launch's profile.
 - A prompt whose only `Profile:` line sits inside the inlined brief → no Profile line. A fresh launch counts for nothing, as with a missing line today. The skills already put the line in the header.
@@ -50,7 +50,8 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
   - `profile_lines` reads only the header.
   - Unit tests in code_review.rs: a header line counts; a line after a heading is ignored; a line inside a fence is ignored; a ` Profile: x` context line after an unfenced `diff --git` is ignored; a header line `#174 …` does not end the header; the existing indentation test still holds.
   - Integration tests in `tests/implementation_review.rs`: a fresh launch with an inlined brief binds and files exactly one pass for its profile and tree; a resumed Delta with a fenced diff carrying a `Profile:` line binds under its launch's profile.
-  - CHANGELOG entry. Release 3.11.1 (tag-release).
+  - CHANGELOG entry (`## Unreleased`).
+- [ ] Phase 1b — release 3.11.1 (tag-release), after the merge; the release commit renames the entry.
 - [ ] Phase 2 — dogfood (the ADR-0052 plan's Phase 6): this branch's F4b launches implementation-review, `code-review-backend` and `code-review-language` (`Profile: lang:rust`) in one message.
   - The push hook must accept the push only once all three are bound.
   - The provenance payload must hold the two `code-review` lines.
@@ -65,7 +66,7 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
     - an inlined brief binds and files exactly 1 pass;
     - the Delta from a `rework` launch binds the new tree, and without the Delta that tree has no pass and the push is advised.
 
-- Phase 1: `cargo test -p amont-agent-process code_review` → the four unit tests pass, and the new ones fail on the old `profile_lines` → as stated. `cargo test --test implementation_review` → the two new tests pass, and every existing one is unchanged.
+- Phase 1, as planned: `cargo test -p amont-agent-process code_review` → the five new unit tests and the existing indentation test pass, and the heading, fence and unfenced-diff tests fail on the old `profile_lines` (observed above). `cargo test --test implementation_review` → the two new tests pass, and every existing one is unchanged.
 - Phase 2:
   - Before the profile reviews run: `amont land` → refused with `missing code review of amont-agent tree <12 hex>: code-review-backend, code-review-language --lang rust`. After they run: allowed.
   - The provenance record under `~/.claude/amont-agent/provenance/amont-agent/<commit>` holds `code-review backend reviewed <tree>` and `code-review lang:rust reviewed <tree>`.
