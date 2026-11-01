@@ -481,7 +481,8 @@ pub struct ProfileReview {
 
 /// The code-review profile reviews this session completed, in launch order.
 /// A launch counts for a profile only when its agent is the one the profile
-/// maps to and its prompt carries exactly one `Profile:` line naming that
+/// maps to and its prompt's header (see [`crate::code_review::profile_lines`])
+/// carries exactly one `Profile:` line naming that
 /// profile. A resumed round inherits the profile of its launch and may omit
 /// the line; one that names another profile counts for nothing.
 pub fn profile_reviews(transcript: &Path) -> std::io::Result<Vec<ProfileReview>> {

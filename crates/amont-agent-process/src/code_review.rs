@@ -128,13 +128,33 @@ pub fn slug(profile: &str) -> Option<String> {
     valid_profile(profile).then(|| profile.replace(':', "-"))
 }
 
-/// The value of each `Profile:` line of a review prompt, in order.
+/// The value of each `Profile:` line in a review prompt's header, in order.
+///
+/// The header is every line before the first one that opens the body: a
+/// Markdown heading (`#` to `######` then a space), a code fence (three or
+/// more backticks or tildes), or an unfenced diff (`diff --git`, `@@`). An
+/// inlined brief starts with its `# … brief` heading and an inlined diff is
+/// fenced or starts with `diff --git`, so neither can add a Profile line: the
+/// launch's own line must come before them.
 pub fn profile_lines(prompt: &str) -> Vec<&str> {
     prompt
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("Profile:"))
+        .map(str::trim)
+        .take_while(|line| !opens_body(line))
+        .filter_map(|line| line.strip_prefix("Profile:"))
         .map(str::trim)
         .collect()
+}
+
+/// Whether a trimmed prompt line opens the body that follows the header.
+fn opens_body(line: &str) -> bool {
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    let heading = (1..=6).contains(&hashes) && line[hashes..].starts_with(' ');
+    heading
+        || line.starts_with("```")
+        || line.starts_with("~~~")
+        || line.starts_with("diff --git")
+        || line.starts_with("@@")
 }
 
 /// The proposal for every repository of the plan's machine comment, one
@@ -519,6 +539,46 @@ mod tests {
             profile_lines("<<<TREE>>>\nProfile: lang:ts\n  Profile: backend \nnot Profile: x"),
             ["lang:ts", "backend"]
         );
+    }
+
+    #[test]
+    fn a_header_profile_line_counts() {
+        assert_eq!(
+            profile_lines("<<<TREE>>>\nRound 1.\n<<<RULES sha=x>>>\nProfile: unix\nRead it."),
+            ["unix"]
+        );
+    }
+
+    #[test]
+    fn a_profile_line_after_a_heading_is_the_body() {
+        let prompt = "<<<TREE>>>\nProfile: unix\n# Implementation review brief\n\nProfile: unix\n";
+        assert_eq!(profile_lines(prompt), ["unix"]);
+        assert!(profile_lines("# Implementation review brief\nProfile: unix\n").is_empty());
+    }
+
+    #[test]
+    fn a_profile_line_inside_a_fence_is_the_body() {
+        for fence in ["```", "~~~", "````diff"] {
+            let prompt =
+                format!("<<<TREE>>>\nDelta.\n{fence}\n Profile: x\n+Profile: y\n{fence}\n");
+            assert!(profile_lines(&prompt).is_empty(), "{fence}");
+            let with_header = format!("<<<TREE>>>\nProfile: backend\n{fence}\nProfile: x\n");
+            assert_eq!(profile_lines(&with_header), ["backend"], "{fence}");
+        }
+    }
+
+    #[test]
+    fn a_profile_line_in_an_unfenced_diff_is_the_body() {
+        for opener in ["diff --git a/x b/x", "@@ -1,2 +1,2 @@"] {
+            let prompt = format!("<<<TREE>>>\nDelta.\n{opener}\n Profile: x\n");
+            assert!(profile_lines(&prompt).is_empty(), "{opener}");
+        }
+    }
+
+    #[test]
+    fn a_hash_without_a_space_is_not_a_heading() {
+        let prompt = "<<<TREE>>>\n#174 follow-up\n####### seven\nProfile: backend\n";
+        assert_eq!(profile_lines(prompt), ["backend"]);
     }
 
     #[test]

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The implementation-review push hook counts a code-review profile's
+  `Profile:` line only in the prompt's header: the lines before the first
+  Markdown heading, code fence (backticks or tildes) or unfenced diff
+  (`diff --git`, `@@`). An inlined brief, which carries its own `Profile:`
+  line after its `# … brief` heading, or a diff holding a `Profile:` line, no
+  longer voids the review or a resumed Delta. The launch's own line must come
+  before them.
+
 ## v3.11.0
 
 ### Added
