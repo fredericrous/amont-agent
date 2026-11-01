@@ -3050,7 +3050,8 @@ fn a_delta_with_a_diff_holding_profile_lines_binds_under_its_launch() {
         "{}\nDelta.\n```diff\n Profile: x\n+Profile: y\n```\ndiff --git a/n b/n\n Profile: z\n",
         crate_block(&w, &repo, &now)
     );
-    let build = |with_delta: bool| {
+    // The rework launch, and the id its Delta resumes.
+    let launched = || {
         let mut t = Transcript::default();
         t.review(
             &w,
@@ -3060,18 +3061,18 @@ fn a_delta_with_a_diff_holding_profile_lines_binds_under_its_launch() {
             Done::Foreground,
         );
         let launch = t.resumable(&w, "code-review-backend", &launch_prompt, "Verdict: rework");
-        if with_delta {
-            t.resume(&w, &launch, &delta, "Verdict: approve");
-        }
-        t
+        (t, launch)
     };
-    let without = w.transcript("no-delta", &build(false));
+    let (rework_only, _) = launched();
+    let without = w.transcript("no-delta", &rework_only);
     assert!(matches!(
         w.push(&repo, "s1", Some(&without)),
         Said::Advise(_)
     ));
     assert!(!profile_pass_file(&w, "backend", "app", &now).is_file());
-    let with = w.transcript("delta", &build(true));
+    let (mut resumed, launch) = launched();
+    resumed.resume(&w, &launch, &delta, "Verdict: approve");
+    let with = w.transcript("delta", &resumed);
     assert_eq!(w.push(&repo, "s2", Some(&with)), Said::Silent);
     assert!(profile_pass_file(&w, "backend", "app", &now).is_file());
 }
