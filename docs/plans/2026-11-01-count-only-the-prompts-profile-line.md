@@ -49,8 +49,8 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
 
 - [x] Phase 1 — amont-agent:
   - `profile_lines` reads only the header, and `profile_reviews` reads its review blocks from the same `header()`.
-  - Unit tests in code_review.rs: a header line counts; a line after a heading is ignored; a line inside a fence is ignored; a ` Profile: x` context line after an unfenced `diff --git` is ignored; a header line `#174 …` does not end the header; the existing indentation test still holds.
-  - Integration tests in `tests/implementation_review.rs`: a fresh launch with an inlined brief binds and files exactly one pass for its profile and tree; a resumed Delta with a fenced diff carrying a `Profile:` line binds under its launch's profile.
+  - Unit tests in code_review.rs: a header line counts; a line after a heading is ignored; a line inside a fence is ignored; a ` Profile: x` context line after an unfenced `diff --git` is ignored; a header line `#174 …` does not end the header; `header()` ends where the body opens; the existing indentation test still holds.
+  - Integration tests in `tests/implementation_review.rs`: a fresh launch with an inlined brief binds and files exactly one pass for its profile and tree; a resumed Delta with a fenced diff carrying a `Profile:` line binds under its launch's profile; a review block only inside a fenced body binds no tree.
   - CHANGELOG entry (`## Unreleased`).
 - [ ] Phase 1b — release 3.11.1 (tag-release), after the merge; the release commit renames the entry.
 - [ ] Phase 2 — dogfood (the ADR-0052 plan's Phase 6): this branch's F4b launches implementation-review, `code-review-backend` and `code-review-language` (`Profile: lang:rust`) in one message.
@@ -67,11 +67,19 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
     - an inlined brief binds and files exactly 1 pass;
     - the Delta from a `rework` launch binds the new tree, and without the Delta that tree has no pass and the push is advised.
 
-- Phase 1, as planned: `cargo test -p amont-agent-process code_review` → the five new unit tests and the existing indentation test pass, and the heading, fence and unfenced-diff tests fail on the old `profile_lines` (observed above). `cargo test --test implementation_review` → the two new tests pass, and every existing one is unchanged.
+- Phase 1, as planned: `cargo test -p amont-agent-process code_review` → the five new unit tests and the existing indentation test pass, and the heading, fence and unfenced-diff tests fail on the old `profile_lines` (observed above). `cargo test --test implementation_review` → the three new tests pass, and every existing one is unchanged.
 - Phase 2:
   - Before the profile reviews run: `amont land` → refused with `missing code review of amont-agent tree <12 hex>: code-review-backend, code-review-language --lang rust`. After they run: allowed.
   - The provenance record under `~/.claude/amont-agent/provenance/amont-agent/<commit>` holds `code-review backend reviewed <tree>` and `code-review lang:rust reviewed <tree>`.
   - Tokens: the sum of the three reviewers, against implementation-review alone. The bar is 3× (ADR-0052 Consequences): 131k + 146k + 153k = 430k, so 3× is 1.29M.
+
+## Implementation review
+
+- Phase 1, with the declared profiles as the dogfood:
+  - implementation-review: approve-with-changes three times. Plan and record fixes only; every candidate ruled fine.
+  - code-review-backend: approve-with-changes, then approve. Fixed: the tree is bound from the header. Deliberate: the refusal text.
+  - code-review-language (`lang:rust`): approve. Two lows applied (comment reflow, `trim_start_matches`).
+- Tokens: 57k + 72k + 78k, 50k + 60k, 50k = 367k, launched in parallel per round.
 
 ## Decision log
 - 2026-11-01 — The backend profile's dogfood review found that the tree a profile review binds was still read from the whole prompt. So a block inside an inlined body could bind a tree the reviewer never read. `code_review::header()` is now the one header definition, used for both the profile and the block. This narrows the binding inputs, a change the Non-goals did not foresee. The rules themselves (exactly one line, the agent map, inheritance) are unchanged.
@@ -79,5 +87,9 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
 - 2026-11-01 — Implemented by hand, not through relais: every relais run on amont-agent today hit its wall time, and this change is 20 lines. The fence rule also covers tildes, and the Delta test starts from a `rework` launch on an earlier tree, so its pass can come only from the resumed round (both from Codex's review).
 
 ## Outcome
+
+Phase 2, observed before the push: `amont land` → refused: `missing code review of amont-agent tree 78ccdfec1ea0: code-review-backend, code-review-language --lang rust (declared in docs/plans/2026-11-01-count-only-the-prompts-profile-line.md). Launch them on this tree, or narrow ## Code review with a reason.`
+
+The push of this branch is the check that the profiles bind and that lang:rust's round-1 `approve` carries to the final tree. It is recorded in the decisions record with the provenance lines. Cost: 367k for 1 + 2 reviewers over three rounds, against 430k for implementation-review alone on #174, so well under the 1.29M bar.
 
 <!-- panel: repos=amont-agent reviewers=backend,codex body-sha=8af33c62082b -->
