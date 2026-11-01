@@ -313,7 +313,6 @@ fn die_on_sigpipe() {
 fn die_on_sigpipe() {}
 
 fn main() -> ExitCode {
-    die_on_sigpipe();
     // Claude Code does not spawn us from git, but a session started inside a
     // git hook still carries GIT_DIR / GIT_WORK_TREE, and those beat
     // `current_dir` for every git command we run. `crate::git` builds
@@ -344,7 +343,23 @@ fn main() -> ExitCode {
         std::env::remove_var(key);
     }
 
-    match parse(std::env::args_os().skip(1).collect()) {
+    let invocation = parse(std::env::args_os().skip(1).collect());
+    // `hook` and `board` feed git children on stdin (`git patch-id`). A
+    // child that exits before reading all of it, or is killed at its
+    // deadline, would raise SIGPIPE in the feeder and kill the whole
+    // process: the hook then exits 141 and its decision is lost. Both keep
+    // SIGPIPE ignored, so the write fails as an error the caller handles;
+    // `board` already treats EPIPE on its own output as a quiet exit.
+    if !matches!(
+        invocation,
+        Invocation::Sub {
+            name: Sub::Hook | Sub::Board,
+            ..
+        }
+    ) {
+        die_on_sigpipe();
+    }
+    match invocation {
         Invocation::Help => {
             print!("{USAGE}");
             ExitCode::SUCCESS

@@ -30,55 +30,54 @@ fn examine(_parsed: &Parsed) -> Option<Finding> {
     None
 }
 
-/// The title of the first plan (by file name) under `docs/plans` of the
-/// worktree whose front matter says `status: active`, read from disk; `None`
-/// when there is none. A pointer file that says active counts.
-pub fn active_plan_title(worktree: &std::path::Path) -> Option<String> {
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(worktree.join("docs").join("plans"))
-        .ok()?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .collect();
-    files.sort();
-    files.iter().find_map(|file| {
-        let text = std::fs::read_to_string(file).ok()?;
-        plan_title(&text)
-    })
-}
+/// One budget for every plan lookup of one piece of advice.
+const PLAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn plan_title(text: &str) -> Option<String> {
-    let rest = text.strip_prefix("---\n")?;
-    let (front, body) = rest.split_once("\n---\n")?;
-    let active = front.lines().any(|line| {
-        line.split_once(':').is_some_and(|(key, value)| {
-            key.trim() == "status" && value.split('#').next().unwrap_or("").trim() == "active"
-        })
-    });
-    if !active {
+/// The title of the first active plan the peer's branch added under
+/// `docs/plans` relative to the repository's default branch, read in the
+/// peer's worktree; `None` for a peer on the default branch, a lookup that
+/// failed, or the `deadline`.
+fn peer_plan(peer: &Peer, deadline: std::time::Instant) -> Option<String> {
+    if on_default_branch_by_files(peer) {
         return None;
     }
-    let mut fenced = false;
-    body.lines().find_map(|line| {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            return None;
-        }
-        if fenced {
-            return None;
-        }
-        line.strip_prefix("# ")
-            .map(|title| title.trim().to_string())
-    })
+    let (default, default_name) = crate::git::default_ref(&peer.worktree, deadline)?;
+    if peer.branch == default_name {
+        return None;
+    }
+    crate::git::active_added_plans(&peer.worktree, &default, "HEAD", deadline)
+        .into_iter()
+        .next()
+        .map(|plan| plan.title)
 }
 
-/// The one-line advice, naming every live peer (at most three, freshest first).
+/// Whether the peer's branch is its repository's default, read from files
+/// with no git process: `refs/remotes/origin/HEAD` in the common dir, else the
+/// usual names. `false` means "not known", and the caller asks git.
+fn on_default_branch_by_files(peer: &Peer) -> bool {
+    let origin_head = crate::activity::resolve(&peer.worktree).and_then(|place| {
+        std::fs::read_to_string(place.repo_identity.join("refs/remotes/origin/HEAD")).ok()
+    });
+    match origin_head
+        .as_deref()
+        .and_then(|text| text.trim().strip_prefix("ref: refs/remotes/origin/"))
+    {
+        Some(name) => peer.branch == name,
+        None => peer.branch == "main" || peer.branch == "master",
+    }
+}
+
+/// The one-line advice, naming every live peer (at most three, freshest first)
+/// and the plan each one's branch added; the plan lookups share one 2 s budget
+/// and a peer reached after it is named without a plan.
 pub fn phrase(repo_name: &str, peers: &[Peer], now: std::time::SystemTime) -> String {
     const NAMED: usize = 3;
+    let deadline = std::time::Instant::now() + PLAN_BUDGET;
     let named: Vec<String> = peers
         .iter()
         .take(NAMED)
         .map(|peer| {
-            let plan = active_plan_title(&peer.worktree)
+            let plan = peer_plan(peer, deadline)
                 .map(|title| format!(", active plan \"{title}\""))
                 .unwrap_or_default();
             format!(
@@ -113,22 +112,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn the_title_is_the_first_active_plan_h1_by_file_name() {
-        let dir = std::env::temp_dir().join(format!("wo-plan-{}", std::process::id()));
-        let plans = dir.join("docs").join("plans");
-        std::fs::create_dir_all(&plans).expect("plans dir");
-        std::fs::write(plans.join("a.md"), "---\nstatus: done\n---\n# Old\n").expect("a");
-        std::fs::write(plans.join("c.md"), "---\nstatus: active\n---\n# Third\n").expect("c");
-        std::fs::write(
-            plans.join("b.md"),
-            "---\nstatus: active\n---\n```\n# no\n```\n# Second\n",
-        )
-        .expect("b");
-        assert_eq!(active_plan_title(&dir).as_deref(), Some("Second"));
-        std::fs::remove_dir_all(&dir).expect("cleanup");
-        assert_eq!(active_plan_title(&dir), None);
-    }
     use std::time::{Duration, UNIX_EPOCH};
 
     #[test]

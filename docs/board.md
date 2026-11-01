@@ -54,10 +54,21 @@ repository A and then moved to B is not in A any more, whatever its earlier
 lines say. A session is live in that place while its file's modification time
 is less than the window old.
 
-The file is cut back to its newest 2000 lines when it passes 4000, and the
-session sweep deletes it after a week. The record is written after the
-decision and never changes it; a failure to write is journalled once per
-session and then ignored.
+`work-overlap` looks for peers in two passes, so a write that meets nobody
+spawns nothing. The first pass reads only files modified within the last week
+(the sweep's horizon; older files are skipped from their metadata), and only
+their last line. Only when one of them is in the same repository is the
+window read from git config, and the second pass keeps the live ones.
+
+A changed-place append to a file longer than 256 KiB first trims it to the
+newest complete lines that fit in 128 KiB, the new line included (a new line
+that alone exceeds 128 KiB is kept alone); a call that finds the same place
+never trims. The trim writes `<file>.tmp.<pid>` (mode 0600) and renames it
+over the file, so a reader sees the old or the new file whole. A line another
+process appends during a trim may be lost. The session sweep deletes it after
+a week. The record is written after the decision and never changes it; a
+failure to write, and a trim that fails (the line is then appended to the
+untrimmed file), are each journalled once per session and then ignored.
 
 ## `work-overlap`
 
@@ -66,9 +77,13 @@ NotebookEdit in a repository, it advises once when another session's latest
 line names the same repository and that session is live. The window is 2 h
 and is set with `git config --global amont.agent.work-overlap.window`
 (`90m`, `3h`, `2d`; a bare number is seconds). The message names the other
-session, its worktree, its branch, the title of the active plan in its
-worktree (read from `docs/plans` on disk, only when the rule fires) and how
-long ago it was last seen, and points to `amont-agent board --repo <repo
+session, its worktree, its branch, the title of the active plan its branch
+added (the first active file under `docs/plans` that the worktree's `HEAD`
+adds relative to the repository's default branch, read with bounded git calls
+only when the rule fires; none for a peer on the default branch) and how long
+ago it was last seen. The plan lookups of all named peers (at most three)
+share one 2 s budget, and a peer reached after it is named without a plan.
+The message then points to `amont-agent board --repo <repo
 name>`, then to a message to that session (SendMessage) or to the person. It
 is silent when the only matching activity is the session's own, and fires
 when another live session works in the very same worktree.
@@ -103,7 +118,9 @@ Plans are read (`git diff`, `git show`) only for live branches: a stale
 unmerged branch, with or without a plan, costs no git call beyond the single
 `for-each-ref` listing and is not listed. Each entry shows:
 
-- the path (if checked out) and the branch;
+- the path (if checked out) and the branch; a branch checked out in a worktree
+  whose change is already on the default branch is marked
+  `(merged: git worktree remove <path>)`;
 - the title of the active plan: a plan file under `docs/plans` that the branch
   adds relative to the default branch and whose `status` is `active`. A plan
   whose `repos:` names several repositories is listed under each of them: in
@@ -124,14 +141,38 @@ unmerged branch, with or without a plan, costs no git call beyond the single
 - the sessions whose latest activity line names that worktree, with the full
   session id and the age of the activity file's modification time.
 
-**Just landed**: `git log --first-parent <default> --since <dur>`, with short
-sha, subject and age. `--fetch` first runs `git fetch origin -q` on the
-selected repositories (a failure is one line on stderr).
+**Merged**: a live candidate branch (a worktree's branch, or a live branch
+with no worktree) is merged when its whole change from the merge-base
+(`git diff <merge-base> <branch>`) is not empty and its `git patch-id
+--stable` equals the patch-id of one non-merge commit on the default branch
+after the merge-base. The default branch's patch-ids are built once per
+repository per call, from the oldest merge-base among its candidates
+(`git log -p --no-merges <oldest-merge-base>..<default>` into `git patch-id
+--stable`); each candidate then costs a merge-base and one diff. Every diff
+and log runs with `--no-ext-diff --no-textconv --no-color`, and nothing is
+written to the repository. A merged branch with no worktree is left out; one
+in a worktree stays listed with the label above. This is how a squash merge
+reads as merged although the branch's commits are not ancestors of the
+default branch. Known limits:
+
+- Without `--fetch`, a branch merged after the last fetch reads as in flight.
+- A squash whose content changed while merging (a conflict resolution), or one
+  merged after the default branch changed lines within 3 lines of the branch's
+  change, is not recognised and stays listed until it leaves the `--since`
+  window.
+
+**Just landed** (`landed` in the JSON): `git log --first-parent <default>
+--since <dur>`, with short sha, subject and age. `--fetch` first runs
+`git fetch --prune origin -q` on the selected repositories, up to 4 at once,
+each within 60 s, and every fetch finishes before any report is built; a
+failure is one stderr line starting `<repo>:`, in the order of the selected
+repositories. When stderr is a terminal a `fetching <n> repositories...` line
+comes first.
 
 A repository with nothing in flight and nothing landed prints nothing unless
 it was named with `--repo`. `--json` prints an array of `{repo, path,
-worktrees: [{path, branch, plans, programme_ticket, sessions: [{id,
-last_seen_secs}]}], landed: [{sha, subject, age_secs}]}`; `plans` is an array of titles (empty when none); `path` is null for a
+worktrees: [{path, branch, merged, plans, programme_ticket, sessions: [{id,
+last_seen_secs}]}], landed: [{sha, subject, age_secs}]}`; `merged` is a boolean; `plans` is an array of titles (empty when none); `path` is null for a
 branch with no worktree, `programme_ticket` is `<slug>/<id>` or null. Exit 0
 unless the command itself fails; an unreadable repository is reported on
 stderr and skipped.

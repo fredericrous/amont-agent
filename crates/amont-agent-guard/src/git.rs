@@ -10,6 +10,7 @@
 //! every failure to ASK is treated as "no opinion" rather than as an answer.
 
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Run `cmd`, retrying the transient SPAWN failures a loaded machine
 /// produces: EINTR, EAGAIN (fork pressure), ETXTBSY (another thread's
@@ -259,8 +260,272 @@ pub fn output(args: &[&str]) -> Option<Output> {
     })
 }
 
+/// Run `git -C dir args` and return its stdout, or `None` on a non-zero exit,
+/// a spawn failure or the `deadline`.
+///
+/// The bounded shape for a lookup a person waits on: stdin is null (or
+/// `input`, fed from a thread), stderr null, git never prompts and takes no
+/// optional locks. On unix the child leads its own process group. stdout is
+/// drained on a reader thread, and the deadline covers the reader AND the child's
+/// exit, in that order. On any expiry the whole group is killed before the
+/// child is reaped, partial output is dropped and an unfinished reader is left
+/// to end by itself (it gets EOF once the group is dead), never joined. A
+/// reaped leader's group is never signalled.
+pub fn bytes_bounded(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    deadline: Instant,
+) -> Option<Vec<u8>> {
+    use std::io::{Read, Write};
+    if Instant::now() >= deadline {
+        return None;
+    }
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = retrying(|| cmd.spawn()).ok()?;
+    let (Some(mut stdout), stdin) = (child.stdout.take(), child.stdin.take()) else {
+        abandon(&mut child);
+        return None;
+    };
+    if let (Some(bytes), Some(mut stdin)) = (input, stdin) {
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&bytes); // a broken pipe means git stopped reading; its exit status is the answer
+        });
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let read = stdout.read_to_end(&mut buffer).map(|_| buffer);
+        let _ = sender.send(read); // the receiver is gone once the deadline passed; nobody wants the bytes
+    });
+    let bytes = match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(Ok(bytes)) => bytes,
+        _ => {
+            abandon(&mut child);
+            return None;
+        }
+    };
+    // The leader is reaped only here, after the last point that may signal its group.
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            _ => {
+                abandon(&mut child);
+                return None;
+            }
+        }
+    };
+    status.success().then_some(bytes)
+}
+
+/// [`bytes_bounded`], decoded lossily and trimmed.
+pub fn stdout_bounded(dir: &std::path::Path, args: &[&str], deadline: Instant) -> Option<String> {
+    let bytes = bytes_bounded(dir, args, None, deadline)?;
+    Some(String::from_utf8_lossy(&bytes).trim().to_string())
+}
+
+/// Kill the child's process group, then reap the child.
+fn abandon(child: &mut std::process::Child) {
+    kill_group(child.id());
+    let _ = child.kill(); // already dead after the group kill, or not a unix group
+    let _ = child.wait(); // reaping only; the answer is already "no"
+}
+
+/// SIGKILL to the process group led by `leader`. A group that is already gone
+/// (ESRCH) is the outcome wanted, so the result is not read.
+#[cfg(unix)]
+fn kill_group(leader: u32) {
+    extern "C" {
+        fn kill(pid: std::ffi::c_int, sig: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    const SIGKILL: std::ffi::c_int = 9;
+    let Ok(leader) = std::ffi::c_int::try_from(leader) else {
+        return;
+    };
+    if leader > 0 {
+        // SAFETY: `kill` takes two integers and touches no memory.
+        unsafe {
+            kill(-leader, SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_leader: u32) {}
+
+/// The default branch of the repository at `dir` as `(ref to compare against,
+/// branch name)`: origin/HEAD's target, else `main`, else `master`, each as
+/// `origin/<name>` when that exists, else the local branch.
+pub fn default_ref(dir: &std::path::Path, deadline: Instant) -> Option<(String, String)> {
+    let exists = |reference: &str| {
+        stdout_bounded(
+            dir,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{reference}^{{commit}}"),
+            ],
+            deadline,
+        )
+        .is_some()
+    };
+    let mut names: Vec<String> = Vec::new();
+    if let Some(head) = stdout_bounded(
+        dir,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        deadline,
+    ) {
+        names.extend(head.strip_prefix("origin/").map(str::to_string));
+    }
+    names.extend(["main", "master"].map(str::to_string));
+    names.into_iter().find_map(|name| {
+        let remote = format!("origin/{name}");
+        if exists(&remote) {
+            Some((remote, name))
+        } else if exists(&name) {
+            Some((name.clone(), name))
+        } else {
+            None
+        }
+    })
+}
+
+/// A Markdown file under `docs/plans` that a ref adds, with its text.
+pub struct AddedPlan {
+    /// The path relative to the repository root.
+    pub file: String,
+    pub text: String,
+}
+
+/// The plan files (not READMEs) that `reference` adds under `docs/plans`
+/// relative to `default`, with the text each has at `reference`, in path order.
+/// Whether a plan is active is for the caller to read.
+pub fn added_plans(
+    dir: &std::path::Path,
+    default: &str,
+    reference: &str,
+    deadline: Instant,
+) -> Vec<AddedPlan> {
+    let range = format!("{default}...{reference}");
+    let added = stdout_bounded(
+        dir,
+        &[
+            "diff",
+            "--name-only",
+            "--diff-filter=A",
+            &range,
+            "--",
+            "docs/plans",
+        ],
+        deadline,
+    )
+    .unwrap_or_default();
+    added
+        .lines()
+        .filter(|file| file.ends_with(".md") && !file.ends_with("README.md"))
+        .filter_map(|file| {
+            let text = stdout_bounded(dir, &["show", &format!("{reference}:{file}")], deadline)?;
+            Some(AddedPlan {
+                file: file.to_string(),
+                text,
+            })
+        })
+        .collect()
+}
+
+/// An `AddedPlan` whose front matter says `status: active`.
+pub struct ActivePlan {
+    /// The path relative to the repository root.
+    pub file: String,
+    pub text: String,
+    /// The first heading outside a code fence.
+    pub title: String,
+}
+
+/// The active plans `reference` adds under `docs/plans` relative to `default`,
+/// in path order: [`added_plans`] kept to `status: active`, with their titles.
+pub fn active_added_plans(
+    dir: &std::path::Path,
+    default: &str,
+    reference: &str,
+    deadline: Instant,
+) -> Vec<ActivePlan> {
+    added_plans(dir, default, reference, deadline)
+        .into_iter()
+        .filter_map(|plan| {
+            let title = active_plan_title(&plan.text)?;
+            Some(ActivePlan {
+                file: plan.file,
+                text: plan.text,
+                title,
+            })
+        })
+        .collect()
+}
+
+/// The title of an `active` plan, `None` for any other status or no heading.
+fn active_plan_title(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("---\n")?;
+    let (front, body) = rest.split_once("\n---\n")?;
+    let active = front.lines().any(|line| {
+        line.split_once(':').is_some_and(|(key, value)| {
+            key.trim() == "status" && value.split('#').next().unwrap_or("").trim() == "active"
+        })
+    });
+    if !active {
+        return None;
+    }
+    let mut fenced = false;
+    body.lines().find_map(|line| {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            return None;
+        }
+        if fenced {
+            return None;
+        }
+        line.strip_prefix("# ")
+            .map(|title| title.trim().to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_an_active_plan_has_a_title_and_a_fenced_heading_is_not_it() {
+        assert_eq!(
+            super::active_plan_title("---\nstatus: active\n---\n```\n# no\n```\n# Second\n")
+                .as_deref(),
+            Some("Second")
+        );
+        assert_eq!(
+            super::active_plan_title("---\nstatus: done\n---\n# Old\n"),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]

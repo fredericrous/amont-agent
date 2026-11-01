@@ -16,9 +16,13 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Past this many lines the file is cut back to [`KEPT_LINES`].
-const CAP_LINES: usize = 4000;
-const KEPT_LINES: usize = 2000;
+/// A changed-place append to a file longer than this many bytes trims it.
+const TRIM_ABOVE_BYTES: u64 = 256 * 1024;
+/// A trim keeps the newest complete lines that fit in this many bytes,
+/// the caller's new line included.
+const TRIM_TARGET_BYTES: usize = 128 * 1024;
+/// The last line is looked for in this many final bytes first.
+const TAIL_WINDOW_BYTES: u64 = 4096;
 
 /// Where a session works: the repository, the worktree and the branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,12 +67,29 @@ fn encode(field: &str) -> String {
 }
 
 fn decode(field: &str) -> String {
-    field
-        .replace("%20", " ")
-        .replace("%09", "\t")
-        .replace("%0A", "\n")
-        .replace("%0D", "\r")
-        .replace("%25", "%")
+    let mut out = String::with_capacity(field.len());
+    let mut rest = field;
+    while let Some(at) = rest.find('%') {
+        out.push_str(&rest[..at]);
+        let escape = &rest[at..];
+        let (decoded, length) = if escape.starts_with("%25") {
+            ('%', 3)
+        } else if escape.starts_with("%20") {
+            (' ', 3)
+        } else if escape.starts_with("%09") {
+            ('\t', 3)
+        } else if escape.starts_with("%0A") {
+            ('\n', 3)
+        } else if escape.starts_with("%0D") {
+            ('\r', 3)
+        } else {
+            ('%', 1)
+        };
+        out.push(decoded);
+        rest = &escape[length..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn path_field(path: &Path) -> String {
@@ -162,6 +183,18 @@ fn file_for(session: &str) -> Option<PathBuf> {
     Some(sessions_dir()?.join(format!("{session}.activity")))
 }
 
+/// A record that was kept; `TrimFailed` says the oversized file could not be
+/// trimmed and the line was appended to it instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recorded {
+    Whole,
+    TrimFailed,
+}
+
+impl Recorded {
+    pub const TRIM_FAILED_REASON: &'static str = "the activity file could not be trimmed";
+}
+
 /// Why the activity record could not be kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
@@ -180,54 +213,162 @@ impl Failure {
     }
 }
 
-/// The place of the last line of `text`, as its three encoded fields.
-fn last_fields(text: &str) -> Option<[&str; 3]> {
-    let line = text.lines().rev().find(|l| !l.trim().is_empty())?;
+/// The three encoded place fields of one activity line.
+fn fields_of(line: &str) -> Option<[&str; 3]> {
     let mut parts = line.split_whitespace();
     let _ts = parts.next()?;
-    let fields = [parts.next()?, parts.next()?, parts.next()?];
-    Some(fields)
+    Some([parts.next()?, parts.next()?, parts.next()?])
+}
+
+/// The last complete (newline-terminated) non-empty line of the bytes. An
+/// unterminated tail, such as another process's append caught midway, is
+/// ignored.
+fn last_line_of(bytes: &[u8]) -> Option<String> {
+    let complete_end = bytes.iter().rposition(|byte| *byte == b'\n')?;
+    bytes[..complete_end]
+        .split(|byte| *byte == b'\n')
+        .rev()
+        .find(|line| !line.iter().all(u8::is_ascii_whitespace))
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+}
+
+/// The last complete non-empty line of the file, read from at most its final
+/// [`TAIL_WINDOW_BYTES`]; the whole file when that window holds none.
+fn tail_line(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut handle = std::fs::File::open(path).ok()?;
+    let length = handle.metadata().ok()?.len();
+    let start = length.saturating_sub(TAIL_WINDOW_BYTES);
+    handle.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    handle.read_to_end(&mut bytes).ok()?;
+    let window_line = if start > 0 {
+        // The window began mid-file: its first line may be cut.
+        let after_first_newline = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1);
+        last_line_of(&bytes[after_first_newline..])
+    } else {
+        last_line_of(&bytes)
+    };
+    if let Some(line) = window_line {
+        return Some(line);
+    }
+    if start == 0 {
+        return None;
+    }
+    handle.seek(SeekFrom::Start(0)).ok()?;
+    bytes.clear();
+    handle.read_to_end(&mut bytes).ok()?;
+    last_line_of(&bytes)
 }
 
 /// Record that `session` is at `place` at `now`: a line when the place
-/// differs from the last line's, otherwise only the modification time.
-pub fn record(session: &str, place: &Place, now: SystemTime) -> Result<(), Failure> {
+/// differs from the last line's, otherwise only the modification time. A
+/// changed-place append to a file over [`TRIM_ABOVE_BYTES`] first trims it.
+pub fn record(session: &str, place: &Place, now: SystemTime) -> Result<Recorded, Failure> {
     use std::io::Write;
     let file = file_for(session).ok_or(Failure::NoSessionFile)?;
     let dir = file.parent().ok_or(Failure::NoSessionFile)?;
     std::fs::create_dir_all(dir).map_err(|_| Failure::DirectoryNotCreated)?;
     crate::journal::private(dir, 0o700);
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
     let fields = place.fields();
-    let unchanged =
-        last_fields(&text).is_some_and(|last| last.iter().zip(&fields).all(|(a, b)| a == b));
-    let seconds = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let mut open = std::fs::OpenOptions::new();
+    let last = tail_line(&file);
+    let unchanged = last
+        .as_deref()
+        .and_then(fields_of)
+        .is_some_and(|last| last.iter().zip(&fields).all(|(a, b)| a == b));
     if unchanged {
-        open.write(true);
-    } else {
-        open.create(true).append(true);
-        if text.lines().count() > CAP_LINES {
-            cut_back(&file, &text);
-        }
-    }
-    let mut handle = open.open(&file).map_err(|_| Failure::NotWritten)?;
-    if !unchanged {
-        let line = format!("{seconds} {} {} {}\n", fields[0], fields[1], fields[2]);
-        handle
-            .write_all(line.as_bytes())
+        let handle = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
             .map_err(|_| Failure::NotWritten)?;
+        handle.set_modified(now).map_err(|_| Failure::NotWritten)?;
+        return Ok(Recorded::Whole);
     }
-    handle.set_modified(now).map_err(|_| Failure::NotWritten)
+    let seconds = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let line = format!("{seconds} {} {} {}\n", fields[0], fields[1], fields[2]);
+    let over = std::fs::metadata(&file).is_ok_and(|meta| meta.len() > TRIM_ABOVE_BYTES);
+    let mut trim_failed = false;
+    if over {
+        // A failed trim leaves the file whole: it only grows until the next call.
+        if trim_and_append(&file, &line, &|from, to| std::fs::rename(from, to)).is_ok() {
+            let handle = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .map_err(|_| Failure::NotWritten)?;
+            handle.set_modified(now).map_err(|_| Failure::NotWritten)?;
+            return Ok(Recorded::Whole);
+        }
+        trim_failed = true;
+    }
+    let mut handle = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .map_err(|_| Failure::NotWritten)?;
+    handle
+        .write_all(line.as_bytes())
+        .map_err(|_| Failure::NotWritten)?;
+    handle.set_modified(now).map_err(|_| Failure::NotWritten)?;
+    Ok(if trim_failed {
+        Recorded::TrimFailed
+    } else {
+        Recorded::Whole
+    })
 }
 
-/// Keep the newest [`KEPT_LINES`] lines. A failed rewrite leaves the file as
-/// it was: it only grows a little longer until the next call.
-fn cut_back(file: &Path, text: &str) {
-    let mut newest: Vec<&str> = text.lines().rev().take(KEPT_LINES).collect();
-    newest.reverse();
-    newest.push("");
-    let _ = std::fs::write(file, newest.join("\n")); // a failed cut only leaves the file longer until the next call
+/// Replace the file with its newest complete lines that fit in
+/// [`TRIM_TARGET_BYTES`] together with `line`, then `line`. The new content is
+/// written to `<file>.tmp.<pid>` (mode 0600) and `rename`d over the file; on
+/// any failure the temp file is removed and the original is untouched. A line
+/// another process appends between the read and the rename is lost.
+fn trim_and_append(
+    file: &Path,
+    line: &str,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let old = std::fs::read(file)?;
+    let complete_end = old
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
+    let complete = &old[..complete_end];
+    let budget = TRIM_TARGET_BYTES.saturating_sub(line.len());
+    let mut kept_from = complete.len();
+    while kept_from > 0 {
+        let line_from = complete[..kept_from - 1]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1);
+        if complete.len() - line_from > budget {
+            break;
+        }
+        kept_from = line_from;
+    }
+    let mut name = file.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp.{}", std::process::id()));
+    let temp = file.with_file_name(name);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = options
+        .open(&temp)
+        .and_then(|mut handle| {
+            handle.write_all(&complete[kept_from..])?;
+            handle.write_all(line.as_bytes())
+        })
+        .and_then(|()| rename(&temp, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp); // the temp file may not exist; the original is what matters
+    }
+    written
 }
 
 /// A session's latest line, with the session's last-seen time.
@@ -254,9 +395,13 @@ pub fn latest_all() -> Vec<Seen> {
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let session = name.strip_suffix(".activity")?;
-            let last_seen = entry.metadata().ok()?.modified().ok()?;
-            let text = std::fs::read_to_string(entry.path()).ok()?;
-            let [repo, worktree, branch] = last_fields(&text)?;
+            let meta = entry.metadata().ok()?;
+            let last_seen = meta.modified().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            let line = tail_line(&entry.path())?;
+            let [repo, worktree, branch] = fields_of(&line)?;
             Some(Seen {
                 session: session.to_string(),
                 repo_identity: PathBuf::from(decode(repo)),
@@ -268,18 +413,48 @@ pub fn latest_all() -> Vec<Seen> {
         .collect()
 }
 
-/// Every other session whose latest line names `repo_identity`, freshest
-/// first.
-pub fn peers_in(session: &str, repo_identity: &Path) -> Vec<Peer> {
+/// Every other session last seen after `cutoff` whose latest line names
+/// `repo_identity`, freshest first. A file is opened only when its name ends
+/// `.activity`, it is a regular file and its modification time, read without
+/// opening it, is after `cutoff`.
+pub fn peers_in(session: &str, repo_identity: &Path, cutoff: SystemTime) -> Vec<Peer> {
+    match sessions_dir() {
+        Some(dir) => peers_in_dir(&dir, session, repo_identity, cutoff),
+        None => Vec::new(),
+    }
+}
+
+/// [`peers_in`] over the sessions directory `dir`.
+fn peers_in_dir(dir: &Path, session: &str, repo_identity: &Path, cutoff: SystemTime) -> Vec<Peer> {
     let want = path_field(repo_identity);
-    let mut found: Vec<Peer> = latest_all()
-        .into_iter()
-        .filter(|seen| seen.session != session && path_field(&seen.repo_identity) == want)
-        .map(|seen| Peer {
-            session: seen.session,
-            worktree: seen.worktree,
-            branch: seen.branch,
-            last_seen: seen.last_seen,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let own = format!("{session}.activity");
+    let mut found: Vec<Peer> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let peer = name.strip_suffix(".activity")?;
+            if name == own {
+                return None;
+            }
+            let meta = entry.metadata().ok()?;
+            let last_seen = meta.modified().ok()?;
+            if !meta.is_file() || last_seen <= cutoff {
+                return None;
+            }
+            let line = tail_line(&entry.path())?;
+            let [repo, worktree, branch] = fields_of(&line)?;
+            if path_field(Path::new(&decode(repo))) != want {
+                return None;
+            }
+            Some(Peer {
+                session: peer.to_string(),
+                worktree: PathBuf::from(decode(worktree)),
+                branch: decode(branch),
+                last_seen,
+            })
         })
         .collect();
     found.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
@@ -394,9 +569,43 @@ pub fn bash_targets(command: &str, cwd: &Path) -> Vec<PathBuf> {
 /// The default window a peer counts as live for.
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(2 * 3600);
 
+/// No activity file is older than this: the session sweep deletes it after a
+/// week. A peer lookup can use it as its cutoff before the configured window
+/// is known, which needs a `git config` read.
+pub const HORIZON: Duration = Duration::from_secs(7 * 24 * 3600);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_peer_file_last_written_before_the_cutoff_is_not_a_peer() {
+        let dir = std::env::temp_dir().join(format!("amont-peers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // a missing directory is the normal first run
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let repo = Path::new("/r/a/.git");
+        let line = "1 /r/a/.git /r/a main\n";
+        for (name, seconds) in [("old", 1_000), ("new", 9_000)] {
+            let file = dir.join(format!("{name}.activity"));
+            std::fs::write(&file, line).expect("write");
+            let handle = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .expect("open");
+            handle.set_modified(at(seconds)).expect("mtime");
+        }
+        let peers = peers_in_dir(&dir, "me", repo, at(5_000));
+        let names: Vec<&str> = peers.iter().map(|peer| peer.session.as_str()).collect();
+        assert_eq!(names, ["new"]);
+        let _ = std::fs::remove_dir_all(&dir); // cleanup only; a leftover temp dir is harmless
+    }
+
+    #[test]
+    fn an_unterminated_tail_is_not_a_line() {
+        assert_eq!(last_line_of(b"1 a b c\n2 d e").as_deref(), Some("1 a b c"));
+        assert_eq!(last_line_of(b"1 a b c\n").as_deref(), Some("1 a b c"));
+        assert_eq!(last_line_of(b"no newline at all"), None);
+    }
 
     fn at(seconds: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(seconds)
@@ -408,6 +617,60 @@ mod tests {
             assert_eq!(decode(&encode(field)), field);
             assert!(!encode(field).contains(char::is_whitespace));
         }
+    }
+
+    fn old_decode(field: &str) -> String {
+        field
+            .replace("%20", " ")
+            .replace("%09", "\t")
+            .replace("%0A", "\n")
+            .replace("%0D", "\r")
+            .replace("%25", "%")
+    }
+
+    #[test]
+    fn decode_matches_the_old_chained_replace_and_inverts_encode() {
+        let alphabet = ["%", "2", "5", "0", "9", "A", "D", " ", "\t", "\n", "a"];
+        let mut strings = vec![String::new()];
+        let mut layer = vec![String::new()];
+        for _ in 0..3 {
+            layer = layer
+                .iter()
+                .flat_map(|prefix| alphabet.iter().map(move |c| format!("{prefix}{c}")))
+                .collect();
+            strings.extend(layer.iter().cloned());
+        }
+        for text in ["%2", "%41", "%%20", "%25", "%2525"] {
+            strings.push(text.to_string());
+        }
+        for text in &strings {
+            assert_eq!(decode(text), old_decode(text), "decode of {text:?}");
+        }
+        for text in &strings {
+            assert_eq!(decode(&encode(text)), *text, "round trip of {text:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_rename_leaves_the_file_whole_and_no_temp_sibling() {
+        let dir = std::env::temp_dir().join(format!("amont-agent-trim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let file = dir.join("s.activity");
+        let original = b"1 /r /w main\n2 /r /w feat\n";
+        std::fs::write(&file, original).expect("a seeded file");
+        let outcome = trim_and_append(&file, "3 /r /w x\n", &|_, _| {
+            Err(std::io::Error::other("rename refused"))
+        });
+        assert!(outcome.is_err());
+        assert_eq!(std::fs::read(&file).expect("the file"), original);
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("the directory")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["s.activity".to_string()]);
+        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]

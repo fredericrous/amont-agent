@@ -197,21 +197,24 @@ fn record_activity(
     mode: &str,
     cwd: &std::path::Path,
 ) {
-    let Err(failure) = crate::activity::record(session, place, now) else {
-        return;
+    let (key, outcome, excerpt) = match crate::activity::record(session, place, now) {
+        Ok(crate::activity::Recorded::Whole) => return,
+        Ok(crate::activity::Recorded::TrimFailed) => (
+            "activity-untrimmed",
+            "untrimmed",
+            crate::activity::Recorded::TRIM_FAILED_REASON,
+        ),
+        Err(failure) => ("activity-unrecorded", "unrecorded", failure.as_str()),
     };
-    if matches!(
-        crate::lsp::told(session, "activity-unrecorded"),
-        crate::lsp::Told::First
-    ) {
+    if matches!(crate::lsp::told(session, key), crate::lsp::Told::First) {
         journal::record(&journal::Entry {
             rule: rules::work_overlap::RULE.id,
             stance: "-",
-            outcome: "unrecorded",
+            outcome,
             session,
             repo: &repo_name(cwd),
             mode,
-            excerpt: failure.as_str(),
+            excerpt,
         });
     }
 }
@@ -226,7 +229,15 @@ fn work_overlap(
 ) -> Decision {
     let rule = &rules::work_overlap::RULE;
     let key = format!("work-overlap {}", place.repo_identity.display());
-    let candidates = crate::activity::peers_in(&op.session, &place.repo_identity);
+    if crate::lsp::was_told(&op.session, &key) {
+        return Decision::Silent;
+    }
+    // The horizon, not the configured window, bounds this first pass: the
+    // window is a `git config` read, paid only once a peer is in the repository.
+    let horizon = now
+        .checked_sub(crate::activity::HORIZON)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let candidates = crate::activity::peers_in(&op.session, &place.repo_identity, horizon);
     if candidates.is_empty() {
         return Decision::Silent;
     }

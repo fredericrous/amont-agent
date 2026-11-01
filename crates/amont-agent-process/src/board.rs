@@ -1,13 +1,15 @@
 //! `amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]`:
 //! the work in flight per repository and what landed recently, derived from
 //! git and the session activity files on every call (decisions ADR-0051).
-//! Read-only: `--fetch` updates remote-tracking refs and nothing else; the
+//! Read-only: `--fetch` (`git fetch --prune origin -q`) updates and prunes
+//! remote-tracking refs and nothing else; the
 //! activity files are only read, through `amont_agent_guard::activity`.
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use amont_agent_guard::activity::{self, Seen};
@@ -15,6 +17,13 @@ use amont_agent_guard::git;
 
 const DEFAULT_SINCE: Duration = Duration::from_secs(48 * 3600);
 const FETCH_BUDGET: Duration = Duration::from_secs(60);
+/// Repositories fetched at once.
+const FETCH_PARALLEL: usize = 4;
+/// Each bounded git lookup of the report.
+const LOOKUP_BUDGET: Duration = Duration::from_secs(30);
+/// Keeps a diff or a log from the user's own git configuration out of the
+/// patch-id input.
+const PLAIN_DIFF: [&str; 3] = ["--no-ext-diff", "--no-textconv", "--no-color"];
 
 pub const USAGE: &str = "\
 usage: amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]
@@ -24,10 +33,13 @@ and the session activity files on every call. Read-only.
 
 In flight: each worktree; each local or origin branch not merged into the
 default branch that is live: its tip commit is newer than --since, it is
-checked out in a worktree, or a session's latest activity line names it. Per entry: the path, the branch, the
-active plan's title, `programme <slug> ticket <id>` for a prog/<slug>/<id>
+checked out in a worktree, or a session's latest activity line names it. A
+branch whose whole change is already on the default branch as one commit
+(same stable patch-id: a squash merge) is merged: left out, or, when a worktree
+holds it, listed with `(merged: git worktree remove <path>)`. Per entry: the
+path, the branch, the active plan's title, `programme <slug> ticket <id>` for a prog/<slug>/<id>
 branch, and the sessions whose latest activity line names that worktree, each
-with its last-seen age. A squash-merged branch older than --since that is not
+with its last-seen age. A branch older than --since that is not
 checked out and that no session names is left out. Listing the whole plan root
 (no --repo) skips the scan of sibling repositories for plans that name one.
 
@@ -38,10 +50,11 @@ Just landed: the first-parent commits of the default branch within --since.
                   repeatable. Without it: the working directory's repository,
                   else every repository directly under the plan root.
   --since <dur>   the window: 45s, 90m, 3h, 2d (default 48h)
-  --fetch         run `git fetch origin -q` on the selected repositories first
+  --fetch         run `git fetch --prune origin -q` on the selected
+                  repositories first (up to 4 at once)
   --json          one JSON array on stdout: {repo, path, worktrees: [{path,
-                  branch, plans: [title], programme_ticket, sessions: [{id,
-                  last_seen_secs}]}], landed: [{sha, subject, age_secs}]}
+                  branch, merged, plans: [title], programme_ticket, sessions:
+                  [{id, last_seen_secs}]}], landed: [{sha, subject, age_secs}]}
 
 A repository with nothing in flight and nothing landed prints nothing unless
 it was named with --repo. Exit 0 unless the command itself fails (2 on a usage
@@ -116,6 +129,8 @@ struct Entry {
     branch: String,
     plans: Vec<String>,
     sessions: Vec<Session>,
+    /// The branch's whole change is already on the default branch.
+    merged: bool,
 }
 
 impl Entry {
@@ -167,7 +182,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let sibling_root = if whole_root { None } else { root.as_deref() };
     let sessions = activity::latest_all();
     let now = SystemTime::now();
-    let mut reports = Vec::new();
+    let mut readable: Vec<PathBuf> = Vec::new();
     for dir in selected {
         if git::stdout_in(&dir, &["rev-parse", "--git-dir"]).is_none() {
             eprintln!(
@@ -176,14 +191,16 @@ pub fn run(args: &[OsString]) -> ExitCode {
             );
             continue;
         }
-        if options.fetch && !fetch_origin(&dir) {
-            eprintln!(
-                "amont-agent: board: `git fetch origin` failed in {}",
-                dir.display()
-            );
-        }
-        reports.push(report(&dir, &options, &sessions, now, sibling_root));
+        readable.push(dir);
     }
+    if options.fetch {
+        fetch_all(&readable);
+    }
+    let reports: Vec<Report> = readable
+        .iter()
+        .map(|dir| report(dir, &options, &sessions, now, sibling_root))
+        .collect();
+    let mut reports = reports;
     if !named {
         reports.retain(|r| !r.entries.is_empty() || !r.landed.is_empty());
     }
@@ -260,72 +277,56 @@ fn main_checkout(dir: &Path) -> Option<PathBuf> {
     }
 }
 
-fn fetch_origin(dir: &Path) -> bool {
-    let child = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["fetch", "origin", "-q"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else {
-        return false;
-    };
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) if start.elapsed() < FETCH_BUDGET => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-            _ => {
-                let _ = child.kill(); // the budget expired; the child may already have exited
-                let _ = child.wait(); // reaping only; the fetch has already failed
-                return false;
-            }
+fn repo_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// `git fetch --prune origin -q` in every repository, at most
+/// [`FETCH_PARALLEL`] at once, each within [`FETCH_BUDGET`]. Every fetch
+/// finishes before this returns; failures are reported in the order of `dirs`,
+/// one stderr line each starting `<repo>:`.
+fn fetch_all(dirs: &[PathBuf]) {
+    use std::io::IsTerminal as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    if dirs.is_empty() {
+        return;
+    }
+    if std::io::stderr().is_terminal() {
+        eprintln!("fetching {} repositories...", dirs.len());
+    }
+    let next = AtomicUsize::new(0);
+    let outcomes: Vec<std::sync::OnceLock<bool>> =
+        dirs.iter().map(|_| std::sync::OnceLock::new()).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..FETCH_PARALLEL.min(dirs.len()) {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::SeqCst);
+                let Some(dir) = dirs.get(index) else {
+                    return;
+                };
+                let deadline = Instant::now() + FETCH_BUDGET;
+                let fetched =
+                    git::bytes_bounded(dir, &["fetch", "--prune", "origin", "-q"], None, deadline)
+                        .is_some();
+                let _ = outcomes[index].set(fetched); // each index is claimed by exactly one worker, so it is never set twice
+            });
+        }
+    });
+    for (dir, outcome) in dirs.iter().zip(&outcomes) {
+        if outcome.get() != Some(&true) {
+            eprintln!(
+                "{}: `git fetch --prune origin -q` failed in {}",
+                repo_name(dir),
+                dir.display()
+            );
         }
     }
 }
 
 fn real(path: &Path) -> PathBuf {
     crate::plan_review::real(path)
-}
-
-/// The default branch as a ref to compare against: `origin/<name>` when it
-/// exists, else the local branch.
-fn default_ref(dir: &Path) -> Option<(String, String)> {
-    let exists = |r: &str| {
-        git::stdout_in(
-            dir,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("{r}^{{commit}}"),
-            ],
-        )
-        .is_some()
-    };
-    let mut names: Vec<String> = Vec::new();
-    if let Some(head) = git::stdout_in(
-        dir,
-        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    ) {
-        names.extend(head.strip_prefix("origin/").map(str::to_string));
-    }
-    names.extend(["main", "master"].map(str::to_string));
-    names.into_iter().find_map(|name| {
-        let remote = format!("origin/{name}");
-        if exists(&remote) {
-            Some((remote, name))
-        } else if exists(&name) {
-            Some((name.clone(), name))
-        } else {
-            None
-        }
-    })
 }
 
 struct Worktree {
@@ -391,6 +392,7 @@ fn unmerged_branches(dir: &Path, default: &str, default_name: &str) -> Vec<Unmer
     )
     .unwrap_or_default();
     let mut found: Vec<Unmerged> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
     for line in listing.lines() {
         let Some((reference, tip)) = line.split_once('\t') else {
             continue;
@@ -403,18 +405,22 @@ fn unmerged_branches(dir: &Path, default: &str, default_name: &str) -> Vec<Unmer
             continue;
         }
         let tip: u64 = tip.parse().unwrap_or(0);
-        match found.iter_mut().find(|b| b.name == branch) {
-            Some(existing) => {
+        match index.get(branch) {
+            Some(&at) => {
+                let existing = &mut found[at];
                 existing.tip = existing.tip.max(tip);
                 if reference.starts_with("refs/heads/") {
                     existing.reference = reference.to_string();
                 }
             }
-            None => found.push(Unmerged {
-                name: branch.to_string(),
-                tip,
-                reference: reference.to_string(),
-            }),
+            None => {
+                index.insert(branch.to_string(), found.len());
+                found.push(Unmerged {
+                    name: branch.to_string(),
+                    tip,
+                    reference: reference.to_string(),
+                });
+            }
         }
     }
     found.sort_by(|a, b| b.tip.cmp(&a.tip).then_with(|| a.name.cmp(&b.name)));
@@ -431,42 +437,99 @@ struct PlanRef {
 /// The active plans the branch at `reference` adds under docs/plans,
 /// relative to `default`.
 fn active_plans(dir: &Path, default: &str, reference: &str) -> Vec<PlanRef> {
-    let range = format!("{default}...{reference}");
-    let added = git::stdout_in(
-        dir,
-        &[
-            "diff",
-            "--name-only",
-            "--diff-filter=A",
-            &range,
-            "--",
-            "docs/plans",
-        ],
-    )
-    .unwrap_or_default();
-    added
-        .lines()
-        .filter(|f| f.ends_with(".md") && !f.ends_with("README.md"))
-        .filter_map(|file| {
-            let text = git::stdout_in(dir, &["show", &format!("{reference}:{file}")])?;
-            let title = plan_title(&text)?;
-            let file = file.rsplit('/').next().unwrap_or(file).to_string();
-            Some(PlanRef {
+    let deadline = Instant::now() + LOOKUP_BUDGET;
+    git::active_added_plans(dir, default, reference, deadline)
+        .into_iter()
+        .map(|plan| {
+            let title = plan.title;
+            let file = plan
+                .file
+                .rsplit('/')
+                .next()
+                .unwrap_or(&plan.file)
+                .to_string();
+            PlanRef {
                 file,
                 title,
-                repos: crate::shipped::plan_repos(&text).unwrap_or_default(),
-            })
+                repos: crate::shipped::plan_repos(&plan.text).unwrap_or_default(),
+            }
         })
         .collect()
 }
 
-/// The title of an `active` plan, `None` for any other status.
-fn plan_title(text: &str) -> Option<String> {
-    let (front, body) = crate::plans::split_front_matter(text);
-    if crate::plans::field(front, "status").as_deref() != Some("active") {
-        return None;
+/// The branches among `candidates` (name, ref) whose whole change from the
+/// merge-base is already on `default` as one non-merge commit: the same
+/// `git patch-id --stable`. A squash merge reads as merged this way. Nothing is
+/// written to the repository.
+///
+/// One `git log -p` of the default branch since the oldest merge-base is built
+/// per call; each candidate then costs a merge-base and one diff.
+fn merged_branches(dir: &Path, default: &str, candidates: &[(String, String)]) -> HashSet<String> {
+    let deadline = Instant::now() + LOOKUP_BUDGET;
+    let mut changes: Vec<(&str, String, String)> = Vec::new();
+    for (branch, reference) in candidates {
+        let Some(base) = git::stdout_bounded(dir, &["merge-base", default, reference], deadline)
+        else {
+            continue;
+        };
+        let mut diff = vec!["diff"];
+        diff.extend(PLAIN_DIFF);
+        diff.extend([base.as_str(), reference.as_str()]);
+        let Some(patch) = git::bytes_bounded(dir, &diff, None, deadline) else {
+            continue;
+        };
+        if patch.is_empty() {
+            continue;
+        }
+        if let Some(id) = first_patch_id(&patch, deadline, dir) {
+            changes.push((branch.as_str(), base, id));
+        }
     }
-    crate::plan_review::title(body)
+    if changes.is_empty() {
+        return HashSet::new();
+    }
+    let mut bases: Vec<&str> = changes.iter().map(|(_, base, _)| base.as_str()).collect();
+    bases.sort_unstable();
+    bases.dedup();
+    let oldest = if let [only] = bases.as_slice() {
+        (*only).to_string()
+    } else {
+        let mut octopus = vec!["merge-base", "--octopus"];
+        octopus.extend(&bases);
+        match git::stdout_bounded(dir, &octopus, deadline) {
+            Some(oldest) => oldest,
+            None => return HashSet::new(),
+        }
+    };
+    let range = format!("{oldest}..{default}");
+    let mut log = vec!["log", "-p", "--no-merges"];
+    log.extend(PLAIN_DIFF);
+    log.push(&range);
+    let Some(history) = git::bytes_bounded(dir, &log, None, deadline) else {
+        return HashSet::new();
+    };
+    let Some(ids) = git::bytes_bounded(dir, &["patch-id", "--stable"], Some(&history), deadline)
+    else {
+        return HashSet::new();
+    };
+    let on_default: HashSet<String> = String::from_utf8_lossy(&ids)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+        .collect();
+    changes
+        .into_iter()
+        .filter(|(_, _, id)| on_default.contains(id))
+        .map(|(branch, _, _)| branch.to_string())
+        .collect()
+}
+
+/// The stable patch-id of a single diff.
+fn first_patch_id(patch: &[u8], deadline: Instant, dir: &Path) -> Option<String> {
+    let out = git::bytes_bounded(dir, &["patch-id", "--stable"], Some(patch), deadline)?;
+    String::from_utf8_lossy(&out)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
 }
 
 fn age_secs(now: SystemTime, then: SystemTime) -> u64 {
@@ -484,7 +547,7 @@ fn report(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let default = default_ref(dir);
+    let default = git::default_ref(dir, Instant::now() + LOOKUP_BUDGET);
     let (default_ref_name, default_name) = default.clone().unwrap_or_default();
     let now_epoch = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let identity = git::stdout_in(
@@ -529,12 +592,32 @@ fn report(
     };
     let mut own_plan_files: Vec<String> = Vec::new();
 
+    let trees: Vec<Worktree> = worktrees(dir).into_iter().filter(|t| !t.bare).collect();
+    let checked_out: HashSet<&str> = trees.iter().filter_map(|t| t.branch.as_deref()).collect();
+    let window = options.since.as_secs();
+    let live: Vec<(&Unmerged, Vec<Session>)> = listed
+        .iter()
+        .filter(|b| !checked_out.contains(b.name.as_str()))
+        .filter_map(|b| {
+            let named = sessions_of(&|s| s.branch == b.name);
+            let recent = now_epoch.saturating_sub(b.tip) <= window;
+            (recent || !named.is_empty()).then_some((b, named))
+        })
+        .collect();
+    let candidates: Vec<(String, String)> = listed
+        .iter()
+        .filter(|b| checked_out.contains(b.name.as_str()))
+        .chain(live.iter().map(|(b, _)| *b))
+        .map(|b| (b.name.clone(), b.reference.clone()))
+        .collect();
+    let merged = if default.is_some() {
+        merged_branches(dir, &default_ref_name, &candidates)
+    } else {
+        HashSet::new()
+    };
+
     let mut entries: Vec<Entry> = Vec::new();
-    let mut checked_out: Vec<String> = Vec::new();
-    for (index, tree) in worktrees(dir).into_iter().enumerate() {
-        if tree.bare {
-            continue;
-        }
+    for (index, tree) in trees.into_iter().enumerate() {
         let tree_path = real(&tree.path);
         let tree_sessions = sessions_of(&|s| real(&s.worktree) == tree_path);
         let on_default = tree.branch.as_deref() == Some(default_name.as_str());
@@ -548,40 +631,28 @@ fn report(
         let plan_refs = tree.branch.as_deref().map(plans_of).unwrap_or_default();
         own_plan_files.extend(plan_refs.iter().map(|p| p.file.clone()));
         let plans = plan_refs.into_iter().map(|p| p.title).collect();
-        if let Some(b) = &tree.branch {
-            checked_out.push(b.clone());
-        }
         entries.push(Entry {
             path: Some(tree.path),
+            merged: tree.branch.as_ref().is_some_and(|b| merged.contains(b)),
             branch,
             plans,
             sessions: tree_sessions,
         });
     }
-    if default.is_some() {
-        let window = options.since.as_secs();
-        for Unmerged {
-            name: branch, tip, ..
-        } in &listed
-        {
-            let branch = branch.clone();
-            if checked_out.contains(&branch) {
-                continue;
-            }
-            let named = sessions_of(&|s| s.branch == branch);
-            let recent = now_epoch.saturating_sub(*tip) <= window;
-            if recent || !named.is_empty() {
-                let plan_refs = plans_of(&branch);
-                own_plan_files.extend(plan_refs.iter().map(|p| p.file.clone()));
-                let plans: Vec<String> = plan_refs.into_iter().map(|p| p.title).collect();
-                entries.push(Entry {
-                    path: None,
-                    branch,
-                    plans,
-                    sessions: named,
-                });
-            }
+    for (Unmerged { name: branch, .. }, named) in live {
+        if merged.contains(branch.as_str()) {
+            continue;
         }
+        let plan_refs = plans_of(branch);
+        own_plan_files.extend(plan_refs.iter().map(|p| p.file.clone()));
+        let plans: Vec<String> = plan_refs.into_iter().map(|p| p.title).collect();
+        entries.push(Entry {
+            path: None,
+            branch: branch.clone(),
+            plans,
+            sessions: named,
+            merged: false,
+        });
     }
     entries.extend(sibling_plans(
         identity.clone().unwrap_or_else(|| real(&dir.join(".git"))),
@@ -661,6 +732,7 @@ fn sibling_refs(dir: &Path) -> Option<SiblingRefs> {
         }
     })?;
     let mut branches: Vec<(String, u64, bool)> = Vec::new();
+    let mut index: HashMap<&str, usize> = HashMap::new();
     for (reference, tip, checked_out) in &refs {
         let branch = reference
             .strip_prefix("refs/heads/")
@@ -669,12 +741,16 @@ fn sibling_refs(dir: &Path) -> Option<SiblingRefs> {
         if branch == default_name {
             continue;
         }
-        match branches.iter_mut().find(|(name, _, _)| name == branch) {
-            Some(existing) => {
+        match index.get(branch) {
+            Some(&at) => {
+                let existing = &mut branches[at];
                 existing.1 = existing.1.max(*tip);
                 existing.2 |= *checked_out;
             }
-            None => branches.push((branch.to_string(), *tip, *checked_out)),
+            None => {
+                index.insert(branch, branches.len());
+                branches.push((branch.to_string(), *tip, *checked_out));
+            }
         }
     }
     Some(SiblingRefs {
@@ -775,6 +851,7 @@ fn sibling_plans(
                     branch: format!("{sibling_name}:{branch}"),
                     plans: titles,
                     sessions: Vec::new(),
+                    merged: false,
                 });
             }
         }
@@ -832,7 +909,13 @@ fn to_text(reports: &[Report], since: Duration) -> String {
                 .path
                 .as_ref()
                 .map_or("(no worktree)".to_string(), |p| p.display().to_string());
-            out.push_str(&format!("    {} [{}]\n", place, entry.branch));
+            let label = match (&entry.path, entry.merged) {
+                (Some(path), true) => {
+                    format!(" (merged: git worktree remove {})", path.display())
+                }
+                _ => String::new(),
+            };
+            out.push_str(&format!("    {} [{}]{label}\n", place, entry.branch));
             if let Some(ticket) = entry.programme_ticket() {
                 let (slug, id) = ticket.split_once('/').unwrap_or((&ticket, ""));
                 out.push_str(&format!("      programme {slug} ticket {id}\n"));
@@ -880,6 +963,7 @@ fn to_json(reports: &[Report]) -> String {
                     json!({
                         "path": entry.path.as_ref().map(|p| p.display().to_string()),
                         "branch": entry.branch,
+                        "merged": entry.merged,
                         "plans": entry.plans,
                         "programme_ticket": entry.programme_ticket(),
                         "sessions": sessions,
@@ -907,25 +991,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_active_plan_has_a_title() {
-        assert_eq!(
-            plan_title("---\nstatus: active\n---\n# Board\n"),
-            Some("Board".to_string())
-        );
-        assert_eq!(plan_title("---\nstatus: done\n---\n# Board\n"), None);
-        assert_eq!(
-            plan_title("---\nstatus: active\n---\n```\n# not the title\n```\n# Real\n"),
-            Some("Real".to_string())
-        );
-    }
-
-    #[test]
     fn programme_branches_are_labelled() {
         let entry = |branch: &str| Entry {
             path: None,
             branch: branch.to_string(),
             plans: Vec::new(),
             sessions: Vec::new(),
+            merged: false,
         };
         assert_eq!(
             entry("prog/x/t02").programme_ticket().as_deref(),

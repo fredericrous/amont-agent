@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `amont-agent board` reads a squash-merged branch as merged: a live branch
+  whose whole change has the same `git patch-id --stable` as one non-merge
+  commit on the default branch is left out, or, when a worktree holds it,
+  listed with `(merged: git worktree remove <path>)`; every worktree entry in
+  `--json` carries `"merged"`. Limits are in `docs/board.md`.
+- `work-overlap` names the active plan that the peer's branch added (read in
+  the peer's worktree, one 2 s budget for all named peers), and none for a peer
+  on the default branch; it no longer reads the worktree's `docs/plans` from
+  disk.
+- `amont-agent board --fetch` runs `git fetch --prune origin -q` for up to 4
+  repositories at once, finishes all fetches before reporting, and prints each
+  failure as one stderr line starting `<repo>:` in repository order.
+- The board's git lookups (default branch, added plans, merged-ness, fetch) run
+  on a bounded runner in `amont-agent-guard`: deadline, null stdin and stderr,
+  no prompts or optional locks, own process group killed at the deadline.
+- The session activity record and `work-overlap` cost less per write:
+  `work-overlap` checks its read-only told record before looking for peers,
+  peers are chosen by file modification time without opening stale files, the
+  last line is read from the final 4 KiB, and a file over 256 KiB is trimmed
+  atomically (temp file and rename) to the newest lines within 128 KiB instead
+  of by line count. A line another process appends during a trim may be lost.
+  Percent-decoding of activity fields is one pass with the same result. A
+  failed trim is journalled once per session.
+
+### Fixed
+
+- `amont-agent hook` and `amont-agent board` keep SIGPIPE ignored: a `git
+  patch-id` that exits before reading its input (or is killed at its deadline)
+  no longer kills the process. The hook used to exit 141 there, and its
+  decision was lost.
+
 ## v3.11.1
 
 ### Fixed

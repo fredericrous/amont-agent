@@ -2868,9 +2868,29 @@ fn bug_nudge_is_silent_without_a_transcript_path() {
 
 /// As [`send`], with the hook's clock set to `now` (epoch seconds).
 fn send_clocked(payload: &str, now: u64) -> Reply {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    send_clocked_in(&home(), payload, now)
+}
+
+/// As [`send_clocked`], with the scratch home given: `home()` is per thread,
+/// so a worker thread passes its test's home in.
+fn send_clocked_in(config_dir: &std::path::Path, payload: &str, now: u64) -> Reply {
+    send_clocked_with_path(config_dir, payload, now, None)
+}
+
+/// As [`send_clocked_in`], with `path` as the hook's PATH when given.
+fn send_clocked_with_path(
+    config_dir: &std::path::Path,
+    payload: &str,
+    now: u64,
+    path: Option<&std::ffi::OsStr>,
+) -> Reply {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    let mut child = command
         .arg("hook")
-        .env("CLAUDE_CONFIG_DIR", home())
+        .env("CLAUDE_CONFIG_DIR", config_dir)
         .env("AMONT_AGENT_TEST_NOW", now.to_string())
         .env("GIT_CONFIG_GLOBAL", home().join("no-global-gitconfig"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -3106,10 +3126,10 @@ fn work_overlap_tells_a_session_once_about_a_live_peer_in_its_repository() {
         "1m",
         "amont-agent board --repo second",
         "SendMessage",
-        "Overlap Plan Title",
     ] {
         assert!(reason.contains(part), "{part}: {}", told.stdout);
     }
+    assert!(!reason.contains("active plan"), "{}", told.stdout);
     assert_eq!(told.decision(), None, "advice, not a refusal");
     let again = scene.call("Edit", "ov-s2", &scene.second_repo, 240);
     assert!(!again.reason().contains("work-overlap"), "{}", again.stdout);
@@ -3205,5 +3225,390 @@ fn work_overlap_window_is_read_from_git_config() {
         default_window.reason().contains("ovw-s1"),
         "{}",
         default_window.stdout
+    );
+}
+
+// Activity record cost: told check first, mtime-filtered peers, tail reads,
+// size-based trim.
+
+const SEED_LINE_BYTES: usize = 150;
+
+impl Overlap {
+    /// A line of exactly `SEED_LINE_BYTES` bytes naming a place of its own.
+    fn seed_line(number: usize) -> String {
+        let head = format!("{number} /seed/repo /seed/worktree ");
+        let pad = SEED_LINE_BYTES - head.len() - 1;
+        format!("{head}{}\n", "b".repeat(pad))
+    }
+
+    fn seed(&self, session: &str, bytes: usize) -> usize {
+        let count = bytes / SEED_LINE_BYTES + 1;
+        let text: String = (0..count).map(|n| Self::seed_line(100_000 + n)).collect();
+        std::fs::create_dir_all(self.activity_file(session).parent().expect("dir")).expect("dir");
+        std::fs::write(self.activity_file(session), text).expect("seed");
+        count
+    }
+
+    fn size(&self, session: &str) -> u64 {
+        std::fs::metadata(self.activity_file(session))
+            .expect("an activity file")
+            .len()
+    }
+
+    fn edit_payload(&self, session: &str, repo: &std::path::Path) -> String {
+        let file = serde_json::Value::String(repo.join("f.txt").display().to_string());
+        let cwd = serde_json::Value::String(repo.display().to_string());
+        format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default",
+                 "tool_input":{{"file_path":{file},"old_string":"a","new_string":"b"}}}}"#
+        )
+    }
+
+    /// The edit, run on a thread: a hook that blocks on a FIFO fails the test
+    /// instead of hanging it.
+    fn edit_within_timeout(&self, session: &str, repo: &std::path::Path, later: u64) -> Reply {
+        let payload = self.edit_payload(session, repo);
+        let now = self.start + later;
+        let config_dir = home();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(send_clocked_in(&config_dir, &payload, now)); // the receiver is gone after a timeout
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the hook returned: it must not open the peer's FIFO")
+    }
+
+    #[cfg(unix)]
+    fn replace_with_fifo(&self, session: &str) {
+        let path = self.activity_file(session);
+        std::fs::remove_file(&path).expect("remove the activity file");
+        let made = Command::new("mkfifo").arg(&path).status().expect("mkfifo");
+        assert!(made.success());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_told_session_never_opens_a_peers_recent_fifo() {
+    let scene = Overlap::new("act-fifo-told");
+    scene.call("Edit", "fto-s1", &scene.first_repo, 0);
+    let told = scene.call("Edit", "fto-s2", &scene.first_repo, 10);
+    assert!(told.reason().contains("work-overlap"), "{}", told.stdout);
+    scene.replace_with_fifo("fto-s1");
+    let again = scene.edit_within_timeout("fto-s2", &scene.first_repo, 20);
+    assert!(!again.reason().contains("work-overlap"), "{}", again.stdout);
+}
+
+/// The first pass is bounded by the sweep horizon (a week), so a peer file
+/// older than that is never opened; one between the window and the horizon is
+/// read only for its last line.
+#[cfg(unix)]
+#[test]
+fn a_peer_fifo_older_than_the_horizon_is_never_opened() {
+    let scene = Overlap::new("act-fifo-old");
+    scene.call("Edit", "fto-old1", &scene.first_repo, 0);
+    scene.replace_with_fifo("fto-old1");
+    let touched = Command::new("touch")
+        .args(["-t", "200001010000"])
+        .arg(scene.activity_file("fto-old1"))
+        .status()
+        .expect("touch");
+    assert!(touched.success());
+    let quiet = scene.edit_within_timeout("fto-old2", &scene.first_repo, 10);
+    assert!(!quiet.reason().contains("work-overlap"), "{}", quiet.stdout);
+}
+
+#[test]
+fn record_reads_the_last_line_of_a_file_whose_head_is_not_utf8() {
+    let scene = Overlap::new("act-tail-utf8");
+    let place = format!(
+        "{} {} {} main\n",
+        scene.start,
+        scene.first_repo.join(".git").display(),
+        scene.first_repo.display()
+    );
+    let mut bytes = vec![0xFF_u8; 10];
+    bytes.push(b'\n');
+    while bytes.len() < 200 * 1024 {
+        bytes.extend_from_slice(Overlap::seed_line(7).as_bytes());
+    }
+    bytes.extend_from_slice(place.as_bytes());
+    std::fs::create_dir_all(scene.activity_file("tu8").parent().expect("dir")).expect("dir");
+    std::fs::write(scene.activity_file("tu8"), &bytes).expect("seed");
+    scene.call("Edit", "tu8", &scene.first_repo, 5);
+    assert_eq!(scene.size("tu8"), bytes.len() as u64, "nothing appended");
+}
+
+#[test]
+fn a_changed_place_append_trims_once_to_the_byte_target() {
+    let scene = Overlap::new("act-trim");
+    let count = scene.seed("trm", 300 * 1024);
+    scene.call("Edit", "trm", &scene.first_repo, 5);
+    assert!(scene.size("trm") <= 128 * 1024, "{}", scene.size("trm"));
+    let lines = scene.lines("trm");
+    let last = lines.last().expect("a last line");
+    assert!(
+        last.contains(&scene.first_repo.display().to_string()),
+        "{last}"
+    );
+    assert_eq!(
+        lines[lines.len() - 2],
+        Overlap::seed_line(100_000 + count - 1).trim_end(),
+        "the newest seed line is kept"
+    );
+    let first_kept = lines[0].clone();
+    for step in 0..100 {
+        let repo = if step % 2 == 0 {
+            &scene.second_repo
+        } else {
+            &scene.first_repo
+        };
+        scene.call("Edit", "trm", repo, 10 + step);
+    }
+    let after = scene.lines("trm");
+    assert_eq!(after.len(), lines.len() + 100);
+    assert_eq!(after[0], first_kept, "no further trim");
+}
+
+#[test]
+fn a_new_line_over_the_target_is_kept_alone_and_an_unchanged_call_does_not_trim() {
+    let scene = Overlap::new("act-trim-big");
+    let head = scene.second_repo.join(".git").join("HEAD");
+    std::fs::write(
+        &head,
+        format!("ref: refs/heads/{}\n", "z".repeat(300 * 1024)),
+    )
+    .expect("HEAD");
+    scene.seed("trb", 300 * 1024);
+    scene.call("Edit", "trb", &scene.second_repo, 5);
+    assert_eq!(scene.lines("trb").len(), 1);
+    let size = scene.size("trb");
+    assert!(size > 256 * 1024);
+    scene.call("Edit", "trb", &scene.second_repo, 10);
+    assert_eq!(scene.lines("trb").len(), 1);
+    assert_eq!(scene.size("trb"), size);
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_records_during_a_trim_leave_only_whole_lines() {
+    let scene = Overlap::new("act-trim-race");
+    scene.seed("trr", 300 * 1024);
+    let payloads: Vec<String> = [&scene.first_repo, &scene.second_repo]
+        .iter()
+        .cycle()
+        .take(8)
+        .map(|repo| scene.edit_payload("trr", repo))
+        .collect();
+    let now = scene.start + 5;
+    let config_dir = home();
+    let workers: Vec<_> = payloads
+        .into_iter()
+        .map(|payload| {
+            let config_dir = config_dir.clone();
+            std::thread::spawn(move || send_clocked_in(&config_dir, &payload, now))
+        })
+        .collect();
+    for worker in workers {
+        worker.join().expect("the hook ran");
+    }
+    let lines = scene.lines("trr");
+    for line in &lines {
+        assert_eq!(line.split_whitespace().count(), 4, "{line}");
+    }
+    let last = lines.last().expect("a last line");
+    let places = [&scene.first_repo, &scene.second_repo];
+    assert!(
+        places
+            .iter()
+            .any(|repo| last.contains(&repo.display().to_string())),
+        "{last}"
+    );
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn commit_plan(dir: &std::path::Path, file: &str, title: &str) {
+    let path = dir.join("docs").join("plans").join(file);
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("plans dir");
+    std::fs::write(&path, format!("---\nstatus: active\n---\n# {title}\n")).expect("plan");
+    git_in(dir, &["add", "docs"]);
+    git_in(dir, &["commit", "-q", "-m", title]);
+}
+
+/// A real repository on `main` with an older active plan, and a linked
+/// worktree on `feat/x` that adds a newer one.
+fn real_overlap_repo(name: &str) -> (PathBuf, PathBuf) {
+    let root = home().join(name).canonicalize_or_create();
+    let main = root.join("main-tree");
+    std::fs::create_dir_all(&main).expect("repo dir");
+    git_in(&main, &["init", "-q", "-b", "main"]);
+    commit_plan(&main, "2026-10-01-old.md", "Older Main Plan");
+    let branch_tree = root.join("feat-tree");
+    // A relative path: the canonical root carries Windows' `\\?\` prefix,
+    // which `git worktree add` rejects.
+    git_in(
+        &main,
+        &["worktree", "add", "-q", "-b", "feat/x", "../feat-tree"],
+    );
+    commit_plan(&branch_tree, "2026-10-31-x.md", "Branch Added Plan");
+    (main, branch_tree)
+}
+
+#[test]
+fn work_overlap_names_the_plan_the_peers_branch_added_and_none_for_main() {
+    let scene = Overlap::new("overlap-real-plan");
+    let (main, branch_tree) = real_overlap_repo("overlap-real-plan-repo");
+    scene.call("Edit", "orp-s1", &branch_tree, 0);
+    let told = scene.call("Edit", "orp-s2", &main, 60);
+    let reason = told.reason();
+    assert!(reason.contains("work-overlap"), "{}", told.stdout);
+    assert!(reason.contains("Branch Added Plan"), "{}", told.stdout);
+    assert!(!reason.contains("Older Main Plan"), "{}", told.stdout);
+}
+
+#[test]
+fn work_overlap_names_no_plan_for_a_peer_on_the_default_branch() {
+    let scene = Overlap::new("overlap-real-main");
+    let (main, branch_tree) = real_overlap_repo("overlap-real-main-repo");
+    scene.call("Edit", "orm-s1", &main, 0);
+    let told = scene.call("Edit", "orm-s2", &branch_tree, 60);
+    let reason = told.reason();
+    assert!(reason.contains("orm-s1"), "{}", told.stdout);
+    assert!(!reason.contains("active plan"), "{}", told.stdout);
+}
+
+/// A `git` first on PATH that hangs on the plan lookup's `--name-only` diff,
+/// as `hang` says, and runs the real git otherwise. Returns the PATH.
+#[cfg(unix)]
+fn hanging_git_path(dir: &std::path::Path, hang: &str) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+    let real = Command::new("which")
+        .arg("git")
+        .output()
+        .expect("which")
+        .stdout;
+    let real = String::from_utf8(real).expect("utf8");
+    std::fs::create_dir_all(dir).expect("shim dir");
+    let shim = dir.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *--name-only*) {hang} ;; esac\nexec '{}' \"$@\"\n",
+            real.trim()
+        ),
+    )
+    .expect("shim");
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let mut path = dir.as_os_str().to_owned();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    path
+}
+
+#[cfg(unix)]
+fn shim_sleeps(marker: &str) -> bool {
+    Command::new("pgrep")
+        .args(["-f", marker])
+        .output()
+        .expect("pgrep")
+        .status
+        .success()
+}
+
+#[cfg(unix)]
+fn advice_with_hanging_lookup(name: &str, hang: &str, marker: &str) {
+    let scene = Overlap::new(name);
+    let (main, branch_tree) = real_overlap_repo(&format!("{name}-repo"));
+    let path = hanging_git_path(&home().join(format!("{name}-shim")), hang);
+    let call = |tool_session: &str,
+                repo: &std::path::Path,
+                later: u64,
+                git_path: Option<&std::ffi::OsStr>| {
+        let file = serde_json::Value::String(repo.join("f.txt").display().to_string());
+        let cwd = serde_json::Value::String(repo.display().to_string());
+        let started = std::time::Instant::now();
+        let reply = send_clocked_with_path(
+            &home(),
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":{cwd},
+                     "session_id":"{tool_session}","permission_mode":"default",
+                     "tool_input":{{"file_path":{file},"old_string":"a","new_string":"b"}}}}"#
+            ),
+            scene.start + later,
+            git_path,
+        );
+        (reply, started.elapsed())
+    };
+    call(
+        &format!("{name}-s1"),
+        &branch_tree,
+        0,
+        Some(path.as_os_str()),
+    );
+    // The same firing path with the real git: its time is everything the
+    // advice costs on this machine except the lookups the shim hangs, so the
+    // bound below measures only what the hang adds.
+    let (baseline, fired) = call(&format!("{name}-s2"), &main, 60, None);
+    assert!(
+        baseline.reason().contains("work-overlap"),
+        "{}",
+        baseline.stdout
+    );
+    let (told, took) = call(&format!("{name}-s3"), &main, 70, Some(path.as_os_str()));
+    assert!(told.reason().contains("work-overlap"), "{}", told.stdout);
+    assert!(!told.reason().contains("active plan"), "{}", told.stdout);
+    // The lookups share a 2 s budget and the shim would hold git for 30 s.
+    // What is judged is that the lookup is bounded at all: on a host at load
+    // 30 the kill, reap and scheduling past the budget took over 2 s, so the
+    // bound leaves 10 s and a missing budget (30 s) still fails.
+    let bound = fired + std::time::Duration::from_secs(10);
+    assert!(took < bound, "{took:?} against {bound:?}");
+    // The hanging call itself contains the whole 2 s wait, so an absolute
+    // floor cannot flake under load; with the ceiling above it pins the
+    // budget to about 2-12 s.
+    let floor = std::time::Duration::from_millis(1900);
+    assert!(took >= floor, "{took:?} under {floor:?}");
+    assert!(!shim_sleeps(marker), "{marker} still runs");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_plan_lookup_that_waits_on_a_child_holding_stdout_is_cut_at_the_budget() {
+    advice_with_hanging_lookup("overlap-hang-wait", "sleep 30.01", "sleep 30.01");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_plan_lookup_whose_git_exits_leaving_a_child_holding_stdout_is_cut_at_the_budget() {
+    advice_with_hanging_lookup("overlap-hang-orphan", "sleep 30.02 & exit 0", "sleep 30.02");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_plan_lookup_whose_git_closes_stdout_and_keeps_running_is_cut_at_the_budget() {
+    advice_with_hanging_lookup(
+        "overlap-hang-closed",
+        "exec >&-; sleep 30.03",
+        "sleep 30.03",
     );
 }
