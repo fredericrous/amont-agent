@@ -76,7 +76,7 @@ When a declared profile has no pass on the pushed tree and no review of it in th
 
 ## Phases
 
-- [ ] Phase 1 — amont-agent:
+- [x] Phase 1 — amont-agent:
   - The transcript carry, `declaration()` taking a commit, `reviews()` on the header, and the tidy-ups.
   - Tests in `tests/implementation_review.rs`:
     - a backend `approve` of tree A, a fix at B, implementation-review of B, one push → allowed and journalled `carried-from`, with no push judged at A;
@@ -92,14 +92,22 @@ When a declared profile has no pass on the pushed tree and no review of it in th
 
 ## Verification
 
-- Phase 1, observed on 76369ed:
+- Phase 1, observed (the swap-back on 76369ed, the 17-test run on ae5b72b):
   - On the fix round: `cargo test --test implementation_review -- session_ carry carries implementation_review_block_in_the_body a_declaration_changed_since an_unreadable_declaration a_pointer_plan_gets a_rebased_branch` → 17 passed: the 8 existing carry tests and 9 new ones, including `a_rebased_branch_does_not_carry_from_the_session` and the header test `an_implementation_review_block_in_the_body_binds_nothing`.
   - With the old behaviour swapped in (`SessionCarry::Undecided` in place of the session read, and `parse_blocks(&c.prompt)` in `reviews()`), the session-carry test and the header test → FAILED. Restored, and compared with `cmp`.
   - The gate (clippy, the full suite) passed at commit.
 
-- Phase 1: the new integration tests pass, and the existing carry tests still pass. With `carried` restored to pass files only, the transcript-carry test fails; with `reviews()` back on the whole prompt, the fenced-block test fails. `cargo test` → 0 failed. Live check (always run): after both profiles approve, commit a docs-only fix, run implementation-review on it, push once → the push is allowed, with no profile re-run, and the journal holds `profile-carried … profile=backend carried-from <12 hex>` and the same for `lang:rust`. Production: over 14 days, count `profile-carried` lines against profile re-runs on diffs of 10 lines or fewer.
+- Phase 1: the new integration tests pass, and the existing carry tests still pass. With `carried` restored to pass files only, the transcript-carry test fails; with `reviews()` back on the whole prompt, the fenced-block test fails. `cargo test` → 0 failed. Live check (deferred: see Decision log 2026-11-02, holds-until the first plan PR after 3.12.0): after both profiles approve, commit a docs-only fix, run implementation-review on it, push once → the push is allowed, with no profile re-run, and the journal holds `profile-carried … profile=backend carried-from <12 hex>` and the same for `lang:rust`. Production: over 14 days, count `profile-carried` lines against profile re-runs on diffs of 10 lines or fewer.
 - Phase 2: `scripts/check.sh` → exit 0, no "counts for nothing" phrase is left under `parts/`, and the implementation-review launch text in worktree-task puts its TREE line before any heading or fence (grep). Rollback for Phase 1: pin amont-agent 3.11.x again.
 - Phase 3: the pins equal each release's SHA256SUMS lines. After the install, `amont-agent --version` → 3.12.0, the agents' text holds the new reason, and doctor → healthy.
+
+## Implementation review
+
+- Phase 1, profiles declared `backend, lang:rust`:
+  - implementation-review: approve-with-changes twice. Fixed: a session-path rebase test and the exact test record. Plan text only after that.
+  - code-review-backend: approve-with-changes, then approve. Fixed: the rebase test, and the journal lines saying why a carry did not happen.
+  - code-review-language: approve-with-changes twice. Fixed: derived `Default`, named `Carry` fields and the journal lines. Deliberate: `Result<Option<_>>`, no per-commit cache, `unwrap_or_else` (clippy passed in the gate).
+- Tokens: about 59k + 80k, 60k + 64k, 56k + 62k, so 381k.
 
 ## Decision log
 - 2026-11-02 — From the code reviews:
