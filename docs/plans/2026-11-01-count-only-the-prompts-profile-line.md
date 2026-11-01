@@ -42,12 +42,13 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
 - `profile_lines(prompt)` scans the prompt from its first line. It stops at the first line whose trimmed text is a Markdown heading (`#{1,6}` then a space), starts with three or more backticks or tildes (a fence), or starts with `diff --git` or `@@` (an unfenced diff). It returns the `Profile:` values of the lines before that point, as today.
 - A prompt with `TREE`, `Round 1.`, `RULES`, the `CANDIDATES` block and `Profile: unix`, then an inlined brief → one Profile line (`unix`). The brief's own `Profile: unix` comes after its `# Implementation review brief` heading and is not read.
 - A Delta message holding the block, `Delta.` and a fenced diff with a `+Profile: x` or ` Profile: x` line → no Profile line from the diff, so the round inherits its launch's profile.
+- The review block a profile review binds (`<<<TREE …>>>`) is read from the same header (`code_review::header`), so a block inside an inlined brief or diff binds no tree.
 - A prompt whose only `Profile:` line sits inside the inlined brief → no Profile line. A fresh launch counts for nothing, as with a missing line today. The skills already put the line in the header.
 
 ## Phases
 
 - [x] Phase 1 — amont-agent:
-  - `profile_lines` reads only the header.
+  - `profile_lines` reads only the header, and `profile_reviews` reads its review blocks from the same `header()`.
   - Unit tests in code_review.rs: a header line counts; a line after a heading is ignored; a line inside a fence is ignored; a ` Profile: x` context line after an unfenced `diff --git` is ignored; a header line `#174 …` does not end the header; the existing indentation test still holds.
   - Integration tests in `tests/implementation_review.rs`: a fresh launch with an inlined brief binds and files exactly one pass for its profile and tree; a resumed Delta with a fenced diff carrying a `Profile:` line binds under its launch's profile.
   - CHANGELOG entry (`## Unreleased`).
@@ -60,9 +61,9 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
 ## Verification
 
 - Phase 1, observed:
-  - `cargo test -p amont-agent-process code_review::tests` → 14 passed, the five new tests included: header, heading, fence (backticks, tildes, ````` ````diff `````), unfenced diff, `#174`.
+  - `cargo test -p amont-agent-process code_review::tests` on 89c098f → 15 passed. The new ones: header, heading, fence (backticks, tildes, ````` ````diff `````), unfenced diff, `#174`, and `the_header_ends_where_the_body_opens`.
   - With the old `profile_lines` body swapped back in → 3 failed (heading, fence, unfenced diff) and the header and `#174` tests passed. The file was then restored and compared with `cmp`.
-  - `cargo test --test implementation_review -- inlined_brief delta_with_a_diff resumed_round` → 5 passed:
+  - `cargo test --test implementation_review -- body_binds inlined_brief delta_with_a_diff resumed_round` on 89c098f → 6 passed. With `parse_blocks(&c.prompt)` swapped back in, `a_review_block_in_the_body_binds_nothing` → FAILED; the file was restored and compared with `cmp`. Earlier, on the first fix:
     - an inlined brief binds and files exactly 1 pass;
     - the Delta from a `rework` launch binds the new tree, and without the Delta that tree has no pass and the push is advised.
 
@@ -73,6 +74,8 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
   - Tokens: the sum of the three reviewers, against implementation-review alone. The bar is 3× (ADR-0052 Consequences): 131k + 146k + 153k = 430k, so 3× is 1.29M.
 
 ## Decision log
+- 2026-11-01 — The backend profile's dogfood review found that the tree a profile review binds was still read from the whole prompt. So a block inside an inlined body could bind a tree the reviewer never read. `code_review::header()` is now the one header definition, used for both the profile and the block. This narrows the binding inputs, a change the Non-goals did not foresee. The rules themselves (exactly one line, the agent map, inheritance) are unchanged.
+- 2026-11-01 — Deliberate: a refusal that says why a profile line placed after a heading did not count would change the hook's output, which this plan's Code review line leaves out. The docs say where the line goes. The same header rule for implementation-review's own block scan is a follow-up outside this plan.
 - 2026-11-01 — Implemented by hand, not through relais: every relais run on amont-agent today hit its wall time, and this change is 20 lines. The fence rule also covers tildes, and the Delta test starts from a `rework` launch on an earlier tree, so its pass can come only from the resumed round (both from Codex's review).
 
 ## Outcome
