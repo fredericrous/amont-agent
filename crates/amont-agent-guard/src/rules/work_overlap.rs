@@ -38,6 +38,9 @@ const PLAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 /// peer's worktree; `None` for a peer on the default branch, a lookup that
 /// failed, or the `deadline`.
 fn peer_plan(peer: &Peer, deadline: std::time::Instant) -> Option<String> {
+    if on_default_branch_by_files(peer) {
+        return None;
+    }
     let (default, default_name) = crate::git::default_ref(&peer.worktree, deadline)?;
     if peer.branch == default_name {
         return None;
@@ -46,6 +49,22 @@ fn peer_plan(peer: &Peer, deadline: std::time::Instant) -> Option<String> {
         .into_iter()
         .next()
         .map(|plan| plan.title)
+}
+
+/// Whether the peer's branch is its repository's default, read from files
+/// with no git process: `refs/remotes/origin/HEAD` in the common dir, else the
+/// usual names. `false` means "not known", and the caller asks git.
+fn on_default_branch_by_files(peer: &Peer) -> bool {
+    let origin_head = crate::activity::resolve(&peer.worktree).and_then(|place| {
+        std::fs::read_to_string(place.repo_identity.join("refs/remotes/origin/HEAD")).ok()
+    });
+    match origin_head
+        .as_deref()
+        .and_then(|text| text.trim().strip_prefix("ref: refs/remotes/origin/"))
+    {
+        Some(name) => peer.branch == name,
+        None => peer.branch == "main" || peer.branch == "master",
+    }
 }
 
 /// The one-line advice, naming every live peer (at most three, freshest first)
