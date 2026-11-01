@@ -359,8 +359,17 @@ plan with no section journals `undeclared-profiles`.
 A completed launch counts for a profile only when its agent is the one the
 profile maps to (`lang:<x>` to `code-review-language`, `ui-design` to
 `interface-review`, any other role to `code-review-<role>`) and its prompt
-carries exactly one `Profile: <role>` line naming that profile. Two lines, or
-a line naming another profile, count for nothing. A resumed round
+carries exactly one `Profile: <role>` line naming that profile, in its
+header. Two lines, or a line naming another profile, count for nothing. The
+header is every line before the first that opens the body: a Markdown heading
+(`#` to `######` then a space), a code fence (three or more backticks or
+tildes), or an unfenced diff (`diff --git`, `@@`). So an inlined brief, which
+starts with `# Implementation review brief`, and an inlined diff never add a
+line. The launch's own `Profile:` line must come before them: a prompt that
+opens with the inlined brief and carries its line only there counts for
+nothing. The review block (`<<<TREE …>>>`) a profile review binds is read
+from the same header, so a block inside an inlined brief or diff binds no
+tree (3.11.1). A resumed round
 (`SendMessage`) inherits its launch's profile and may omit the line; one that
 names another profile counts for nothing. A profile review never satisfies
 the implementation review, nor the reverse. A profile's verdict is read like
