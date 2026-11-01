@@ -1,0 +1,103 @@
+---
+status: active
+branch: fix/carry-from-transcript (amont-agent), fix/brief-reason (greenharness-skills), chore/pin-skills-0.3.1 (grh)
+repos: [amont-agent, greenharness-skills, grh]
+adrs: [ADR-0052]
+---
+# Plan: an approval carries from the session, and the review header is one rule
+
+## Review panel
+
+👉 **Decide:** none. Approve if an `approve` given in this session should carry to the pushed tree without a re-run. A cross-repository (pointer) plan gets no session carry for now, because a pointer records no canonical revision.
+📍 amont-agent, greenharness-skills, grh · not started · next: Phase 1 (amont-agent 3.12.0). Panel: backend (opus), codex (gpt-6-astra).
+**Changed by review:**
+- The session is read before filed passes, so a newer rework blocks any carry. An unreadable declaration at the reviewed commit means no carry.
+- A pointer's historical declaration needs a fixed revision, and without one there is no carry. The live check is now a sequence that always runs.
+📄 Full reviews: [2026-11-02-an-approval-carries-from-the-session.reviews.md](2026-11-02-an-approval-carries-from-the-session.reviews.md)
+**Verdicts:** backend approve-with-changes three times; Codex approve-with-changes. 7 findings carried into implementation:
+- a 0-re-run bar due 11-15;
+- seven carry tests;
+- a Missing-declaration test;
+- the rollback line's placement;
+- a per-commit plan list;
+- Missing falls through to filed passes;
+- an unchanged-pointer test.
+
+## Context
+
+The ADR-0052 dogfood (amont-agent #177) left four items open in the canonical plan `decisions/docs/plans/2026-10-31-plan-names-its-code-reviewers.md`:
+
+1. **An approval never carries in the usual flow.** `ProfileGate::carried` (`crates/amont-agent-process/src/implementation_review.rs:814`) reads only pass files the hook filed when it judged an earlier push. A session that reviews, fixes and then pushes once never judged a push at the approved tree, so the profile's `approve` is ignored. On #177, both profiles re-ran on a docs-only diff. `work.code-review-delta` promises the carry; today it only works across two pushes.
+2. **implementation-review's own block scan reads the whole prompt.** `reviews()` (`implementation_review.rs:280`) calls `parse_blocks(&c.prompt)`. A `<<<TREE …>>>` block inside an inlined brief or diff can bind a tree the reviewer did not read, the defect #177 fixed for the profiles.
+3. **The skill's reason is now untrue.** greenharness-skills worktree-task step 2c and the seven agent files say a brief goes by path because "a prompt with two Profile lines counts for nothing". Since amont-agent 3.11.1, only the header counts.
+4. **Two lows from the lang:rust review of #177.** `code_review::header` is `pub` with one in-crate caller, and the definition of the body sits on `profile_lines`, not on `header`.
+
+## Goal
+
+An `approve` a profile gave in this session to an earlier tree of the branch carries to the pushed tree under the same conditions as a filed pass. Both review scans read the prompt's header only. The skill says why a brief still goes by path. The code tidy-ups are done.
+
+## Non-goals
+
+- No change to the carry's conditions (ADR-0052 `work.code-review-delta`): verdict `approve` only, a commit in `pushed ^merge-base`, the same plan and declaration, and implementation-review passing the pushed tree. Only where the earlier approval is found changes.
+- No carry for implementation-review itself: it always reviews the pushed tree, as today.
+- No change to the refusal text.
+- The application-landscape findings (double undo, touch editing, raw px, stale pack) stay with that repository's owner.
+
+## Code review
+- amont-agent: backend, lang:rust (unix and tui left out: no command line, output or message changes)
+- greenharness-skills: none — markdown wording only
+- grh: none — pin bump only
+
+## Behaviour
+
+### The carry also reads the session (amont-agent)
+
+When a declared profile has no pass on the pushed tree and no review of it in the transcript, `carried` looks at the transcript first, then at filed passes. If this profile's latest transcript review of any branch tree is not `approve`, nothing carries, a filed pass included.
+- **The latest review only.** It takes this profile's latest completed review, in launch order, whose block names this repository and a tree of a commit in `pushed ^merge-base`, other than the pushed tree. A later `rework` or `approve-with-changes` of an earlier tree therefore blocks the carry.
+- **Its verdict** must be `approve`.
+- **The declaration must match.** The declaration is read at that commit, the newest branch commit whose content id is the reviewed tree. This uses the same `declaration()` logic, refactored to take the commit it reads. Its plan path and digest must equal the current ones. For transcript carry, a pointer plan's historical declaration must come from an immutable canonical revision tied to the reviewed commit; without that evidence, the transcript candidate yields `Missing`. Never resolve a historical declaration through today's canonical working-tree file. Add an integration test with no filed pass: approve A through a pointer plan, change the canonical declaration, then push B after implementation-review; no transcript carry is allowed. A declaration that cannot be read at that commit means no carry (`Missing`), never an `unknown` refusal.
+- **implementation-review must pass the pushed tree**, as for every carry today (`hold()` only reaches the profiles after that).
+- **When it carries,** it writes the pushed tree's pass with `how = "carried-from <12 hex>"` and the reviewed commit as its basis, and journals `profile-carried … carried-from <12 hex> <shortstat>`. That is the shape of today's carry, so a carry chain still records the first reviewed commit.
+
+### One header for both scans (amont-agent)
+
+- `reviews()` reads review blocks from `code_review::header(&c.prompt)`, like `profile_reviews`.
+- An implementation-review prompt then binds only the TREE block before its first heading, fence or unfenced diff. A prompt that opens with the inlined brief and carries no TREE line before it binds nothing: the push is refused with "launch the implementation-review agent". worktree-task already puts the TREE line first.
+- `parse_rules_sha` and the CANDIDATES read are unchanged.
+
+### Tidy-ups (amont-agent)
+
+- `header` becomes `pub(crate)`.
+- The definition of the body (heading, fence, unfenced diff) moves to `header`'s doc comment, and `profile_lines` points to it.
+
+### The skill's reason (greenharness-skills)
+
+- In worktree-task step 2c and the seven `code-review-*.md` input paragraphs, the reason becomes: the brief is long, so passing it by path keeps the prompt small. The hook reads only the header, so the prompt's own `Profile:` and TREE lines must come before any pasted text.
+
+## Phases
+
+- [ ] Phase 1 — amont-agent:
+  - The transcript carry, `declaration()` taking a commit, `reviews()` on the header, and the tidy-ups.
+  - Tests in `tests/implementation_review.rs`:
+    - a backend `approve` of tree A, a fix at B, implementation-review of B, one push → allowed and journalled `carried-from`, with no push judged at A;
+    - the same with a later `rework` of A → refused;
+    - with `approve-with-changes` → refused;
+    - a pass filed by a push at A, then a transcript `rework` of A, then a push at B → refused;
+    - with the declaration changed between A and B → refused;
+    - after a rebase that moves A out of `pushed ^merge-base` → refused;
+    - an implementation-review prompt whose only TREE block for the pushed tree sits inside a fenced body → refused, and the same block in the header → allowed.
+  - CHANGELOG and docs/implementation-review.md. Release 3.12.0 (tag-release): a minor version, since what binds changes.
+- [ ] Phase 2 — greenharness-skills: the reworded reason. Release 0.3.1.
+- [ ] Phase 3 — grh: pin amont-agent 3.12.0 and skills 0.3.1. Release 0.1.5, then `brew upgrade` and `grh install workflow --yes` on the laptop.
+
+## Verification
+
+- Phase 1: the new integration tests pass, and the four existing carry tests still pass. With `carried` restored to pass files only, the transcript-carry test fails; with `reviews()` back on the whole prompt, the fenced-block test fails. `cargo test` → 0 failed. Live check (always run): after both profiles approve, commit a docs-only fix, run implementation-review on it, push once → the push is allowed, with no profile re-run, and the journal holds `profile-carried … profile=backend carried-from <12 hex>` and the same for `lang:rust`. Production: over 14 days, count `profile-carried` lines against profile re-runs on diffs of 10 lines or fewer.
+- Phase 2: `scripts/check.sh` → exit 0, no "counts for nothing" phrase is left under `parts/`, and the implementation-review launch text in worktree-task puts its TREE line before any heading or fence (grep). Rollback for Phase 1: pin amont-agent 3.11.x again.
+- Phase 3: the pins equal each release's SHA256SUMS lines. After the install, `amont-agent --version` → 3.12.0, the agents' text holds the new reason, and doctor → healthy.
+
+## Decision log
+
+## Outcome
+
+<!-- panel: repos=amont-agent,greenharness-skills,grh reviewers=backend,codex body-sha=c7bf8dc59c72 -->
