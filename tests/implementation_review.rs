@@ -3077,6 +3077,40 @@ fn a_delta_with_a_diff_holding_profile_lines_binds_under_its_launch() {
     assert!(profile_pass_file(&w, "backend", "app", &now).is_file());
 }
 
+/// The tree a profile review binds comes from its header too: a launch whose
+/// header names an earlier tree, with the pushed tree's block only inside an
+/// inlined body, does not review the pushed tree.
+#[test]
+fn a_review_block_in_the_body_binds_nothing() {
+    let w = World::new("profile-body-block");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let reviewed = w.tree(&repo);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { e() }\nfn e() {}\n")]);
+    let pushed = w.tree(&repo);
+    assert_ne!(reviewed, pushed);
+    let prompt = format!(
+        "{}\nProfile: backend\nRound 1.\n```text\n{}\n```\n",
+        crate_block(&w, &repo, &reviewed),
+        crate_block(&w, &repo, &pushed)
+    );
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(&w, "code-review-backend", &prompt, "Verdict: approve");
+    let transcript = w.transcript("t", &t);
+    assert!(matches!(
+        w.push(&repo, "s1", Some(&transcript)),
+        Said::Advise(_)
+    ));
+    assert!(!profile_pass_file(&w, "backend", "app", &pushed).is_file());
+}
+
 fn crate_block(_w: &World, repo: &Path, sha: &str) -> String {
     let name = repo.file_name().unwrap().to_string_lossy();
     format!("<<<TREE repo={name} sha={sha}>>>\n<<<RULES sha={ABC_SHA}>>>")

@@ -137,19 +137,33 @@ pub fn slug(profile: &str) -> Option<String> {
 /// fenced or starts with `diff --git`, so neither can add a Profile line: the
 /// launch's own line must come before them.
 pub fn profile_lines(prompt: &str) -> Vec<&str> {
-    prompt
+    header(prompt)
         .lines()
-        .map(str::trim)
-        .take_while(|line| !opens_body(line))
-        .filter_map(|line| line.strip_prefix("Profile:"))
+        .filter_map(|line| line.trim().strip_prefix("Profile:"))
         .map(str::trim)
         .collect()
 }
 
+/// A review prompt's header: its text up to the first line that opens the
+/// body (see [`profile_lines`]). The profile and the review block a launch
+/// binds to are both read from here, so neither can come from an inlined
+/// brief or diff.
+pub fn header(prompt: &str) -> &str {
+    let mut end = 0;
+    for line in prompt.split_inclusive('\n') {
+        if opens_body(line.trim()) {
+            break;
+        }
+        end += line.len();
+    }
+    &prompt[..end]
+}
+
 /// Whether a trimmed prompt line opens the body that follows the header.
 fn opens_body(line: &str) -> bool {
-    let hashes = line.bytes().take_while(|b| *b == b'#').count();
-    let heading = (1..=6).contains(&hashes) && line[hashes..].starts_with(' ');
+    let rest = line.trim_start_matches('#');
+    let hashes = line.len() - rest.len();
+    let heading = (1..=6).contains(&hashes) && rest.starts_with(' ');
     heading
         || line.starts_with("```")
         || line.starts_with("~~~")
@@ -573,6 +587,13 @@ mod tests {
             let prompt = format!("<<<TREE>>>\nDelta.\n{opener}\n Profile: x\n");
             assert!(profile_lines(&prompt).is_empty(), "{opener}");
         }
+    }
+
+    #[test]
+    fn the_header_ends_where_the_body_opens() {
+        let prompt = "<<<TREE a>>>\nProfile: unix\n```diff\n<<<TREE b>>>\n```\n";
+        assert_eq!(header(prompt), "<<<TREE a>>>\nProfile: unix\n");
+        assert_eq!(header("no body\nat all"), "no body\nat all");
     }
 
     #[test]
