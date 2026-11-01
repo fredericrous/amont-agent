@@ -190,7 +190,12 @@ impl World {
             .write_all(payload.to_string().as_bytes())
             .unwrap();
         let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "a decision exits 0");
+        assert!(
+            out.status.success(),
+            "a decision exits 0: {:?} {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stdout = String::from_utf8(out.stdout).unwrap();
         if stdout.trim().is_empty() {
             return Said::Silent;
@@ -1701,8 +1706,24 @@ fn an_overrule_carries_over_by_patch() {
 #[cfg(unix)]
 #[test]
 fn a_patch_id_that_cannot_be_computed_holds_the_push() {
-    let w = World::new("bypatch-noid");
+    patch_id_failure_holds_the_push("bypatch-noid", None);
+}
+
+/// A diff larger than a pipe's buffer is still being written when the
+/// failing `git patch-id` exits: the write must fail, not kill the hook
+/// (SIGPIPE), on every run rather than when the race goes that way.
+#[test]
+fn a_patch_id_that_exits_before_reading_holds_the_push() {
+    let big = "x\n".repeat(100 * 1024);
+    patch_id_failure_holds_the_push("bypatch-noread", Some(&big));
+}
+
+fn patch_id_failure_holds_the_push(name: &str, big: Option<&str>) {
+    let w = World::new(name);
     let repo = w.repo("app");
+    if let Some(body) = big {
+        w.commit(&repo, &[("src/big.txt", body)]);
+    }
     let transcript = reviewed(&w, &repo);
     advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
     let real = String::from_utf8(

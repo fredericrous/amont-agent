@@ -28,6 +28,13 @@
   Percent-decoding of activity fields is one pass with the same result. A
   failed trim is journalled once per session.
 
+### Fixed
+
+- `amont-agent hook` and `amont-agent board` keep SIGPIPE ignored: a `git
+  patch-id` that exits before reading its input (or is killed at its deadline)
+  no longer kills the process. The hook used to exit 141 there, and its
+  decision was lost.
+
 ## v3.11.1
 
 ### Fixed
