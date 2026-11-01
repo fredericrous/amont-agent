@@ -3565,7 +3565,9 @@ fn advice_with_hanging_lookup(name: &str, hang: &str, marker: &str) {
     let (told, took) = call(&format!("{name}-s2"), &main, 60);
     assert!(told.reason().contains("work-overlap"), "{}", told.stdout);
     assert!(!told.reason().contains("active plan"), "{}", told.stdout);
-    assert!(took < std::time::Duration::from_millis(2500), "{took:?}");
+    // The lookups share a 2 s budget; the shim would hold git for 30 s. 4 s
+    // leaves room for the hook's own start on a loaded machine (2.65 s seen).
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
     assert!(!shim_sleeps(marker), "{marker} still runs");
 }
 
