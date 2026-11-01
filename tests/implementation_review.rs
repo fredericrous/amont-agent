@@ -1714,14 +1714,14 @@ fn a_patch_id_that_cannot_be_computed_holds_the_push() {
 /// (SIGPIPE), on every run rather than when the race goes that way.
 #[test]
 fn a_patch_id_that_exits_before_reading_holds_the_push() {
-    let big = "x\n".repeat(100 * 1024);
-    patch_id_failure_holds_the_push("bypatch-noread", Some(&big));
+    let past_pipe_buffer = "x\n".repeat(100 * 1024);
+    patch_id_failure_holds_the_push("bypatch-noread", Some(&past_pipe_buffer));
 }
 
-fn patch_id_failure_holds_the_push(name: &str, big: Option<&str>) {
+fn patch_id_failure_holds_the_push(name: &str, oversized_file: Option<&str>) {
     let w = World::new(name);
     let repo = w.repo("app");
-    if let Some(body) = big {
+    if let Some(body) = oversized_file {
         w.commit(&repo, &[("src/big.txt", body)]);
     }
     let transcript = reviewed(&w, &repo);
