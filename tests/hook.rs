@@ -3545,7 +3545,10 @@ fn advice_with_hanging_lookup(name: &str, hang: &str, marker: &str) {
     let scene = Overlap::new(name);
     let (main, branch_tree) = real_overlap_repo(&format!("{name}-repo"));
     let path = hanging_git_path(&home().join(format!("{name}-shim")), hang);
-    let call = |tool_session: &str, repo: &std::path::Path, later: u64| {
+    let call = |tool_session: &str,
+                repo: &std::path::Path,
+                later: u64,
+                git_path: Option<&std::ffi::OsStr>| {
         let file = serde_json::Value::String(repo.join("f.txt").display().to_string());
         let cwd = serde_json::Value::String(repo.display().to_string());
         let started = std::time::Instant::now();
@@ -3557,18 +3560,33 @@ fn advice_with_hanging_lookup(name: &str, hang: &str, marker: &str) {
                      "tool_input":{{"file_path":{file},"old_string":"a","new_string":"b"}}}}"#
             ),
             scene.start + later,
-            Some(&path),
+            git_path,
         );
         (reply, started.elapsed())
     };
-    // The first call meets no peer and looks nothing up: its time is the
-    // hook's own start on this machine, which the bound below sets aside.
-    let (_, start_up) = call(&format!("{name}-s1"), &branch_tree, 0);
-    let (told, took) = call(&format!("{name}-s2"), &main, 60);
+    call(
+        &format!("{name}-s1"),
+        &branch_tree,
+        0,
+        Some(path.as_os_str()),
+    );
+    // The same firing path with the real git: its time is everything the
+    // advice costs on this machine except the lookups the shim hangs, so the
+    // bound below measures only what the hang adds.
+    let (baseline, fired) = call(&format!("{name}-s2"), &main, 60, None);
+    assert!(
+        baseline.reason().contains("work-overlap"),
+        "{}",
+        baseline.stdout
+    );
+    let (told, took) = call(&format!("{name}-s3"), &main, 70, Some(path.as_os_str()));
     assert!(told.reason().contains("work-overlap"), "{}", told.stdout);
     assert!(!told.reason().contains("active plan"), "{}", told.stdout);
-    // The lookups share a 2 s budget; the shim would hold git for 30 s.
-    let bound = start_up + std::time::Duration::from_millis(2500);
+    // The lookups share a 2 s budget; the shim would hold git for 30 s. On a
+    // host at load 30 the kill, reap and scheduling past the budget took up
+    // to 1.3 s, so 1.5 s of slack: a missing budget (30 s) or one above about
+    // 3.5 s still fails.
+    let bound = fired + std::time::Duration::from_millis(3500);
     assert!(took < bound, "{took:?} against {bound:?}");
     assert!(!shim_sleeps(marker), "{marker} still runs");
 }
