@@ -46,7 +46,7 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
 
 ## Phases
 
-- [ ] Phase 1 — amont-agent:
+- [x] Phase 1 — amont-agent:
   - `profile_lines` reads only the header.
   - Unit tests in code_review.rs: a header line counts; a line after a heading is ignored; a line inside a fence is ignored; a ` Profile: x` context line after an unfenced `diff --git` is ignored; a header line `#174 …` does not end the header; the existing indentation test still holds.
   - Integration tests in `tests/implementation_review.rs`: a fresh launch with an inlined brief binds and files exactly one pass for its profile and tree; a resumed Delta with a fenced diff carrying a `Profile:` line binds under its launch's profile.
@@ -58,6 +58,13 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
 
 ## Verification
 
+- Phase 1, observed:
+  - `cargo test -p amont-agent-process code_review::tests` → 14 passed, the five new tests included: header, heading, fence (backticks, tildes, ````` ````diff `````), unfenced diff, `#174`.
+  - With the old `profile_lines` body swapped back in → 3 failed (heading, fence, unfenced diff) and the header and `#174` tests passed. The file was then restored and compared with `cmp`.
+  - `cargo test --test implementation_review -- inlined_brief delta_with_a_diff resumed_round` → 5 passed:
+    - an inlined brief binds and files exactly 1 pass;
+    - the Delta from a `rework` launch binds the new tree, and without the Delta that tree has no pass and the push is advised.
+
 - Phase 1: `cargo test -p amont-agent-process code_review` → the four unit tests pass, and the new ones fail on the old `profile_lines` → as stated. `cargo test --test implementation_review` → the two new tests pass, and every existing one is unchanged.
 - Phase 2:
   - Before the profile reviews run: `amont land` → refused with `missing code review of amont-agent tree <12 hex>: code-review-backend, code-review-language --lang rust`. After they run: allowed.
@@ -65,6 +72,7 @@ The hook counts only the `Profile:` lines in the prompt's header. The header is 
   - Tokens: the sum of the three reviewers, against implementation-review alone. The bar is 3× (ADR-0052 Consequences): 131k + 146k + 153k = 430k, so 3× is 1.29M.
 
 ## Decision log
+- 2026-11-01 — Implemented by hand, not through relais: every relais run on amont-agent today hit its wall time, and this change is 20 lines. The fence rule also covers tildes, and the Delta test starts from a `rework` launch on an earlier tree, so its pass can come only from the resumed round (both from Codex's review).
 
 ## Outcome
 
