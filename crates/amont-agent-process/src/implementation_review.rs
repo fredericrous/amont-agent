@@ -277,7 +277,7 @@ pub fn reviews(transcript: &Path) -> std::io::Result<Vec<Review>> {
             let verdict = verdict_of(&c.result);
             let rules_sha = crate::review_brief::parse_rules_sha(&c.prompt);
             let candidates = Reviewed::read(c.agent_id.as_deref(), &c.prompt, &c.result);
-            parse_blocks(&c.prompt)
+            parse_blocks(crate::code_review::header(&c.prompt))
                 .into_iter()
                 .map(move |(repo, sha)| Review {
                     repo,
@@ -713,6 +713,29 @@ struct Declaration {
     digest: String,
 }
 
+impl Declaration {
+    fn empty() -> Self {
+        Declaration {
+            profiles: Vec::new(),
+            plan: String::new(),
+            any_section: false,
+            digest: String::new(),
+        }
+    }
+}
+
+/// What this session's profile reviews say about carrying a pass.
+enum SessionCarry {
+    /// The profile's latest review of an earlier branch tree is not
+    /// `approve`: nothing carries, not even a filed pass.
+    Blocked,
+    /// It is an `approve` whose commit held the same declaration: the content
+    /// id it read and the basis the carried pass keeps.
+    Carry(String, Basis),
+    /// The session says nothing that decides it: filed passes may.
+    Undecided,
+}
+
 /// The per-profile half of the push judgement: every code-review profile
 /// the branch's plans declare for this repository needs its own pass on the
 /// pushed tree. A plan with no section requires none.
@@ -728,22 +751,66 @@ struct ProfileGate<'a> {
     stance: Stance,
 }
 
+/// How a declaration read at a commit treats a pointer plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Canonical {
+    /// Follow `canonical:` to the plan root's checkout: right for the pushed
+    /// commit, whose declaration is the one in force now.
+    Follow,
+    /// A pointer records no revision of its canonical file, so what it
+    /// declared at an earlier commit cannot be proven: give no declaration.
+    Unproven,
+}
+
 impl ProfileGate<'_> {
     fn declaration(&self) -> Result<Declaration, String> {
-        let mut found = Declaration {
-            profiles: Vec::new(),
-            plan: String::new(),
-            any_section: false,
-            digest: String::new(),
-        };
+        self.declaration_of(self.pushed, self.plans, Canonical::Follow)
+            .map(|found| found.unwrap_or_else(Declaration::empty))
+    }
+
+    /// The declaration as `commit` held it, read from the plans it changed
+    /// since the merge-base, for a session carry. `None` when it cannot be
+    /// read or proven (a pointer plan), so nothing carries from it.
+    fn declaration_at(&self, commit: &str) -> Option<Declaration> {
+        let changed = git::stdout_in(
+            self.repo,
+            &[
+                "diff",
+                "--name-only",
+                self.merge_base,
+                commit,
+                "--",
+                PLANS_PATH,
+            ],
+        )?;
+        let plans: Vec<String> = changed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+        self.declaration_of(commit, &plans, Canonical::Unproven)
+            .ok()
+            .flatten()
+    }
+
+    fn declaration_of(
+        &self,
+        commit: &str,
+        plans: &[String],
+        canonical: Canonical,
+    ) -> Result<Option<Declaration>, String> {
+        let mut found = Declaration::empty();
         let mut described = String::new();
-        for path in self.plans {
+        for path in plans {
             // A plan deleted on the branch is not there to declare anything.
-            let Some(text) =
-                git::stdout_in(self.repo, &["show", &format!("{}:{path}", self.pushed)])
+            let Some(text) = git::stdout_in(self.repo, &["show", &format!("{commit}:{path}")])
             else {
                 continue;
             };
+            if canonical == Canonical::Unproven && crate::code_review::is_pointer(&text) {
+                return Ok(None);
+            }
             let declared = crate::code_review::declared_text(&text)
                 .and_then(|text| crate::code_review::parse(&text))
                 .map_err(|why| {
@@ -769,7 +836,7 @@ impl ProfileGate<'_> {
             }
         }
         found.digest = hex(&sha256(described.as_bytes()));
-        Ok(found)
+        Ok(Some(found))
     }
 
     /// The commits of the branch after the merge-base, newest first, each
@@ -803,6 +870,55 @@ impl ProfileGate<'_> {
             plan: declared.plan.clone(),
             declaration: declared.digest.clone(),
         })
+    }
+
+    /// The session's say on carrying `profile`: its latest review, in launch
+    /// order, of a tree of the branch other than the pushed one.
+    fn session_carry(
+        &self,
+        profile: &str,
+        declared: &Declaration,
+        branch: &[(String, String)],
+        reviews: &[ProfileReview],
+    ) -> SessionCarry {
+        let Some(latest) = reviews.iter().rev().find(|review| {
+            review.repo == self.name
+                && review.profile == profile
+                && review.sha != self.tree
+                && branch.iter().any(|(_, id)| *id == review.sha)
+        }) else {
+            return SessionCarry::Undecided;
+        };
+        if latest.verdict != Some(Verdict::Approve) {
+            return SessionCarry::Blocked;
+        }
+        // A content id leaves docs/plans/ out, so a plan-only commit keeps
+        // the tree: every branch commit with the reviewed tree is one the
+        // review may have read, and each must hold the declaration in force
+        // now. One that differs, or cannot be read, carries nothing.
+        let commits: Vec<&String> = branch
+            .iter()
+            .filter(|(_, id)| *id == latest.sha)
+            .map(|(commit, _)| commit)
+            .collect();
+        let Some(newest) = commits.first() else {
+            return SessionCarry::Undecided;
+        };
+        let same = commits.iter().all(|commit| {
+            self.declaration_at(commit)
+                .is_some_and(|then| then.plan == declared.plan && then.digest == declared.digest)
+        });
+        if !same {
+            return SessionCarry::Undecided;
+        }
+        SessionCarry::Carry(
+            latest.sha.clone(),
+            Basis {
+                commit: (*newest).clone(),
+                plan: declared.plan.clone(),
+                declaration: declared.digest.clone(),
+            },
+        )
     }
 
     /// An `approve` this profile gave an earlier commit of the branch that
@@ -898,7 +1014,12 @@ impl ProfileGate<'_> {
             .rev()
             .find(|r| r.repo == name && r.sha == tree && r.profile == profile)
         else {
-            if let Some((reviewed_id, kept)) = self.carried(profile, declared, branch) {
+            let carry = match self.session_carry(profile, declared, branch, reviews()) {
+                SessionCarry::Blocked => None,
+                SessionCarry::Carry(reviewed_id, kept) => Some((reviewed_id, kept)),
+                SessionCarry::Undecided => self.carried(profile, declared, branch),
+            };
+            if let Some((reviewed_id, kept)) = carry {
                 let stat = git::stdout_in(
                     self.repo,
                     &["diff", "--shortstat", &kept.commit, self.pushed],
