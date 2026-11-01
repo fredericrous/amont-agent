@@ -3588,6 +3588,10 @@ fn advice_with_hanging_lookup(name: &str, hang: &str, marker: &str) {
     // bound leaves 10 s and a missing budget (30 s) still fails.
     let bound = fired + std::time::Duration::from_secs(10);
     assert!(took < bound, "{took:?} against {bound:?}");
+    // Load only adds time, so a floor cannot flake: the hang must cost at
+    // least most of the 2 s budget, which pins the budget to about 2-12 s.
+    let floor = fired + std::time::Duration::from_millis(1900);
+    assert!(took >= floor, "{took:?} under {floor:?}");
     assert!(!shim_sleeps(marker), "{marker} still runs");
 }
 
