@@ -3464,24 +3464,16 @@ fn real_overlap_repo(name: &str) -> (PathBuf, PathBuf) {
     git_in(&main, &["init", "-q", "-b", "main"]);
     commit_plan(&main, "2026-10-01-old.md", "Older Main Plan");
     let branch_tree = root.join("feat-tree");
+    // A relative path: the canonical root carries Windows' `\\?\` prefix,
+    // which `git worktree add` rejects.
     git_in(
         &main,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-b",
-            "feat/x",
-            branch_tree.to_str().expect("utf8"),
-        ],
+        &["worktree", "add", "-q", "-b", "feat/x", "../feat-tree"],
     );
     commit_plan(&branch_tree, "2026-10-31-x.md", "Branch Added Plan");
     (main, branch_tree)
 }
 
-// Unix only: the fixture's canonical temp path carries Windows' `\\?\`
-// prefix, which `git worktree add` rejects.
-#[cfg(unix)]
 #[test]
 fn work_overlap_names_the_plan_the_peers_branch_added_and_none_for_main() {
     let scene = Overlap::new("overlap-real-plan");
@@ -3494,9 +3486,6 @@ fn work_overlap_names_the_plan_the_peers_branch_added_and_none_for_main() {
     assert!(!reason.contains("Older Main Plan"), "{}", told.stdout);
 }
 
-// Unix only: the fixture's canonical temp path carries Windows' `\\?\`
-// prefix, which `git worktree add` rejects.
-#[cfg(unix)]
 #[test]
 fn work_overlap_names_no_plan_for_a_peer_on_the_default_branch() {
     let scene = Overlap::new("overlap-real-main");
