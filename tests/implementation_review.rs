@@ -3532,6 +3532,13 @@ fn a_later_rework_in_the_session_blocks_the_carry() {
     let (_, said) = session_push(&w, &repo, &["Verdict: approve", "Verdict: rework"]);
     assert!(advised(&said).contains("code-review-backend"), "{said:?}");
     assert!(carried_lines(&w).is_empty());
+    assert!(
+        w.journal()
+            .iter()
+            .any(|l| l.contains("profile-carry-blocked") && l.contains("verdict=rework")),
+        "{:?}",
+        w.journal()
+    );
 }
 
 #[test]
@@ -3726,4 +3733,33 @@ fn an_implementation_review_block_in_the_body_binds_nothing() {
     );
     let transcript = w.transcript("header", &t);
     assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
+}
+
+/// A rebase moves the approved tree out of `pushed ^merge-base`: the session's
+/// approve of it carries nothing.
+#[test]
+fn a_rebased_branch_does_not_carry_from_the_session() {
+    let w = World::new("session-rebase");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let tree_a = reviewed_tree(&w, &repo, "fn a() { b() }\nfn b() { 14; }\n");
+    let prompt_a = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(&w, &repo, &tree_a)
+    );
+    advance_main_and_rebase(&w, &repo, &[("README.md", "moved main\n")]);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 15; }\n")]);
+    let mut t = Transcript::default();
+    t.profile_review(&w, "code-review-backend", &prompt_a, "Verdict: approve");
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
 }

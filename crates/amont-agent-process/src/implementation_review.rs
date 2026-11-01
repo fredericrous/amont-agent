@@ -703,6 +703,7 @@ enum Standing {
 }
 
 /// The profiles the branch's plans declare for this repository.
+#[derive(Default)]
 struct Declaration {
     profiles: Vec<String>,
     /// The first plan that declares them.
@@ -713,25 +714,18 @@ struct Declaration {
     digest: String,
 }
 
-impl Declaration {
-    fn empty() -> Self {
-        Declaration {
-            profiles: Vec::new(),
-            plan: String::new(),
-            any_section: false,
-            digest: String::new(),
-        }
-    }
-}
-
 /// What this session's profile reviews say about carrying a pass.
 enum SessionCarry {
     /// The profile's latest review of an earlier branch tree is not
     /// `approve`: nothing carries, not even a filed pass.
     Blocked,
-    /// It is an `approve` whose commit held the same declaration: the content
-    /// id it read and the basis the carried pass keeps.
-    Carry(String, Basis),
+    /// It is an `approve` whose commits all held the declaration in force.
+    Carry {
+        /// The content id the review read.
+        reviewed_id: String,
+        /// What the carried pass records.
+        kept: Basis,
+    },
     /// The session says nothing that decides it: filed passes may.
     Undecided,
 }
@@ -765,7 +759,7 @@ enum Canonical {
 impl ProfileGate<'_> {
     fn declaration(&self) -> Result<Declaration, String> {
         self.declaration_of(self.pushed, self.plans, Canonical::Follow)
-            .map(|found| found.unwrap_or_else(Declaration::empty))
+            .map(|found| found.unwrap_or_else(Declaration::default))
     }
 
     /// The declaration as `commit` held it, read from the plans it changed
@@ -800,7 +794,7 @@ impl ProfileGate<'_> {
         plans: &[String],
         canonical: Canonical,
     ) -> Result<Option<Declaration>, String> {
-        let mut found = Declaration::empty();
+        let mut found = Declaration::default();
         let mut described = String::new();
         for path in plans {
             // A plan deleted on the branch is not there to declare anything.
@@ -890,6 +884,17 @@ impl ProfileGate<'_> {
             return SessionCarry::Undecided;
         };
         if latest.verdict != Some(Verdict::Approve) {
+            note(
+                "profile-carry-blocked",
+                "-",
+                self.name,
+                &format!(
+                    "tree={} profile={profile} by {} verdict={}",
+                    short(self.tree),
+                    &latest.sha[..12],
+                    latest.verdict.map_or("none", Verdict::as_str)
+                ),
+            );
             return SessionCarry::Blocked;
         }
         // A content id leaves docs/plans/ out, so a plan-only commit keeps
@@ -909,16 +914,26 @@ impl ProfileGate<'_> {
                 .is_some_and(|then| then.plan == declared.plan && then.digest == declared.digest)
         });
         if !same {
+            note(
+                "profile-carry-declaration-differs",
+                "-",
+                self.name,
+                &format!(
+                    "tree={} profile={profile} reviewed {}: a commit with that tree holds another, an unreadable or a pointer declaration",
+                    short(self.tree),
+                    &latest.sha[..12]
+                ),
+            );
             return SessionCarry::Undecided;
         }
-        SessionCarry::Carry(
-            latest.sha.clone(),
-            Basis {
+        SessionCarry::Carry {
+            reviewed_id: latest.sha.clone(),
+            kept: Basis {
                 commit: (*newest).clone(),
                 plan: declared.plan.clone(),
                 declaration: declared.digest.clone(),
             },
-        )
+        }
     }
 
     /// An `approve` this profile gave an earlier commit of the branch that
@@ -1016,7 +1031,7 @@ impl ProfileGate<'_> {
         else {
             let carry = match self.session_carry(profile, declared, branch, reviews()) {
                 SessionCarry::Blocked => None,
-                SessionCarry::Carry(reviewed_id, kept) => Some((reviewed_id, kept)),
+                SessionCarry::Carry { reviewed_id, kept } => Some((reviewed_id, kept)),
                 SessionCarry::Undecided => self.carried(profile, declared, branch),
             };
             if let Some((reviewed_id, kept)) = carry {
