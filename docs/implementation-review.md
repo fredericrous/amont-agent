@@ -367,7 +367,9 @@ tildes), or an unfenced diff (`diff --git`, `@@`). So an inlined brief, which
 starts with `# Implementation review brief`, and an inlined diff never add a
 line. The launch's own `Profile:` line must come before them: a prompt that
 opens with the inlined brief and carries its line only there counts for
-nothing (3.11.1). A resumed round
+nothing. The review block (`<<<TREE …>>>`) a profile review binds is read
+from the same header, so a block inside an inlined brief or diff binds no
+tree (3.11.1). A resumed round
 (`SendMessage`) inherits its launch's profile and may omit the line; one that
 names another profile counts for nothing. A profile review never satisfies
 the implementation review, nor the reverse. A profile's verdict is read like
