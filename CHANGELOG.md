@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v3.11.1
 
 ### Fixed
 
