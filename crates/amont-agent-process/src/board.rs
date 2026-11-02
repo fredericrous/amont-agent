@@ -40,8 +40,10 @@ holds it, listed with `(merged: git worktree remove <path>)`. Per entry: the
 path, the branch, the active plan's title, `programme <slug> ticket <id>` for a prog/<slug>/<id>
 branch, and the sessions whose latest activity line names that worktree, each
 with its last-seen age. A branch older than --since that is not
-checked out and that no session names is left out. Listing the whole plan root
-(no --repo) skips the scan of sibling repositories for plans that name one.
+checked out and that no session names is left out. The sibling repositories
+are scanned for plans that name the selected one, except when the whole plan
+root is listed (no --repo, run outside any repository): every repository is
+listed then.
 
 Just landed: the first-parent commits of the default branch within --since.
 

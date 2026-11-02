@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `amont-agent board --help` says the sibling scan is skipped only when the
+  whole plan root is listed (no `--repo`, run outside any repository); run
+  inside a repository with no `--repo`, the scan runs.
+
 ## v3.13.1
 
 ### Fixed
