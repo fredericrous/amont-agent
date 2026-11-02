@@ -577,17 +577,17 @@ pub(crate) fn sole_pair(text: &str, guide_dir: &Path) -> Option<(PathBuf, PathBu
 
 /// Two names of one file: a hard link has two canonical paths.
 #[cfg(unix)]
-fn same_inode(a: &Path, b: &Path) -> bool {
+fn same_inode(first: &Path, second: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+    match (std::fs::metadata(first), std::fs::metadata(second)) {
+        (Ok(one), Ok(other)) => one.dev() == other.dev() && one.ino() == other.ino(),
         // Unreadable: refuse the pair, so the person is asked.
-        _ => true,
+        (Err(_), _) | (_, Err(_)) => true,
     }
 }
 
 #[cfg(not(unix))]
-fn same_inode(_a: &Path, _b: &Path) -> bool {
+fn same_inode(_first: &Path, _second: &Path) -> bool {
     false
 }
 
