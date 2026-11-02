@@ -281,10 +281,42 @@ pub(crate) fn is_pointer(plan_text: &str) -> bool {
     crate::plans::field(front, "canonical").is_some_and(|canonical| !canonical.is_empty())
 }
 
-/// A plan's declaration text for the brief: the plan itself, or the
-/// canonical file a pointer plan names, read under the plan root. `Err`
-/// names a canonical file that cannot be read.
+/// Whether a pointer plan carries its own `## Code review` section (one that
+/// parses, or one that does not: either way it is the pointer's own).
+pub(crate) fn has_own_section(plan_text: &str) -> bool {
+    is_pointer(plan_text) && !matches!(parse(plan_text), Ok(None))
+}
+
+/// A plan's declaration text: the plan itself; for a pointer, its own
+/// `## Code review` section when it has one (ADR-0052: it is versioned with
+/// the branch), else the canonical file it names, read under the plan root.
+/// `Err` names a canonical file that cannot be read.
 pub(crate) fn declared_text(plan_text: &str) -> Result<String, String> {
+    if has_own_section(plan_text) {
+        return Ok(plan_text.to_string());
+    }
+    canonical_text(plan_text)
+}
+
+/// A pointer's own section must declare this repository: an empty one, or one
+/// naming only other repositories, would drop the canonical's requirements
+/// without stating any.
+pub(crate) fn require_own_line(
+    plan_text: &str,
+    declared: &BTreeMap<String, Declared>,
+    repo: &str,
+) -> Result<(), String> {
+    if has_own_section(plan_text) && !declared.contains_key(repo) {
+        return Err(format!(
+            "the pointer's own ## Code review section declares nothing for `{repo}`"
+        ));
+    }
+    Ok(())
+}
+
+/// The canonical plan's text for a pointer (the plan itself otherwise), read
+/// under the plan root's checkout.
+pub(crate) fn canonical_text(plan_text: &str) -> Result<String, String> {
     let (front, _) = crate::plans::split_front_matter(plan_text);
     let Some(canonical) = crate::plans::field(front, "canonical").filter(|c| !c.is_empty()) else {
         return Ok(plan_text.to_string());
@@ -307,7 +339,14 @@ pub(crate) fn declared_text(plan_text: &str) -> Result<String, String> {
 /// declaration that cannot be read or parsed is an error, so the brief exits
 /// 1 as `plan-panel` does, rather than describing a review nobody declared.
 pub fn declared_line(repo: &str, plan_text: Option<&str>) -> Result<String, String> {
-    let shown = match plan_text.map(|text| declared_text(text).and_then(|t| parse(&t))) {
+    let shown = match plan_text.map(|text| {
+        declared_text(text)
+            .and_then(|t| parse(&t))
+            .and_then(|map| match map {
+                Some(map) => require_own_line(text, &map, repo).map(|()| Some(map)),
+                None => Ok(None),
+            })
+    }) {
         None | Some(Ok(None)) => "not declared".to_string(),
         Some(Ok(Some(map))) => map
             .get(repo)
@@ -598,6 +637,32 @@ mod tests {
         let prompt = "<<<TREE a>>>\nProfile: unix\n```diff\n<<<TREE b>>>\n```\n";
         assert_eq!(header(prompt), "<<<TREE a>>>\nProfile: unix\n");
         assert_eq!(header("no body\nat all"), "no body\nat all");
+    }
+
+    #[test]
+    fn a_pointer_with_its_own_section_declares_through_it() {
+        let own = "---\ncanonical: decisions:docs/plans/p.md\n---\n# X\n\n## Code review\n\n- app: backend\n";
+        assert!(has_own_section(own));
+        assert_eq!(declared_text(own).as_deref(), Ok(own));
+        let declared = parse(own).unwrap().unwrap();
+        assert!(require_own_line(own, &declared, "app").is_ok());
+        assert!(require_own_line(own, &declared, "other").is_err());
+        // review-brief's line reports the same error, not "not declared".
+        assert!(declared_line("other", Some(own)).is_err_and(|why| why.contains("`other`")));
+        assert!(declared_line("app", Some(own)).is_ok());
+        // An empty own section declares nothing for anyone: an error too.
+        let empty = "---\ncanonical: decisions:docs/plans/p.md\n---\n# X\n\n## Code review\n\n";
+        assert!(has_own_section(empty));
+        assert!(declared_line("app", Some(empty)).is_err());
+    }
+
+    #[test]
+    fn a_pointer_without_its_own_section_reads_the_canonical() {
+        let bare = "---\ncanonical: decisions:docs/plans/p.md\n---\n# X\n";
+        assert!(!has_own_section(bare));
+        let plain = "# X\n\n## Code review\n\n- app: backend\n";
+        assert!(!has_own_section(plain), "not a pointer");
+        assert_eq!(declared_text(plain).as_deref(), Ok(plain));
     }
 
     #[test]

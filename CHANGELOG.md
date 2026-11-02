@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Changed
+
+- A branch that changes nothing outside `docs/plans/` needs no code-review
+  profile, only the implementation review of its plan record. The check is
+  its own `git diff --quiet` (no relative paths, submodules included), run
+  before the declaration is read; a diff git cannot answer keeps the profiles
+  required. Journalled `profiles-plan-only`.
+- A pointer plan with its own `## Code review` section declares through it, so
+  the declaration is versioned with the branch and an approval from the
+  session carries. The section must declare this repository; an empty one or
+  one naming only other repositories is an error. A line that drifted from the
+  canonical plan's is journalled `pointer-line-drift`. A pointer without the
+  section reads its canonical plan as before.
+
 ### Fixed
 
 - `amont-agent board --help` says the sibling scan is skipped only when the
