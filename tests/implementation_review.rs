@@ -3468,3 +3468,298 @@ fn a_pass_replayed_by_patch_after_a_rebase_records_no_commit() {
     .unwrap();
     assert!(record.get("commit").is_none(), "{record}");
 }
+
+// Carried from the session (a review the hook never judged a push at).
+
+/// A code commit after the declaration, so the reviewed tree belongs to one
+/// commit only (a content id leaves docs/plans/ out, and the fixture's own
+/// code commit shares the tree with a later plan-only commit). Returns it.
+fn reviewed_tree(w: &World, repo: &Path, body: &str) -> String {
+    w.commit(repo, &[("src/lib.rs", body)]);
+    w.tree(repo)
+}
+
+/// The backend profile's reviews of tree A, in launch order, then a fix at B,
+/// the implementation review of B, and one push of B. No push is judged at A,
+/// so any carry comes from the session. Returns A's tree.
+fn session_push(w: &World, repo: &Path, a_verdicts: &[&str]) -> (String, Said) {
+    let tree_a = reviewed_tree(w, repo, "fn a() { b() }\nfn b() { 10; }\n");
+    let prompt_a = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(w, repo, &tree_a)
+    );
+    w.commit(repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 2; }\n")]);
+    let mut t = Transcript::default();
+    for verdict in a_verdicts {
+        t.profile_review(w, "code-review-backend", &prompt_a, verdict);
+    }
+    t.review(
+        w,
+        AGENT,
+        &w.block(repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("session", &t);
+    let said = w.push(repo, "s1", Some(&transcript));
+    (tree_a, said)
+}
+
+#[test]
+fn an_approve_in_the_session_carries_without_a_push_at_its_tree() {
+    let w = World::new("session-carry");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let (tree_a, said) = session_push(&w, &repo, &["Verdict: approve"]);
+    assert_eq!(said, Said::Silent, "{:?}", w.journal());
+    assert!(
+        !profile_pass_file(&w, "backend", "app", &tree_a).is_file(),
+        "no push was judged at A"
+    );
+    let lines = carried_lines(&w);
+    assert_eq!(lines.len(), 1, "{:?}", w.journal());
+    assert!(
+        lines[0].contains(&format!("carried-from {}", &tree_a[..12])),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_later_rework_in_the_session_blocks_the_carry() {
+    let w = World::new("session-rework");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let (_, said) = session_push(&w, &repo, &["Verdict: approve", "Verdict: rework"]);
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+    assert!(
+        w.journal()
+            .iter()
+            .any(|l| l.contains("profile-carry-blocked") && l.contains("verdict=rework")),
+        "{:?}",
+        w.journal()
+    );
+}
+
+#[test]
+fn an_approve_with_changes_in_the_session_does_not_carry() {
+    let w = World::new("session-awc");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let (_, said) = session_push(&w, &repo, &["Verdict: approve-with-changes"]);
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}
+
+/// A pass filed by a push at A carries, unless the session's latest review of
+/// a branch tree says otherwise: a rework of A after that push blocks it.
+#[test]
+fn a_session_rework_blocks_a_filed_pass() {
+    let w = World::new("session-blocks-filed");
+    let repo = w.repo("app");
+    let tree_a = pushed_at_a(&w, &repo, "Verdict: approve");
+    assert!(profile_pass_file(&w, "backend", "app", &tree_a).is_file());
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 3; }\n")]);
+    let mut t = Transcript::default();
+    t.profile_review(
+        &w,
+        "code-review-backend",
+        &format!(
+            "{}\nProfile: backend\nRound 2.\n",
+            crate_block(&w, &repo, &tree_a)
+        ),
+        "Verdict: rework",
+    );
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("b", &t);
+    let said = w.push(&repo, "s2", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn a_declaration_changed_since_the_session_approve_does_not_carry() {
+    let w = World::new("session-declaration");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let tree_a = reviewed_tree(&w, &repo, "fn a() { b() }\nfn b() { 11; }\n");
+    let prompt_a = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(&w, &repo, &tree_a)
+    );
+    declare(&w, &repo, "- app: backend, unix");
+    // A content id leaves docs/plans/ out: the fix makes the pushed tree differ.
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 5; }\n")]);
+    assert_ne!(w.tree(&repo), tree_a);
+    let mut t = Transcript::default();
+    t.profile_review(&w, "code-review-backend", &prompt_a, "Verdict: approve");
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}
+
+/// A declaration that cannot be read at the approved commit carries nothing,
+/// and does not hold the push as `unknown`: the current one reads fine.
+#[test]
+fn an_unreadable_declaration_at_the_approved_commit_is_not_a_carry() {
+    let w = World::new("session-unreadable");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: wizard");
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    let tree_a = reviewed_tree(&w, &repo, "fn a() { b() }\nfn b() { 12; }\n");
+    let prompt_a = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(&w, &repo, &tree_a)
+    );
+    declare(&w, &repo, "- app: backend");
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 6; }\n")]);
+    assert_ne!(w.tree(&repo), tree_a);
+    let mut t = Transcript::default();
+    t.profile_review(&w, "code-review-backend", &prompt_a, "Verdict: approve");
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    match w.push(&repo, "s1", Some(&transcript)) {
+        Said::Deny(text) => {
+            assert!(text.contains("code-review-backend"), "{text}");
+            assert!(!text.contains("cannot be read"), "{text}");
+        }
+        other => panic!("expected the missing profile to hold, got {other:?}"),
+    }
+    assert!(carried_lines(&w).is_empty());
+}
+
+/// A pointer plan records no revision of its canonical plan, so what it
+/// declared when the session approved cannot be proven: no session carry,
+/// whether the canonical declaration changed since or not.
+#[test]
+fn a_pointer_plan_gets_no_session_carry() {
+    for changed in ["- app: backend, unix", "- app: backend"] {
+        let w = World::new("session-pointer");
+        let repo = w.repo("app");
+        let canonical = w.root.join("decisions/docs/plans");
+        std::fs::create_dir_all(&canonical).unwrap();
+        let declare_canonical = |section: &str| {
+            std::fs::write(
+                canonical.join("p.md"),
+                format!("# P\n\n## Code review\n\n{section}\n"),
+            )
+            .unwrap();
+        };
+        declare_canonical("- app: backend");
+        w.set_global(
+            "amont.agent.plan-review.root",
+            &w.root.display().to_string(),
+        );
+        w.commit(
+            &repo,
+            &[(
+                PLAN_REL,
+                "---\ncanonical: decisions:docs/plans/p.md\nstatus: active\n---\n# X (pointer)\n",
+            )],
+        );
+        let tree_a = reviewed_tree(&w, &repo, "fn a() { b() }\nfn b() { 13; }\n");
+        let prompt_a = format!(
+            "{}\nProfile: backend\nRound 1.\n",
+            crate_block(&w, &repo, &tree_a)
+        );
+        w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 4; }\n")]);
+        declare_canonical(changed);
+        let mut t = Transcript::default();
+        t.profile_review(&w, "code-review-backend", &prompt_a, "Verdict: approve");
+        t.review(
+            &w,
+            AGENT,
+            &w.block(&repo),
+            "Verdict: approve",
+            Done::Foreground,
+        );
+        let transcript = w.transcript("t", &t);
+        let said = w.push(&repo, "s1", Some(&transcript));
+        assert!(
+            advised(&said).contains("code-review-backend"),
+            "{changed}: {said:?}"
+        );
+        assert!(carried_lines(&w).is_empty(), "{changed}");
+    }
+}
+
+/// The implementation review binds its block from the prompt's header too: a
+/// block for the pushed tree only inside a fenced body binds nothing.
+#[test]
+fn an_implementation_review_block_in_the_body_binds_nothing() {
+    let w = World::new("impl-body-block");
+    let repo = w.repo("app");
+    let pushed = w.tree(&repo);
+    let other = "f".repeat(64);
+    let body_only = format!(
+        "{}\nRound 1.\n```text\n{}\n```\n",
+        crate_block(&w, &repo, &other),
+        crate_block(&w, &repo, &pushed)
+    );
+    let mut t = Transcript::default();
+    t.review(&w, AGENT, &body_only, "Verdict: approve", Done::Foreground);
+    let transcript = w.transcript("body", &t);
+    assert!(matches!(
+        w.push(&repo, "s1", Some(&transcript)),
+        Said::Advise(_)
+    ));
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("header", &t);
+    assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
+}
+
+/// A rebase moves the approved tree out of `pushed ^merge-base`: the session's
+/// approve of it carries nothing.
+#[test]
+fn a_rebased_branch_does_not_carry_from_the_session() {
+    let w = World::new("session-rebase");
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: backend");
+    let tree_a = reviewed_tree(&w, &repo, "fn a() { b() }\nfn b() { 14; }\n");
+    let prompt_a = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(&w, &repo, &tree_a)
+    );
+    advance_main_and_rebase(&w, &repo, &[("README.md", "moved main\n")]);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 15; }\n")]);
+    let mut t = Transcript::default();
+    t.profile_review(&w, "code-review-backend", &prompt_a, "Verdict: approve");
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty());
+}

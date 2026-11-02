@@ -128,14 +128,8 @@ pub fn slug(profile: &str) -> Option<String> {
     valid_profile(profile).then(|| profile.replace(':', "-"))
 }
 
-/// The value of each `Profile:` line in a review prompt's header, in order.
-///
-/// The header is every line before the first one that opens the body: a
-/// Markdown heading (`#` to `######` then a space), a code fence (three or
-/// more backticks or tildes), or an unfenced diff (`diff --git`, `@@`). An
-/// inlined brief starts with its `# … brief` heading and an inlined diff is
-/// fenced or starts with `diff --git`, so neither can add a Profile line: the
-/// launch's own line must come before them.
+/// The value of each `Profile:` line in a review prompt's [`header`], in
+/// order.
 pub fn profile_lines(prompt: &str) -> Vec<&str> {
     header(prompt)
         .lines()
@@ -145,10 +139,13 @@ pub fn profile_lines(prompt: &str) -> Vec<&str> {
 }
 
 /// A review prompt's header: its text up to the first line that opens the
-/// body (see [`profile_lines`]). The profile and the review block a launch
-/// binds to are both read from here, so neither can come from an inlined
-/// brief or diff.
-pub fn header(prompt: &str) -> &str {
+/// body. That line is a Markdown heading (`#` to `######` then a space), a
+/// code fence (three or more backticks or tildes), or an unfenced diff
+/// (`diff --git`, `@@`). An inlined brief starts with its `# … brief`
+/// heading and an inlined diff is fenced or starts with `diff --git`, so
+/// neither is in the header. A review's `Profile:` line and the review blocks
+/// it binds are read from here only: the launch's own lines come first.
+pub(crate) fn header(prompt: &str) -> &str {
     let mut end = 0;
     for line in prompt.split_inclusive('\n') {
         if opens_body(line.trim()) {
@@ -275,6 +272,13 @@ fn parse_line(entry: &str) -> Result<(String, Declared), String> {
         return Err("the profile list is empty".into());
     }
     Ok((repo.to_string(), Declared::Profiles { profiles, left_out }))
+}
+
+/// Whether a plan file is a pointer: its front matter names a `canonical:`
+/// plan in another repository.
+pub(crate) fn is_pointer(plan_text: &str) -> bool {
+    let (front, _) = crate::plans::split_front_matter(plan_text);
+    crate::plans::field(front, "canonical").is_some_and(|canonical| !canonical.is_empty())
 }
 
 /// A plan's declaration text for the brief: the plan itself, or the

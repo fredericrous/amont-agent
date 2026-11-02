@@ -412,7 +412,30 @@ pass of an earlier commit C only when all hold:
 - its plan path and declaration digest equal the current ones;
 - the pass has all three fields; one written without them never carries.
 
+The approval may also come from the session itself, with no push ever
+judged at its tree (3.12.0). The hook reads the transcript before any filed
+pass. It takes this profile's latest completed review, in launch order, of a
+tree of a commit in `git rev-list <pushed> ^<merge-base>` other than the
+pushed one:
+
+- if that review is not `approve`, nothing carries, not even a filed pass:
+  a later `rework` of an earlier tree outranks an older pass;
+- if it is `approve`, it carries when every branch commit whose content id
+  is the reviewed tree holds the current plan path and declaration digest,
+  read at that commit from the plans it changed since the merge-base. A
+  content id leaves `docs/plans/` out, so a plan-only commit shares its
+  tree: each such commit is one the review may have read. A declaration
+  that differs or cannot be read there carries nothing, and never holds the
+  push as unknown;
+- a pointer plan records no revision of its canonical plan, so what it
+  declared then cannot be proven: it gets no session carry, and filed passes
+  still may.
+
 The carry writes a pass for the pushed tree (`how` is `carried-from <12 hex
 of the reviewed content id>`) and journals `profile-carried` with
 `carried-from <12 hex>` and the `git diff --shortstat C <pushed>`. Otherwise
 the profile is missing and must review the new tree.
+
+The implementation review's own block is read from the prompt's header too
+(3.12.0), as a profile's is: a `<<<TREE …>>>` block inside an inlined brief
+or diff binds nothing, so the prompt's TREE line comes first.

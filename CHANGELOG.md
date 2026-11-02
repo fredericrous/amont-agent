@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- A code-review profile's `approve` carries to a fix commit from the
+  session itself, with no push judged at the approved tree. The hook reads
+  the session first: the profile's latest review of an earlier branch tree
+  decides, so a later `rework` blocks even a filed pass. The declaration must
+  match at every branch commit holding the reviewed tree. A pointer plan gets
+  no session carry, because it records no revision of its canonical plan.
+- The implementation review's `<<<TREE …>>>` block is read from the prompt's
+  header only, as a profile's is since 3.11.1: a block inside an inlined
+  brief or diff binds nothing.
+
 ## v3.12.0
 
 ### Changed
