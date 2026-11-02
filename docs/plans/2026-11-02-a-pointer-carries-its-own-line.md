@@ -9,7 +9,7 @@ adrs: [ADR-0052]
 ## Review panel
 
 👉 **Decide:** none. Approve if a branch that changes only its plan should skip the profile reviews (it keeps implementation-review), and if a pointer plan should declare through its own copied `## Code review` line.
-📍 amont-agent, greenharness-skills, grh · not started · next: Phase 1 (amont-agent 3.14.0). Panel: backend (opus), codex (gpt-6-astra).
+📍 amont-agent, greenharness-skills, grh · Phase 1 reviewed · next: release amont-agent 3.14.0, then Phase 2. Panel: backend (opus), codex (gpt-6-astra).
 **Changed by review:**
 - The plan-only check is its own `git diff --quiet`, which can't be fooled by git config and fails closed. A pointer's section must validly declare this repository.
 - A pointer's stale line is journalled as `pointer-line-drift`. The test command names the right package.
@@ -103,6 +103,12 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 - Live check, on the next cross-repository plan whose pointer declares a profile: the pointer push after a session pass shows `carried-from` in the journal and no `profiles-unreadable`; record it in Outcome.
 - Phase 2: `scripts/check.sh` → exit 0.
 - Phase 3: each pin equals its SHA256SUMS line. After the install, `amont-agent --version` reports 3.14.0 or the version chosen, and doctor → healthy.
+
+## Implementation review
+
+- approve on e01ac4f, after two Deltas. implementation-review: 51k + 69k + 76k, 46 s + 29 s + 15 s; code-review-backend: 58k + 73k + 76k; code-review-language (rust): 63k + 78k + 81k.
+- Fixed: a unit test for the git failure, `profiles-plan-only-unknown`, three missing tests, the stale counts, `Declared` compared directly, the imports, and a guard unit test that can fail.
+- deliberate: no `PlanSource` enum (logged above); the new unit test's scratch dir stays behind on a panic: the next run removes it first.
 
 ## Decision log
 - 2026-11-02 — From the code reviews:
