@@ -303,7 +303,7 @@ pub(crate) fn declared_text(plan_text: &str) -> Result<String, String> {
 /// without stating any.
 pub(crate) fn require_own_line(
     plan_text: &str,
-    declared: &std::collections::BTreeMap<String, Declared>,
+    declared: &BTreeMap<String, Declared>,
     repo: &str,
 ) -> Result<(), String> {
     if has_own_section(plan_text) && !declared.contains_key(repo) {
@@ -647,6 +647,13 @@ mod tests {
         let declared = parse(own).unwrap().unwrap();
         assert!(require_own_line(own, &declared, "app").is_ok());
         assert!(require_own_line(own, &declared, "other").is_err());
+        // review-brief's line reports the same error, not "not declared".
+        assert!(declared_line("other", Some(own)).is_err_and(|why| why.contains("`other`")));
+        assert!(declared_line("app", Some(own)).is_ok());
+        // An empty own section declares nothing for anyone: an error too.
+        let empty = "---\ncanonical: decisions:docs/plans/p.md\n---\n# X\n\n## Code review\n\n";
+        assert!(has_own_section(empty));
+        assert!(declared_line("app", Some(empty)).is_err());
     }
 
     #[test]

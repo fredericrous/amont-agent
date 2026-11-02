@@ -113,7 +113,8 @@ pub fn diff_quiet_in(dir: &std::path::Path, args: &[&str]) -> Result<bool, Strin
     match status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        other => Err(format!("`git {}` failed ({other:?})", args.join(" "))),
+        Some(code) => Err(format!("`git {}` exited {code}", args.join(" "))),
+        None => Err(format!("`git {}` was killed by a signal", args.join(" "))),
     }
 }
 
@@ -533,6 +534,59 @@ fn active_plan_title(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A scratch repository with one commit, removed when dropped.
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch_repo(name: &str) -> Scratch {
+        let dir =
+            std::env::temp_dir().join(format!("amont-agent-git-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            assert!(Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        run(&["init", "-q", "-b", "main", "--template="]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1\n").unwrap();
+        run(&["add", "a"]);
+        run(&["commit", "-q", "-m", "one"]);
+        std::fs::write(dir.join("a"), "2\n").unwrap();
+        run(&["commit", "-q", "-am", "two"]);
+        Scratch(dir)
+    }
+
+    /// The three answers stay apart: no difference, a difference, and a git
+    /// that failed, which the plan-only check must not read as plan-only.
+    #[test]
+    fn diff_quiet_tells_same_differs_and_failure_apart() {
+        let repo = scratch_repo("diff-quiet");
+        let diff = |from: &str, to: &str| {
+            super::diff_quiet_in(&repo.0, &["diff", "--quiet", from, to, "--", "."])
+        };
+        assert_eq!(diff("HEAD", "HEAD"), Ok(true));
+        assert_eq!(diff("HEAD~1", "HEAD"), Ok(false));
+        let failed = diff("no-such-rev", "HEAD");
+        assert!(
+            failed.as_ref().is_err_and(|why| why.contains("exited")),
+            "{failed:?}"
+        );
+    }
+
     #[test]
     fn only_an_active_plan_has_a_title_and_a_fenced_heading_is_not_it() {
         assert_eq!(

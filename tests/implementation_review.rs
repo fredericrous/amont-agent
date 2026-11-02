@@ -3951,3 +3951,38 @@ fn a_pointer_with_its_own_line_carries_from_the_session() {
         w.journal()
     );
 }
+
+/// A pointer whose own section did not declare this repository at the
+/// reviewed commit gives that commit's approve no carry, even after the
+/// section is fixed.
+#[test]
+fn an_invalid_pointer_line_at_the_reviewed_commit_does_not_carry() {
+    let w = World::new("pointer-invalid-carry");
+    let repo = pointer_repo(&w, "app", "- other: backend", Some("- app: backend"));
+    let tree_a = reviewed_tree(&w, &repo, "fn a() { b() }\nfn b() { 30; }\n");
+    let prompt_a = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(&w, &repo, &tree_a)
+    );
+    w.commit(
+        &repo,
+        &[(
+            PLAN_REL,
+            "---\ncanonical: decisions:docs/plans/p.md\nstatus: active\n---\n# X (pointer)\n\n## Code review\n\n- app: backend\n",
+        )],
+    );
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 31; }\n")]);
+    let mut t = Transcript::default();
+    t.profile_review(&w, "code-review-backend", &prompt_a, "Verdict: approve");
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(carried_lines(&w).is_empty(), "{:?}", w.journal());
+}

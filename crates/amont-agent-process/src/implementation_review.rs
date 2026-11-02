@@ -45,7 +45,10 @@
 //! is refused by the hook itself, outside any stance, because under `deny`
 //! a pass file is a trust boundary.
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+
+use crate::code_review::Declared;
 
 use crate::candidates_block::Reviewed;
 use crate::content_id::content_id;
@@ -794,32 +797,29 @@ impl ProfileGate<'_> {
     /// A pointer's own line that differs from the line its canonical plan now
     /// holds for this repository is journalled: the pointer's line wins, and
     /// the drift should not go unseen.
-    fn note_drift(
-        &self,
-        path: &str,
-        text: &str,
-        own: &std::collections::BTreeMap<String, crate::code_review::Declared>,
-    ) {
+    fn note_drift(&self, path: &str, text: &str, own: &BTreeMap<String, Declared>) {
         let Ok(Some(then)) = crate::code_review::canonical_text(text)
             .and_then(|canonical| crate::code_review::parse(&canonical))
         else {
             return;
         };
-        let line = |map: &std::collections::BTreeMap<String, crate::code_review::Declared>| {
-            map.get(self.name).map_or_else(
-                || "not declared".to_string(),
-                crate::code_review::Declared::describe,
-            )
-        };
-        let (pointer, canonical) = (line(own), line(&then));
-        if pointer != canonical {
-            note(
-                "pointer-line-drift",
-                "-",
-                self.name,
-                &format!("{path}: pointer `{pointer}`, canonical `{canonical}`"),
-            );
+        if own.get(self.name) == then.get(self.name) {
+            return;
         }
+        let line = |map: &BTreeMap<String, Declared>| {
+            map.get(self.name)
+                .map_or_else(|| "not declared".to_string(), Declared::describe)
+        };
+        note(
+            "pointer-line-drift",
+            "-",
+            self.name,
+            &format!(
+                "{path}: pointer `{}`, canonical `{}`",
+                line(own),
+                line(&then)
+            ),
+        );
     }
 
     fn declaration_of(
@@ -1346,7 +1346,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         target,
     };
     let plans_excluded = format!(":(top,exclude){PLANS_PATH}/");
-    let plan_only = git::diff_quiet_in(
+    let plan_only = match git::diff_quiet_in(
         &repo,
         &[
             "diff",
@@ -1361,7 +1361,19 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             ":(top)",
             &plans_excluded,
         ],
-    ) == Ok(true);
+    ) {
+        Ok(same) => same,
+        // Not an answer: keep the profiles required, and say why.
+        Err(why) => {
+            note(
+                "profiles-plan-only-unknown",
+                "-",
+                &name,
+                &format!("tree={} {why}", short(&tree)),
+            );
+            false
+        }
+    };
     let gate = ProfileGate {
         repo: &repo,
         name: &name,
