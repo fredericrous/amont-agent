@@ -573,8 +573,8 @@ pub(crate) fn sole_pair(
         let full = std::fs::canonicalize(root.join(rel)).ok()?;
         (full.starts_with(&root) && full.is_file()).then_some(full)
     };
-    let (b, a) = (inside(before)?, inside(after)?);
-    (b != a).then_some((b, a))
+    let (before_file, after_file) = (inside(before)?, inside(after)?);
+    (before_file != after_file).then_some((before_file, after_file))
 }
 
 struct Ctx<'p> {

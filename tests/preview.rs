@@ -1734,8 +1734,6 @@ fn an_old_four_field_approval_matches_only_its_own_commit() {
     assert!(w.push_advised("s"), "a same-tree commit does not");
 }
 
-// --- the base of a push, and an unchanged screen (ADR-0057) ---------------
-
 impl World {
     /// `refs/remotes/origin/HEAD` → `origin/main`, as a clone has it.
     fn set_remote_head(&self) {
@@ -1865,7 +1863,8 @@ fn a_before_and_after_that_differ_still_wait_for_the_person() {
 fn a_printed_unchanged_flag_over_differing_files_approves_nothing() {
     let w = World::new("forged-flag");
     w.commit("app/routes/settings.tsx", "1\n");
-    let _ = w.register_guide(
+    // Its JSON is the forged flag; the hook must ignore it, which is the test.
+    let _forged = w.register_guide(
         GUIDE,
         &[
             ("panel.png", b"p"),

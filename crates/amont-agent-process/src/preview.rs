@@ -237,16 +237,16 @@ fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
     if !(contains(&tracking, &t.src) && contains(&tracking, &default)) {
         return tracking;
     }
-    let Some(mb) = git(repo, &["merge-base", &t.src, &default]) else {
+    let Some(merge_base) = git(repo, &["merge-base", &t.src, &default]) else {
         return tracking;
     };
     note(
         "base",
         "-",
         &repo.to_string_lossy(),
-        &format!("base=merge-base {} over {tracking}", short(&mb)),
+        &format!("base=merge-base {} over {tracking}", short(&merge_base)),
     );
-    mb
+    merge_base
 }
 
 /// Whether a branch push carries an interface change, or `None` when its
@@ -1149,9 +1149,9 @@ fn unchanged_pair(
         return None;
     }
     let (before, after) = crate::guide::sole_pair(text, folder)?;
-    let b = std::fs::read(&before).ok()?;
-    let a = std::fs::read(&after).ok()?;
-    if b != a {
+    let before_bytes = std::fs::read(&before).ok()?;
+    let after_bytes = std::fs::read(&after).ok()?;
+    if before_bytes != after_bytes {
         return None;
     }
     let name = |p: &Path| {
@@ -1159,7 +1159,7 @@ fn unchanged_pair(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     };
-    Some((hex(&sha256(&b)), name(&before), name(&after)))
+    Some((hex(&sha256(&before_bytes)), name(&before), name(&after)))
 }
 
 /// The text a marked question starts with: the marker, then the label the
