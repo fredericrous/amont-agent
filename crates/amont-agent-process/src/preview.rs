@@ -220,13 +220,17 @@ fn published(repo: &Path, t: &Target) -> Option<Published> {
     })
 }
 
-/// The base of a push whose branch has a remote-tracking ref. A ref that the
-/// remote's default branch already contains, and that the pushed commit
-/// descends from, is a stale name for work published long ago (an old
-/// branch of the same name, merged and deleted remotely but never pruned
-/// here): the push is diffed from its merge-base with the default branch
-/// instead, journalled `base=merge-base`. Anything else, or any doubt, keeps
-/// the tracking ref. The ancestry checks read git's exit status
+/// The base of a push whose branch has a remote-tracking ref. The ref is the
+/// base only for a branch whose remote commits are its own: the pushed
+/// commit descends from it and the remote's default branch does not contain
+/// it. Otherwise it is a stale name for work published long ago, an old
+/// branch of the same name deleted remotely but never pruned here. That
+/// covers a ref the default branch contains (a merge) and one the pushed
+/// commit does not descend from (a squash merge, or a rewritten branch,
+/// diffed from main so that nothing new hides). The push is then diffed from
+/// its merge-base with the default branch, journalled `base=merge-base`. A
+/// missing default branch, or any git failure, keeps the tracking ref. The
+/// ancestry checks read git's exit status
 /// ([`amont_agent_guard::git::succeeds_in`]): `--is-ancestor` prints
 /// nothing, so a stdout reader would always say no.
 fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
@@ -234,7 +238,7 @@ fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
     let contains = |a: &str, b: &str| {
         amont_agent_guard::git::succeeds_in(repo, &["merge-base", "--is-ancestor", a, b])
     };
-    if !(contains(&tracking, &t.src) && contains(&tracking, &default)) {
+    if contains(&tracking, &t.src) && !contains(&tracking, &default) {
         return tracking;
     }
     let Some(merge_base) = git(repo, &["merge-base", &t.src, &default]) else {

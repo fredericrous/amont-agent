@@ -1797,6 +1797,30 @@ fn a_stale_tracking_ref_already_in_main_is_not_the_base() {
 }
 
 #[test]
+fn a_squash_merged_stale_tracking_ref_is_not_the_base() {
+    // Seen 2026-11-02 in duro-app: the old branch was squash-merged, so its
+    // commit is in neither main nor the new branch, and diffing from it
+    // showed months of main's UI work.
+    let w = World::new("squashed-base");
+    w.commit("app/old.tsx", "1\n");
+    git(&w.work, &["push", "-q", "origin", "feat/x"]);
+    git(&w.work, &["checkout", "-q", "main"]);
+    git(&w.work, &["merge", "-q", "--squash", "feat/x"]);
+    git(&w.work, &["commit", "-qm", "squashed"]);
+    w.commit("app/later.tsx", "1\n");
+    git(&w.work, &["push", "-q", "origin", "main"]);
+    git(
+        &w.root.join("remote.git"),
+        &["update-ref", "-d", "refs/heads/feat/x"],
+    );
+    w.set_remote_head();
+    git(&w.work, &["checkout", "-q", "-B", "feat/x", "main"]);
+    w.commit("README.md", "pack refresh\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("base=merge-base"), "{}", w.journal());
+}
+
+#[test]
 fn a_ui_change_over_a_stale_tracking_ref_is_still_advised() {
     let w = World::new("stale-base-ui");
     w.stale_branch();

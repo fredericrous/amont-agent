@@ -334,7 +334,9 @@ files are diffed from the branch's remote-tracking ref when there is one,
 else from the merge base with the remote's `HEAD`. A tracking ref that the
 pushed commit descends from, and that the remote's default branch already
 contains, is a stale name: an old branch of the same name, merged and
-deleted on the remote but never pruned here. The push is then diffed from
+deleted on the remote but never pruned here. So is a tracking ref the pushed
+commit does not descend from, as after a squash merge, where the old
+commit is in neither branch. The push is then diffed from
 its merge base with the remote's `HEAD`, journalled `base=merge-base`. On
 2026-11-02 such a ref made a one-file pack refresh in duro-app look like
 months of main's UI work. A tracking ref with commits of its own that the
