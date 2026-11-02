@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: fix/pointer-and-plan-only (amont-agent), fix/pointer-code-review (greenharness-skills), chore/pin-0.1.7 (grh)
 repos: [amont-agent, greenharness-skills, grh]
 adrs: [ADR-0052]
@@ -9,7 +9,7 @@ adrs: [ADR-0052]
 ## Review panel
 
 👉 **Decide:** none. Approve if a branch that changes only its plan should skip the profile reviews (it keeps implementation-review), and if a pointer plan should declare through its own copied `## Code review` line.
-📍 amont-agent, greenharness-skills, grh · Phase 1 reviewed · next: release amont-agent 3.14.0, then Phase 2. Panel: backend (opus), codex (gpt-6-astra).
+📍 amont-agent, greenharness-skills, grh · done: amont-agent 3.14.0, skills 0.3.2, grh 0.1.7 · next: the pointer carry live check. Panel: backend (opus), codex (gpt-6-astra).
 **Changed by review:**
 - The plan-only check is its own `git diff --quiet`, which can't be fooled by git config and fails closed. A pointer's section must validly declare this repository.
 - A pointer's stale line is journalled as `pointer-line-drift`. The test command names the right package.
@@ -82,8 +82,8 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
     - a pointer without its own section → no session carry, as today.
   - Unit tests in code_review.rs for `declared_text` on a pointer with and without its own section.
   - CHANGELOG and docs/implementation-review.md. Release 3.14.0 (tag-release), after checking the version is free.
-- [ ] Phase 2 — greenharness-skills: the template and landing-step wording. Release the next free patch version.
-- [ ] Phase 3 — grh: pin both. Release the next free version, then `brew upgrade` and `grh install workflow --yes`.
+- [x] Phase 2 — greenharness-skills: the template and landing-step wording. Release the next free patch version.
+- [x] Phase 3 — grh: pin both. Release the next free version, then `brew upgrade` and `grh install workflow --yes`.
 
 ## Verification
 
@@ -102,6 +102,8 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 - Live check, after 3.14.0 is installed: this plan's own closing record branch, which is plan-only, lands with no profile review, and the journal holds `profiles-plan-only`.
 - Live check, on the next cross-repository plan whose pointer declares a profile: the pointer push after a session pass shows `carried-from` in the journal and no `profiles-unreadable`; record it in Outcome.
 - Phase 2: `scripts/check.sh` → exit 0.
+- Phase 2, observed: `scripts/check.sh` → exit 0; implementation-review approve after one Delta (greenharness/skills#6, released v0.3.2).
+- Phase 3, observed: the five pins equal their SHA256SUMS lines (four amont-agent 3.14.0 targets and the skills 0.3.2 tarball, hashed after download); grh 0.1.7 released (greenharness/grh#11). After `brew upgrade grh amont-agent` and `grh install workflow --yes`: `amont-agent --version` → 3.14.0, `amont-agent doctor` → every check ✓.
 - Phase 3: each pin equals its SHA256SUMS line. After the install, `amont-agent --version` reports 3.14.0 or the version chosen, and doctor → healthy.
 
 ## Implementation review
@@ -128,5 +130,10 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 - 2026-11-02 — the person chose: skip the profiles on a plan-only branch, keeping implementation-review; a pointer copies its repository's Code review line.
 
 ## Outcome
+
+- amont-agent 3.14.0 (#187, #188, #189), skills 0.3.2 (#6), grh 0.1.7 (#11), installed on the laptop.
+- The first v3.14.0 tag push was refused by the release audit: RUSTSEC-2026-0433 (pulldown-cmark 0.13.5, published 2026-10-28). Since the tag had never been pushed, it was deleted locally, the exact pin was bumped to 0.13.6 in #189 (the pinned fixed-plan sha test passes, so plan shas are unchanged), and v3.14.0 was tagged on that merge.
+- The hook installed before 3.14.0 refused the skills pointer's land: its canonical plan was not yet in the live amont-agent checkout. That is the gap this plan closes. A fast-forward of the live checkout let the land go through.
+- Open: the two live checks. This closing branch is plan-only, so its push should journal `profiles-plan-only`. The pointer carry waits on the next cross-repository plan whose pointer declares a profile.
 
 <!-- panel: repos=amont-agent,greenharness-skills,grh reviewers=backend,codex body-sha=834a6a970c68 -->
