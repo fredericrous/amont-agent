@@ -2278,4 +2278,67 @@ mod tests {
             "~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl"
         ));
     }
+
+    /// A pointer whose own section does not declare this repository gives
+    /// no declaration at that commit, so nothing can carry from it; once it
+    /// does, the commit declares through it.
+    #[test]
+    fn declaration_at_needs_the_pointers_own_line_for_this_repository() {
+        let dir =
+            std::env::temp_dir().join(format!("amont-agent-declaration-at-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // absent on a first run, which is fine
+        std::fs::create_dir_all(dir.join(PLANS_PATH)).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("README.md"), "x\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        let plan = format!("{PLANS_PATH}/p.md");
+        let commit_with = |section: &str| {
+            std::fs::write(
+                dir.join(&plan),
+                format!(
+                    "---\ncanonical: decisions:docs/plans/p.md\nstatus: active\n---\n# X\n\n## Code review\n\n{section}\n"
+                ),
+            )
+            .unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", section]);
+            git(&["rev-parse", "HEAD"])
+        };
+        let invalid = commit_with("- other: backend");
+        let valid = commit_with("- app: backend");
+        let plans = vec![plan.clone()];
+        let gate = ProfileGate {
+            repo: &dir,
+            name: "app",
+            tree: "",
+            key: None,
+            plans: &plans,
+            pushed: &valid,
+            merge_base: &base,
+            transcript: None,
+            stance: Stance::Deny,
+            plan_only: false,
+        };
+        assert!(gate.declaration_at(&invalid).is_none());
+        let declared = gate
+            .declaration_at(&valid)
+            .expect("a valid own line declares");
+        assert_eq!(declared.profiles, vec!["backend".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir); // a temp dir left behind is harmless
+    }
 }

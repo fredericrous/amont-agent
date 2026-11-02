@@ -89,11 +89,14 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 
 - Phase 1, observed:
   - `cargo test -p amont-agent-process code_review::tests` → 17 passed.
-  - `cargo test -p amont-agent --test implementation_review -- plan_only gitlink pointer carr session_` → 24 passed: the 17 that pass on main and 7 new.
+  - `cargo test -p amont-agent --test implementation_review -- plan_only gitlink pointer carr session_` → 25 passed: the 17 that pass on main and 8 new.
+  - `cargo test -p amont-agent-guard diff_quiet` → 1 passed; `cargo test -p amont-agent-process declaration_at_needs` → 1 passed.
   - Mutations:
     - plan-only forced off, with `declared_text` back to canonical-only → `a_plan_only_branch_needs_no_profile` and `a_pointer_declares_through_its_own_line` FAILED;
-    - `--ignore-submodules=none` removed → `a_gitlink_change_is_not_plan_only` FAILED.
+    - `--ignore-submodules=none` removed → `a_gitlink_change_is_not_plan_only` FAILED;
+    - `require_own_line` removed from `declaration_of` → `declaration_at_needs_the_pointers_own_line_for_this_repository` FAILED.
     Both files were restored and compared with `cmp`.
+  - `cargo test --workspace` → 32 test binaries, 0 failed.
 
 - Phase 1: the new tests pass and `cargo test -p amont-agent --test implementation_review carr` → every test that passes on main 860e5fc still passes, plus the new carry tests, 0 failed. The workspace suite (`cargo test --workspace`) → 0 failed. With the plan-only skip removed, the plan-only test fails; with `declared_text` back to canonical-only, the pointer-section test fails. `cargo test` → 0 failed.
 - Live check, after 3.14.0 is installed: this plan's own closing record branch, which is plan-only, lands with no profile review, and the journal holds `profiles-plan-only`.
@@ -107,6 +110,7 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
   - an unanswerable plan-only check journals `profiles-plan-only-unknown` with its error;
   - new tests: the review-brief error, an empty own section, and no carry from an invalid pointer line;
   - `Declared` values are compared directly, and the error text is "exited N" or "killed by a signal".
+  - the guard that gives no carry from an invalid pointer line is a unit test of `declaration_at`: the integration test's two declarations differ, so it proves only the outcome (delta review);
   - Deliberate: no `PlanSource` enum. `own` is computed once per plan, and a plan is small.
 - 2026-11-02 — Implemented by hand. From the carried findings:
   - `--no-relative` and `:(top)` / `:(top,exclude)docs/plans/` pathspecs;

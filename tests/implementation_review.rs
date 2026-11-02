@@ -3954,7 +3954,9 @@ fn a_pointer_with_its_own_line_carries_from_the_session() {
 
 /// A pointer whose own section did not declare this repository at the
 /// reviewed commit gives that commit's approve no carry, even after the
-/// section is fixed.
+/// section is fixed. The outcome only: the two declarations also differ, so
+/// the guard itself is proven by the unit test
+/// `declaration_at_needs_the_pointers_own_line_for_this_repository`.
 #[test]
 fn an_invalid_pointer_line_at_the_reviewed_commit_does_not_carry() {
     let w = World::new("pointer-invalid-carry");
