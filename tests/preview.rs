@@ -1872,6 +1872,35 @@ fn without_a_remote_head_a_squashed_tracking_ref_stays_the_base() {
 }
 
 #[test]
+fn a_default_branch_with_no_shared_history_keeps_the_tracking_ref() {
+    // `origin/HEAD` names a branch with no history in common with the push:
+    // there is no merge base, so the tracking ref is kept, journalled as
+    // that, and `set-head` would not help, so it is not suggested.
+    let w = World::new("no-shared-history");
+    w.squashed_branch();
+    git(&w.work, &["checkout", "-q", "--orphan", "other"]);
+    git(&w.work, &["rm", "-rq", "--cached", "."]);
+    std::fs::write(w.work.join("other.txt"), "x\n").unwrap();
+    git(&w.work, &["add", "other.txt"]);
+    git(&w.work, &["commit", "-qm", "orphan"]);
+    git(&w.work, &["push", "-q", "origin", "other"]);
+    git(
+        &w.work,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/other",
+        ],
+    );
+    git(&w.work, &["checkout", "-q", "-f", "feat/x"]);
+    w.commit("README.md", "pack refresh\n");
+    let _held = w.push_advised("s");
+    let journal = w.journal();
+    assert!(journal.contains("shares no history"), "{journal}");
+    assert!(!journal.contains("set-head"), "{journal}");
+}
+
+#[test]
 fn a_ui_change_over_a_stale_tracking_ref_is_still_advised() {
     let w = World::new("stale-base-ui");
     w.stale_branch();

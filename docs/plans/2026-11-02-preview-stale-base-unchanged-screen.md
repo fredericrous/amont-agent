@@ -54,4 +54,7 @@ This repository carries Phase 1:
 - The fix: the tracking ref stays the base only for a branch whose remote commits are its own (the pushed commit descends from it and main does not contain it). Any other tracking ref uses the merge-base with main.
 - A rewritten branch is now diffed from main: it is judged by every file it carries over main, so nothing it adds can hide behind its old ref. Recorded in the canonical plan's Decision log at close.
 - Without `refs/remotes/<remote>/HEAD` the tracking ref is kept, journalled `base=tracking reason=no-default` with `git remote set-head <remote> -a`, checked first so a merged ref is journalled too. A default branch that shares no history with the push is journalled as that, without the set-head hint.
-- Observed: `cargo test -p amont-agent --test preview` → 75 passed, 4 new (squash, UI over squash, force-pushed, no remote HEAD); clippy clean. With only the condition line set back to 3.15.0's `if !(descends && contains(&tracking, &default))`, which returns before any note, the squash, force-pushed and no-HEAD tests FAILED; the file was restored and compared with cmp.
+- Observed on the final tree: `cargo test -p amont-agent --test preview` → 76 passed, 5 new (squash, UI over squash, force-pushed, no remote HEAD, no shared history); clippy clean.
+  - With the condition line set back to 3.15.0's `if !(descends && contains(&tracking, &default))`, the squash, force-pushed and no-shared-history tests FAILED.
+  - With the `rev-parse --verify` check of `<remote>/HEAD` removed, the no-remote-HEAD test FAILED.
+  - The file was restored and compared with cmp after each mutation.
