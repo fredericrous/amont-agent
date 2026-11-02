@@ -9,7 +9,7 @@ adrs: [ADR-0052]
 ## Review panel
 
 👉 **Decide:** none. Approve if a branch that changes only its plan should skip the profile reviews (it keeps implementation-review), and if a pointer plan should declare through its own copied `## Code review` line.
-📍 amont-agent, greenharness-skills, grh · done: amont-agent 3.14.0, skills 0.3.2, grh 0.1.7 · next: the pointer carry live check. Panel: backend (opus), codex (gpt-6-astra).
+📍 amont-agent, greenharness-skills, grh · done: amont-agent 3.14.0, skills 0.3.2, grh 0.1.7 · next: the two live checks (plan-only on this push, the pointer carry on the next cross-repository plan). Panel: backend (opus), codex (gpt-6-astra).
 **Changed by review:**
 - The plan-only check is its own `git diff --quiet`, which can't be fooled by git config and fails closed. A pointer's section must validly declare this repository.
 - A pointer's stale line is journalled as `pointer-line-drift`. The test command names the right package.
@@ -98,13 +98,13 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
     Both files were restored and compared with `cmp`.
   - `cargo test --workspace` → 32 test binaries, 0 failed.
 
-- Phase 1: the new tests pass and `cargo test -p amont-agent --test implementation_review carr` → every test that passes on main 860e5fc still passes, plus the new carry tests, 0 failed. The workspace suite (`cargo test --workspace`) → 0 failed. With the plan-only skip removed, the plan-only test fails; with `declared_text` back to canonical-only, the pointer-section test fails. `cargo test` → 0 failed.
-- Live check, after 3.14.0 is installed: this plan's own closing record branch, which is plan-only, lands with no profile review, and the journal holds `profiles-plan-only`.
-- Live check, on the next cross-repository plan whose pointer declares a profile: the pointer push after a session pass shows `carried-from` in the journal and no `profiles-unreadable`; record it in Outcome.
-- Phase 2: `scripts/check.sh` → exit 0.
+- Planned: Phase 1: the new tests pass and `cargo test -p amont-agent --test implementation_review carr` → every test that passes on main 860e5fc still passes, plus the new carry tests, 0 failed. The workspace suite (`cargo test --workspace`) → 0 failed. With the plan-only skip removed, the plan-only test fails; with `declared_text` back to canonical-only, the pointer-section test fails. `cargo test` → 0 failed.
+- Planned: Live check, after 3.14.0 is installed: this plan's own closing record branch, which is plan-only, lands with no profile review, and the journal holds `profiles-plan-only`.
+- Planned: Live check, on the next cross-repository plan whose pointer declares a profile: the pointer push after a session pass shows `carried-from` in the journal and no `profiles-unreadable`; record it in Outcome.
+- Planned: Phase 2: `scripts/check.sh` → exit 0.
 - Phase 2, observed: `scripts/check.sh` → exit 0; implementation-review approve after one Delta (greenharness/skills#6, released v0.3.2).
 - Phase 3, observed: the five pins equal their SHA256SUMS lines (four amont-agent 3.14.0 targets and the skills 0.3.2 tarball, hashed after download); grh 0.1.7 released (greenharness/grh#11). After `brew upgrade grh amont-agent` and `grh install workflow --yes`: `amont-agent --version` → 3.14.0, `amont-agent doctor` → every check ✓.
-- Phase 3: each pin equals its SHA256SUMS line. After the install, `amont-agent --version` reports 3.14.0 or the version chosen, and doctor → healthy.
+- Planned: Phase 3: each pin equals its SHA256SUMS line. After the install, `amont-agent --version` reports 3.14.0 or the version chosen, and doctor → healthy.
 
 ## Implementation review
 
