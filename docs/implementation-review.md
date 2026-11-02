@@ -413,7 +413,7 @@ pass of an earlier commit C only when all hold:
 - the pass has all three fields; one written without them never carries.
 
 The approval may also come from the session itself, with no push ever
-judged at its tree (3.12.0). The hook reads the transcript before any filed
+judged at its tree (3.13.0). The hook reads the transcript before any filed
 pass. It takes this profile's latest completed review, in launch order, of a
 tree of a commit in `git rev-list <pushed> ^<merge-base>` other than the
 pushed one:
@@ -437,5 +437,5 @@ of the reviewed content id>`) and journals `profile-carried` with
 the profile is missing and must review the new tree.
 
 The implementation review's own block is read from the prompt's header too
-(3.12.0), as a profile's is: a `<<<TREE …>>>` block inside an inlined brief
+(3.13.0), as a profile's is: a `<<<TREE …>>>` block inside an inlined brief
 or diff binds nothing, so the prompt's TREE line comes first.
