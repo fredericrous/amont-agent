@@ -1,0 +1,15 @@
+amont-provenance-v1
+commit 6ce64023c4db32249e39fd00d000d023a50abf0d
+tree cec0954d4132199311793e61996784403aac6ca4
+canon c957a4084d74df63995ec41dc57c80a767ffdc48
+plan docs/plans/2026-11-02-a-pointer-carries-its-own-line.md a48792c61d9265b73870996478a583f41d65f3500ae092917694a13e7fa218dc
+review reviewed c7bc806833afa67ba7068b791dc7d0e017c09489c6084c64ce713415766764ae
+preview not-required
+producer amont-agent 3.14.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBHOzppIorSfuHy4NsAkyFlucme5Sca6S3LjQ7W8KQKrgfiwg
+9qHHnqHEZTFWdiImkVsk7cra/Ddbtz0mrkOuwD
+-----END SSH SIGNATURE-----
