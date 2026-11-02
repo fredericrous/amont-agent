@@ -9,7 +9,7 @@ adrs: [ADR-0052]
 ## Review panel
 
 👉 **Decide:** none. Approve if an `approve` given in this session should carry to the pushed tree without a re-run. A cross-repository (pointer) plan gets no session carry for now, because a pointer records no canonical revision.
-📍 amont-agent, greenharness-skills, grh · not started · next: Phase 1 (amont-agent 3.12.0). Panel: backend (opus), codex (gpt-6-astra).
+📍 amont-agent, greenharness-skills, grh · not started · next: Phase 1 (amont-agent 3.13.0). Panel: backend (opus), codex (gpt-6-astra).
 **Changed by review:**
 - The session is read before filed passes, so a newer rework blocks any carry. An unreadable declaration at the reviewed commit means no carry.
 - A pointer's historical declaration needs a fixed revision, and without one there is no carry. The live check is now a sequence that always runs.
@@ -86,9 +86,9 @@ When a declared profile has no pass on the pushed tree and no review of it in th
     - with the declaration changed between A and B → refused;
     - after a rebase that moves A out of `pushed ^merge-base` → refused;
     - an implementation-review prompt whose only TREE block for the pushed tree sits inside a fenced body → refused, and the same block in the header → allowed.
-  - CHANGELOG and docs/implementation-review.md. Release 3.12.0 (tag-release): a minor version, since what binds changes.
+  - CHANGELOG and docs/implementation-review.md. Release 3.13.0 (tag-release): a minor version, since what binds changes.
 - [ ] Phase 2 — greenharness-skills: the reworded reason. Release 0.3.1.
-- [ ] Phase 3 — grh: pin amont-agent 3.12.0 and skills 0.3.1. Release 0.1.5, then `brew upgrade` and `grh install workflow --yes` on the laptop.
+- [ ] Phase 3 — grh: pin amont-agent 3.13.0 and skills 0.3.1. Release 0.1.5, then `brew upgrade` and `grh install workflow --yes` on the laptop.
 
 ## Verification
 
@@ -97,9 +97,9 @@ When a declared profile has no pass on the pushed tree and no review of it in th
   - With the old behaviour swapped in (`SessionCarry::Undecided` in place of the session read, and `parse_blocks(&c.prompt)` in `reviews()`), the session-carry test and the header test → FAILED. Restored, and compared with `cmp`.
   - The gate (clippy, the full suite) passed at commit.
 
-- Phase 1: the new integration tests pass, and the existing carry tests still pass. With `carried` restored to pass files only, the transcript-carry test fails; with `reviews()` back on the whole prompt, the fenced-block test fails. `cargo test` → 0 failed. Live check (deferred: see Decision log 2026-11-02, holds-until the first plan PR after 3.12.0): after both profiles approve, commit a docs-only fix, run implementation-review on it, push once → the push is allowed, with no profile re-run, and the journal holds `profile-carried … profile=backend carried-from <12 hex>` and the same for `lang:rust`. Production: over 14 days, count `profile-carried` lines against profile re-runs on diffs of 10 lines or fewer.
+- Phase 1: the new integration tests pass, and the existing carry tests still pass. With `carried` restored to pass files only, the transcript-carry test fails; with `reviews()` back on the whole prompt, the fenced-block test fails. `cargo test` → 0 failed. Live check (deferred: see Decision log 2026-11-02, holds-until the first plan PR after 3.13.0): after both profiles approve, commit a docs-only fix, run implementation-review on it, push once → the push is allowed, with no profile re-run, and the journal holds `profile-carried … profile=backend carried-from <12 hex>` and the same for `lang:rust`. Production: over 14 days, count `profile-carried` lines against profile re-runs on diffs of 10 lines or fewer.
 - Phase 2: `scripts/check.sh` → exit 0, no "counts for nothing" phrase is left under `parts/`, and the implementation-review launch text in worktree-task puts its TREE line before any heading or fence (grep). Rollback for Phase 1: pin amont-agent 3.11.x again.
-- Phase 3: the pins equal each release's SHA256SUMS lines. After the install, `amont-agent --version` → 3.12.0, the agents' text holds the new reason, and doctor → healthy.
+- Phase 3: the pins equal each release's SHA256SUMS lines. After the install, `amont-agent --version` → 3.13.0, the agents' text holds the new reason, and doctor → healthy.
 
 ## Implementation review
 
@@ -110,11 +110,12 @@ When a declared profile has no pass on the pushed tree and no review of it in th
 - Tokens: about 59k + 80k, 60k + 64k, 56k + 62k, so 381k.
 
 ## Decision log
+- 2026-11-02 — Another session released 3.12.0 (#179) during this work, so this ships as 3.13.0. The plan's versions now say 3.13.0. The two "(3.12.0)" mentions in `docs/implementation-review.md` are corrected in the 3.13.0 release commit, so the reviewed tree stays bound. skills 0.3.1 and grh 0.1.5 are checked as free before tagging.
 - 2026-11-02 — From the code reviews:
   - added a session-path rebase test, and journal lines `profile-carry-blocked` and `profile-carry-declaration-differs`, so a carry that does not happen says why;
   - `#[derive(Default)]` on `Declaration` and named `Carry` fields;
   - deliberate: `declaration_of` keeps `Result<Option<_>>`, where `None` is a pointer under `Unproven`, and there is no per-commit cache, since branches are short.
-- 2026-11-02 — The live check cannot run on this branch: the push hook that judges its push is the installed 3.11.1, not this code. It runs at the first plan PR pushed after 3.12.0 is installed: `holds-until:` that push, recorded in the canonical ADR-0052 plan's follow-ups.
+- 2026-11-02 — The live check cannot run on this branch: the push hook that judges its push is the installed 3.11.1, not this code. It runs at the first plan PR pushed after 3.13.0 is installed: `holds-until:` that push, recorded in the canonical ADR-0052 plan's follow-ups.
 - 2026-11-02 — Built by hand, not through relais: every relais run on amont-agent hit its wall time. One change came from implementing it: a content id leaves `docs/plans/` out, so a plan-only commit shares its tree with the commit before it. "The newest commit with the reviewed tree" could therefore read a declaration changed after the review. The declaration must now match at every branch commit with that tree. The test `a_declaration_changed_since_the_session_approve_does_not_carry` failed on the first version and passes on this one.
 - 2026-11-02 — Done from the carried findings: an unreadable declaration means no carry, not unknown (tested under deny); an unchanged pointer gets no session carry either (tested); Missing falls through to filed passes; each commit's plan list is computed against the merge-base (`declaration_at`). Not done: a separate restored-plan test (Codex). The per-commit plan list covers it by construction, and no test pins it.
 
