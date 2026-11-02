@@ -71,7 +71,7 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 
 ## Phases
 
-- [ ] Phase 1 — amont-agent:
+- [x] Phase 1 — amont-agent:
   - The plan-only skip in `ProfileGate::hold` and `declared_text` preferring the pointer's own section.
   - Tests in `tests/implementation_review.rs`:
     - a plan-only branch with `backend` declared and only an implementation-review pass → allowed, journal `profiles-plan-only`;
@@ -87,6 +87,14 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 
 ## Verification
 
+- Phase 1, observed:
+  - `cargo test -p amont-agent-process code_review::tests` → 17 passed.
+  - `cargo test -p amont-agent --test implementation_review -- plan_only gitlink pointer carr session_` → 24 passed: the 17 that pass on main and 7 new.
+  - Mutations:
+    - plan-only forced off, with `declared_text` back to canonical-only → `a_plan_only_branch_needs_no_profile` and `a_pointer_declares_through_its_own_line` FAILED;
+    - `--ignore-submodules=none` removed → `a_gitlink_change_is_not_plan_only` FAILED.
+    Both files were restored and compared with `cmp`.
+
 - Phase 1: the new tests pass and `cargo test -p amont-agent --test implementation_review carr` → every test that passes on main 860e5fc still passes, plus the new carry tests, 0 failed. The workspace suite (`cargo test --workspace`) → 0 failed. With the plan-only skip removed, the plan-only test fails; with `declared_text` back to canonical-only, the pointer-section test fails. `cargo test` → 0 failed.
 - Live check, after 3.14.0 is installed: this plan's own closing record branch, which is plan-only, lands with no profile review, and the journal holds `profiles-plan-only`.
 - Live check, on the next cross-repository plan whose pointer declares a profile: the pointer push after a session pass shows `carried-from` in the journal and no `profiles-unreadable`; record it in Outcome.
@@ -94,6 +102,13 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 - Phase 3: each pin equals its SHA256SUMS line. After the install, `amont-agent --version` reports 3.14.0 or the version chosen, and doctor → healthy.
 
 ## Decision log
+- 2026-11-02 — Implemented by hand. From the carried findings:
+  - `--no-relative` and `:(top)` / `:(top,exclude)docs/plans/` pathspecs;
+  - a `git::diff_quiet_in` helper that returns the exit status, where exit 1 and a failure stay distinct;
+  - the plan-only skip runs before the declaration read;
+  - the gitlink mutation check;
+  - the drift test.
+  `profiles-plan-only` is journalled on every plan-only push, not only when the declaration would have found profiles: reading the declaration first would bring back the hold the skip removes.
 - 2026-11-02 — the person chose: skip the profiles on a plan-only branch, keeping implementation-review; a pointer copies its repository's Code review line.
 
 ## Outcome
