@@ -1138,13 +1138,8 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
 /// The guide's before/after pair when it is byte-identical and nothing
 /// excludes it (ADR-0057): the one unambiguous pair
 /// ([`crate::guide::sole_pair`]), two different files inside the guide's
-/// directory, on a branch that commits no picked mockup. Returns the
-/// image's sha256 and the two file names, for the journal.
-fn unchanged_pair(
-    text: &str,
-    folder: &Path,
-    screens: &[String],
-) -> Option<(String, String, String)> {
+/// directory, on a branch that commits no picked mockup.
+fn unchanged_pair(text: &str, folder: &Path, screens: &[String]) -> Option<Unchanged> {
     if !screens.is_empty() {
         return None;
     }
@@ -1159,7 +1154,80 @@ fn unchanged_pair(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     };
-    Some((hex(&sha256(&before_bytes)), name(&before), name(&after)))
+    Some(Unchanged {
+        sha256: hex(&sha256(&before_bytes)),
+        before: name(&before),
+        after: name(&after),
+    })
+}
+
+/// An unchanged pair, for the journal: the image's sha256 and the two file
+/// names.
+struct Unchanged {
+    sha256: String,
+    before: String,
+    after: String,
+}
+
+/// Approve `reg` as `unchanged` when its guide's pair is byte-identical,
+/// compared here from the files and never from the flag `register` printed
+/// (ADR-0057). The guide must be the one the page was rendered from: beside
+/// the printed page, outside the repository and no larger than a guide may
+/// be, as `register` checked it. Anything that cannot be compared leaves the
+/// registration waiting for the person's answer, journalled
+/// `unchanged-skipped`.
+fn approve_if_unchanged(reg: &Registration, repo: &Path, page: &str) {
+    let skip = |why: &str| {
+        note(
+            "unchanged-skipped",
+            &reg.session,
+            &reg.repo,
+            &format!("{} {why}", reg.id),
+        )
+    };
+    let Ok(guide) = std::fs::canonicalize(&reg.guide) else {
+        return skip("the guide cannot be read");
+    };
+    let page_dir = std::fs::canonicalize(page)
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+    let Some(folder) = guide.parent().filter(|f| page_dir.as_deref() == Some(*f)) else {
+        return skip("the guide is not beside its page");
+    };
+    let canon_repo = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+    if guide.starts_with(&canon_repo) {
+        return skip("the guide is inside the repository");
+    }
+    let size = std::fs::metadata(&guide)
+        .map(|m| m.len())
+        .unwrap_or(u64::MAX);
+    if size > crate::guide::MAX_BYTES {
+        return skip("the guide is larger than a guide may be");
+    }
+    let Ok(text) = std::fs::read_to_string(&guide) else {
+        return skip("the guide is not UTF-8 text");
+    };
+    let screens = match mockup_screens(repo, &reg.commit) {
+        Ok(screens) => screens,
+        Err(why) => return skip(&format!("the mockup screens cannot be listed: {why}")),
+    };
+    let Some(same) = unchanged_pair(&text, folder, &screens) else {
+        return;
+    };
+    note(
+        "unchanged",
+        &reg.session,
+        &reg.repo,
+        &format!(
+            "{} {} sha256={} before={} after={}",
+            reg.id,
+            reg.label(),
+            same.sha256,
+            same.before,
+            same.after
+        ),
+    );
+    approve(std::slice::from_ref(reg), "unchanged");
 }
 
 /// The text a marked question starts with: the marker, then the label the
@@ -1383,28 +1451,9 @@ pub fn bind(
             }
         ),
     );
-    regs.push(reg.clone());
+    approve_if_unchanged(&reg, &repo, &printed.page);
+    regs.push(reg);
     save_registrations(&regs);
-    // Compared again here, from the files: the printed flag is the agent's
-    // command speaking, and never approves anything (ADR-0057).
-    let guide = Path::new(&reg.guide);
-    let screens = mockup_screens(&repo, &reg.commit);
-    if let (Ok(text), Ok(screens)) = (std::fs::read_to_string(guide), screens) {
-        let folder = guide.parent().unwrap_or(Path::new("/"));
-        if let Some((sha, before, after)) = unchanged_pair(&text, folder, &screens) {
-            note(
-                "unchanged",
-                &bash.session,
-                &reg.repo,
-                &format!(
-                    "{} {} sha256={sha} before={before} after={after}",
-                    reg.id,
-                    reg.label()
-                ),
-            );
-            approve(std::slice::from_ref(&reg), "unchanged");
-        }
-    }
     None
 }
 

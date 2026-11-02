@@ -1832,7 +1832,10 @@ fn an_identical_before_and_after_is_approved_unchanged() {
         str::to_string,
     );
     assert_eq!(json["unchanged"], true, "{json}");
-    assert!(err.contains("recorded as unchanged once bound"), "{err}");
+    assert!(
+        err.contains("approves this preview as unchanged when it binds it"),
+        "{err}"
+    );
     assert!(!w.push_advised("s"), "{}", w.journal());
     let journal = w.journal();
     assert!(journal.contains(" unchanged "), "{journal}");
