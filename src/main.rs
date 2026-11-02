@@ -33,6 +33,7 @@ use amont_agent_guard::harness_review;
 use amont_agent_process::attestations;
 use amont_agent_process::content_id;
 mod hook;
+mod open;
 use amont_agent_guard::journal;
 use amont_agent_guard::json;
 use amont_agent_guard::lsp;
@@ -110,6 +111,8 @@ usage: amont-agent <command>
   preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
                         validate a localhost preview of HEAD for approval
                         and render its guide to a page
+  open <url|path>       open a page for the person, through the opener in
+                        `git config --global amont.agent.opener`
   plan-sha [--short] [--block [--lang <l>]] [--legacy] [--] <file|->
                         the sha256 of a plan's canonical body, as reviewed
   plan-panel <plan.md>  the review agents a plan still needs, as the
@@ -210,9 +213,10 @@ enum Sub {
     Quiet,
     Shipped,
     Board,
+    Open,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 28] = [
+const SUBCOMMANDS: [(&str, Sub); 29] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -241,6 +245,7 @@ const SUBCOMMANDS: [(&str, Sub); 28] = [
     ("quiet", Sub::Quiet),
     ("shipped", Sub::Shipped),
     ("board", Sub::Board),
+    ("open", Sub::Open),
 ];
 
 enum Invocation {
@@ -407,6 +412,7 @@ fn main() -> ExitCode {
                 let mut findings =
                     doctor::run(rule_table::RULES, attestations::doctor_finding(), &scanned);
                 findings.push(plan_root_finding());
+                findings.push(open::opener_finding());
                 if let Ok(project) = std::env::current_dir() {
                     findings.extend(amont_agent_process::agents::review_gaps(&project));
                 }
@@ -439,6 +445,7 @@ fn main() -> ExitCode {
             Sub::PlanSha => run_plan_sha(&args),
             Sub::Shipped => shipped::run(&args),
             Sub::Board => board::run(&args),
+            Sub::Open => open::run(&args),
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);
@@ -1678,9 +1685,11 @@ fn run_preview(args: &[OsString]) -> ExitCode {
             if r.unchanged {
                 eprintln!("amont-agent: before and after are byte-identical; the hook approves this preview as unchanged when it binds it, if they still are");
             }
-            println!("{}", r.to_json());
             if open {
-                open_page(std::path::Path::new(&r.page));
+                let opened = open_page(std::path::Path::new(&r.page));
+                println!("{}", with_opened(&r.to_json(), opened));
+            } else {
+                println!("{}", r.to_json());
             }
             ExitCode::SUCCESS
         }
@@ -1691,30 +1700,26 @@ fn run_preview(args: &[OsString]) -> ExitCode {
     }
 }
 
-/// Hand the page to the platform's opener and do not wait. Whatever
-/// happens, the registration stands: the page is a convenience.
-fn open_page(page: &std::path::Path) {
-    use std::process::{Command, Stdio};
-    let mut cmd = if cfg!(target_os = "macos") {
-        Command::new("open")
-    } else if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.args(["/c", "start", ""]);
-        c
-    } else {
-        Command::new("xdg-open")
-    };
-    let spawned = cmd
-        .arg(page)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    if spawned.is_err() {
-        eprintln!(
-            "amont-agent: the page could not be opened; it is at {}",
-            page.display()
-        );
+/// Open the registered page through the same opener as `amont-agent open`.
+/// Whatever happens, the registration stands: the page is a convenience.
+fn open_page(page: &std::path::Path) -> bool {
+    match open::open_url(&amont_agent_process::guide::file_url(page)) {
+        Ok(()) => true,
+        Err(why) => {
+            eprintln!("amont-agent: {why}");
+            false
+        }
+    }
+}
+
+/// The registration JSON with `opened` added after its other fields.
+fn with_opened(registration: &str, opened: bool) -> String {
+    match serde_json::from_str::<serde_json::Value>(registration) {
+        Ok(serde_json::Value::Object(mut fields)) => {
+            fields.insert("opened".into(), serde_json::Value::Bool(opened));
+            serde_json::Value::Object(fields).to_string()
+        }
+        _ => registration.to_string(),
     }
 }
 

@@ -64,9 +64,11 @@ terminal, a local page, and the app already open in their browser.
    | `question_prefix` | `[preview <id>] <label>`: what the marked question starts with, verbatim |
    | `attestation` | `guide` again, for hooks older than 2.21.0 |
 
-   `--open` also hands the page
-   to the platform opener (`open`, `xdg-open`, `cmd /c start`) without
-   waiting; failing to open never fails the command.
+   `--open` also opens the page through the machine's opener
+   (`amont.agent.opener`, see [configuration](configuration.md); the platform
+   opener by default) and prints the JSON after the attempt with
+   `"opened": true` or `"opened": false`; failing to open never fails the
+   command.
 
    The `PostToolUse` hook binds that output to the session and to the
    person's current prompt, in the repository the command ran in — the

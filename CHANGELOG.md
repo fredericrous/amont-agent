@@ -2,6 +2,22 @@
 
 ## v3.15.2
 
+### Added
+
+- `amont-agent open <url|path>` opens a page for the person through the
+  per-machine opener `amont.agent.opener` (a command template; `{}` is the
+  page, split into words first so it stays one argument; default `open`,
+  `xdg-open` or `cmd /c start ""`). A path becomes a percent-encoded `file://`
+  URL. Silent on success; one error line and exit 1 on failure; exit 2 for
+  usage (ADR-0058).
+- `doctor` reports the opener and warns when its program is not found.
+
+### Changed
+
+- `preview register --open` goes through the same opener, prints its JSON
+  after the launch attempt, and adds `"opened": true|false`. An opener failure
+  keeps exit 0.
+
 ### Fixed
 
 - A preview approval is stored under an exclusive lock on `approvals.lock`,
