@@ -344,8 +344,8 @@ default branch lacks, and that the pushed commit descends from, stays the
 base, so work already pushed is not asked about again. A rewritten branch
 (force-pushed) is diffed from main: every file it carries over main is
 judged. Without `refs/remotes/<remote>/HEAD` there is no merge base, so the
-tracking ref stays the base, journalled `base=tracking` with the command
-that sets it (`git remote set-head <remote> -a`).
+tracking ref stays the base, journalled `base=tracking reason=no-default`
+with the command that sets it (`git remote set-head <remote> -a`).
 
 ### What counts as an interface change
 

@@ -232,11 +232,28 @@ fn published(repo: &Path, t: &Target) -> Option<Published> {
 /// default branch, journalled `base=merge-base` with the reason. The ancestry
 /// checks read git's exit status ([`amont_agent_guard::git::succeeds_in`]):
 /// `--is-ancestor` prints nothing, so a stdout reader would always say no. A
-/// failed ancestry check counts as no, so the push is diffed from main; only
-/// a missing default branch, or a failed `merge-base`, keeps the tracking
-/// ref, journalled `base=tracking`.
+/// failed descent check counts as no, so the push is diffed from main. The
+/// tracking ref is kept, journalled `base=tracking`, when the default branch
+/// is missing (with the command that sets it) or shares no history with the
+/// pushed commit.
 fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
     let default = format!("refs/remotes/{}/HEAD", t.remote);
+    let repo_name = repo.to_string_lossy();
+    let keep = |why: String| {
+        note(
+            "base",
+            "-",
+            &repo_name,
+            &format!("base=tracking {tracking} {why}"),
+        );
+    };
+    if !amont_agent_guard::git::succeeds_in(repo, &["rev-parse", "--verify", "--quiet", &default]) {
+        keep(format!(
+            "reason=no-default: no {default} (`git remote set-head {} -a` sets it)",
+            t.remote
+        ));
+        return tracking;
+    }
     let contains = |a: &str, b: &str| {
         amont_agent_guard::git::succeeds_in(repo, &["merge-base", "--is-ancestor", a, b])
     };
@@ -245,17 +262,11 @@ fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
         return tracking;
     }
     let reason = if descends { "merged" } else { "not-descended" };
-    let repo_name = repo.to_string_lossy();
     let Some(merge_base) = git(repo, &["merge-base", &t.src, &default]) else {
-        note(
-            "base",
-            "-",
-            &repo_name,
-            &format!(
-                "base=tracking {tracking} reason={reason}: no merge base with {default} (`git remote set-head {} -a` sets it)",
-                t.remote
-            ),
-        );
+        keep(format!(
+            "reason={reason}: {} shares no history with {default}",
+            short(&t.src)
+        ));
         return tracking;
     };
     note(
