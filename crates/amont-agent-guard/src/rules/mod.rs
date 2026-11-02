@@ -31,6 +31,7 @@ pub mod adr_lint_written;
 pub mod agent_guidance_shape;
 pub mod agent_guidance_written;
 pub mod amend_pushed;
+pub mod ask_unopened_page;
 pub mod bare_stash_pop;
 pub mod branch_force_delete;
 pub mod cd_carries_over;

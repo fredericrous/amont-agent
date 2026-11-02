@@ -58,6 +58,49 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// `ask-unopened-page`: a question that names a local page nobody opened for
+/// the person. The stance is looked up only once a page is named.
+fn ask_unopened_page(ask: &payload::Ask) -> Decision {
+    use amont_agent_guard::page_open::{self, Verdict};
+    let rule = &rules::ask_unopened_page::RULE;
+    let (pages, why) = match page_open::judge(ask) {
+        Verdict::Shown => return Decision::Silent,
+        Verdict::Unopened(pages) => (pages, None),
+        Verdict::Unknown { pages, why } => (pages, Some(why)),
+    };
+    let stance = crate::stance::resolve(rule);
+    if stance == Stance::Observe {
+        return Decision::Silent;
+    }
+    let commands = page_open::commands(&pages);
+    match why {
+        Some(why) => Decision::Advise(decision::phrase(
+            rule.id,
+            &format!(
+                "this question names a page the hook cannot tell was opened for the person ({why}). \
+                 A URL or a path in a question does not show it (`work.page-shown-before-asked`). \
+                 If it was not opened, open it before asking:\n{commands}"
+            ),
+            "",
+        )),
+        None => {
+            let text = decision::phrase(
+                rule.id,
+                &format!(
+                    "this question names a page that was never opened for the person. A URL or a path in a question does not show it (`work.page-shown-before-asked`). \
+                     Open each page, one command per page, then ask the question again:\n{commands}"
+                ),
+                "",
+            );
+            if stance == Stance::Deny {
+                Decision::Deny(text)
+            } else {
+                Decision::Advise(text)
+            }
+        }
+    }
+}
+
 fn decide(raw: &str) -> Decision {
     // Name the session before any stance is looked up (ADR-0042 shadow arm).
     if let Some(session) = serde_json::from_str::<serde_json::Value>(raw)
@@ -94,7 +137,7 @@ fn decide(raw: &str) -> Decision {
                 Some(why) => {
                     Decision::Deny(decision::phrase(crate::push_preview::RULE.id, &why, ""))
                 }
-                None => Decision::Silent,
+                None => ask_unopened_page(&ask),
             }
         }
         Event::PrePlanExit(plan) => {

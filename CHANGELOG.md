@@ -11,6 +11,16 @@
   URL. Silent on success; one error line and exit 1 on failure; exit 2 for
   usage (ADR-0058).
 - `doctor` reports the opener and warns when its program is not found.
+- `ask-unopened-page`, a rule on `AskUserQuestion` that ships as `deny`
+  (ADR-0058, `work.page-shown-before-asked`). A question naming a local page
+  (a `localhost`, `127.0.0.1`, `[::1]` or `0.0.0.0` URL, a `file://` URL, or a
+  path ending `.html`/`.htm`) is refused unless the session transcript shows a
+  standalone `amont-agent open <page>` (or a `preview register --open` that
+  reported `opened: true` for it) since the last answered question about that
+  page. The refusal names each unopened page and gives one
+  `amont-agent open '<page>'` command each. With no readable transcript, a
+  truncated last line or a window past 16 MiB it advises. The question's
+  option labels, descriptions and previews are read too.
 
 ### Changed
 
