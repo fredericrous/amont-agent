@@ -98,7 +98,7 @@ When a declared profile has no pass on the pushed tree and no review of it in th
   - The gate (clippy, the full suite) passed at commit.
 
 - Phase 1: the new integration tests pass, and the existing carry tests still pass. With `carried` restored to pass files only, the transcript-carry test fails; with `reviews()` back on the whole prompt, the fenced-block test fails. `cargo test` → 0 failed. Live check (deferred: see Decision log 2026-11-02, holds-until the first plan PR after 3.13.0): after both profiles approve, commit a docs-only fix, run implementation-review on it, push once → the push is allowed, with no profile re-run, and the journal holds `profile-carried … profile=backend carried-from <12 hex>` and the same for `lang:rust`. Production: over 14 days, count `profile-carried` lines against profile re-runs on diffs of 10 lines or fewer.
-- Phase 2: `scripts/check.sh` → exit 0, no "counts for nothing" phrase is left under `parts/`, and the implementation-review launch text in worktree-task puts its TREE line before any heading or fence (grep). Rollback for Phase 1: pin amont-agent 3.11.x again.
+- Phase 2: `scripts/check.sh` → exit 0, no "counts for nothing" phrase is left under `parts/`, and the implementation-review launch text in worktree-task puts its TREE line before any heading or fence (grep). Rollback for Phase 1: pin amont-agent 3.12.x again.
 - Phase 3: the pins equal each release's SHA256SUMS lines. After the install, `amont-agent --version` → 3.13.0, the agents' text holds the new reason, and doctor → healthy.
 
 ## Implementation review
