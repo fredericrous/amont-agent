@@ -123,8 +123,15 @@ fn is_page(token: &str) -> bool {
         }
         return LOCAL_HOSTS.contains(&host_of(&token[at + 3..]).to_ascii_lowercase().as_str());
     }
+    // A file name with a stem: a bare `.html` or a glob `*.html` names an
+    // extension, not a page (a false deny in the 14-day backtest).
     let lower = token.to_ascii_lowercase();
-    lower.ends_with(".html") || lower.ends_with(".htm")
+    let name = lower.rsplit('/').next().unwrap_or("");
+    let stem = name
+        .strip_suffix(".html")
+        .or_else(|| name.strip_suffix(".htm"))
+        .unwrap_or("");
+    !stem.is_empty() && !stem.contains(['*', '?', '<', '{'])
 }
 
 /// The host of `authority/path…`, without userinfo or port.
@@ -593,6 +600,12 @@ mod tests {
     fn remote_and_schemeless_hosts_are_not_pages() {
         assert!(keys("127.0.0.1:8080 and https://github.com/a/b and localhost:3000").is_empty());
         assert!(keys("http://localhost.evil.com/ x.htmlx").is_empty());
+    }
+
+    #[test]
+    fn an_extension_alone_is_not_a_page() {
+        assert!(keys("a local URL or `.html` file, any *.html or docs/*.htm").is_empty());
+        assert_eq!(keys("docs/x.html"), ["docs/x.html"]);
     }
 
     #[test]
