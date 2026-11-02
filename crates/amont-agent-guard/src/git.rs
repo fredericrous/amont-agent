@@ -538,14 +538,14 @@ mod tests {
     struct Scratch(std::path::PathBuf);
     impl Drop for Scratch {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let _ = std::fs::remove_dir_all(&self.0); // a temp dir left behind is harmless
         }
     }
 
     fn scratch_repo(name: &str) -> Scratch {
         let dir =
             std::env::temp_dir().join(format!("amont-agent-git-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // absent on a first run, which is fine
         std::fs::create_dir_all(&dir).unwrap();
         let run = |args: &[&str]| {
             assert!(Command::new("git")
