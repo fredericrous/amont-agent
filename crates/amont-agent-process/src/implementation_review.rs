@@ -743,6 +743,9 @@ struct ProfileGate<'a> {
     merge_base: &'a str,
     transcript: Option<&'a Path>,
     stance: Stance,
+    /// The branch changes nothing outside docs/plans/ (a successful
+    /// `git diff --quiet`; a failed one is `false`).
+    plan_only: bool,
 }
 
 /// How a declaration read at a commit treats a pointer plan.
@@ -788,6 +791,37 @@ impl ProfileGate<'_> {
             .flatten()
     }
 
+    /// A pointer's own line that differs from the line its canonical plan now
+    /// holds for this repository is journalled: the pointer's line wins, and
+    /// the drift should not go unseen.
+    fn note_drift(
+        &self,
+        path: &str,
+        text: &str,
+        own: &std::collections::BTreeMap<String, crate::code_review::Declared>,
+    ) {
+        let Ok(Some(then)) = crate::code_review::canonical_text(text)
+            .and_then(|canonical| crate::code_review::parse(&canonical))
+        else {
+            return;
+        };
+        let line = |map: &std::collections::BTreeMap<String, crate::code_review::Declared>| {
+            map.get(self.name).map_or_else(
+                || "not declared".to_string(),
+                crate::code_review::Declared::describe,
+            )
+        };
+        let (pointer, canonical) = (line(own), line(&then));
+        if pointer != canonical {
+            note(
+                "pointer-line-drift",
+                "-",
+                self.name,
+                &format!("{path}: pointer `{pointer}`, canonical `{canonical}`"),
+            );
+        }
+    }
+
     fn declaration_of(
         &self,
         commit: &str,
@@ -802,7 +836,8 @@ impl ProfileGate<'_> {
             else {
                 continue;
             };
-            if canonical == Canonical::Unproven && crate::code_review::is_pointer(&text) {
+            let own = crate::code_review::has_own_section(&text);
+            if canonical == Canonical::Unproven && crate::code_review::is_pointer(&text) && !own {
                 return Ok(None);
             }
             let declared = crate::code_review::declared_text(&text)
@@ -811,6 +846,11 @@ impl ProfileGate<'_> {
                     format!("the code review declared in {path} cannot be read: {why}")
                 })?;
             let Some(declared) = declared else { continue };
+            crate::code_review::require_own_line(&text, &declared, self.name)
+                .map_err(|why| format!("the code review declared in {path}: {why}"))?;
+            if own && canonical == Canonical::Follow {
+                self.note_drift(path, &text, &declared);
+            }
             found.any_section = true;
             if let Some(line) = declared.get(self.name) {
                 described.push_str(&line.describe());
@@ -1100,6 +1140,19 @@ impl ProfileGate<'_> {
     /// verdict of every declared profile, in declaration order, when each has
     /// a pass (empty when none is declared).
     fn hold(&self) -> Result<Vec<ProfileVerdict>, Judged> {
+        // A branch that changes nothing outside docs/plans/ has no code for a
+        // profile to read: implementation-review alone checks its record.
+        // Decided before the declaration is read, so an unreadable one cannot
+        // hold a plan-only push.
+        if self.plan_only {
+            note(
+                "profiles-plan-only",
+                "-",
+                self.name,
+                &format!("tree={}", short(self.tree)),
+            );
+            return Ok(Vec::new());
+        }
         let declared = match self.declaration() {
             Ok(declared) => declared,
             Err(why) if self.stance == Stance::Deny => {
@@ -1292,6 +1345,23 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         plans: &plans,
         target,
     };
+    let plans_excluded = format!(":(top,exclude){PLANS_PATH}/");
+    let plan_only = git::diff_quiet_in(
+        &repo,
+        &[
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--ignore-submodules=none",
+            &merge_base,
+            pushed,
+            "--",
+            ":(top)",
+            &plans_excluded,
+        ],
+    ) == Ok(true);
     let gate = ProfileGate {
         repo: &repo,
         name: &name,
@@ -1302,6 +1372,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         merge_base: &merge_base,
         transcript: ctx.transcript,
         stance,
+        plan_only,
     };
     if let Some(Pass {
         verdict,

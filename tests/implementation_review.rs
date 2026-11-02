@@ -3763,3 +3763,191 @@ fn a_rebased_branch_does_not_carry_from_the_session() {
     assert!(advised(&said).contains("code-review-backend"), "{said:?}");
     assert!(carried_lines(&w).is_empty());
 }
+
+// A plan-only branch, and a pointer's own Code review line (ADR-0052).
+
+/// `feat/x` without its code commit: the branch changes only `docs/plans/`.
+fn plan_only_repo(w: &World, name: &str) -> PathBuf {
+    let repo = w.repo(name);
+    git(&repo, &["reset", "-q", "--hard", "HEAD~1"]);
+    repo
+}
+
+fn impl_review_only(w: &World, repo: &Path) -> Transcript {
+    let mut t = Transcript::default();
+    t.review(
+        w,
+        AGENT,
+        &w.block(repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t
+}
+
+#[test]
+fn a_plan_only_branch_needs_no_profile() {
+    let w = World::new("plan-only");
+    let repo = plan_only_repo(&w, "app");
+    declare(&w, &repo, "- app: backend");
+    let transcript = w.transcript("t", &impl_review_only(&w, &repo));
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert!(
+        w.journal()
+            .iter()
+            .any(|l| l.contains(" profiles-plan-only ")),
+        "{:?}",
+        w.journal()
+    );
+}
+
+#[test]
+fn a_plan_only_branch_still_needs_the_implementation_review() {
+    let w = World::new("plan-only-no-impl");
+    let repo = plan_only_repo(&w, "app");
+    declare(&w, &repo, "- app: backend");
+    let said = w.push(
+        &repo,
+        "s1",
+        Some(&w.transcript("t", &Transcript::default())),
+    );
+    assert!(!matches!(said, Said::Silent), "{said:?}");
+}
+
+/// A gitlink update is code even when git is told to ignore submodules.
+#[test]
+fn a_gitlink_change_is_not_plan_only() {
+    let w = World::new("plan-only-gitlink");
+    let repo = plan_only_repo(&w, "app");
+    declare(&w, &repo, "- app: backend");
+    git(&repo, &["config", "diff.ignoreSubmodules", "all"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    git(
+        &repo,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{head},vendor/sub"),
+        ],
+    );
+    git(&repo, &["commit", "-q", "-m", "gitlink"]);
+    let transcript = w.transcript("t", &impl_review_only(&w, &repo));
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("code-review-backend"), "{said:?}");
+    assert!(!w.journal().iter().any(|l| l.contains("profiles-plan-only")));
+}
+
+/// A pointer plan for this repository, with `own` as its own Code review
+/// section (none when empty), whose canonical plan holds `canonical` (no
+/// file when `None`).
+fn pointer_repo(w: &World, name: &str, own: &str, canonical: Option<&str>) -> PathBuf {
+    let repo = w.repo(name);
+    let dir = w.root.join("decisions/docs/plans");
+    std::fs::create_dir_all(&dir).unwrap();
+    if let Some(section) = canonical {
+        std::fs::write(
+            dir.join("p.md"),
+            format!("# P\n\n## Code review\n\n{section}\n"),
+        )
+        .unwrap();
+    }
+    w.set_global(
+        "amont.agent.plan-review.root",
+        &w.root.display().to_string(),
+    );
+    let mut plan =
+        "---\ncanonical: decisions:docs/plans/p.md\nstatus: active\n---\n# X (pointer)\n"
+            .to_string();
+    if !own.is_empty() {
+        plan.push_str(&format!("\n## Code review\n\n{own}\n"));
+    }
+    w.commit(&repo, &[(PLAN_REL, &plan)]);
+    repo
+}
+
+/// The pointer's own line declares, even with no canonical plan to read.
+#[test]
+fn a_pointer_declares_through_its_own_line() {
+    let w = World::new("pointer-own");
+    let repo = pointer_repo(&w, "app", "- app: backend", None);
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+    let transcript = w.transcript("t", &impl_review_only(&w, &repo));
+    match w.push(&repo, "s1", Some(&transcript)) {
+        Said::Deny(text) => {
+            assert!(text.contains("code-review-backend"), "{text}");
+            assert!(!text.contains("cannot be read"), "{text}");
+        }
+        other => panic!("expected the missing profile to hold, got {other:?}"),
+    }
+}
+
+/// A pointer's own section that declares nothing for this repository is an
+/// error, never a silent exemption.
+#[test]
+fn a_pointer_section_without_this_repository_is_an_error() {
+    for own in ["- other: backend", "- app: wizard"] {
+        let w = World::new("pointer-wrong");
+        let repo = pointer_repo(&w, "app", own, Some("- app: backend"));
+        w.set_global("amont.agent.implementation-review.stance", "deny");
+        let transcript = w.transcript("t", &impl_review_only(&w, &repo));
+        match w.push(&repo, "s1", Some(&transcript)) {
+            Said::Deny(text) => assert!(text.contains("code review declared in"), "{own}: {text}"),
+            other => panic!("{own}: expected a hold, got {other:?}"),
+        }
+    }
+}
+
+/// A pointer whose own line differs from its readable canonical uses its own
+/// line and journals the drift.
+#[test]
+fn a_pointer_line_that_drifted_is_journalled() {
+    let w = World::new("pointer-drift");
+    let repo = pointer_repo(&w, "app", "- app: backend", Some("- app: backend, unix"));
+    let transcript = w.transcript("t", &impl_review_only(&w, &repo));
+    let said = w.push(&repo, "s1", Some(&transcript));
+    let text = advised(&said);
+    assert!(text.contains("code-review-backend"), "{text}");
+    assert!(!text.contains("code-review-unix"), "{text}");
+    assert!(
+        w.journal().iter().any(|l| l.contains("pointer-line-drift")),
+        "{:?}",
+        w.journal()
+    );
+}
+
+/// With its own line, a pointer plan gets the session carry.
+#[test]
+fn a_pointer_with_its_own_line_carries_from_the_session() {
+    let w = World::new("pointer-carry");
+    let repo = pointer_repo(&w, "app", "- app: backend", Some("- app: backend"));
+    let tree_a = reviewed_tree(&w, &repo, "fn a() { b() }\nfn b() { 20; }\n");
+    let prompt_a = format!(
+        "{}\nProfile: backend\nRound 1.\n",
+        crate_block(&w, &repo, &tree_a)
+    );
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 21; }\n")]);
+    let mut t = Transcript::default();
+    t.profile_review(&w, "code-review-backend", &prompt_a, "Verdict: approve");
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("t", &t);
+    assert_eq!(
+        w.push(&repo, "s1", Some(&transcript)),
+        Said::Silent,
+        "{:?}",
+        w.journal()
+    );
+    assert!(
+        carried_lines(&w)
+            .iter()
+            .any(|l| l.contains(&format!("carried-from {}", &tree_a[..12]))),
+        "{:?}",
+        w.journal()
+    );
+}

@@ -97,6 +97,26 @@ pub fn succeeds_in(dir: &std::path::Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `git -C dir <args>` (a `diff --quiet` or similar) found no
+/// difference. `Ok(true)` is exit 0, `Ok(false)` exit 1, and `Err` anything
+/// else: git could not run, or failed, which a caller must not read as an
+/// answer.
+pub fn diff_quiet_in(dir: &std::path::Path, args: &[&str]) -> Result<bool, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = retrying(|| cmd.status()).map_err(|e| format!("git could not be run: {e}"))?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        other => Err(format!("`git {}` failed ({other:?})", args.join(" "))),
+    }
+}
+
 /// Raw stdout of a git command run inside `dir`, optionally fed `input` on
 /// stdin: bytes as git wrote them, never trimmed or decoded.
 ///

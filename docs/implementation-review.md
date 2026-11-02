@@ -349,12 +349,24 @@ When the plan declares code-review profiles for the repository, the push
 needs a pass for each of them on the pushed tree, beside the implementation
 review (ADR-0052). The hook reads the declaration from the plan(s) changed
 under `docs/plans/` between the merge base and the pushed commit, as that
-commit holds them; a pointer plan (`canonical: <repo>:<path>`) is read
-through its canonical file under the plan root. A canonical file or a
+commit holds them. A pointer plan (`canonical: <repo>:<path>`) that has
+its own `## Code review` section declares through it; that section must
+declare this repository, and an empty one or one naming only other
+repositories is a declaration error. When the canonical plan is also
+readable and holds a different line for this repository, the pointer's line
+wins and `pointer-line-drift` is journalled. A pointer with no section is
+read through its canonical file under the plan root (3.14.0). A canonical file or a
 `## Code review` section that cannot be read is held under `deny` and
 journalled (`profiles-unreadable`) otherwise. A plan with no section, or a
 repository line `none — …`, requires the implementation review alone; a
 plan with no section journals `undeclared-profiles`.
+
+A branch that changes nothing outside `docs/plans/` needs no profile: there
+is no code for one to read (3.14.0). The hook decides it with `git diff
+--quiet --no-relative --ignore-submodules=none` over the whole tree minus
+`docs/plans/`, before it reads the declaration, and journals
+`profiles-plan-only`; a diff git cannot answer is not plan-only. The
+implementation review still reviews such a branch's plan record.
 
 A completed launch counts for a profile only when its agent is the one the
 profile maps to (`lang:<x>` to `code-review-language`, `ui-design` to
@@ -427,9 +439,10 @@ pushed one:
   tree: each such commit is one the review may have read. A declaration
   that differs or cannot be read there carries nothing, and never holds the
   push as unknown;
-- a pointer plan records no revision of its canonical plan, so what it
-  declared then cannot be proven: it gets no session carry, and filed passes
-  still may.
+- a pointer plan with its own `## Code review` section is read at that
+  commit like any plan, and carries; one without the section records no
+  revision of its canonical plan, so what it declared then cannot be proven:
+  it gets no session carry, and filed passes still may.
 
 The carry writes a pass for the pushed tree (`how` is `carried-from <12 hex
 of the reviewed content id>`) and journals `profile-carried` with
