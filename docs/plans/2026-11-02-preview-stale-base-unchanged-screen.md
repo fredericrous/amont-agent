@@ -1,7 +1,7 @@
 ---
 canonical: decisions:docs/plans/2026-11-02-preview-stale-base-unchanged-screen.md
 phases: [1]
-status: active
+status: done
 ---
 # The preview guard ignores a stale remote branch, and an unchanged screen needs no approval (pointer)
 
@@ -58,3 +58,13 @@ This repository carries Phase 1:
   - With the condition line set back to 3.15.0's `if !(descends && contains(&tracking, &default))`, the squash, force-pushed and no-shared-history tests FAILED.
   - With the `rev-parse --verify` check of `<remote>/HEAD` removed, the no-remote-HEAD test FAILED.
   - The file was restored and compared with cmp after each mutation.
+- Implementation review of the follow-up:
+  - verdicts: implementation-review approve-with-changes on 27bf061, after three Deltas; lang:rust, backend and unix approve.
+  - fixed:
+    - the doc comment's failure claims;
+    - `reason=merged|not-descended`;
+    - `<remote>/HEAD` checked first and journalled `reason=no-default` with the set-head hint, and "shares no history" journalled without it;
+    - the `squashed_branch()` helper;
+    - tests for UI over a squash, a force-pushed branch, no remote HEAD and no shared history;
+    - the mutation record rerun on the final tree.
+  - deliberate: the no-shared-history test does not assert the push verdict; `without_a_remote_head_a_squashed_tracking_ref_stays_the_base` already pins that a kept tracking ref asks.
