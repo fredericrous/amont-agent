@@ -1,0 +1,17 @@
+amont-provenance-v1
+commit 4ad98be165c348cf5fcff6b1ddc5d12f1440a2e1
+tree bb787b331e8b8e44a122e9b870f036fc84dcd6c6
+canon f3ed8285e6342645018466c160a9d1849a7ca2c9
+plan docs/plans/2026-11-02-an-approval-carries-from-the-session.md 162c406e2cc0ca9c777aaaca51b7d6d3e50cc64012718842b33b686f1d86d2f3
+review reviewed 2a1e64d4761e0cfebe00330ba837da5c77a070010c6029c8dd70d9d58f1aa5ae
+code-review backend reviewed 2a1e64d4761e0cfebe00330ba837da5c77a070010c6029c8dd70d9d58f1aa5ae
+code-review lang:rust reviewed 2a1e64d4761e0cfebe00330ba837da5c77a070010c6029c8dd70d9d58f1aa5ae
+preview not-required
+producer amont-agent 3.13.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBRrmDJthzuEcLPBBqAVORTG8fuEGTkhGiiFWeXS3SJoZL5Sb
+cUKOvZtwbulq54qd+of+VzXYpO72cAXIU4wzML
+-----END SSH SIGNATURE-----
