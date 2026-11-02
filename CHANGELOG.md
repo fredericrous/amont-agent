@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `push-preview` no longer diffs a branch push from a remote-tracking ref
+  that the remote's default branch already contains (an old branch of the
+  same name, deleted remotely but never pruned here). It diffs from the merge
+  base with the remote's `HEAD` instead, journalled `base=merge-base`. On
+  2026-11-02 such a ref held a one-file pack refresh in five repositories.
+- A preview whose one before/after pair is byte-identical (two different
+  files inside the guide's directory, no picked mockup) is approved
+  `unchanged` when the hook binds it, with no question (ADR-0057).
+  `preview register` prints `"unchanged": true` and says so on stderr; the
+  hook compares the files again and never trusts the printed flag.
+
 ## v3.14.0
 
 ### Security

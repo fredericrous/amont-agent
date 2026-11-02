@@ -14,7 +14,7 @@
 //! markdown crate would be a new dependency on a trust path (ADR-0020,
 //! `change.dependency-bar`) for a page nobody but the person reads.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The sections a guide must carry, as H2 headings, in the order the page
 /// shows them.
@@ -528,6 +528,69 @@ fn pair(text: &str) -> Option<(String, String)> {
         .iter()
         .find(|s| *s != before && file_name(s).contains("after"))?;
     Some((before.clone(), after.clone()))
+}
+
+/// The guide's one unambiguous before/after pair, as files inside
+/// `guide_dir`, for the `unchanged` approval (ADR-0057): exactly one
+/// distinct before image and one distinct built (`after`, `live`) image,
+/// whose names share the same state once their role words are removed, two
+/// different files. `None` for anything else: more candidates, a mismatched
+/// state, an absolute or escaping path, a missing file. Unlike [`pair`],
+/// which only picks what the page shows, this never guesses.
+pub(crate) fn sole_pair(text: &str, guide_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut befores: Vec<(String, String)> = Vec::new();
+    let mut afters: Vec<(String, String)> = Vec::new();
+    for src in images(text) {
+        let Some((role, state)) = role(&src) else {
+            continue;
+        };
+        let list = match role {
+            Role::Before => &mut befores,
+            Role::Built => &mut afters,
+            Role::Design => continue,
+        };
+        if !list.iter().any(|(s, _)| *s == src) {
+            list.push((src, state));
+        }
+    }
+    let ([(before, before_state)], [(after, after_state)]) =
+        (befores.as_slice(), afters.as_slice())
+    else {
+        return None;
+    };
+    if before_state != after_state {
+        return None;
+    }
+    let root = std::fs::canonicalize(guide_dir).ok()?;
+    let inside = |src: &str| -> Option<PathBuf> {
+        let rel = Path::new(src);
+        if src.contains("://") || rel.is_absolute() {
+            return None;
+        }
+        let full = std::fs::canonicalize(root.join(rel)).ok()?;
+        (full.starts_with(&root) && full.is_file()).then_some(full)
+    };
+    let (before_file, after_file) = (inside(before)?, inside(after)?);
+    (before_file != after_file && distinct_files(&before_file, &after_file))
+        .then_some((before_file, after_file))
+}
+
+/// Two files that are known to be distinct: a hard link has two canonical
+/// paths but is one file. `false` when either cannot be read, so the person
+/// is asked.
+#[cfg(unix)]
+fn distinct_files(first: &Path, second: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(first), std::fs::metadata(second)) {
+        (Ok(one), Ok(other)) => one.dev() != other.dev() || one.ino() != other.ino(),
+        (Err(_), _) | (_, Err(_)) => false,
+    }
+}
+
+/// Elsewhere only the canonical paths tell two files apart.
+#[cfg(not(unix))]
+fn distinct_files(_first: &Path, _second: &Path) -> bool {
+    true
 }
 
 struct Ctx<'p> {
@@ -1360,6 +1423,128 @@ Viewport: 1120px · light
         assert_eq!(
             file_url(Path::new(r"\\?\C:\x\i.html")),
             "file:///C:/x/i.html"
+        );
+    }
+
+    /// A scratch directory holding `files`, removed on drop.
+    struct Shots(std::path::PathBuf);
+    impl Drop for Shots {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0); // a temp dir left behind is harmless
+        }
+    }
+    fn shots(name: &str, files: &[(&str, &[u8])]) -> Shots {
+        let dir = std::env::temp_dir().join(format!(
+            "amont-agent-sole-pair-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir); // absent on a first run, which is fine
+        std::fs::create_dir_all(&dir).unwrap();
+        for (f, body) in files {
+            std::fs::write(dir.join(f), body).unwrap();
+        }
+        Shots(dir)
+    }
+
+    #[test]
+    fn the_sole_pair_is_one_before_and_one_after_of_the_same_state() {
+        let scratch = shots("one", &[("before.png", b"x"), ("after.png", b"x")]);
+        let (b, a) = sole_pair("![b](before.png) ![a](after.png)", &scratch.0).expect("one pair");
+        assert!(b.ends_with("before.png") && a.ends_with("after.png"));
+        let scratch = shots(
+            "state",
+            &[("before-empty.png", b"x"), ("after-empty.png", b"x")],
+        );
+        assert!(sole_pair("![b](before-empty.png) ![a](after-empty.png)", &scratch.0).is_some());
+    }
+
+    #[test]
+    fn two_pairs_or_a_mismatched_state_is_no_sole_pair() {
+        let scratch = shots(
+            "two",
+            &[
+                ("before.png", b"x"),
+                ("after.png", b"x"),
+                ("before-b.png", b"y"),
+                ("after-b.png", b"z"),
+            ],
+        );
+        let text = "![b](before.png) ![a](after.png) ![b](before-b.png) ![a](after-b.png)";
+        assert_eq!(
+            sole_pair(text, &scratch.0),
+            None,
+            "the first pair is not chosen"
+        );
+        let scratch = shots(
+            "mismatch",
+            &[("before.png", b"x"), ("after-empty.png", b"x")],
+        );
+        assert_eq!(
+            sole_pair("![b](before.png) ![a](after-empty.png)", &scratch.0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_pair_outside_the_guide_or_one_file_twice_is_no_sole_pair() {
+        let scratch = shots("outside", &[("before.png", b"x")]);
+        let guide_dir = scratch.0.join("guide");
+        std::fs::create_dir_all(&guide_dir).unwrap();
+        std::fs::write(guide_dir.join("after.png"), b"x").unwrap();
+        assert_eq!(
+            sole_pair("![b](../before.png) ![a](after.png)", &guide_dir),
+            None
+        );
+        assert_eq!(
+            sole_pair("![b](/tmp/before.png) ![a](after.png)", &scratch.0),
+            None
+        );
+        let scratch = shots("missing", &[("before.png", b"x")]);
+        assert_eq!(
+            sole_pair("![b](before.png) ![a](after.png)", &scratch.0),
+            None
+        );
+        #[cfg(unix)]
+        {
+            let scratch = shots("link", &[("before.png", b"x")]);
+            std::os::unix::fs::symlink(scratch.0.join("before.png"), scratch.0.join("after.png"))
+                .unwrap();
+            assert_eq!(
+                sole_pair("![b](before.png) ![a](after.png)", &scratch.0),
+                None,
+                "two names for one file"
+            );
+            let scratch = shots("hard", &[("before.png", b"x")]);
+            std::fs::hard_link(scratch.0.join("before.png"), scratch.0.join("after.png")).unwrap();
+            assert_eq!(
+                sole_pair("![b](before.png) ![a](after.png)", &scratch.0),
+                None,
+                "a hard link is one file"
+            );
+        }
+    }
+
+    #[test]
+    fn a_guide_with_two_pairs_still_renders_its_comparison() {
+        let text = GOOD.replace(
+            "![before](shots/before.png) ![after](shots/after.png)",
+            "![before](shots/before.png) ![after](shots/after.png) ![before](shots/before-b.png) ![after](shots/after-b.png)",
+        );
+        let html = render(
+            &text,
+            &Page {
+                label: "app@1234567",
+                commit: "1234567",
+                url: "http://localhost:1/",
+            },
+        );
+        let block = &html[html
+            .find("<div class=\"pair\">")
+            .expect("the comparison block")..];
+        let block = &block[..block.find("</div>").expect("its end")];
+        assert!(
+            block.contains("shots/before.png") && block.contains("shots/after.png"),
+            "{html}"
         );
     }
 }
