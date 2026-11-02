@@ -53,7 +53,7 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 ### A plan-only branch (amont-agent)
 
 `judge_push` already computes the branch patch outside `docs/plans/` (`patch_key`, `implementation_review.rs:96-118`, which errs "the branch changes nothing outside docs/plans/").
-- Plan-only is computed on its own, not taken from `key` being `None` (that is also a git failure): `git diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none <merge-base> <pushed> -- . ':!docs/plans/'` exit 0 = plan-only, exit 1 = code, any other result = today's path (no skip). Add a regression test with an implementation-review pass, backend declared, and a committed gitlink update outside docs/plans/ while `diff.ignoreSubmodules=all` is configured: the profile remains required and `profiles-plan-only` is absent.
+- Plan-only is computed on its own, not taken from `key` being `None` (that is also a git failure): `git diff --quiet --no-ext-diff --no-textconv --no-relative --ignore-submodules=none <merge-base> <pushed> -- ':(top)' ':(top,exclude)docs/plans/'` exit 0 = plan-only, exit 1 = code, any other result = today's path (no skip). Add a regression test with an implementation-review pass, backend declared, and a committed gitlink update outside docs/plans/ while `diff.ignoreSubmodules=all` is configured: the profile remains required and `profiles-plan-only` is absent.
 - When that diff is empty, `ProfileGate::hold` returns no required profile, journals `profiles-plan-only`, and leaves the implementation-review gate unchanged.
 - The provenance note then carries no `code-review` line.
 
@@ -102,6 +102,12 @@ Two gaps are left from ADR-0052, recorded in `docs/plans/2026-11-02-an-approval-
 - Phase 3: each pin equals its SHA256SUMS line. After the install, `amont-agent --version` reports 3.14.0 or the version chosen, and doctor → healthy.
 
 ## Decision log
+- 2026-11-02 — From the code reviews:
+  - the planned "git diff fails" test is a unit test of `git::diff_quiet_in` (exit 0, exit 1, a failure), because through the hook a bad merge-base already ends as `unknown` before the plan-only diff runs;
+  - an unanswerable plan-only check journals `profiles-plan-only-unknown` with its error;
+  - new tests: the review-brief error, an empty own section, and no carry from an invalid pointer line;
+  - `Declared` values are compared directly, and the error text is "exited N" or "killed by a signal".
+  - Deliberate: no `PlanSource` enum. `own` is computed once per plan, and a plan is small.
 - 2026-11-02 — Implemented by hand. From the carried findings:
   - `--no-relative` and `:(top)` / `:(top,exclude)docs/plans/` pathspecs;
   - a `git::diff_quiet_in` helper that returns the exit status, where exit 1 and a failure stay distinct;
