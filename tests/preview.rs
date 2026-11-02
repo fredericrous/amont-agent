@@ -1763,6 +1763,25 @@ impl World {
         git(&self.work, &["checkout", "-q", "-B", "feat/x", "main"]);
     }
 
+    /// An old `feat/x` with UI work, squash-merged into main (so its commit
+    /// is in neither branch) and deleted on the remote, its tracking ref
+    /// never pruned; main moves on with more UI work; `feat/x` starts again
+    /// from main. The remote's `HEAD` is the test's to set.
+    fn squashed_branch(&self) {
+        self.commit("app/old.tsx", "1\n");
+        git(&self.work, &["push", "-q", "origin", "feat/x"]);
+        git(&self.work, &["checkout", "-q", "main"]);
+        git(&self.work, &["merge", "-q", "--squash", "feat/x"]);
+        git(&self.work, &["commit", "-qm", "squashed"]);
+        self.commit("app/later.tsx", "1\n");
+        git(&self.work, &["push", "-q", "origin", "main"]);
+        git(
+            &self.root.join("remote.git"),
+            &["update-ref", "-d", "refs/heads/feat/x"],
+        );
+        git(&self.work, &["checkout", "-q", "-B", "feat/x", "main"]);
+    }
+
     /// Register `text` with `files` beside it, through the CLI and the
     /// hook; `printed` rewrites the CLI's stdout before the hook sees it.
     fn register_guide(
@@ -1794,6 +1813,91 @@ fn a_stale_tracking_ref_already_in_main_is_not_the_base() {
     w.commit("README.md", "pack refresh\n");
     assert!(!w.push_advised("s"), "{}", w.journal());
     assert!(w.journal().contains("base=merge-base"), "{}", w.journal());
+}
+
+#[test]
+fn a_squash_merged_stale_tracking_ref_is_not_the_base() {
+    // Seen 2026-11-02 in duro-app: the old branch was squash-merged, so its
+    // commit is in neither main nor the new branch, and diffing from it
+    // showed months of main's UI work.
+    let w = World::new("squashed-base");
+    w.squashed_branch();
+    w.set_remote_head();
+    w.commit("README.md", "pack refresh\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(
+        w.journal().contains("base=merge-base") && w.journal().contains("reason=not-descended"),
+        "{}",
+        w.journal()
+    );
+}
+
+#[test]
+fn a_ui_change_over_a_squash_merged_tracking_ref_is_still_advised() {
+    let w = World::new("squashed-base-ui");
+    w.squashed_branch();
+    w.set_remote_head();
+    w.commit("app/new.tsx", "1\n");
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn a_force_pushed_branch_is_diffed_from_main() {
+    // The remote branch is live and the local one rewritten: every file the
+    // branch carries over main is judged, not its delta from the old tip.
+    let w = World::new("force-pushed");
+    w.set_remote_head();
+    w.commit("app/a.tsx", "1\n");
+    git(&w.work, &["push", "-q", "origin", "feat/x"]);
+    git(&w.work, &["reset", "-q", "--hard", "main"]);
+    w.commit("app/b.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("base=merge-base"), "{}", w.journal());
+}
+
+#[test]
+fn without_a_remote_head_a_squashed_tracking_ref_stays_the_base() {
+    // No `refs/remotes/origin/HEAD`: there is no merge base to diff from, so
+    // the tracking ref is kept and the journal says how to set the HEAD.
+    let w = World::new("squashed-no-head");
+    w.squashed_branch();
+    w.commit("README.md", "pack refresh\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("base=tracking"), "{}", w.journal());
+    assert!(
+        w.journal().contains("git remote set-head origin -a"),
+        "{}",
+        w.journal()
+    );
+}
+
+#[test]
+fn a_default_branch_with_no_shared_history_keeps_the_tracking_ref() {
+    // `origin/HEAD` names a branch with no history in common with the push:
+    // there is no merge base, so the tracking ref is kept, journalled as
+    // that, and `set-head` would not help, so it is not suggested.
+    let w = World::new("no-shared-history");
+    w.squashed_branch();
+    git(&w.work, &["checkout", "-q", "--orphan", "other"]);
+    git(&w.work, &["rm", "-rq", "--cached", "."]);
+    std::fs::write(w.work.join("other.txt"), "x\n").unwrap();
+    git(&w.work, &["add", "other.txt"]);
+    git(&w.work, &["commit", "-qm", "orphan"]);
+    git(&w.work, &["push", "-q", "origin", "other"]);
+    git(
+        &w.work,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/other",
+        ],
+    );
+    git(&w.work, &["checkout", "-q", "-f", "feat/x"]);
+    w.commit("README.md", "pack refresh\n");
+    let _held = w.push_advised("s");
+    let journal = w.journal();
+    assert!(journal.contains("shares no history"), "{journal}");
+    assert!(!journal.contains("set-head"), "{journal}");
 }
 
 #[test]

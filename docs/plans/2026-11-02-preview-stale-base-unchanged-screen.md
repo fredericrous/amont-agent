@@ -47,3 +47,24 @@ This repository carries Phase 1:
   - the journal writes `base=merge-base` only when the merge base is chosen;
   - the own-commits test asserts NOT advised, since already-pushed UI is not asked again.
 - **Follow-up:** `approve()`'s unlocked read-modify-write predates this change.
+
+## Follow-up: a squash-merged stale ref (3.15.1)
+
+- The Phase 3 live check failed under 3.15.0. duro-app's push was still held, because its stale `origin/chore/refresh-fleet-pack` (4f80f4e) was squash-merged: that commit is in neither main nor the new branch, so 3.15.0's "already in main" condition did not fire.
+- The fix: the tracking ref stays the base only for a branch whose remote commits are its own (the pushed commit descends from it and main does not contain it). Any other tracking ref uses the merge-base with main.
+- A rewritten branch is now diffed from main: it is judged by every file it carries over main, so nothing it adds can hide behind its old ref. Recorded in the canonical plan's Decision log at close.
+- Without `refs/remotes/<remote>/HEAD` the tracking ref is kept, journalled `base=tracking reason=no-default` with `git remote set-head <remote> -a`, checked first so a merged ref is journalled too. A default branch that shares no history with the push is journalled as that, without the set-head hint.
+- Observed on the final tree: `cargo test -p amont-agent --test preview` → 76 passed, 5 new (squash, UI over squash, force-pushed, no remote HEAD, no shared history); clippy clean.
+  - With the condition line set back to 3.15.0's `if !(descends && contains(&tracking, &default))`, the squash, force-pushed and no-shared-history tests FAILED.
+  - With the `rev-parse --verify` check of `<remote>/HEAD` removed, the no-remote-HEAD test FAILED.
+  - The file was restored and compared with cmp after each mutation.
+- Implementation review of the follow-up:
+  - verdicts: implementation-review approve-with-changes on 27bf061, after three Deltas; lang:rust, backend and unix approve.
+  - fixed:
+    - the doc comment's failure claims;
+    - `reason=merged|not-descended`;
+    - `<remote>/HEAD` checked first and journalled `reason=no-default` with the set-head hint, and "shares no history" journalled without it;
+    - the `squashed_branch()` helper;
+    - tests for UI over a squash, a force-pushed branch, no remote HEAD and no shared history;
+    - the mutation record rerun on the final tree.
+  - deliberate: the no-shared-history test does not assert the push verdict; `without_a_remote_head_a_squashed_tracking_ref_stays_the_base` already pins that a kept tracking ref asks.

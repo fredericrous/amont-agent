@@ -220,31 +220,63 @@ fn published(repo: &Path, t: &Target) -> Option<Published> {
     })
 }
 
-/// The base of a push whose branch has a remote-tracking ref. A ref that the
-/// remote's default branch already contains, and that the pushed commit
-/// descends from, is a stale name for work published long ago (an old
-/// branch of the same name, merged and deleted remotely but never pruned
-/// here): the push is diffed from its merge-base with the default branch
-/// instead, journalled `base=merge-base`. Anything else, or any doubt, keeps
-/// the tracking ref. The ancestry checks read git's exit status
-/// ([`amont_agent_guard::git::succeeds_in`]): `--is-ancestor` prints
-/// nothing, so a stdout reader would always say no.
+/// The base of a push whose branch has a remote-tracking ref. The ref is the
+/// base only for a branch whose remote commits are its own: the pushed
+/// commit descends from it and the remote's default branch does not contain
+/// it. Otherwise it is a stale name for work published long ago, an old
+/// branch of the same name deleted remotely but never pruned here. That
+/// covers a ref the default branch contains (a merge) and one the pushed
+/// commit does not descend from (a squash merge, or a rewritten branch,
+/// diffed from main, so a rewritten branch is judged by every file it
+/// carries over main). The push is then diffed from its merge-base with the
+/// default branch, journalled `base=merge-base` with the reason. The ancestry
+/// checks read git's exit status ([`amont_agent_guard::git::succeeds_in`]):
+/// `--is-ancestor` prints nothing, so a stdout reader would always say no. A
+/// failed descent check counts as no, so the push is diffed from main. The
+/// tracking ref is kept, journalled `base=tracking`, when the default branch
+/// is missing (with the command that sets it) or shares no history with the
+/// pushed commit.
 fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
     let default = format!("refs/remotes/{}/HEAD", t.remote);
+    let repo_name = repo.to_string_lossy();
+    let keep = |why: String| {
+        note(
+            "base",
+            "-",
+            &repo_name,
+            &format!("base=tracking {tracking} {why}"),
+        );
+    };
+    if !amont_agent_guard::git::succeeds_in(repo, &["rev-parse", "--verify", "--quiet", &default]) {
+        keep(format!(
+            "reason=no-default: no {default} (`git remote set-head {} -a` sets it)",
+            t.remote
+        ));
+        return tracking;
+    }
     let contains = |a: &str, b: &str| {
         amont_agent_guard::git::succeeds_in(repo, &["merge-base", "--is-ancestor", a, b])
     };
-    if !(contains(&tracking, &t.src) && contains(&tracking, &default)) {
+    let descends = contains(&tracking, &t.src);
+    if descends && !contains(&tracking, &default) {
         return tracking;
     }
+    let reason = if descends { "merged" } else { "not-descended" };
     let Some(merge_base) = git(repo, &["merge-base", &t.src, &default]) else {
+        keep(format!(
+            "reason={reason}: {} shares no history with {default}",
+            short(&t.src)
+        ));
         return tracking;
     };
     note(
         "base",
         "-",
-        &repo.to_string_lossy(),
-        &format!("base=merge-base {} over {tracking}", short(&merge_base)),
+        &repo_name,
+        &format!(
+            "base=merge-base {} over {tracking} reason={reason}",
+            short(&merge_base)
+        ),
     );
     merge_base
 }

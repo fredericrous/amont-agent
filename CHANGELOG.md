@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `push-preview` also ignores a stale remote-tracking ref that the pushed
+  commit does not descend from: an old branch of the same name that was
+  squash-merged, so its commit is in neither main nor the new branch.
+  3.15.0 only covered a ref main contains, and duro-app's pack refresh
+  stayed held. The ref is the base only for a branch whose remote commits
+  are its own.
+
 ## v3.15.0
 
 ### Changed
