@@ -3497,6 +3497,75 @@ fn work_overlap_names_no_plan_for_a_peer_on_the_default_branch() {
     assert!(!reason.contains("active plan"), "{}", told.stdout);
 }
 
+/// With no `origin/HEAD` and both `main` and `master`, `main` is the default:
+/// a peer on `master` is named with the plan its branch added.
+#[test]
+fn work_overlap_names_the_plan_of_a_peer_on_master_beside_main() {
+    let scene = Overlap::new("overlap-master");
+    let (main, _) = real_overlap_repo("overlap-master-repo");
+    git_in(
+        &main,
+        &["worktree", "add", "-q", "-b", "master", "../master-tree"],
+    );
+    let master_tree = main.parent().expect("root").join("master-tree");
+    commit_plan(&master_tree, "2026-11-02-m.md", "Master Added Plan");
+    scene.call("Edit", "omb-s1", &master_tree, 0);
+    let told = scene.call("Edit", "omb-s2", &main, 60);
+    let reason = told.reason();
+    assert!(reason.contains("omb-s1"), "{}", told.stdout);
+    assert!(reason.contains("Master Added Plan"), "{}", told.stdout);
+}
+
+/// `origin/HEAD` naming `develop`: a peer on `main` is not on the default and
+/// is named with the plan its branch added; a peer on `develop` with none.
+#[test]
+fn work_overlap_follows_an_origin_head_that_names_another_branch() {
+    let scene = Overlap::new("overlap-develop");
+    let (main, branch_tree) = real_overlap_repo("overlap-develop-repo");
+    git_in(
+        &main,
+        &["update-ref", "refs/remotes/origin/develop", "HEAD"],
+    );
+    git_in(
+        &main,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/develop",
+        ],
+    );
+    commit_plan(&main, "2026-11-02-on-main.md", "Main Added Plan");
+    scene.call("Edit", "odv-s1", &main, 0);
+    let told = scene.call("Edit", "odv-s2", &branch_tree, 60);
+    let reason = told.reason();
+    assert!(reason.contains("odv-s1"), "{}", told.stdout);
+    assert!(reason.contains("Main Added Plan"), "{}", told.stdout);
+    assert!(!reason.contains("Older Main Plan"), "{}", told.stdout);
+
+    git_in(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "develop",
+            "../develop-tree",
+            "refs/remotes/origin/develop",
+        ],
+    );
+    let develop_tree = main.parent().expect("root").join("develop-tree");
+    scene.call("Edit", "odv-s3", &develop_tree, 120);
+    let told = scene.call("Edit", "odv-s4", &branch_tree, 180);
+    let reason = told.reason();
+    assert!(reason.contains("odv-s3"), "{}", told.stdout);
+    assert!(
+        !reason.contains("branch `develop`, active plan"),
+        "{}",
+        told.stdout
+    );
+}
+
 /// A `git` first on PATH that hangs on the plan lookup's `--name-only` diff,
 /// as `hang` says, and runs the real git otherwise. Returns the PATH.
 #[cfg(unix)]

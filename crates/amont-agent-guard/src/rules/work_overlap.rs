@@ -54,16 +54,45 @@ fn peer_plan(peer: &Peer, deadline: std::time::Instant) -> Option<String> {
 /// Whether the peer's branch is its repository's default, read from files
 /// with no git process: `refs/remotes/origin/HEAD` in the common dir, else the
 /// usual names. `false` means "not known", and the caller asks git.
+///
+/// Without `origin/HEAD`, `master` is the default only when no `main` exists:
+/// `git::default_ref` prefers `main`, and this shortcut must agree with it.
 fn on_default_branch_by_files(peer: &Peer) -> bool {
-    let origin_head = crate::activity::resolve(&peer.worktree).and_then(|place| {
-        std::fs::read_to_string(place.repo_identity.join("refs/remotes/origin/HEAD")).ok()
-    });
+    let Some(common) = crate::activity::resolve(&peer.worktree).map(|place| place.repo_identity)
+    else {
+        return false;
+    };
+    let origin_head = std::fs::read_to_string(common.join("refs/remotes/origin/HEAD")).ok();
     match origin_head
         .as_deref()
         .and_then(|text| text.trim().strip_prefix("ref: refs/remotes/origin/"))
     {
         Some(name) => peer.branch == name,
-        None => peer.branch == "main" || peer.branch == "master",
+        None => match peer.branch.as_str() {
+            "main" => true,
+            "master" => !ref_exists_by_files(&common, "main"),
+            _ => false,
+        },
+    }
+}
+
+/// Whether `refs/heads/<name>` or `refs/remotes/origin/<name>` exists, loose
+/// or packed, in the common dir. A ref that cannot be read counts as present,
+/// so a doubt leaves the answer to git.
+fn ref_exists_by_files(common: &std::path::Path, name: &str) -> bool {
+    let refs = [
+        format!("refs/heads/{name}"),
+        format!("refs/remotes/origin/{name}"),
+    ];
+    if refs.iter().any(|r| common.join(r).exists()) {
+        return true;
+    }
+    match std::fs::read_to_string(common.join("packed-refs")) {
+        Ok(packed) => packed.lines().any(|line| {
+            line.split_once(' ')
+                .is_some_and(|(_, r)| refs.iter().any(|want| want == r))
+        }),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }
 

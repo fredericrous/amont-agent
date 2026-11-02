@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `work-overlap` names the plan of a peer on `master` when the repository
+  also has `main` and no `origin/HEAD`: `main` is the default there, as the
+  git lookup already decided, so `master` is not taken as the default branch.
+
 ## v3.13.0
 
 ### Changed
