@@ -2,6 +2,12 @@
 
 ## v3.14.0
 
+### Security
+
+- pulldown-cmark 0.13.6 (RUSTSEC-2026-0433, quadratic parsing of nested image
+  wikilinks; the feature is off here). Plan shas are unchanged: the pinned
+  fixed-plan test passes.
+
 ### Changed
 
 - A branch that changes nothing outside `docs/plans/` needs no code-review
