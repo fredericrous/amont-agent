@@ -1763,6 +1763,25 @@ impl World {
         git(&self.work, &["checkout", "-q", "-B", "feat/x", "main"]);
     }
 
+    /// An old `feat/x` with UI work, squash-merged into main (so its commit
+    /// is in neither branch) and deleted on the remote, its tracking ref
+    /// never pruned; main moves on with more UI work; `feat/x` starts again
+    /// from main. The remote's `HEAD` is the test's to set.
+    fn squashed_branch(&self) {
+        self.commit("app/old.tsx", "1\n");
+        git(&self.work, &["push", "-q", "origin", "feat/x"]);
+        git(&self.work, &["checkout", "-q", "main"]);
+        git(&self.work, &["merge", "-q", "--squash", "feat/x"]);
+        git(&self.work, &["commit", "-qm", "squashed"]);
+        self.commit("app/later.tsx", "1\n");
+        git(&self.work, &["push", "-q", "origin", "main"]);
+        git(
+            &self.root.join("remote.git"),
+            &["update-ref", "-d", "refs/heads/feat/x"],
+        );
+        git(&self.work, &["checkout", "-q", "-B", "feat/x", "main"]);
+    }
+
     /// Register `text` with `files` beside it, through the CLI and the
     /// hook; `printed` rewrites the CLI's stdout before the hook sees it.
     fn register_guide(
@@ -1802,22 +1821,54 @@ fn a_squash_merged_stale_tracking_ref_is_not_the_base() {
     // commit is in neither main nor the new branch, and diffing from it
     // showed months of main's UI work.
     let w = World::new("squashed-base");
-    w.commit("app/old.tsx", "1\n");
-    git(&w.work, &["push", "-q", "origin", "feat/x"]);
-    git(&w.work, &["checkout", "-q", "main"]);
-    git(&w.work, &["merge", "-q", "--squash", "feat/x"]);
-    git(&w.work, &["commit", "-qm", "squashed"]);
-    w.commit("app/later.tsx", "1\n");
-    git(&w.work, &["push", "-q", "origin", "main"]);
-    git(
-        &w.root.join("remote.git"),
-        &["update-ref", "-d", "refs/heads/feat/x"],
-    );
+    w.squashed_branch();
     w.set_remote_head();
-    git(&w.work, &["checkout", "-q", "-B", "feat/x", "main"]);
     w.commit("README.md", "pack refresh\n");
     assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(
+        w.journal().contains("base=merge-base") && w.journal().contains("reason=not-descended"),
+        "{}",
+        w.journal()
+    );
+}
+
+#[test]
+fn a_ui_change_over_a_squash_merged_tracking_ref_is_still_advised() {
+    let w = World::new("squashed-base-ui");
+    w.squashed_branch();
+    w.set_remote_head();
+    w.commit("app/new.tsx", "1\n");
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn a_force_pushed_branch_is_diffed_from_main() {
+    // The remote branch is live and the local one rewritten: every file the
+    // branch carries over main is judged, not its delta from the old tip.
+    let w = World::new("force-pushed");
+    w.set_remote_head();
+    w.commit("app/a.tsx", "1\n");
+    git(&w.work, &["push", "-q", "origin", "feat/x"]);
+    git(&w.work, &["reset", "-q", "--hard", "main"]);
+    w.commit("app/b.tsx", "1\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
     assert!(w.journal().contains("base=merge-base"), "{}", w.journal());
+}
+
+#[test]
+fn without_a_remote_head_a_squashed_tracking_ref_stays_the_base() {
+    // No `refs/remotes/origin/HEAD`: there is no merge base to diff from, so
+    // the tracking ref is kept and the journal says how to set the HEAD.
+    let w = World::new("squashed-no-head");
+    w.squashed_branch();
+    w.commit("README.md", "pack refresh\n");
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("base=tracking"), "{}", w.journal());
+    assert!(
+        w.journal().contains("git remote set-head origin -a"),
+        "{}",
+        w.journal()
+    );
 }
 
 #[test]

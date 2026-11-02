@@ -340,8 +340,12 @@ commit is in neither branch. The push is then diffed from
 its merge base with the remote's `HEAD`, journalled `base=merge-base`. On
 2026-11-02 such a ref made a one-file pack refresh in duro-app look like
 months of main's UI work. A tracking ref with commits of its own that the
-default branch lacks stays the base, so work already pushed is not asked
-about again.
+default branch lacks, and that the pushed commit descends from, stays the
+base, so work already pushed is not asked about again. A rewritten branch
+(force-pushed) is diffed from main: every file it carries over main is
+judged. Without `refs/remotes/<remote>/HEAD` there is no merge base, so the
+tracking ref stays the base, journalled `base=tracking` with the command
+that sets it (`git remote set-head <remote> -a`).
 
 ### What counts as an interface change
 

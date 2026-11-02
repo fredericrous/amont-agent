@@ -52,4 +52,6 @@ This repository carries Phase 1:
 
 - The Phase 3 live check failed under 3.15.0. duro-app's push was still held, because its stale `origin/chore/refresh-fleet-pack` (4f80f4e) was squash-merged: that commit is in neither main nor the new branch, so 3.15.0's "already in main" condition did not fire.
 - The fix: the tracking ref stays the base only for a branch whose remote commits are its own (the pushed commit descends from it and main does not contain it). Any other tracking ref uses the merge-base with main.
-- A rewritten branch is now also diffed from main, in the direction of asking more. Recorded in the canonical plan's Decision log at close.
+- A rewritten branch is now diffed from main: it is judged by every file it carries over main, so nothing it adds can hide behind its old ref. Recorded in the canonical plan's Decision log at close.
+- Without `refs/remotes/<remote>/HEAD` the tracking ref is kept, journalled `base=tracking` with `git remote set-head <remote> -a`.
+- Observed: `cargo test -p amont-agent --test preview` → 75 passed, 4 new (squash, UI over squash, force-pushed, no remote HEAD); clippy clean. With the 3.15.0 condition restored, the squash, force-pushed and no-HEAD tests FAILED; the file was restored and compared with cmp.

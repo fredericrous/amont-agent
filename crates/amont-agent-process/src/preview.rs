@@ -227,28 +227,45 @@ fn published(repo: &Path, t: &Target) -> Option<Published> {
 /// branch of the same name deleted remotely but never pruned here. That
 /// covers a ref the default branch contains (a merge) and one the pushed
 /// commit does not descend from (a squash merge, or a rewritten branch,
-/// diffed from main so that nothing new hides). The push is then diffed from
-/// its merge-base with the default branch, journalled `base=merge-base`. A
-/// missing default branch, or any git failure, keeps the tracking ref. The
-/// ancestry checks read git's exit status
-/// ([`amont_agent_guard::git::succeeds_in`]): `--is-ancestor` prints
-/// nothing, so a stdout reader would always say no.
+/// diffed from main, so a rewritten branch is judged by every file it
+/// carries over main). The push is then diffed from its merge-base with the
+/// default branch, journalled `base=merge-base` with the reason. The ancestry
+/// checks read git's exit status ([`amont_agent_guard::git::succeeds_in`]):
+/// `--is-ancestor` prints nothing, so a stdout reader would always say no. A
+/// failed ancestry check counts as no, so the push is diffed from main; only
+/// a missing default branch, or a failed `merge-base`, keeps the tracking
+/// ref, journalled `base=tracking`.
 fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
     let default = format!("refs/remotes/{}/HEAD", t.remote);
     let contains = |a: &str, b: &str| {
         amont_agent_guard::git::succeeds_in(repo, &["merge-base", "--is-ancestor", a, b])
     };
-    if contains(&tracking, &t.src) && !contains(&tracking, &default) {
+    let descends = contains(&tracking, &t.src);
+    if descends && !contains(&tracking, &default) {
         return tracking;
     }
+    let reason = if descends { "merged" } else { "not-descended" };
+    let repo_name = repo.to_string_lossy();
     let Some(merge_base) = git(repo, &["merge-base", &t.src, &default]) else {
+        note(
+            "base",
+            "-",
+            &repo_name,
+            &format!(
+                "base=tracking {tracking} reason={reason}: no merge base with {default} (`git remote set-head {} -a` sets it)",
+                t.remote
+            ),
+        );
         return tracking;
     };
     note(
         "base",
         "-",
-        &repo.to_string_lossy(),
-        &format!("base=merge-base {} over {tracking}", short(&merge_base)),
+        &repo_name,
+        &format!(
+            "base=merge-base {} over {tracking} reason={reason}",
+            short(&merge_base)
+        ),
     );
     merge_base
 }
