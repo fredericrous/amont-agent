@@ -1,6 +1,6 @@
 ---
-status: active
-branch: fix/carry-from-transcript (amont-agent), fix/brief-reason (greenharness-skills), chore/pin-skills-0.3.1 (grh)
+status: done
+branch: fix/carry-from-transcript (amont-agent), fix/brief-reason (greenharness-skills), chore/pin-0.1.6 (grh)
 repos: [amont-agent, greenharness-skills, grh]
 adrs: [ADR-0052]
 ---
@@ -87,8 +87,8 @@ When a declared profile has no pass on the pushed tree and no review of it in th
     - after a rebase that moves A out of `pushed ^merge-base` → refused;
     - an implementation-review prompt whose only TREE block for the pushed tree sits inside a fenced body → refused, and the same block in the header → allowed.
   - CHANGELOG and docs/implementation-review.md. Release 3.13.0 (tag-release): a minor version, since what binds changes.
-- [ ] Phase 2 — greenharness-skills: the reworded reason. Release 0.3.1.
-- [ ] Phase 3 — grh: pin amont-agent 3.13.0 and skills 0.3.1. Release 0.1.5, then `brew upgrade` and `grh install workflow --yes` on the laptop.
+- [x] Phase 2 — greenharness-skills: the reworded reason. Release 0.3.1.
+- [x] Phase 3 — grh: pin amont-agent 3.13.0 and skills 0.3.1. Release 0.1.6 (0.1.5 was taken), then `brew upgrade` and `grh install workflow --yes` on the laptop.
 
 ## Verification
 
@@ -98,8 +98,13 @@ When a declared profile has no pass on the pushed tree and no review of it in th
   - The gate (clippy, the full suite) passed at commit.
 
 - Phase 1: the new integration tests pass, and the existing carry tests still pass. With `carried` restored to pass files only, the transcript-carry test fails; with `reviews()` back on the whole prompt, the fenced-block test fails. `cargo test` → 0 failed. Live check (deferred: see Decision log 2026-11-02, holds-until the first plan PR after 3.13.0): after both profiles approve, commit a docs-only fix, run implementation-review on it, push once → the push is allowed, with no profile re-run, and the journal holds `profile-carried … profile=backend carried-from <12 hex>` and the same for `lang:rust`. Production: over 14 days, count `profile-carried` lines against profile re-runs on diffs of 10 lines or fewer.
-- Phase 2: `scripts/check.sh` → exit 0, no "counts for nothing" phrase is left under `parts/`, and the implementation-review launch text in worktree-task puts its TREE line before any heading or fence (grep). Rollback for Phase 1: pin amont-agent 3.12.x again.
-- Phase 3: the pins equal each release's SHA256SUMS lines. After the install, `amont-agent --version` → 3.13.0, the agents' text holds the new reason, and doctor → healthy.
+- Phase 2, observed on greenharness/skills #5 and release 0.3.1: `check.sh` → exit 0; `grep -rn "counts for nothing" parts` → 0 lines; the 0.3.1 tarball checks `OK`, and its seven agents hold the new reason. Planned: `scripts/check.sh` → exit 0, no "counts for nothing" phrase is left under `parts/`, and the implementation-review launch text in worktree-task puts its TREE line before any heading or fence (grep). Rollback for Phase 1: pin amont-agent 3.12.x again.
+- Phase 3, observed on greenharness/grh #10 and release 0.1.6:
+  - each pin equals its SHA256SUMS line;
+  - on the laptop: `brew upgrade`, then `grh install workflow --yes` → grh 0.1.6, `amont-agent --version` 3.13.0;
+  - the seven installed agents and worktree-task hold the new reason, with 0 old phrases left;
+  - doctor → `healthy: true`.
+- Phase 3, as planned: the pins equal each release's SHA256SUMS lines. After the install, `amont-agent --version` → 3.13.0, the agents' text holds the new reason, and doctor → healthy.
 
 ## Implementation review
 
@@ -110,6 +115,7 @@ When a declared profile has no pass on the pushed tree and no review of it in th
 - Tokens: about 59k + 80k, 60k + 64k, 56k + 62k, so 381k.
 
 ## Decision log
+- 2026-11-02 — grh 0.1.5 was released by another session (#9, pinning amont-agent 3.12.0), so this ships as grh 0.1.6.
 - 2026-11-02 — Another session released 3.12.0 (#179) during this work, so this ships as 3.13.0. The plan's versions now say 3.13.0. The two "(3.12.0)" mentions in `docs/implementation-review.md` are corrected in the 3.13.0 release commit, so the reviewed tree stays bound. skills 0.3.1 and grh 0.1.5 are checked as free before tagging.
 - 2026-11-02 — From the code reviews:
   - added a session-path rebase test, and journal lines `profile-carry-blocked` and `profile-carry-declaration-differs`, so a carry that does not happen says why;
@@ -120,5 +126,15 @@ When a declared profile has no pass on the pushed tree and no review of it in th
 - 2026-11-02 — Done from the carried findings: an unreadable declaration means no carry, not unknown (tested under deny); an unchanged pointer gets no session carry either (tested); Missing falls through to filed passes; each commit's plan list is computed against the merge-base (`declaration_at`). Not done: a separate restored-plan test (Codex). The per-commit plan list covers it by construction, and no test pins it.
 
 ## Outcome
+
+Shipped: amont-agent 3.13.0 (#180, #181), skills 0.3.1 (#5), grh 0.1.6 (#10), installed on the laptop.
+- **The session carry:** a profile's `approve` from earlier in the session now carries to a fix commit, so profiles that already approved no longer re-run.
+- **The block scan:** implementation-review's block is read from the header only.
+- **The skill wording:** it gives the true reason a brief goes by path.
+
+Still open:
+- **The live check:** the first plan PR pushed under 3.13.0 should show `profile-carried … carried-from` for its approving profiles, with no re-run.
+- **The production bar:** due 2026-11-15, 0 profile re-runs on diffs of 10 lines or fewer after an approve.
+- **A pointer's canonical revision:** recording it would let a cross-repository plan carry from the session too.
 
 <!-- panel: repos=amont-agent,greenharness-skills,grh reviewers=backend,codex body-sha=c7bf8dc59c72 -->
