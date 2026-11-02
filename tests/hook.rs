@@ -362,7 +362,14 @@ fn only_the_emitter_writes_to_stdout() {
     // CLI verb a person typed. What makes those safe is that nothing reachable
     // from `hook` calls them — `decide` dispatches to the rules, the journal and
     // the emitter, and to nothing here.
-    const NOT_THE_HOOK_PATH: &[&str] = &["decision.rs", "main.rs", "doctor.rs", "backtest.rs"];
+    // `open.rs` prints its own `--help`, under the `open` verb only.
+    const NOT_THE_HOOK_PATH: &[&str] = &[
+        "decision.rs",
+        "main.rs",
+        "doctor.rs",
+        "backtest.rs",
+        "open.rs",
+    ];
     let mut check = |path: &std::path::Path, text: &str| {
         if NOT_THE_HOOK_PATH.iter().any(|name| path.ends_with(name)) {
             return;
