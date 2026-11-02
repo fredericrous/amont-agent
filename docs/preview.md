@@ -239,11 +239,18 @@ compares the guide's images itself. It approves the commit with channel
 - both are relative paths that resolve inside the guide's directory, to two
   different files (a symlink of one to the other is one file);
 - the two files are byte-identical;
-- the branch commits no picked mockup: mockup mode always asks.
+- the branch commits no picked mockup: mockup mode always asks;
+- the guide is the one the page was rendered from: beside the page this
+  call wrote, outside the repository, no larger than a guide may be.
 
-`register` prints `"unchanged": true` and says on stderr that the preview
-will be recorded as unchanged once bound. The flag only informs: the hook
+A hard link of one file to the other is one file, as a symlink is.
+`register` prints `"unchanged": true`, and on stderr: `amont-agent: before
+and after are byte-identical; the hook approves this preview as unchanged
+when it binds it, if they still are`. The flag only informs: the hook
 compares the files again and never approves on what the command printed.
+When the comparison cannot run (an unreadable guide, a guide that is not
+beside its page, mockup screens that cannot be listed), the hook journals
+`unchanged-skipped` with the reason and the person is asked.
 Each approval is journalled `unchanged` with the image's sha256 and both
 file names, so a retro can check it against the commit's UI diff. The agent
 takes both screenshots, so the pair is self-certified; the person chose to

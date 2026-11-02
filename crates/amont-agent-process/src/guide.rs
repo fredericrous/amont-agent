@@ -571,24 +571,26 @@ pub(crate) fn sole_pair(text: &str, guide_dir: &Path) -> Option<(PathBuf, PathBu
         (full.starts_with(&root) && full.is_file()).then_some(full)
     };
     let (before_file, after_file) = (inside(before)?, inside(after)?);
-    (before_file != after_file && !same_inode(&before_file, &after_file))
+    (before_file != after_file && distinct_files(&before_file, &after_file))
         .then_some((before_file, after_file))
 }
 
-/// Two names of one file: a hard link has two canonical paths.
+/// Two files that are known to be distinct: a hard link has two canonical
+/// paths but is one file. `false` when either cannot be read, so the person
+/// is asked.
 #[cfg(unix)]
-fn same_inode(first: &Path, second: &Path) -> bool {
+fn distinct_files(first: &Path, second: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (std::fs::metadata(first), std::fs::metadata(second)) {
-        (Ok(one), Ok(other)) => one.dev() == other.dev() && one.ino() == other.ino(),
-        // Unreadable: refuse the pair, so the person is asked.
-        (Err(_), _) | (_, Err(_)) => true,
+        (Ok(one), Ok(other)) => one.dev() != other.dev() || one.ino() != other.ino(),
+        (Err(_), _) | (_, Err(_)) => false,
     }
 }
 
+/// Elsewhere only the canonical paths tell two files apart.
 #[cfg(not(unix))]
-fn same_inode(_first: &Path, _second: &Path) -> bool {
-    false
+fn distinct_files(_first: &Path, _second: &Path) -> bool {
+    true
 }
 
 struct Ctx<'p> {

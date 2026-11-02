@@ -1901,3 +1901,37 @@ fn an_identical_pair_on_a_mockup_branch_still_waits() {
     assert_eq!(json["unchanged"], false, "{json}");
     assert!(w.push_advised("s"));
 }
+
+#[test]
+fn an_identical_pair_in_a_guide_that_is_not_the_pages_is_not_approved() {
+    // The printed JSON names another guide, with an identical pair, in a
+    // directory that is not the rendered page's: the hook skips it.
+    let w = World::new("unchanged-elsewhere");
+    w.commit("app/routes/settings.tsx", "1\n");
+    let other = w.root.join("elsewhere");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("guide.md"), GUIDE).unwrap();
+    for f in ["panel.png", "before.png", "after.png"] {
+        std::fs::write(other.join(f), b"same").unwrap();
+    }
+    let elsewhere = other.join("guide.md").display().to_string();
+    let _rewritten = w.register_guide(
+        GUIDE,
+        &[
+            ("panel.png", b"p"),
+            ("before.png", b"a"),
+            ("after.png", b"b"),
+        ],
+        |out| {
+            let mut v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["guide"] = serde_json::json!(elsewhere);
+            v["attestation"] = serde_json::json!(elsewhere);
+            v.to_string()
+        },
+    );
+    assert!(w.push_advised("s"), "{}", w.journal());
+    let journal = w.journal();
+    assert!(journal.contains("unchanged-skipped"), "{journal}");
+    assert!(journal.contains("not beside its page"), "{journal}");
+    assert!(!journal.contains(" unchanged "), "{journal}");
+}

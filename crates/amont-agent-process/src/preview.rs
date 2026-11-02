@@ -1198,10 +1198,10 @@ fn approve_if_unchanged(reg: &Registration, repo: &Path, page: &str) {
     if guide.starts_with(&canon_repo) {
         return skip("the guide is inside the repository");
     }
-    let size = std::fs::metadata(&guide)
-        .map(|m| m.len())
-        .unwrap_or(u64::MAX);
-    if size > crate::guide::MAX_BYTES {
+    let Ok(meta) = std::fs::metadata(&guide) else {
+        return skip("the guide cannot be read");
+    };
+    if meta.len() > crate::guide::MAX_BYTES {
         return skip("the guide is larger than a guide may be");
     }
     let Ok(text) = std::fs::read_to_string(&guide) else {
