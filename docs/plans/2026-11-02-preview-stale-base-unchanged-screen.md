@@ -1,7 +1,7 @@
 ---
 canonical: decisions:docs/plans/2026-11-02-preview-stale-base-unchanged-screen.md
 phases: [1]
-status: done
+status: active
 ---
 # The preview guard ignores a stale remote branch, and an unchanged screen needs no approval (pointer)
 
@@ -47,3 +47,9 @@ This repository carries Phase 1:
   - the journal writes `base=merge-base` only when the merge base is chosen;
   - the own-commits test asserts NOT advised, since already-pushed UI is not asked again.
 - **Follow-up:** `approve()`'s unlocked read-modify-write predates this change.
+
+## Follow-up: a squash-merged stale ref (3.15.1)
+
+- The Phase 3 live check failed under 3.15.0. duro-app's push was still held, because its stale `origin/chore/refresh-fleet-pack` (4f80f4e) was squash-merged: that commit is in neither main nor the new branch, so 3.15.0's "already in main" condition did not fire.
+- The fix: the tracking ref stays the base only for a branch whose remote commits are its own (the pushed commit descends from it and main does not contain it). Any other tracking ref uses the merge-base with main.
+- A rewritten branch is now also diffed from main, in the direction of asking more. Recorded in the canonical plan's Decision log at close.
