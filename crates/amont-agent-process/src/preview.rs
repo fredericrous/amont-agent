@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 use amont_agent_guard::journal;
 use amont_agent_guard::push_target::{self, Kind, Push, Target};
 use amont_agent_guard::rules::Stance;
+use amont_agent_guard::sha256::{hex, sha256};
 
 /// A registration nobody answered lapses after a day: the commit pins the
 /// content, and any other prompt drops it long before this.
@@ -180,7 +181,7 @@ fn published(repo: &Path, t: &Target) -> Option<Published> {
     }
     let tracking = format!("refs/remotes/{}/{}", t.remote, short);
     let base = if git(repo, &["rev-parse", "--verify", "--quiet", &tracking]).is_some() {
-        Some(tracking)
+        Some(base_over_tracking(repo, t, tracking))
     } else {
         git(
             repo,
@@ -217,6 +218,35 @@ fn published(repo: &Path, t: &Target) -> Option<Published> {
             .map(str::to_string)
             .collect(),
     })
+}
+
+/// The base of a push whose branch has a remote-tracking ref. A ref that the
+/// remote's default branch already contains, and that the pushed commit
+/// descends from, is a stale name for work published long ago (an old
+/// branch of the same name, merged and deleted remotely but never pruned
+/// here): the push is diffed from its merge-base with the default branch
+/// instead, journalled `base=merge-base`. Anything else, or any doubt, keeps
+/// the tracking ref. The ancestry checks read git's exit status
+/// ([`amont_agent_guard::git::succeeds_in`]): `--is-ancestor` prints
+/// nothing, so a stdout reader would always say no.
+fn base_over_tracking(repo: &Path, t: &Target, tracking: String) -> String {
+    let default = format!("refs/remotes/{}/HEAD", t.remote);
+    let contains = |a: &str, b: &str| {
+        amont_agent_guard::git::succeeds_in(repo, &["merge-base", "--is-ancestor", a, b])
+    };
+    if !(contains(&tracking, &t.src) && contains(&tracking, &default)) {
+        return tracking;
+    }
+    let Some(mb) = git(repo, &["merge-base", &t.src, &default]) else {
+        return tracking;
+    };
+    note(
+        "base",
+        "-",
+        &repo.to_string_lossy(),
+        &format!("base=merge-base {} over {tracking}", short(&mb)),
+    );
+    mb
 }
 
 /// Whether a branch push carries an interface change, or `None` when its
@@ -913,6 +943,10 @@ pub struct Registered {
     /// `[preview <id>] <label>`. Empty when read from a release that printed
     /// none.
     pub question_prefix: String,
+    /// The guide's one before/after pair is byte-identical (ADR-0057), as
+    /// `register` saw it. Informative only: `bind` compares the files again
+    /// and never approves on this flag.
+    pub unchanged: bool,
 }
 
 impl Registered {
@@ -931,6 +965,7 @@ impl Registered {
             amont_agent_guard::json::string_array_field("aliases", &self.aliases),
             amont_agent_guard::json::string_field("question_prefix", &self.question_prefix),
             amont_agent_guard::json::string_field("attestation", &self.guide),
+            amont_agent_guard::json::bool_field("unchanged", self.unchanged),
         ])
     }
     /// Reads 2.21.0's shape, and the older one that carried only
@@ -957,6 +992,10 @@ impl Registered {
                 })
                 .unwrap_or_default(),
             question_prefix: s("question_prefix").unwrap_or_default(),
+            unchanged: v
+                .get("unchanged")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         })
     }
 }
@@ -1080,6 +1119,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
     amont_agent_guard::atomic::write_atomic(&page, &html)
         .map_err(|e| format!("the page {} could not be written: {e}", page.display()))?;
     let id = format!("{}{:x}", short(&commit), now() & 0xfff_ffff);
+    let unchanged = unchanged_pair(&text, &folder, &screens).is_some();
     Ok(Registered {
         question_prefix: question_prefix(&id, &label),
         id,
@@ -1091,7 +1131,35 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
         page: page.to_string_lossy().into_owned(),
         label,
         aliases,
+        unchanged,
     })
+}
+
+/// The guide's before/after pair when it is byte-identical and nothing
+/// excludes it (ADR-0057): the one unambiguous pair
+/// ([`crate::guide::sole_pair`]), two different files inside the guide's
+/// directory, on a branch that commits no picked mockup. Returns the
+/// image's sha256 and the two file names, for the journal.
+fn unchanged_pair(
+    text: &str,
+    folder: &Path,
+    screens: &[String],
+) -> Option<(String, String, String)> {
+    if !screens.is_empty() {
+        return None;
+    }
+    let (before, after) = crate::guide::sole_pair(text, folder)?;
+    let b = std::fs::read(&before).ok()?;
+    let a = std::fs::read(&after).ok()?;
+    if b != a {
+        return None;
+    }
+    let name = |p: &Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    Some((hex(&sha256(&b)), name(&before), name(&after)))
 }
 
 /// The text a marked question starts with: the marker, then the label the
@@ -1315,8 +1383,28 @@ pub fn bind(
             }
         ),
     );
-    regs.push(reg);
+    regs.push(reg.clone());
     save_registrations(&regs);
+    // Compared again here, from the files: the printed flag is the agent's
+    // command speaking, and never approves anything (ADR-0057).
+    let guide = Path::new(&reg.guide);
+    let screens = mockup_screens(&repo, &reg.commit);
+    if let (Ok(text), Ok(screens)) = (std::fs::read_to_string(guide), screens) {
+        let folder = guide.parent().unwrap_or(Path::new("/"));
+        if let Some((sha, before, after)) = unchanged_pair(&text, folder, &screens) {
+            note(
+                "unchanged",
+                &bash.session,
+                &reg.repo,
+                &format!(
+                    "{} {} sha256={sha} before={before} after={after}",
+                    reg.id,
+                    reg.label()
+                ),
+            );
+            approve(std::slice::from_ref(&reg), "unchanged");
+        }
+    }
     None
 }
 
@@ -2051,6 +2139,7 @@ index 15750da..2770014 100644
             label: "r-wt-x@c".into(),
             aliases: vec!["r@c".into(), "repo@c".into()],
             question_prefix: "[preview i] r-wt-x@c".into(),
+            unchanged: true,
         };
         assert!(r
             .to_json()

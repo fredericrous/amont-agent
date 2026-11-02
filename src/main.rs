@@ -1675,6 +1675,9 @@ fn run_preview(args: &[OsString]) -> ExitCode {
     };
     match preview::register(&dir, &url, std::path::Path::new(&guide)) {
         Ok(r) => {
+            if r.unchanged {
+                eprintln!("amont-agent: before and after are identical; will be recorded as unchanged once bound, no question needed");
+            }
             println!("{}", r.to_json());
             if open {
                 open_page(std::path::Path::new(&r.page));

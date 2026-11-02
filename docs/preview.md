@@ -213,6 +213,7 @@ A branch in mockup mode that is pushed without a bound approval is **held**
 | does not answer (a timeout) | still pending |
 | types `approve`, `ship`, `lgtm` or `looks good` as the next prompt, after a marked question was asked | approved |
 | types anything else next — including `yes`, `go`, `ok`, `continue` | the previews lapse |
+| is not asked: the guide's before and after are byte-identical (below) | approved `unchanged` when the hook binds the registration |
 
 The id in the marker is what approves: it begins with the commit's sha7,
 which the person sees, and the registration it names is already bound to
@@ -223,6 +224,30 @@ nothing. A `register` that did not bind — not the last command, run in the
 background, with no `PreToolUse` stamp, or whose output does not match
 HEAD or this call — says so right after it runs, with the command to run
 and the question to ask.
+
+### An unchanged screen
+
+A screen that renders byte for byte as it did before leaves the person
+nothing to judge (ADR-0057). When `preview register` is bound, the hook
+compares the guide's images itself. It approves the commit with channel
+`unchanged`, and asks nothing, when all hold:
+
+- the guide has exactly one before image and one built image (`after`,
+  `live`) whose names share the same state once the role word is removed
+  (`before.png` with `after.png`, `before-empty.png` with `after-empty.png`);
+  more candidates, or a mismatched state, are asked;
+- both are relative paths that resolve inside the guide's directory, to two
+  different files (a symlink of one to the other is one file);
+- the two files are byte-identical;
+- the branch commits no picked mockup: mockup mode always asks.
+
+`register` prints `"unchanged": true` and says on stderr that the preview
+will be recorded as unchanged once bound. The flag only informs: the hook
+compares the files again and never approves on what the command printed.
+Each approval is journalled `unchanged` with the image's sha256 and both
+file names, so a retro can check it against the commit's UI diff. The agent
+takes both screenshots, so the pair is self-certified; the person chose to
+trust it (2026-11-02).
 
 Unmarked questions are ignored, so a release question answered "Approve"
 approves no preview, even in the same turn. Another session's answers never
@@ -294,6 +319,20 @@ could write to, not proof. That is why every pass is journalled. The
 exemption lapses when the screenshots show a visible change the plan did
 not decide; that part is the skill's (`worktree-task` F7) to enforce: the
 hook can only see that the person approved the declaration.
+
+### The base of a branch push
+
+A branch push publishes what it adds over what the remote already has. Its
+files are diffed from the branch's remote-tracking ref when there is one,
+else from the merge base with the remote's `HEAD`. A tracking ref that the
+pushed commit descends from, and that the remote's default branch already
+contains, is a stale name: an old branch of the same name, merged and
+deleted on the remote but never pruned here. The push is then diffed from
+its merge base with the remote's `HEAD`, journalled `base=merge-base`. On
+2026-11-02 such a ref made a one-file pack refresh in duro-app look like
+months of main's UI work. A tracking ref with commits of its own that the
+default branch lacks stays the base, so work already pushed is not asked
+about again.
 
 ### What counts as an interface change
 

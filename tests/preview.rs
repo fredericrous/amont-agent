@@ -1733,3 +1733,169 @@ fn an_old_four_field_approval_matches_only_its_own_commit() {
     git(&w.work, &["commit", "-q", "--amend", "-m", "reworded"]);
     assert!(w.push_advised("s"), "a same-tree commit does not");
 }
+
+// --- the base of a push, and an unchanged screen (ADR-0057) ---------------
+
+impl World {
+    /// `refs/remotes/origin/HEAD` → `origin/main`, as a clone has it.
+    fn set_remote_head(&self) {
+        git(
+            &self.work,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+    }
+
+    /// An old `feat/x` with UI work, merged into main and deleted on the
+    /// remote, whose tracking ref is never pruned here; main then moves on
+    /// with more UI work; `feat/x` starts again from main.
+    fn stale_branch(&self) {
+        self.commit("app/old.tsx", "1\n");
+        git(&self.work, &["push", "-q", "origin", "feat/x"]);
+        git(&self.work, &["checkout", "-q", "main"]);
+        git(&self.work, &["merge", "-q", "--ff-only", "feat/x"]);
+        self.commit("app/later.tsx", "1\n");
+        git(&self.work, &["push", "-q", "origin", "main"]);
+        let remote = self.root.join("remote.git");
+        git(&remote, &["update-ref", "-d", "refs/heads/feat/x"]);
+        self.set_remote_head();
+        git(&self.work, &["checkout", "-q", "-B", "feat/x", "main"]);
+    }
+
+    /// Register `text` with `files` beside it, through the CLI and the
+    /// hook; `printed` rewrites the CLI's stdout before the hook sees it.
+    fn register_guide(
+        &self,
+        text: &str,
+        files: &[(&str, &[u8])],
+        printed: impl Fn(&str) -> String,
+    ) -> (serde_json::Value, String) {
+        let g = self.guide_with(text);
+        for (f, body) in files {
+            std::fs::write(g.parent().unwrap().join(f), body).unwrap();
+        }
+        let command = format!(
+            "amont-agent preview register --url http://localhost:5173/ --guide '{}'",
+            g.display()
+        );
+        self.pre_bash("s", "reg", &command);
+        let (code, out, err) = self.register_cli("http://localhost:5173/", &g);
+        assert_eq!(code, 0, "register refused: {err}");
+        self.post_bash("s", "p1", "reg", &command, &printed(&out));
+        (serde_json::from_str(&out).unwrap(), err)
+    }
+}
+
+#[test]
+fn a_stale_tracking_ref_already_in_main_is_not_the_base() {
+    let w = World::new("stale-base");
+    w.stale_branch();
+    w.commit("README.md", "pack refresh\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(w.journal().contains("base=merge-base"), "{}", w.journal());
+}
+
+#[test]
+fn a_ui_change_over_a_stale_tracking_ref_is_still_advised() {
+    let w = World::new("stale-base-ui");
+    w.stale_branch();
+    w.commit("app/new.tsx", "1\n");
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn a_tracking_ref_with_its_own_unmerged_commits_stays_the_base() {
+    // The branch's UI commit is already on the remote branch; only what
+    // comes after it is new to preview.
+    let w = World::new("own-tracking");
+    w.set_remote_head();
+    w.commit("app/a.tsx", "1\n");
+    git(&w.work, &["push", "-q", "origin", "feat/x"]);
+    w.commit("README.md", "more\n");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    assert!(!w.journal().contains("base=merge-base"), "{}", w.journal());
+}
+
+#[test]
+fn an_identical_before_and_after_is_approved_unchanged() {
+    let w = World::new("unchanged");
+    w.commit("app/routes/settings.tsx", "1\n");
+    let same: &[u8] = b"\x89PNG same";
+    let (json, err) = w.register_guide(
+        GUIDE,
+        &[
+            ("panel.png", b"p"),
+            ("before.png", same),
+            ("after.png", same),
+        ],
+        str::to_string,
+    );
+    assert_eq!(json["unchanged"], true, "{json}");
+    assert!(err.contains("recorded as unchanged once bound"), "{err}");
+    assert!(!w.push_advised("s"), "{}", w.journal());
+    let journal = w.journal();
+    assert!(journal.contains(" unchanged "), "{journal}");
+    assert!(
+        journal.contains("before=before.png after=after.png"),
+        "{journal}"
+    );
+}
+
+#[test]
+fn a_before_and_after_that_differ_still_wait_for_the_person() {
+    let w = World::new("changed");
+    w.commit("app/routes/settings.tsx", "1\n");
+    let (json, _) = w.register_guide(
+        GUIDE,
+        &[
+            ("panel.png", b"p"),
+            ("before.png", b"a"),
+            ("after.png", b"b"),
+        ],
+        str::to_string,
+    );
+    assert_eq!(json["unchanged"], false, "{json}");
+    assert!(w.push_advised("s"));
+}
+
+#[test]
+fn a_printed_unchanged_flag_over_differing_files_approves_nothing() {
+    let w = World::new("forged-flag");
+    w.commit("app/routes/settings.tsx", "1\n");
+    let _ = w.register_guide(
+        GUIDE,
+        &[
+            ("panel.png", b"p"),
+            ("before.png", b"a"),
+            ("after.png", b"b"),
+        ],
+        |out| out.replace("\"unchanged\":false", "\"unchanged\":true"),
+    );
+    assert!(w.push_advised("s"), "{}", w.journal());
+    assert!(!w.journal().contains(" unchanged "), "{}", w.journal());
+}
+
+#[test]
+fn an_identical_pair_on_a_mockup_branch_still_waits() {
+    let w = World::new("unchanged-mockup");
+    mockup_branch(&w);
+    let guide = MOCKUP_GUIDE.replace(
+        "![Mockup B](artboard.png) ![Built](after.png)",
+        "![Mockup B](artboard.png) ![Built](after.png) ![before](before.png)",
+    );
+    let same: &[u8] = b"same";
+    let (json, _) = w.register_guide(
+        &guide,
+        &[
+            ("artboard.png", b"art"),
+            ("after.png", same),
+            ("before.png", same),
+        ],
+        str::to_string,
+    );
+    assert_eq!(json["unchanged"], false, "{json}");
+    assert!(w.push_advised("s"));
+}
