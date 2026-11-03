@@ -2082,3 +2082,40 @@ fn a_marked_approve_that_cannot_be_stored_is_journalled_and_still_asks() {
     assert!(!journal.contains(" approved "), "{journal}");
     assert!(w.push_advised("s"), "{journal}");
 }
+
+/// `preview register --open` through the shared opener: `opened` says whether
+/// the launch worked, and the registration stands either way.
+fn register_opening(name: &str, opener: &str) -> serde_json::Value {
+    let w = World::new(name);
+    w.commit("src/a.txt", "a");
+    w.set_global("amont.agent.opener", opener);
+    let guide = w.guide();
+    let (code, stdout, stderr) = w.run(
+        &[
+            "preview",
+            "register",
+            "--url",
+            "http://localhost:5173/settings",
+            "--guide",
+            &guide.display().to_string(),
+            "--open",
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    serde_json::from_str(stdout.trim()).expect("registration JSON")
+}
+
+#[cfg(unix)] // `true` as the opener
+#[test]
+fn register_open_reports_opened_true_with_a_working_opener() {
+    let r = register_opening("opened-true", "true {}");
+    assert_eq!(r["opened"], serde_json::Value::Bool(true));
+}
+
+#[cfg(unix)] // `false` as the opener
+#[test]
+fn register_open_reports_opened_false_and_still_exits_0_when_the_opener_fails() {
+    let r = register_opening("opened-false", "false {}");
+    assert_eq!(r["opened"], serde_json::Value::Bool(false));
+}

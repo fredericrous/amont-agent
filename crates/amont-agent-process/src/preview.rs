@@ -1013,13 +1013,15 @@ pub struct Registered {
     /// `register` saw it. Informative only: `bind` compares the files again
     /// and never approves on this flag.
     pub unchanged: bool,
+    /// Whether `--open` showed the page; absent when `--open` was not given.
+    pub opened: Option<bool>,
 }
 
 impl Registered {
     /// `attestation` repeats `guide` for one release, so a hook older than
     /// the CLI that printed this still binds it.
     pub fn to_json(&self) -> String {
-        amont_agent_guard::json::object(&[
+        let mut fields = vec![
             amont_agent_guard::json::string_field("id", &self.id),
             amont_agent_guard::json::string_field("repo", &self.repo),
             amont_agent_guard::json::string_field("commit", &self.commit),
@@ -1032,7 +1034,11 @@ impl Registered {
             amont_agent_guard::json::string_field("question_prefix", &self.question_prefix),
             amont_agent_guard::json::string_field("attestation", &self.guide),
             amont_agent_guard::json::bool_field("unchanged", self.unchanged),
-        ])
+        ];
+        if let Some(opened) = self.opened {
+            fields.push(amont_agent_guard::json::bool_field("opened", opened));
+        }
+        amont_agent_guard::json::object(&fields)
     }
     /// Reads 2.21.0's shape, and the older one that carried only
     /// `attestation`.
@@ -1062,6 +1068,7 @@ impl Registered {
                 .get("unchanged")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
+            opened: v.get("opened").and_then(serde_json::Value::as_bool),
         })
     }
 }
@@ -1198,6 +1205,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
         label,
         aliases,
         unchanged,
+        opened: None,
     })
 }
 
@@ -2260,6 +2268,7 @@ index 15750da..2770014 100644
             aliases: vec!["r@c".into(), "repo@c".into()],
             question_prefix: "[preview i] r-wt-x@c".into(),
             unchanged: true,
+            opened: Some(true),
         };
         assert!(r
             .to_json()

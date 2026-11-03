@@ -99,6 +99,12 @@ pub struct Ask {
     pub tool_use_id: String,
     /// The question texts, in order.
     pub questions: Vec<String>,
+    /// The text of every option, in order: `label`, `description` and
+    /// `preview` of each `questions[].options[]`. A page can be named there
+    /// as well as in the question (`ask-unopened-page`).
+    pub option_texts: Vec<String>,
+    /// The payload's `cwd`, against which a relative page path is read.
+    pub cwd: PathBuf,
     /// The call's INPUT already carried `answers`. The tool's schema accepts
     /// them, so a model could pre-answer its own question; an answer that did
     /// not come from the person approves nothing.
@@ -113,6 +119,26 @@ pub struct Ask {
     /// `transcript_path`: an `Overrule` of an implementation review is
     /// honoured only when the transcript shows the `rework` it overrules.
     pub transcript: Option<PathBuf>,
+}
+
+/// The text of every option of an `AskUserQuestion` input (`label`,
+/// `description`, `preview`), in order. Read from the payload and from a
+/// transcript's recorded call alike.
+pub fn option_texts(input: &serde_json::Value) -> Vec<String> {
+    input
+        .get("questions")
+        .and_then(|q| q.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|q| q.get("options").and_then(|o| o.as_array()))
+        .flatten()
+        .flat_map(|option| {
+            ["label", "description", "preview"]
+                .into_iter()
+                .filter_map(|key| option.get(key).and_then(|t| t.as_str()))
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 /// A Read, Edit or Write tool call: one path, and whether it reads or writes.
@@ -478,6 +504,8 @@ pub fn parse(raw: &str) -> Event {
                 prompt_id: str_at("prompt_id"),
                 tool_use_id: str_at("tool_use_id"),
                 questions,
+                option_texts: input.map(option_texts).unwrap_or_default(),
+                cwd: cwd.clone(),
                 prefilled,
                 answers,
                 duration_ms: v.get("duration_ms").and_then(|d| d.as_u64()),
