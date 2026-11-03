@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.16.1
+
+### Fixed
+
+- The plan-review panel counts a reviewer resumed with `SendMessage`: a
+  message that starts with a `<<<PLAN …>>>` block, followed by that agent's
+  completed reply, binds the reviewer to that body, as the implementation
+  review already did. A message without a block binds nothing. Before, the
+  hook read launches only, so `ExitPlanMode` refused a resumed reviewer's
+  final body as `stale (reviewed an older body)`.
+
 ## v3.16.0
 
 ### Added
