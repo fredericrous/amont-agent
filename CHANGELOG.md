@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `lint-suppression-added` scanner: a `Shell` file kind (`.sh`, `.bash`, `.zsh`,
+  and extensionless files with a `sh`/`bash`/`zsh` shebang) with
+  `# shellcheck disable=SCnnnn[,..]` markers, a pure `reasoned` check of each
+  tool's own reason form, and `net_added`, which counts markers over a whole
+  change (a moved marker cancels; removing a reasoned one never cancels an
+  added bare one). `examine_change` is unchanged. `tools/suppression-rate.py`
+  and the shared fixture follow.
+
 ## v3.16.1
 
 ### Fixed

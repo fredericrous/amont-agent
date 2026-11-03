@@ -87,8 +87,9 @@ def pyright_loose(key, value):
     )
 
 
-def codes_of(kind, codes):
-    return [(kind, c, "") for c in codes] or [(kind, "", "")]
+def codes_of(kind, codes, line):
+    """One marker per code, or a single bare one, as (kind, code, section, line)."""
+    return [(kind, c, "", line) for c in codes] or [(kind, "", "", line)]
 
 
 def py_comment(line, state):
@@ -130,7 +131,7 @@ def py_comment(line, state):
 def python(lines):
     out = []
     state = {"triple": None}
-    for line in lines:
+    for number, line in enumerate(lines, 1):
         comment = py_comment(line, state)
         if comment is None:
             continue
@@ -140,14 +141,14 @@ def python(lines):
             if rest is not None:
                 tail = after_prefix(rest.lstrip(), "ignore")
                 if tail is not None and boundary(tail):
-                    out += codes_of("type: ignore", bracket_codes(tail))
+                    out += codes_of("type: ignore", bracket_codes(tail), number)
                 continue
             rest = after_prefix(seg, "pyright:")
             if rest is not None:
                 rest = rest.lstrip()
                 tail = after_prefix(rest, "ignore")
                 if tail is not None and boundary(tail):
-                    out += codes_of("pyright: ignore", bracket_codes(tail))
+                    out += codes_of("pyright: ignore", bracket_codes(tail), number)
                     continue
                 for item in rest.split(","):
                     item = "".join(item.split())
@@ -157,39 +158,43 @@ def python(lines):
                     else:
                         loose = item in ("basic", "off")
                     if loose:
-                        out.append(("pyright", item, ""))
+                        out.append(("pyright", item, "", number))
                 continue
             rest = after_prefix(seg, "ruff:")
             tail = after_prefix(rest.lstrip(), "noqa") if rest is not None else None
             if tail is not None and boundary(tail):
-                out += codes_of("ruff: noqa", noqa_codes(tail))
+                out += codes_of("ruff: noqa", noqa_codes(tail), number)
                 continue
             tail = after_prefix(seg, "noqa")
             if tail is not None and boundary(tail):
-                out += codes_of("noqa", noqa_codes(tail))
+                out += codes_of("noqa", noqa_codes(tail), number)
     return out
 
 
 def c_comments(text):
-    """(is_block, body) of every comment outside a string."""
+    """(line, is_block, body) of every comment outside a string."""
     out = []
+    line = 1
+    counted = 0
     state = "code"
     quote = ""
     i = 0
     n = len(text)
     while i < n:
         c = text[i]
+        line += text.count("\n", counted, i)
+        counted = i
         if state == "code":
             if text.startswith("//", i):
                 end = text.find("\n", i)
                 end = n if end < 0 else end
-                out.append((False, text[i + 2:end]))
+                out.append((line, False, text[i + 2:end]))
                 i = end
             elif text.startswith("/*", i):
                 j = i + 2
                 while j < n and text[j] != "\n" and not text.startswith("*/", j):
                     j += 1
-                out.append((True, text[i + 2:j]))
+                out.append((line, True, text[i + 2:j]))
                 if text.startswith("*/", j):
                     i = j + 2
                 else:
@@ -224,7 +229,7 @@ def c_comments(text):
 
 def script(text):
     out = []
-    for _block, body in c_comments(text):
+    for line, _block, body in c_comments(text):
         body = body.strip().lstrip("/*").strip()
         if body.startswith("eslint-disable"):
             rest = body[len("eslint-disable"):]
@@ -236,17 +241,17 @@ def script(text):
             if not boundary(rest):
                 continue
             codes = [c.strip() for c in rest.split("--")[0].split(",") if c.strip()]
-            out += codes_of("eslint-disable" + suffix, codes)
+            out += codes_of("eslint-disable" + suffix, codes, line)
             continue
         for tag in ("@ts-ignore", "@ts-nocheck", "@ts-expect-error"):
             if body.startswith(tag) and boundary(body[len(tag):]):
-                out.append((tag, "", ""))
+                out.append((tag, "", "", line))
     return out
 
 
 def go(text):
     out = []
-    for block, body in c_comments(text):
+    for line, block, body in c_comments(text):
         if block or not body.startswith("nolint") or not boundary(body[6:]):
             continue
         rest = body[6:]
@@ -254,7 +259,7 @@ def go(text):
         if rest.startswith(":"):
             word = (rest[1:].split() or [""])[0]
             codes = [c.strip() for c in word.split(",") if c.strip()]
-        out += codes_of("nolint", codes)
+        out += codes_of("nolint", codes, line)
     return out
 
 
@@ -289,7 +294,7 @@ def paren_items(s):
 
 def rust(lines):
     out = []
-    for line in lines:
+    for number, line in enumerate(lines, 1):
         t = line.lstrip()
         if not t.startswith("#"):
             continue
@@ -301,7 +306,7 @@ def rust(lines):
         inner = t[1:].lstrip()
         for kind in ("allow", "expect"):
             if inner.startswith(kind + "("):
-                out += codes_of(kind, paren_items(inner[len(kind) + 1:]))
+                out += codes_of(kind, paren_items(inner[len(kind) + 1:]), number)
         if inner.startswith("cfg_attr("):
             args = inner[len("cfg_attr("):]
             found = []
@@ -313,8 +318,67 @@ def rust(lines):
                         found.append((at, kind))
                     at = args.find(needle, at + 1)
             for at, kind in sorted(found):
-                out += codes_of(kind, paren_items(args[at + len(kind) + 1:]))
+                out += codes_of(kind, paren_items(args[at + len(kind) + 1:]), number)
     return out
+
+
+def shell_comment(line):
+    """The text after the first `#` that starts a shell comment: at the start of
+    the line or after whitespace, outside quotes."""
+    quote = None
+    prev = " "
+    for i, c in enumerate(line):
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and prev.isspace():
+            return line[i + 1:]
+        prev = c
+    return None
+
+
+def shellcheck_disable(comment):
+    """(codes, text after the list) of a `shellcheck disable=..` comment."""
+    rest = comment.lstrip()
+    if not rest.startswith("shellcheck"):
+        return None
+    rest = rest[len("shellcheck"):]
+    if not rest[:1].isspace():
+        return None
+    rest = rest.lstrip()
+    if not rest.startswith("disable="):
+        return None
+    listing = rest[len("disable="):]
+    words = listing.split(None, 1)
+    head = listing.split()[0] if words else ""
+    after = listing[len(head):]
+    return [c.strip() for c in head.split(",") if c.strip()], after
+
+
+def shell(lines):
+    out = []
+    for number, line in enumerate(lines, 1):
+        comment = shell_comment(line)
+        parsed = shellcheck_disable(comment) if comment is not None else None
+        if parsed:
+            out += [("shellcheck disable", c, "", number) for c in parsed[0]]
+    return out
+
+
+def shell_by_shebang(base, text):
+    """An extensionless file whose first line is a sh, bash or zsh shebang."""
+    if "." in base.lstrip("."):
+        return False
+    first = text.split("\n", 1)[0].rstrip("\r")
+    if not first.startswith("#!"):
+        return False
+    words = first[2:].split()
+    program = words[0] if words else ""
+    if program.rsplit("/", 1)[-1] == "env":
+        program = next((w for w in words[1:] if not w.startswith("-")), "")
+    return program.rsplit("/", 1)[-1] in ("sh", "bash", "zsh")
 
 
 def ident(c):
@@ -535,26 +599,154 @@ def eslint_loose(k, v):
     return k not in ("ecmaVersion", "version") and v in ("off", "warn", "0", "1")
 
 
-def markers(name, text):
-    """Normalised markers of `text`, as the rule counts them. [] when the file
-    type is not examined."""
+# ---- reasons --------------------------------------------------------------------
+
+
+def has_text(s):
+    return bool(s.strip(" \t\r\n:-*/"))
+
+
+def after_brackets(tail):
+    if tail.startswith("["):
+        return tail[1:].split("]", 1)[1] if "]" in tail else ""
+    return tail
+
+
+def after_noqa_codes(tail):
+    rest = tail.lstrip()
+    rest = rest[1:] if rest.startswith(":") else tail
+    while True:
+        t = rest.lstrip(", \t\r\n")
+        m = re.match(r"[^,\s]+", t)
+        if m and is_code(m.group(0)):
+            rest = t[m.end():]
+        else:
+            return t
+
+
+def starts_a_marker(seg):
+    return any(after_prefix(seg, p) is not None for p in ("type:", "pyright:", "noqa", "ruff:"))
+
+
+def python_reasoned(kind, line_text):
+    comment = py_comment(line_text, {"triple": None})
+    if comment is None:
+        return False
+    segs = [seg.strip() for seg in comment.split("#")]
+    for i, seg in enumerate(segs):
+        rest = None
+        if kind in ("type: ignore", "pyright: ignore"):
+            head = after_prefix(seg, "type:" if kind == "type: ignore" else "pyright:")
+            tail = after_prefix(head.lstrip(), "ignore") if head is not None else None
+            if tail is not None and boundary(tail):
+                rest = after_brackets(tail)
+        else:
+            tail = after_prefix(seg, "noqa")
+            if tail is not None and boundary(tail):
+                rest = after_noqa_codes(tail)
+        if rest is None:
+            continue
+        trimmed = rest.lstrip()
+        if trimmed.startswith("--") and trimmed[2:].strip():
+            return True
+        if any(s and not starts_a_marker(s) for s in segs[i + 1:]):
+            return True
+    return False
+
+
+def comment_bodies(line_text):
+    return [
+        (block, body.strip().lstrip("/*").strip())
+        for _line, block, body in c_comments(line_text)
+    ]
+
+
+def rust_reasoned(line_text):
+    _, found, after_word = line_text.partition("reason")
+    if not found:
+        return False
+    after_word = after_word.lstrip()
+    if not after_word.startswith("="):
+        return False
+    quoted = after_word[1:].lstrip()
+    if not quoted.startswith('"'):
+        return False
+    return bool(quoted[1:].split('"')[0].strip())
+
+
+def reasoned(marker, line_text):
+    """Whether the marker carries a reason in its tool's own reason form, read
+    from the text of the line it was found on. A configuration setting (line 0),
+    a marker with no code, @ts-ignore, @ts-nocheck and a file-level ruff: noqa
+    or pyright: comment never do."""
+    kind, code, _section, line = marker
+    if line == 0 or kind in ("@ts-ignore", "@ts-nocheck", "pyright", "ruff: noqa"):
+        return False
+    if kind == "@ts-expect-error":
+        return any(
+            body.startswith(kind) and boundary(body[len(kind):]) and has_text(body[len(kind):])
+            for _block, body in comment_bodies(line_text)
+        )
+    if not code:
+        return False
+    if kind in ("type: ignore", "pyright: ignore", "noqa"):
+        return python_reasoned(kind, line_text)
+    if kind in ("allow", "expect"):
+        return rust_reasoned(line_text)
+    if kind == "nolint":
+        for block, body in comment_bodies(line_text):
+            if block or not body.startswith("nolint"):
+                continue
+            rest = body[len("nolint"):]
+            rest = rest[1:] if rest.startswith(":") else rest
+            parts = rest.lstrip().split(None, 1)
+            if len(parts) == 2:
+                tail = parts[1].lstrip()
+                if tail.startswith("//") and tail[2:].strip():
+                    return True
+        return False
+    if kind == "shellcheck disable":
+        comment = shell_comment(line_text)
+        parsed = shellcheck_disable(comment) if comment is not None else None
+        if not parsed:
+            return False
+        after = parsed[1].lstrip()
+        return after.startswith("#") and bool(after[1:].strip())
+    if kind.startswith("eslint-disable"):
+        for _block, body in comment_bodies(line_text):
+            if body.startswith(kind) and boundary(body[len(kind):]):
+                _, found, why = body[len(kind):].partition("--")
+                if found and why.strip():
+                    return True
+        return False
+    return False
+
+
+def markers_at(name, text):
+    """Normalised markers of `text` as (kind, code, section, line). Comment
+    markers carry their 1-based line; a configuration setting carries 0. [] when
+    the file type is not examined."""
     base = pathlib.PurePosixPath(name.replace("\\", "/")).name.lower()
     lines = [ln.rstrip("\r") for ln in text.split("\n")]
+
+    def settings(found):
+        return [(*m, 0) for m in found]
+
     if base.startswith("tsconfig") and base.endswith(".json"):
-        return json_lines(lines, tsconfig_loose)
+        return settings(json_lines(lines, tsconfig_loose))
     if base.startswith("eslint.config.") or base.startswith(".eslintrc"):
-        return json_lines(lines, eslint_loose)
+        return settings(json_lines(lines, eslint_loose))
     if base == "pyrightconfig.json":
-        return json_lines(lines, pyright_loose)
+        return settings(json_lines(lines, pyright_loose))
     if base == "pyproject.toml":
-        return toml(lines, "pyproject")
+        return settings(toml(lines, "pyproject"))
     if base in ("ruff.toml", ".ruff.toml"):
-        return toml(lines, "ruff")
+        return settings(toml(lines, "ruff"))
     if base == "cargo.toml":
-        return toml(lines, "cargo")
+        return settings(toml(lines, "cargo"))
     if base in (".golangci.yml", ".golangci.yaml"):
-        return golangci(lines)
-    ext = base.rsplit(".", 1)[-1] if "." in base else ""
+        return settings(golangci(lines))
+    ext = base.rsplit(".", 1)[-1] if "." in base.lstrip(".") else ""
     if ext in ("py", "pyi"):
         return python(lines)
     if ext in ("ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue", "svelte"):
@@ -563,7 +755,14 @@ def markers(name, text):
         return rust(lines)
     if ext == "go":
         return go("\n".join(lines))
+    if ext in ("sh", "bash", "zsh") or (not ext and shell_by_shebang(base, text)):
+        return shell(lines)
     return []
+
+
+def markers(name, text):
+    """Markers of `text` as (kind, code, section), the rule's identity."""
+    return [m[:3] for m in markers_at(name, text)]
 
 
 def added(name, before, after):
@@ -571,6 +770,35 @@ def added(name, before, after):
     had = Counter(markers(name, before))
     now = Counter(markers(name, after))
     return sum(max(0, n - had[k]) for k, n in now.items())
+
+
+def net_added(changes):
+    """The markers a whole change adds, net of the ones it removes anywhere.
+    `changes` is a list of (old_path, before, new_path, after); each side is
+    classified by its own path. Counts are summed over every file, keyed without
+    the path and with whether the marker is reasoned. Returns
+    (new_path, marker) in path then line order."""
+
+    def keyed(marker, text_lines):
+        line_text = text_lines[marker[3] - 1] if marker[3] > 0 else ""
+        return (*marker[:3], reasoned(marker, line_text))
+
+    had = Counter()
+    for old_path, before, _new_path, _after in changes:
+        text_lines = [ln.rstrip("\r") for ln in before.split("\n")]
+        had.update(keyed(m, text_lines) for m in markers_at(old_path, before))
+    now = []
+    for _old_path, _before, new_path, after in changes:
+        text_lines = [ln.rstrip("\r") for ln in after.split("\n")]
+        now += [(new_path, m, keyed(m, text_lines)) for m in markers_at(new_path, after)]
+    now.sort(key=lambda row: (row[0], row[1][3]))
+    seen = Counter()
+    out = []
+    for path, marker, key in now:
+        seen[key] += 1
+        if seen[key] > had[key]:
+            out.append((path, marker))
+    return out
 
 
 # ---- the fixture ----------------------------------------------------------------
@@ -593,14 +821,29 @@ def self_test():
         if not row.strip() or row.startswith("#"):
             continue
         parts = row.split("\t", 2)
-        if len(parts) != 3 or parts[0] not in ("+", "-"):
+        if len(parts) != 3 or parts[0] not in ("+", "-", "r", "b", "n+", "n-"):
             print(f"suppression-rate: {path.name}:{n}: malformed row", file=sys.stderr)
             failed += 1
             continue
         tag, name, sample = parts
-        got = added(name, "", sample.replace("\\n", "\n")) > 0
+        sample = sample.replace("\\n", "\n")
+        if tag in ("+", "-"):
+            got = added(name, "", sample) > 0
+        elif tag in ("r", "b"):
+            sample_lines = sample.split("\n")
+            hits = net_added([("", "", name, sample)])
+            flags = [reasoned(m, sample_lines[m[3] - 1]) for _path, m in hits]
+            got = bool(flags) and all(f == (tag == "r") for f in flags)
+        else:
+            old, _, new = name.partition(">")
+            before, found, after = sample.partition("@@")
+            if not found:
+                before, after = "", sample
+            if not new:
+                old = new = name
+            got = bool(net_added([(old, before, new, after)]))
         checked += 1
-        if got != (tag == "+"):
+        if got != (tag in ("+", "r", "b", "n+")):
             print(f"suppression-rate: {path.name}:{n}: tagged {tag}, got "
                   f"{'+' if got else '-'}: {row}", file=sys.stderr)
             failed += 1

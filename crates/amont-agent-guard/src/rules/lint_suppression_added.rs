@@ -52,7 +52,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::payload::Change;
 use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
@@ -169,6 +169,7 @@ enum File {
     Ruff,
     Cargo,
     Golangci,
+    Shell,
 }
 
 fn file_kind(path: &Path) -> Option<File> {
@@ -194,6 +195,7 @@ fn file_kind(path: &Path) -> Option<File> {
         }
         "rs" => Some(File::Rust),
         "go" => Some(File::Go),
+        "sh" | "bash" | "zsh" => Some(File::Shell),
         _ => None,
     }
 }
@@ -211,6 +213,7 @@ pub fn worth_rebuilding(path: &Path, change: &Change) -> bool {
         // Attribute forms only: `.expect(` is in most Rust edits.
         Some(File::Rust) => &["#[allow", "#![allow", "#[expect", "#![expect", "cfg_attr"],
         Some(File::Go) => &["nolint"],
+        Some(File::Shell) => &["shellcheck"],
         Some(
             File::Tsconfig
             | File::Eslint
@@ -231,6 +234,30 @@ pub fn worth_rebuilding(path: &Path, change: &Change) -> bool {
     }
 }
 
+/// Whether an extensionless `path` is a shell script: its first line is a
+/// `sh`, `bash` or `zsh` shebang, directly or through `env`.
+pub fn shell_by_shebang(path: &Path, text: &str) -> bool {
+    if path.file_name().is_none() || path.extension().is_some() {
+        return false;
+    }
+    let first = text.lines().next().unwrap_or("");
+    let Some(command) = first.strip_prefix("#!") else {
+        return false;
+    };
+    let mut words = command.split_whitespace();
+    let mut program = words.next().unwrap_or("");
+    if program.rsplit('/').next() == Some("env") {
+        program = words.find(|w| !w.starts_with('-')).unwrap_or("");
+    }
+    matches!(program.rsplit('/').next(), Some("sh" | "bash" | "zsh"))
+}
+
+/// The file kind of `path` holding `text`: by name and extension, else a
+/// shell shebang for an extensionless path.
+fn kind_of(path: &Path, text: &str) -> Option<File> {
+    file_kind(path).or_else(|| shell_by_shebang(path, text).then_some(File::Shell))
+}
+
 /// Lines split on `\n`, a trailing `\r` trimmed.
 fn lines(text: &str) -> impl Iterator<Item = &str> {
     text.split('\n').map(|l| l.trim_end_matches('\r'))
@@ -239,7 +266,7 @@ fn lines(text: &str) -> impl Iterator<Item = &str> {
 /// Every marker in `text`, in line order. Empty for a file type that is not
 /// examined.
 pub fn markers(path: &Path, text: &str) -> Vec<Marker> {
-    let Some(file) = file_kind(path) else {
+    let Some(file) = kind_of(path, text) else {
         return Vec::new();
     };
     let mut out = match file {
@@ -247,6 +274,7 @@ pub fn markers(path: &Path, text: &str) -> Vec<Marker> {
         File::Script => script(text),
         File::Go => go(text),
         File::Rust => rust(text),
+        File::Shell => shell(text),
         File::Tsconfig => json_lines(text, tsconfig_loose),
         File::PyrightJson => json_lines(text, pyright_loose),
         File::Eslint => json_lines(text, eslint_loose),
@@ -257,22 +285,76 @@ pub fn markers(path: &Path, text: &str) -> Vec<Marker> {
     out
 }
 
-/// The markers `after` has more of than `before`. Pure.
-pub fn examine_change(path: &Path, before: &str, after: &str) -> Vec<Hit> {
-    let mut had: HashMap<(String, String, String), usize> = HashMap::new();
-    for m in markers(path, before) {
-        *had.entry(m.key()).or_insert(0) += 1;
+/// A marker's identity for counting: kind, code, section, and whether it
+/// carries a reason (always false when reasons are not keyed).
+type MarkerKey = (String, String, String, bool);
+
+#[derive(Clone, Copy)]
+enum Keying {
+    /// Reason text is ignored: the Edit/Write rule denies a marker either way.
+    Plain,
+    /// A reasoned marker and a bare one are different markers.
+    Reasoned,
+}
+
+fn keyed(marker: &Marker, line_text: &str, keying: Keying) -> MarkerKey {
+    let has_reason = match keying {
+        Keying::Plain => false,
+        Keying::Reasoned => reasoned(marker, line_text),
+    };
+    let (kind, codes, section) = marker.key();
+    (kind, codes, section, has_reason)
+}
+
+/// One file of a change: the old path and text, the new path and text. Each
+/// side is classified by its own path; an added or deleted file has an empty
+/// text on its absent side, so that side holds no markers.
+pub type FileChange<'a> = (&'a Path, &'a str, &'a Path, &'a str);
+
+fn net_added_keyed(changes: &[FileChange<'_>], keying: Keying) -> Vec<(PathBuf, Hit)> {
+    let mut had: HashMap<MarkerKey, usize> = HashMap::new();
+    for (old_path, before, _, _) in changes {
+        let text_lines: Vec<&str> = lines(before).collect();
+        for m in markers(old_path, before) {
+            let line_text = text_lines.get(m.line - 1).copied().unwrap_or("");
+            *had.entry(keyed(&m, line_text, keying)).or_insert(0) += 1;
+        }
     }
-    let mut seen: HashMap<(String, String, String), usize> = HashMap::new();
-    markers(path, after)
-        .into_iter()
-        .filter(|m| {
-            let key = m.key();
+    let mut now: Vec<(PathBuf, Marker, MarkerKey)> = Vec::new();
+    for (_, _, new_path, after) in changes {
+        let text_lines: Vec<&str> = lines(after).collect();
+        for m in markers(new_path, after) {
+            let line_text = text_lines.get(m.line - 1).copied().unwrap_or("");
+            let key = keyed(&m, line_text, keying);
+            now.push((new_path.to_path_buf(), m, key));
+        }
+    }
+    now.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.line.cmp(&b.1.line)));
+    let mut seen: HashMap<MarkerKey, usize> = HashMap::new();
+    now.into_iter()
+        .filter_map(|(path, marker, key)| {
             let n = had.get(&key).copied().unwrap_or(0);
             let s = seen.entry(key).or_insert(0);
             *s += 1;
-            *s > n
+            (*s > n).then_some((path, marker))
         })
+        .collect()
+}
+
+/// The markers a whole change adds, net of the ones it removes anywhere: counts
+/// are summed over every file, keyed without the path and with whether the
+/// marker carries a reason, so a marker moved between files cancels and
+/// removing a reasoned marker never cancels an added bare one. Hits are
+/// reported at their new path, in path then line order. Pure.
+pub fn net_added(changes: &[FileChange<'_>]) -> Vec<(PathBuf, Hit)> {
+    net_added_keyed(changes, Keying::Reasoned)
+}
+
+/// The markers `after` has more of than `before`. Pure.
+pub fn examine_change(path: &Path, before: &str, after: &str) -> Vec<Hit> {
+    net_added_keyed(&[(path, before, path, after)], Keying::Plain)
+        .into_iter()
+        .map(|(_, hit)| hit)
         .collect()
 }
 
@@ -576,6 +658,63 @@ fn script(text: &str) -> Vec<Marker> {
     out
 }
 
+/// The text after the first `#` that starts a shell comment: at the start of
+/// the line or after whitespace, outside quotes.
+fn shell_comment(line: &str) -> Option<&str> {
+    let mut quote: Option<char> = None;
+    let mut prev = ' ';
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                '#' if prev.is_whitespace() => return Some(&line[i + 1..]),
+                _ => {}
+            },
+        }
+        prev = c;
+    }
+    None
+}
+
+/// The codes of a `shellcheck disable=..` comment and the text after the list.
+fn shellcheck_disable(comment: &str) -> Option<(Vec<String>, &str)> {
+    let rest = comment.trim_start().strip_prefix("shellcheck")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let list = rest.trim_start().strip_prefix("disable=")?;
+    let end = list.find(char::is_whitespace).unwrap_or(list.len());
+    let codes = list[..end]
+        .split(',')
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+    Some((codes, &list[end..]))
+}
+
+fn shell(text: &str) -> Vec<Marker> {
+    let mut out = Vec::new();
+    for (i, line) in lines(text).enumerate() {
+        let Some((codes, _)) = shell_comment(line).and_then(shellcheck_disable) else {
+            continue;
+        };
+        for code in codes {
+            out.push(comment(
+                "shellcheck disable",
+                &code,
+                i + 1,
+                format!("# shellcheck disable={code}"),
+            ));
+        }
+    }
+    out
+}
+
 fn go(text: &str) -> Vec<Marker> {
     let mut out = Vec::new();
     for (line, block, body) in c_comments(text) {
@@ -693,6 +832,159 @@ fn rust(text: &str) -> Vec<Marker> {
         }
     }
     out
+}
+
+// ---- reasons ------------------------------------------------------------------
+
+/// Non-empty text once separators are trimmed.
+fn has_text(s: &str) -> bool {
+    !s.trim_matches(|c: char| c.is_whitespace() || c == ':' || c == '-' || c == '*' || c == '/')
+        .is_empty()
+}
+
+/// The text after `]` when `tail` opens a bracket list, else `tail`.
+fn after_brackets(tail: &str) -> &str {
+    match tail.strip_prefix('[') {
+        Some(inner) => inner.split_once(']').map_or("", |(_, rest)| rest),
+        None => tail,
+    }
+}
+
+/// `tail` without the `: A, B` code list `noqa` takes.
+fn after_noqa_codes(tail: &str) -> &str {
+    let mut rest = tail.trim_start().strip_prefix(':').unwrap_or(tail);
+    loop {
+        let t = rest.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
+        let end = t
+            .find(|c: char| c == ',' || c.is_whitespace())
+            .unwrap_or(t.len());
+        if end > 0 && is_code(&t[..end]) {
+            rest = &t[end..];
+        } else {
+            return t;
+        }
+    }
+}
+
+/// Another marker, not a reason, when it follows a `#`.
+fn starts_a_marker(seg: &str) -> bool {
+    ["type:", "pyright:", "noqa", "ruff:"]
+        .iter()
+        .any(|p| after_prefix(seg, p).is_some())
+}
+
+fn python_reasoned(kind: &str, line_text: &str) -> bool {
+    let Some(comment_text) = py_comment(line_text, &mut None) else {
+        return false;
+    };
+    let segs: Vec<&str> = comment_text.split('#').map(str::trim).collect();
+    segs.iter().enumerate().any(|(i, seg)| {
+        let rest = match kind {
+            "type: ignore" => after_prefix(seg, "type:")
+                .and_then(|r| after_prefix(r.trim_start(), "ignore"))
+                .filter(|t| boundary(t))
+                .map(after_brackets),
+            "pyright: ignore" => after_prefix(seg, "pyright:")
+                .and_then(|r| after_prefix(r.trim_start(), "ignore"))
+                .filter(|t| boundary(t))
+                .map(after_brackets),
+            _ => after_prefix(seg, "noqa")
+                .filter(|t| boundary(t))
+                .map(after_noqa_codes),
+        };
+        rest.is_some_and(|rest| {
+            rest.trim_start()
+                .strip_prefix("--")
+                .is_some_and(|t| !t.trim().is_empty())
+                || segs[i + 1..]
+                    .iter()
+                    .any(|s| !s.is_empty() && !starts_a_marker(s))
+        })
+    })
+}
+
+/// The bodies of the comments on one line, markers' leading `/` and `*` gone.
+fn comment_bodies(line_text: &str) -> Vec<(bool, &str)> {
+    c_comments(line_text)
+        .into_iter()
+        .map(|(_, block, body)| (block, body.trim().trim_start_matches(['/', '*']).trim()))
+        .collect()
+}
+
+fn rust_reasoned(line_text: &str) -> bool {
+    let Some((_, after_word)) = line_text.split_once("reason") else {
+        return false;
+    };
+    let Some(quoted) = after_word
+        .trim_start()
+        .strip_prefix('=')
+        .and_then(|r| r.trim_start().strip_prefix('"'))
+    else {
+        return false;
+    };
+    quoted
+        .split('"')
+        .next()
+        .is_some_and(|r| !r.trim().is_empty())
+}
+
+/// Whether the marker carries a reason in its tool's own reason form, read
+/// from the text of the line it was found on. Never for a configuration
+/// setting, a marker with no code, `@ts-ignore`, `@ts-nocheck`, or a
+/// file-level `ruff: noqa` / `pyright:` comment. Pure.
+pub fn reasoned(hit: &Hit, line_text: &str) -> bool {
+    if matches!(hit.origin, Origin::Setting { .. }) {
+        return false;
+    }
+    let kind = hit.kind.as_str();
+    match kind {
+        "@ts-ignore" | "@ts-nocheck" | "pyright" | "ruff: noqa" => return false,
+        "@ts-expect-error" => {
+            return comment_bodies(line_text).iter().any(|(_, body)| {
+                body.strip_prefix(kind)
+                    .is_some_and(|r| boundary(r) && has_text(r))
+            });
+        }
+        _ => {}
+    }
+    if hit.codes.is_empty() {
+        return false;
+    }
+    match kind {
+        "type: ignore" | "pyright: ignore" | "noqa" => python_reasoned(kind, line_text),
+        "allow" | "expect" => rust_reasoned(line_text),
+        "nolint" => comment_bodies(line_text).iter().any(|(block, body)| {
+            !block
+                && body.strip_prefix("nolint").is_some_and(|rest| {
+                    let rest = rest.strip_prefix(':').unwrap_or(rest);
+                    let after_list = rest.trim_start().split_once(char::is_whitespace);
+                    after_list.is_some_and(|(_, tail)| {
+                        tail.trim_start()
+                            .strip_prefix("//")
+                            .is_some_and(|t| !t.trim().is_empty())
+                    })
+                })
+        }),
+        "shellcheck disable" => shell_comment(line_text)
+            .and_then(shellcheck_disable)
+            .is_some_and(|(_, after)| {
+                after
+                    .trim_start()
+                    .strip_prefix('#')
+                    .is_some_and(|t| !t.trim().is_empty())
+            }),
+        _ if kind.starts_with("eslint-disable") => {
+            comment_bodies(line_text).iter().any(|(_, body)| {
+                body.strip_prefix(kind).is_some_and(|rest| {
+                    boundary(rest)
+                        && rest
+                            .split_once("--")
+                            .is_some_and(|(_, why)| !why.trim().is_empty())
+                })
+            })
+        }
+        _ => false,
+    }
 }
 
 // ---- configuration ------------------------------------------------------------
@@ -2113,6 +2405,243 @@ mod tests {
         );
     }
 
+    // ---- shell, reasons, and whole-change counting ----
+
+    fn reasons(path: &str, text: &str) -> Vec<bool> {
+        let text_lines: Vec<&str> = lines(text).collect();
+        markers(Path::new(path), text)
+            .iter()
+            .map(|m| reasoned(m, text_lines[m.line - 1]))
+            .collect()
+    }
+
+    #[test]
+    fn shell_markers_in_every_shell_extension() {
+        for path in ["a/x.sh", "x.bash", "x.zsh"] {
+            assert_eq!(
+                added(path, "", "# shellcheck disable=SC1091,SC2086\n"),
+                vec![
+                    (1, "shellcheck disable[SC1091]".to_string()),
+                    (1, "shellcheck disable[SC2086]".to_string())
+                ],
+                "{path}"
+            );
+            assert!(!fires(path, "# shellcheck source=lib.sh"), "{path}");
+            assert!(!fires(path, "echo '# shellcheck disable=SC1'"), "{path}");
+            assert!(!fires(path, "echo $# shellcheck disable=SC1"), "{path}");
+        }
+        assert!(!fires("x.txt", "# shellcheck disable=SC2086"));
+    }
+
+    #[test]
+    fn an_extensionless_file_is_shell_by_its_shebang() {
+        let body = "# shellcheck disable=SC2086\n";
+        for head in [
+            "#!/bin/sh",
+            "#!/usr/bin/env bash",
+            "#!/usr/bin/env -S zsh -e",
+            "#!/bin/bash -eu",
+        ] {
+            let text = format!("{head}\n{body}");
+            assert_eq!(added("bin/run", "", &text).len(), 1, "{head}");
+        }
+        assert!(added("bin/run", "", &format!("#!/usr/bin/python3\n{body}")).is_empty());
+        assert!(added("bin/run", "", body).is_empty());
+        assert!(added("bin/run.txt", "", &format!("#!/bin/sh\n{body}")).is_empty());
+        assert!(!shell_by_shebang(Path::new("run"), "#!/bin/dash\n"));
+    }
+
+    #[test]
+    fn the_shell_keyword_makes_a_shell_edit_worth_rebuilding() {
+        let hit = edit("", "# shellcheck disable=SC2086");
+        let miss = edit("", "echo hi");
+        assert!(worth_rebuilding(Path::new("x.sh"), &hit));
+        assert!(!worth_rebuilding(Path::new("x.sh"), &miss));
+    }
+
+    #[test]
+    fn reasoned_rows_by_form() {
+        let cases: &[(&str, &str, bool)] = &[
+            (
+                "x.ts",
+                "// eslint-disable-next-line no-x -- upstream bug",
+                true,
+            ),
+            ("x.ts", "/* eslint-disable no-x -- upstream bug */", true),
+            ("x.ts", "// eslint-disable-next-line no-x", false),
+            ("x.ts", "// eslint-disable-next-line no-x --", false),
+            ("x.ts", "// @ts-expect-error: upstream typing", true),
+            ("x.ts", "/* @ts-expect-error upstream typing */", true),
+            ("x.ts", "// @ts-expect-error", false),
+            (
+                "x.rs",
+                "#[allow(dead_code, reason = \"used by tests\")]",
+                true,
+            ),
+            ("x.rs", "#[expect(unused, reason = \"upstream\")]", true),
+            ("x.rs", "#[allow(dead_code)]", false),
+            ("x.rs", "#[expect(unused, reason = \"\")]", false),
+            ("x.py", "x  # noqa: F401 -- re-export", true),
+            ("x.py", "x  # noqa: F401  # re-export", true),
+            ("x.py", "x  # noqa: F401, E501 -- wide line", true),
+            ("x.py", "x  # noqa: F401", false),
+            ("x.py", "x  # noqa: F401 --", false),
+            ("x.py", "x  # type: ignore[arg-type] -- stub missing", true),
+            ("x.py", "x  # type: ignore[arg-type]  # stub missing", true),
+            ("x.py", "x  # type: ignore[arg-type]", false),
+            (
+                "x.py",
+                "x  # pyright: ignore[reportFoo] -- stub missing",
+                true,
+            ),
+            (
+                "x.py",
+                "x  # pyright: ignore[reportFoo]  # stub missing",
+                true,
+            ),
+            ("x.py", "x  # pyright: ignore[reportFoo]", false),
+            (
+                "x.py",
+                "x  # noqa: F401  # pyright: ignore[reportFoo]",
+                false,
+            ),
+            ("x.go", "f() //nolint:errcheck // best effort", true),
+            ("x.go", "f() //nolint:errcheck", false),
+            (
+                "x.sh",
+                "# shellcheck disable=SC2086 # word splitting wanted",
+                true,
+            ),
+            (
+                "x.sh",
+                "# shellcheck disable=SC1091,SC2086 # sourced at runtime",
+                true,
+            ),
+            ("x.sh", "# shellcheck disable=SC2086", false),
+            ("x.sh", "# shellcheck disable=SC2086 #", false),
+        ];
+        for (path, text, want) in cases {
+            let got = reasons(path, text);
+            assert!(!got.is_empty(), "{path}: {text}: no marker");
+            assert!(got.iter().all(|g| g == want), "{path}: {text}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn never_reasoned_forms() {
+        for (path, text) in [
+            ("x.ts", "/* eslint-disable */ // why"),
+            ("x.ts", "// eslint-disable-next-line -- why"),
+            ("x.py", "x  # noqa -- why"),
+            ("x.py", "x  # type: ignore -- why"),
+            ("x.py", "x  # pyright: ignore -- why"),
+            ("x.go", "f() //nolint // why"),
+            ("x.ts", "// @ts-ignore: why"),
+            ("x.ts", "// @ts-nocheck: why"),
+            ("x.py", "# ruff: noqa: F401 -- why"),
+            ("x.py", "# ruff: noqa -- why"),
+            ("x.py", "# pyright: basic  # why"),
+            ("x.py", "# pyright: reportFoo=none  # why"),
+            ("tsconfig.json", "\"strict\": false // why"),
+            ("Cargo.toml", "[lints.clippy]\nx = \"allow\" # why"),
+            ("ruff.toml", "[lint]\nignore = [\"E501\"] # why"),
+        ] {
+            let got = reasons(path, text);
+            assert!(!got.is_empty(), "{path}: {text}: no marker");
+            assert!(got.iter().all(|g| !g), "{path}: {text}: {got:?}");
+        }
+    }
+
+    fn net(changes: &[FileChange<'_>]) -> Vec<(String, usize, String)> {
+        net_added(changes)
+            .into_iter()
+            .map(|(p, h)| {
+                (
+                    p.display().to_string(),
+                    h.line,
+                    format!("{}[{}]", h.kind, h.codes),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_marker_moved_between_files_cancels() {
+        let marker = "x = f()  # type: ignore[arg-type]\n";
+        let got = net(&[
+            (Path::new("a.py"), marker, Path::new("a.py"), ""),
+            (Path::new("b.py"), "", Path::new("b.py"), marker),
+        ]);
+        assert_eq!(got, vec![]);
+        // Delete plus add of a whole file.
+        let got = net(&[
+            (Path::new("a.py"), marker, Path::new("a.py"), ""),
+            (Path::new("pkg/a.py"), "", Path::new("pkg/a.py"), marker),
+        ]);
+        assert_eq!(got, vec![]);
+    }
+
+    #[test]
+    fn a_surplus_is_reported_at_the_new_path_in_path_then_line_order() {
+        let got = net(&[
+            (
+                Path::new("z.py"),
+                "",
+                Path::new("z.py"),
+                "a  # noqa: E501\n",
+            ),
+            (
+                Path::new("old.py"),
+                "",
+                Path::new("b.py"),
+                "x\n# noqa: F401\ny  # noqa: E501\n",
+            ),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                ("b.py".to_string(), 2, "noqa[F401]".to_string()),
+                ("b.py".to_string(), 3, "noqa[E501]".to_string()),
+                ("z.py".to_string(), 1, "noqa[E501]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rename_is_classified_by_each_sides_own_path() {
+        let bare = "x = f()  # noqa: F821\n";
+        let got = net(&[(Path::new("a.txt"), bare, Path::new("a.py"), bare)]);
+        assert_eq!(got, vec![("a.py".to_string(), 1, "noqa[F821]".to_string())]);
+        let got = net(&[(Path::new("a.py"), bare, Path::new("a.txt"), bare)]);
+        assert_eq!(got, vec![]);
+    }
+
+    #[test]
+    fn removing_a_reasoned_marker_does_not_cancel_an_added_bare_one() {
+        let reasoned_line = "x  # noqa: E501 -- generated table\n";
+        let bare_line = "y  # noqa: E501\n";
+        let got = net(&[
+            (Path::new("a.py"), reasoned_line, Path::new("a.py"), ""),
+            (Path::new("b.py"), "", Path::new("b.py"), bare_line),
+        ]);
+        assert_eq!(got, vec![("b.py".to_string(), 1, "noqa[E501]".to_string())]);
+        // The same reason kept cancels.
+        let got = net(&[
+            (Path::new("a.py"), reasoned_line, Path::new("a.py"), ""),
+            (Path::new("b.py"), "", Path::new("b.py"), reasoned_line),
+        ]);
+        assert_eq!(got, vec![]);
+    }
+
+    #[test]
+    fn examine_change_ignores_reasons() {
+        silent(
+            "x.py",
+            "a  # noqa: E501\n",
+            "a  # noqa: E501 -- generated table\n",
+        );
+    }
+
     /// The shared fixture, through the fragment path. `tools/suppression-rate.py
     /// --self-test` classifies the same file.
     #[test]
@@ -2134,8 +2663,28 @@ mod tests {
                     .unwrap_or_else(|| panic!("line {}: no sample", n + 1)),
             );
             let sample = sample.replace("\\n", "\n");
-            let hit = !added(file, "", &sample).is_empty();
-            assert_eq!(hit, tag == "+", "line {}: {line}", n + 1);
+            let got = match tag {
+                "+" | "-" => Some(!added(file, "", &sample).is_empty()),
+                "r" | "b" => {
+                    let hits = net_added(&[(Path::new(""), "", Path::new(file), &sample)]);
+                    let sample_lines: Vec<&str> = lines(&sample).collect();
+                    let reasons: Vec<bool> = hits
+                        .iter()
+                        .map(|(_, h)| reasoned(h, sample_lines[h.line - 1]))
+                        .collect();
+                    let want = tag == "r";
+                    Some(!reasons.is_empty() && reasons.iter().all(|r| *r == want))
+                }
+                "n+" | "n-" => {
+                    let (old, new) = file.split_once('>').unwrap_or((file, file));
+                    let (before, after) = sample.split_once("@@").unwrap_or(("", &sample));
+                    let hits = net_added(&[(Path::new(old), before, Path::new(new), after)]);
+                    Some(!hits.is_empty())
+                }
+                other => panic!("line {}: unknown tag {other}", n + 1),
+            };
+            let expected = matches!(tag, "+" | "r" | "b" | "n+");
+            assert_eq!(got, Some(expected), "line {}: {line}", n + 1);
             checked += 1;
         }
         assert!(checked >= 40, "the fixture holds {checked} samples");

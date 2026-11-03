@@ -1,6 +1,9 @@
 # Tagged sample lines for lint-suppression-added, one per line:
 #   <tag> TAB <file name> TAB <sample>
-# `+` the rule fires on a fragment holding the sample, `-` it stays silent. The
+# `+` the rule fires on a fragment holding the sample, `-` it stays silent; `r`
+# it fires and every hit carries a reason, `b` it fires and none does; `n+` and
+# `n-` a whole change (file name `old>new` for a rename, sample `before@@after`)
+# does or does not add a marker once removals are netted. The
 # file name decides the file type; `\n` in a sample is a line break. A fragment
 # has no file around it, so samples that need a section carry their header.
 #
@@ -73,3 +76,32 @@
 -	.golangci.yml	linters:\n  disable: [errcheck]
 -	README.md	# noqa
 -	README.md	#[allow(dead_code)]
++	x.sh	# shellcheck disable=SC2086
++	x.bash	# shellcheck disable=SC1091,SC2086
++	x.zsh	# shellcheck disable=SC2086
+-	x.sh	# shellcheck source=lib.sh
+-	x.sh	echo '# shellcheck disable=SC2086'
+-	x.txt	# shellcheck disable=SC2086
+r	x.sh	# shellcheck disable=SC2086 # word splitting wanted
+b	x.sh	# shellcheck disable=SC2086
+r	x.ts	// eslint-disable-next-line no-console -- cli output
+b	x.ts	// eslint-disable-next-line no-console
+r	x.ts	// @ts-expect-error: upstream typing
+b	x.ts	// @ts-expect-error
+b	x.ts	// @ts-ignore: upstream typing
+r	x.rs	#[allow(dead_code, reason = "used by tests")]
+b	x.rs	#[allow(dead_code)]
+r	x.py	x  # noqa: F401 -- re-export
+r	x.py	x  # type: ignore[arg-type]  # stub missing
+b	x.py	x  # noqa: F401
+b	x.py	x  # type: ignore -- stub missing
+b	x.py	# ruff: noqa: F401 -- why
+r	x.go	f() //nolint:errcheck // best effort
+b	x.go	f() //nolint:errcheck
+b	tsconfig.json	"strict": false // why
+n-	x.py	x  # noqa: E501\n@@x\n  # noqa: E501
+n+	x.py	x\n@@x  # noqa: E501
+n-	x.py	x  # noqa: E501\n@@x  # noqa: E501
+n+	a.txt>a.py	x  # noqa: F821\n@@x  # noqa: F821
+n-	a.py>a.txt	x  # noqa: F821\n@@x  # noqa: F821
+n+	x.py	x  # noqa: E501 -- why\n@@x  # noqa: E501
