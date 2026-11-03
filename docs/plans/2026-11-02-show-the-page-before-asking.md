@@ -1,7 +1,7 @@
 ---
 canonical: decisions:docs/plans/2026-11-02-show-the-page-before-asking.md
 phases: [2]
-status: active
+status: done
 ---
 # Show the page before asking about it (pointer)
 
@@ -22,11 +22,18 @@ This repository carries Phase 2:
 ## Decision log
 
 - 2026-11-02 — The hook cites `work.page-shown-before-asked`, the rule ADR-0058 adopted (see the canonical Decision log). The pack refresh is the branch's first commit.
-- 2026-11-02 — Another session's `fix/preview-squashed-stale-base` touches `preview.rs`, `tests/preview.rs` and the CHANGELOG. This branch avoids `preview.rs` and rebases on whichever lands first. The CHANGELOG is the only shared file.
+- 2026-11-02 — Another session's `fix/preview-squashed-stale-base` touches `preview.rs`, `tests/preview.rs` and the CHANGELOG. This branch touches `preview.rs` only to add the registration's `opened` field (no approval logic), and rebased on 3.15.1 and #195. The CHANGELOG is the only shared file.
 
 - 2026-11-03 — Phase 2 was built in two relais runs. The `open` command's worker hit its wall time with a complete candidate, which was committed through the gate and recorded `salvaged` (89dfd8d). The rule's run was approved after review. Its low findings were fixed by hand: no output parameter, an accurate module comment, a `holds-until:` on "asked again" standing in for "the page changed". Deliberate: a `cd` carried over from an earlier Bash call is covered, because the transcript's per-entry `cwd` follows it. `tests/hook.rs` exempts `open.rs` from the stdout check, because it prints only its own `--help` under the `open` verb.
 
 - 2026-11-03 — Code review round 1 (implementation-review, backend, lang:rust, unix): fixed in one relais run (budget-stopped with its candidate, verified, approved) plus by hand. The fixes: option parsing; a create_new 0600 stderr file; the Windows default is now rundll32 instead of cmd; a broken git config is an error, not a silent fallback; typed `OpenError` and `Blind`; `opened` on the registration; register counted only in standalone shapes; no output parameter; names; same-line `let _` reasons; a test for the unset doctor line. A hook-denied call is recorded `is_error: true` (checked in session 81c1a1d5), so a denied ask is not a window boundary. The person chose "Ship as is" on the scan cost (2026-11-03).
+
+## Implementation review
+
+- implementation-review: round 1 approve-with-changes, 3 blocking code-rule items (same-line `let _` reasons, the `settle` output parameter, names), fails-first, unset-opener test and register shape all fixed. Delta approve-with-changes, 2 low: plan text updated here (the Windows default is now `rundll32`, and `preview.rs` gains `opened`; the canonical plan is corrected when Phase 5 closes); deliberate: a page whose written form starts with `-` gets a deny command that exits 2 (rare, and `amont-agent open -- <page>` works). 104k+134k.
+- backend: round 1 approve-with-changes, 4 fixed (a git config failure is an error, the unlinked log carries a `holds-until:`, register shape, Windows default); Delta approve. 70k+77k.
+- lang:rust: round 1 approve-with-changes, 7 fixed (`OpenError`, create_new 0600, same-line reasons, OsStr, register shape, `Blind`, `opened` on the registration); Delta approve. 86k+99k.
+- unix: round 1 approve-with-changes, 3 fixed (option parsing, create_new, rundll32); Delta approve-with-changes, 1 low deliberate: after `--` a word holding `://` reaches the opener as written; whoever types `--` has said the next word is an operand. 63k+70k.
 
 ## Verification
 
