@@ -212,20 +212,21 @@ Rollout, as the person decided: ship an `amont.pack`, and adopt it in every repo
 
 ## Verification
 
-| Check | Expected |
-|---|---|
-| fails first | the new hook and gate tests run against 3.16.0: every assert and block case fails; the allow cases pass trivially |
-| grh `7952647` replay | blocked: `#[allow(dead_code)]` at `src/main.rs` |
-| happier `50d34efa35` replay | blocked, reasonless `exhaustive-deps` (replay only; happier does not adopt) |
-| trade-agents `45f3dc7a` replay | its 26 moved `type: ignore[arg-type]` cancel. Any surplus is reported, and each one is checked against the parent tree |
-| duro-design-system `66b1905e` replay | the reasoned `@ts-expect-error` lines are kept |
-| homelab `d6bef10ed` replay | the shellcheck disables with ` # reason` are kept; the bare `# shellcheck disable=SC2086` in the workflow YAML is out of scope (YAML) |
-| relais `6f9fbee9` replay | the `#[expect(..., reason=…)]` conversions are kept, or cancel against the removed `#[allow]`s |
-| no-keyword Bash | the fake `git` records 0 calls |
-| cost | the prefilter-pass share and post-Bash p95 are recorded; on a pass, p95 is under 300 ms on trade-agents. If it is over, the person decides before release |
-| suite | `cargo test --workspace` exits 0 and lists the new hook and suppressions tests; clippy `-D warnings` exits 0; `tools/suppression-rate.py --self-test` reports 0 rows that disagree with the Rust test |
-| live | the Phase 5 scratch check, observed after brew upgrade |
-| fleet | `amont list --json` in each adopted live checkout lists `pre-commit-suppressions` at block, trusted |
-| measure, 2026-11-17 | the `net.py`-style git scan over the fleet since release shows 0 reasonless net-new markers landed; the post-Bash journal shows fires and whether the next call removed the marker |
+| Check | Expected | Actual |
+| --- | --- | --- |
+| fails first | the new hook and gate tests run against 3.16.0: every assert and block case fails; the allow cases pass trivially | 3.16.0 has no `suppressions` verb (exit 2) and its hook is silent after the grh `sed -i`; the branch blocks it (exit 1) and asserts `main.rs:1: #[allow(dead_code)]`. The staged case failed on the branch's first (index) comparison and passes after 0782050 |
+| grh `7952647` replay | blocked: `#[allow(dead_code)]` at `src/main.rs` | blocked: `src/main.rs:10` and `:13` `#[allow(dead_code)]: add reason = "…"`; grh `9c19b22` and `76fefe4` also blocked on `src/fetch.rs:117` `too_many_arguments` |
+| happier `50d34efa35` replay | blocked, reasonless `exhaustive-deps` (replay only; happier does not adopt) | blocked: `useSessionDetailsPaneSync.ts:49` `eslint-disable-next-line react-hooks/exhaustive-deps: add -- <why>` |
+| trade-agents `45f3dc7a` replay | its 26 moved `type: ignore[arg-type]` cancel. Any surplus is reported, and each one is checked against the parent tree | the 26 moved `type: ignore[arg-type]` cancel; 1 surplus blocked, a NEW `# pyright: reportArgumentType=none` header (parent has 2 such headers, the commit 3). True positive; it is named at `test_worker_execute.py:19`, the first surplus occurrence in path order (the plan's known approximation), while the added line is in `test_registry_store.py` |
+| duro-design-system `66b1905e` replay | the reasoned `@ts-expect-error` lines are kept | passed (the reasoned `@ts-expect-error` lines kept) |
+| homelab `d6bef10ed` replay | the shellcheck disables with ` # reason` are kept; the bare `# shellcheck disable=SC2086` in the workflow YAML is out of scope (YAML) | passed (reasoned shellcheck disables kept; YAML not examined) |
+| relais `6f9fbee9` replay | the `#[expect(..., reason=…)]` conversions are kept, or cancel against the removed `#[allow]`s | passed (wrapped `#[expect(…, reason = …)]` kept; this needed 0f82017) |
+| no-keyword Bash | the fake `git` records 0 calls | `a_command_naming_no_keyword_spawns_no_git`: the fake `git` records 0 calls |
+| cost | the prefilter-pass share and post-Bash p95 are recorded; on a pass, p95 is under 300 ms on trade-agents. If it is over, the person decides before release | prefilter passes 2,394 of 38,037 Bash calls since 10-20 (6.3%). On a pass, 20 runs on a fresh worktree under a loaded machine: trade-agents (1,289 files) p50 232 ms, p95 266 ms; relais (596 files) p50 253 ms, p95 301 ms; no keyword: 13 ms and 11 ms. Under the 300 ms bar on trade-agents |
+| suite | `cargo test --workspace` exits 0 and lists the new hook and suppressions tests; clippy `-D warnings` exits 0; `tools/suppression-rate.py --self-test` reports 0 rows that disagree with the Rust test | the commit gate (`make check`: cargo test --workspace, clippy -D warnings, fmt, the suppression-rate self-test, 26 checks) passed on every commit; `--self-test`: 100 samples agree |
+| live | the Phase 5 scratch check, observed after brew upgrade | Phase 5, after release: not in this PR |
+| fleet | `amont list --json` in each adopted live checkout lists `pre-commit-suppressions` at block, trusted | Phase 6: not in this PR |
+| measure, 2026-11-17 | the `net.py`-style git scan over the fleet since release shows 0 reasonless net-new markers landed; the post-Bash journal shows fires and whether the next call removed the marker | DUE 2026-11-17 |
+| replay, whole fleet | — | 7,376 non-merge commits since 2026-10-25 across 27 repositories: 7,371 pass, 5 block (above), 0 errors; 0 false positives |
 
 <!-- panel: repos=amont-agent,decisions reviewers=backend,lang:rust,tui,unix,codex body-sha=81f46293160c -->
