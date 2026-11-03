@@ -620,9 +620,11 @@ pub struct Binding {
 }
 
 /// The completed reviews in a transcript, streamed: the review blocks of
-/// every `plan-review-*` launch that completed. See [`completed_agents`].
+/// every `plan-review-*` launch that completed, and every round such a
+/// reviewer was resumed for with `SendMessage` whose message carries a block
+/// (a message without one binds nothing). See [`completed_agents_resumable`].
 pub fn bindings(reader: impl BufRead) -> Vec<Binding> {
-    completed_agents(reader, AGENT_PREFIX)
+    completed_agents_resumable(reader, AGENT_PREFIX)
         .into_iter()
         .flat_map(|c| parse_blocks(&c.agent, &c.prompt))
         .collect()
@@ -687,8 +689,8 @@ pub fn completed_agents(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
 /// overwritten. A round counts only when all three agree, and only on a
 /// structured notification, as a launch does.
 ///
-/// Only the implementation review reads this: the plan-review panel counts
-/// fresh launches alone.
+/// The implementation review and the plan-review panel read this; the other
+/// readers of [`completed_agents`] count fresh launches alone.
 pub fn completed_agents_resumable(reader: impl BufRead, prefix: &str) -> Vec<Completed> {
     scan(reader, prefix, true)
 }

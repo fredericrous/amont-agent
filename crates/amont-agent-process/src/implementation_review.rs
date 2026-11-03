@@ -2092,7 +2092,7 @@ mod tests {
 
     #[test]
     fn the_shared_reader_counts_the_launch_alone() {
-        // What the plan-review panel reads: a resume is not a launch.
+        // What the plain reader returns: a resume is not a launch.
         let launches = crate::plan_review::completed_agents(RESUMED.as_bytes(), AGENT);
         assert_eq!(launches.len(), 1);
         assert!(launches[0].prompt.contains(LAUNCH_TREE));
