@@ -894,11 +894,40 @@ fn approval_of(repo: &Path, commit: &str) -> Option<ApprovedBy> {
         .map(|a| ApprovedBy::ByTree(a.1.clone()))
 }
 
-fn approve(regs: &[Registration], channel: &str) {
-    let Some(d) = dir() else { return };
+/// How long a hook waits for another session's write of `approvals`.
+const APPROVALS_LOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Record `regs` as approved through `channel`, and journal `approved` for
+/// each, only once the `approvals` file holds them. The read, the merge and
+/// the write run under an exclusive lock on `approvals.lock`, so two sessions
+/// approving at once cannot drop each other's line. A lock not taken in time,
+/// or a write that fails, stores nothing and is journalled `approve-failed`
+/// with the reason; the push then still asks the person. Returns whether the
+/// approvals were stored.
+fn approve(regs: &[Registration], channel: &str) -> bool {
+    let fail = |why: &str| {
+        for r in regs {
+            note(
+                "approve-failed",
+                &r.session,
+                &r.repo,
+                &format!("{} by {channel}: {why}", r.label()),
+            );
+        }
+        false
+    };
+    let Some(d) = dir() else {
+        return fail("no state directory");
+    };
     if ensure(&d).is_none() {
-        return;
+        return fail("the state directory cannot be created");
     }
+    let _lock =
+        match crate::review_outcomes::lock_within(&d.join("approvals.lock"), APPROVALS_LOCK_BUDGET)
+        {
+            Ok(lock) => lock,
+            Err(why) => return fail(&format!("the approvals lock was not taken: {why}")),
+        };
     let mut kept = approvals();
     for r in regs {
         kept.retain(|(repo, c, _, _, _)| !(repo == &r.repo && c == &r.commit));
@@ -910,12 +939,6 @@ fn approve(regs: &[Registration], channel: &str) {
             channel.to_string(),
             tree,
         ));
-        note(
-            "approved",
-            &r.session,
-            &r.repo,
-            &format!("{} by {channel}", r.label()),
-        );
     }
     let body: String = kept
         .iter()
@@ -929,8 +952,19 @@ fn approve(regs: &[Registration], channel: &str) {
         })
         .collect();
     let path = d.join("approvals");
-    let _ = amont_agent_guard::atomic::write_atomic(&path, &body);
+    if let Err(why) = amont_agent_guard::atomic::write_atomic(&path, &body) {
+        return fail(&format!("approvals could not be written: {why}"));
+    }
     journal::private(&path, 0o600);
+    for r in regs {
+        note(
+            "approved",
+            &r.session,
+            &r.repo,
+            &format!("{} by {channel}", r.label()),
+        );
+    }
+    true
 }
 
 /// One journal line under the rule's id. The soak reads these back.
@@ -1246,6 +1280,9 @@ fn approve_if_unchanged(reg: &Registration, repo: &Path, page: &str) {
     let Some(same) = unchanged_pair(&text, folder, &screens) else {
         return;
     };
+    if !approve(std::slice::from_ref(reg), "unchanged") {
+        return;
+    }
     note(
         "unchanged",
         &reg.session,
@@ -1259,7 +1296,6 @@ fn approve_if_unchanged(reg: &Registration, repo: &Path, page: &str) {
             same.after
         ),
     );
-    approve(std::slice::from_ref(reg), "unchanged");
 }
 
 /// The text a marked question starts with: the marker, then the label the
@@ -1666,7 +1702,9 @@ pub fn on_post_ask(ask: &amont_agent_guard::payload::Ask) {
                 // The id in the marker is enough: it begins with the commit's
                 // sha7, which the person sees, and the registration it names is
                 // bound to this session, this prompt and this question already.
-                approve(&mine, &format!("option,{latency}"));
+                // A failed store is journalled `approve-failed`; the push
+                // then asks again, which is the safe side.
+                let _stored = approve(&mine, &format!("option,{latency}"));
                 save_registrations(&rest);
             }
             REQUEST_CHANGES | HOLD => {
@@ -1746,7 +1784,8 @@ pub fn on_prompt(prompt: &amont_agent_guard::payload::Prompt) {
         );
     }
     if typed {
-        approve(&asked, "typed");
+        // A failed store is journalled `approve-failed`; the push asks again.
+        let _stored = approve(&asked, "typed");
     } else {
         for r in &asked {
             note(

@@ -2039,3 +2039,46 @@ fn an_identical_pair_in_a_guide_that_is_not_the_pages_is_not_approved() {
     assert!(journal.contains("not beside its page"), "{journal}");
     assert!(!journal.contains(" unchanged "), "{journal}");
 }
+
+/// Make the approvals file unwritable: a non-empty directory stands where
+/// the atomic rename would put it.
+fn block_approvals(w: &World) {
+    let blocked = w.root.join("claude/amont-agent/previews/approvals");
+    std::fs::create_dir_all(&blocked).unwrap();
+    std::fs::write(blocked.join("keep"), "x").unwrap();
+}
+
+#[test]
+fn an_unchanged_approval_that_cannot_be_stored_is_not_claimed() {
+    let w = World::new("unchanged-unstored");
+    w.commit("app/routes/settings.tsx", "1\n");
+    block_approvals(&w);
+    let same: &[u8] = b"same";
+    let _registered = w.register_guide(
+        GUIDE,
+        &[
+            ("panel.png", b"p"),
+            ("before.png", same),
+            ("after.png", same),
+        ],
+        str::to_string,
+    );
+    let journal = w.journal();
+    assert!(journal.contains("approve-failed"), "{journal}");
+    assert!(!journal.contains(" unchanged "), "{journal}");
+    assert!(!journal.contains(" approved "), "{journal}");
+    assert!(w.push_advised("s"), "{journal}");
+}
+
+#[test]
+fn a_marked_approve_that_cannot_be_stored_is_journalled_and_still_asks() {
+    let w = World::new("approve-unstored");
+    w.commit("app/routes/settings.tsx", "1\n");
+    let id = w.register("s", "p1");
+    block_approvals(&w);
+    w.answer("s", "p1", &id, Some("Approve"));
+    let journal = w.journal();
+    assert!(journal.contains("approve-failed"), "{journal}");
+    assert!(!journal.contains(" approved "), "{journal}");
+    assert!(w.push_advised("s"), "{journal}");
+}
