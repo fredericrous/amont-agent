@@ -264,6 +264,42 @@ impl Transcript {
         format!("<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>{status}</status>\n<summary>done</summary>\n</task-notification>")
     }
 
+    /// Launch `agent` in the background (agent id `a1`) on `first`, complete
+    /// it, then resume it with `SendMessage`: `message` is the text sent, and
+    /// the round completes on the agent's own notification.
+    fn resumed(&mut self, w: &World, agent: &str, first: &str, message: &str) -> &mut Self {
+        self.review(w, agent, first, Done::NotifiedUser);
+        let id = w.id();
+        self.lines.push(
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": id, "name": "SendMessage",
+                    "input": {"to": "a1", "message": message}
+                }]}
+            })
+            .to_string(),
+        );
+        self.lines.push(
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": "resumed"}]
+                }]},
+                "toolUseResult": {"success": true, "resumedAgentId": "a1"}
+            })
+            .to_string(),
+        );
+        self.lines.push(
+            serde_json::json!({
+                "type": "user", "origin": {"kind": "task-notification"},
+                "message": {"role": "user", "content": Self::notification(&id, "completed")}
+            })
+            .to_string(),
+        );
+        self
+    }
+
     fn review(&mut self, w: &World, agent: &str, block: &str, done: Done) -> &mut Self {
         let id = w.id();
         self.launch(&id, agent, &format!("Review the plan.\n{block}\n"));
@@ -537,6 +573,57 @@ fn the_same_body_under_a_new_path_in_a_new_session_passes() {
         w.present(&again, &Transcript::default()),
         Said::Silent,
         "the content index carries the baseline across sessions"
+    );
+}
+
+#[test]
+fn a_resumed_reviewer_counts_on_the_block_in_its_message() {
+    let w = World::new("resumed");
+    rust_cli(&w);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let mut t = Transcript::default();
+    full_panel(&w, &mut t, &plan);
+    let launch_block = w.block(&plan, None);
+
+    // The person asks for a change: backend is RESUMED on the new body.
+    let edited = w.plan(
+        "p.md",
+        &BODY.replace("The work.", "The work, resumed."),
+        "repos=tool",
+    );
+    assert!(matches!(w.present(&edited, &t), Said::Deny(ref why) if why.contains("stale")));
+    let message = format!("Delta.\n{}\nWhat changed: a line.", w.block(&edited, None));
+    t.resumed(&w, "plan-review-backend", &launch_block, &message);
+    assert_eq!(
+        w.present(&edited, &t),
+        Said::Silent,
+        "the resumed round bound backend to the body in its message"
+    );
+}
+
+#[test]
+fn a_resume_without_a_block_does_not_rebind() {
+    let w = World::new("resumed-no-block");
+    rust_cli(&w);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let mut t = Transcript::default();
+    full_panel(&w, &mut t, &plan);
+    let launch_block = w.block(&plan, None);
+    let edited = w.plan(
+        "p.md",
+        &BODY.replace("The work.", "The work, resumed."),
+        "repos=tool",
+    );
+    t.resumed(
+        &w,
+        "plan-review-backend",
+        &launch_block,
+        "Please look again.",
+    );
+    let said = w.present(&edited, &t);
+    assert!(
+        matches!(said, Said::Deny(ref why) if why.contains("stale (reviewed an older body) for repos=tool: backend")),
+        "{said:?}"
     );
 }
 
