@@ -2081,6 +2081,7 @@ fn a_marked_approve_that_cannot_be_stored_is_journalled_and_still_asks() {
     assert!(journal.contains("approve-failed"), "{journal}");
     assert!(!journal.contains(" approved "), "{journal}");
     assert!(w.push_advised("s"), "{journal}");
+}
 
 /// `preview register --open` through the shared opener: `opened` says whether
 /// the launch worked, and the registration stands either way.
