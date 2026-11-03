@@ -24,6 +24,15 @@ This repository carries Phase 2:
 - 2026-11-02 — The hook cites `work.page-shown-before-asked`, the rule ADR-0058 adopted (see the canonical Decision log). The pack refresh is the branch's first commit.
 - 2026-11-02 — Another session's `fix/preview-squashed-stale-base` touches `preview.rs`, `tests/preview.rs` and the CHANGELOG. This branch avoids `preview.rs` and rebases on whichever lands first. The CHANGELOG is the only shared file.
 
+- 2026-11-03 — Phase 2 was built in two relais runs. The `open` command's worker hit its wall time with a complete candidate, which was committed through the gate and recorded `salvaged` (89dfd8d). The rule's run was approved after review. Its low findings were fixed by hand: no output parameter, an accurate module comment, a `holds-until:` on "asked again" standing in for "the page changed". Deliberate: a `cd` carried over from an earlier Bash call is covered, because the transcript's per-entry `cwd` follows it. `tests/hook.rs` exempts `open.rs` from the stdout check, because it prints only its own `--help` under the `open` verb.
+
 ## Verification
 
-Rows are in the canonical plan; results are recorded here.
+Rows are in the canonical plan; results are recorded here (2026-11-03, rebased on 3.15.1).
+
+| Check | Actual |
+| --- | --- |
+| opener | `tests/open.rs`: the template's temp file holds exactly the `file://` URL; a path with a space and `#` is one percent-encoded argv entry; missing file exit 1, no argument exit 2, an opener failing within 2 s exit 1; `register --open` reports `opened` false/true with exit 0 (`tests/preview.rs`); doctor `opener` finding (`tests/doctor.rs`) |
+| fails first, passes, preview-url, window, narrow, no transcript | `tests/ask_unopened_page.rs`: 15 end-to-end hook tests pass, including the A/B/C mockup question denied and literal matching of `#/A` vs `#/B`, `/options` vs `/options/` |
+| backtest | every AskUserQuestion of the last 14 days (41 transcripts, 269 asks) replayed through the release binary with the transcript cut at that ask: first run 6 fires, 3 denies, 1 false (a bare `.html` in an option's text); fixed (`an_extension_alone_is_not_a_page`); re-run: 5 fires, 2 denies (the A/B/C placement question; "Quels ajouts veux-tu dans roadmap.html ?"), 0 false; 3 advises (windows past the 16 MiB read-back) |
+| cost | hook call without a page: p50 89 ms, p95 110 ms (process start and every rule); the scan adds about 12 ms on a short session, 80 to 170 ms on long ones, about 790 ms at worst, only for a question that names a page (5 of 269). Over the 2 ms budget: the person chose "Ship as is" (AskUserQuestion, 2026-11-03) |
