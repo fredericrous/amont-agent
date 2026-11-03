@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A preview approval is stored under an exclusive lock on `approvals.lock`,
+  so two sessions approving at once no longer drop each other's line. A lock
+  not taken within 2 s, or a write that fails, stores nothing and is
+  journalled `approve-failed` with the reason; `approved` and `unchanged`
+  are journalled only once the approval is on disk, and the push still asks.
+
 ## v3.15.1
 
 ### Fixed
