@@ -15,7 +15,7 @@ impl Home {
     fn new(name: &str) -> Home {
         let dir =
             std::env::temp_dir().join(format!("amont-agent-doctor-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // a stale scratch directory may not exist
         std::fs::create_dir_all(&dir).expect("scratch dir");
         Home(dir)
     }
@@ -47,7 +47,7 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0); // cleanup is best effort
     }
 }
 
@@ -775,8 +775,8 @@ fn a_full_set_of_code_review_agents_reports_no_gap() {
     assert!(!out.contains("no `implementation-review` agent"), "{out}");
 }
 
-fn opener_doctor_line(w: &Home, name: &str, opener: Option<&str>) -> String {
-    let home = w.0.join(format!("home-{name}"));
+fn opener_doctor_line(home_dir: &Home, name: &str, opener: Option<&str>) -> String {
+    let home = home_dir.0.join(format!("home-{name}"));
     std::fs::create_dir_all(&home).unwrap();
     let gitconfig = home.join("gitconfig");
     std::fs::write(&gitconfig, "").unwrap();
@@ -791,8 +791,8 @@ fn opener_doctor_line(w: &Home, name: &str, opener: Option<&str>) -> String {
     }
     let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
         .args(["doctor", "--json"])
-        .current_dir(&w.0)
-        .env("CLAUDE_CONFIG_DIR", &w.0)
+        .current_dir(&home_dir.0)
+        .env("CLAUDE_CONFIG_DIR", &home_dir.0)
         .env("HOME", &home)
         .env("GIT_CONFIG_GLOBAL", &gitconfig)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -808,10 +808,10 @@ fn opener_doctor_line(w: &Home, name: &str, opener: Option<&str>) -> String {
 
 #[test]
 fn doctor_reports_the_opener_and_warns_when_its_program_is_missing() {
-    let w = Home::new("opener");
-    let good = opener_doctor_line(&w, "good", Some("sh {}"));
+    let home_dir = Home::new("opener");
+    let good = opener_doctor_line(&home_dir, "good", Some("sh {}"));
     assert!(good.contains("opener: sh {} (setting)"), "{good}");
-    let missing = opener_doctor_line(&w, "missing", Some("/nonexistent/browser {}"));
+    let missing = opener_doctor_line(&home_dir, "missing", Some("/nonexistent/browser {}"));
     assert!(
         missing.contains("/nonexistent/browser not found"),
         "{missing}"
@@ -820,4 +820,6 @@ fn doctor_reports_the_opener_and_warns_when_its_program_is_missing() {
         missing.contains("git config --global amont.agent.opener"),
         "{missing}"
     );
+    let unset = opener_doctor_line(&home_dir, "unset", None);
+    assert!(unset.contains("(platform default)"), "{unset}");
 }

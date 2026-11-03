@@ -7,7 +7,7 @@
 - `amont-agent open <url|path>` opens a page for the person through the
   per-machine opener `amont.agent.opener` (a command template; `{}` is the
   page, split into words first so it stays one argument; default `open`,
-  `xdg-open` or `cmd /c start ""`). A path becomes a percent-encoded `file://`
+  `xdg-open` or `rundll32 url.dll,FileProtocolHandler {}`). A path becomes a percent-encoded `file://`
   URL. Silent on success; one error line and exit 1 on failure; exit 2 for
   usage (ADR-0058).
 - `doctor` reports the opener and warns when its program is not found.

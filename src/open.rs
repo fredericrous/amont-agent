@@ -7,7 +7,7 @@
 //! inside each word afterwards, so the page is always exactly one argv entry
 //! and no shell runs.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -20,6 +20,7 @@ use amont_agent_process::guide;
 const SETTING: &str = "amont.agent.opener";
 const USAGE: &str = "usage: amont-agent open <url|path>";
 const LAUNCH_WAIT: Duration = Duration::from_secs(2);
+const CAPTURE_ATTEMPTS: u32 = 16;
 const POLL_EVERY: Duration = Duration::from_millis(20);
 
 const HELP: &str = "\
@@ -30,9 +31,82 @@ absolute, must exist, and is opened as a file:// URL.
 
 The opener is the command template in `git config --global amont.agent.opener`,
 where `{}` stands for the page (the page is appended when there is no `{}`).
-Unset, it is `open` (macOS), `xdg-open` (Linux) or `cmd /c start \"\"` (Windows).
+Unset, it is `open` (macOS), `xdg-open` (Linux) or `rundll32 url.dll,FileProtocolHandler {}` (Windows).
 Silent on success. Exit 0 launched, 1 the page could not be opened, 2 usage.
 ";
+
+/// Why a page could not be opened.
+#[derive(Debug)]
+pub enum OpenError {
+    /// The opener template cannot be read or used.
+    Template(String),
+    NoCwd(std::io::Error),
+    Missing(std::ffi::OsString),
+    Capture(std::io::Error),
+    NotStarted {
+        page: String,
+        program: String,
+        cause: std::io::Error,
+    },
+    Exited {
+        page: String,
+        program: String,
+        status: std::process::ExitStatus,
+        said: String,
+    },
+    Wait {
+        page: String,
+        program: String,
+        cause: std::io::Error,
+    },
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Template(why) => write!(f, "{why}"),
+            OpenError::NoCwd(cause) => write!(f, "no working directory: {cause}"),
+            OpenError::Missing(target) => write!(f, "{} does not exist", target.to_string_lossy()),
+            OpenError::Capture(cause) => {
+                write!(f, "could not capture the opener's output: {cause}")
+            }
+            OpenError::NotStarted {
+                page,
+                program,
+                cause,
+            } => write!(
+                f,
+                "could not open {page}: `{program}` did not start: {cause} (check {SETTING})"
+            ),
+            OpenError::Exited {
+                page,
+                program,
+                status,
+                said,
+            } if said.is_empty() => write!(
+                f,
+                "could not open {page}: `{program}` exited with {status} (check {SETTING})"
+            ),
+            OpenError::Exited {
+                page,
+                program,
+                status,
+                said,
+            } => write!(
+                f,
+                "could not open {page}: `{program}` exited with {status}: {said} (check {SETTING})"
+            ),
+            OpenError::Wait {
+                page,
+                program,
+                cause,
+            } => write!(
+                f,
+                "could not open {page}: `{program}` could not be waited on: {cause} (check {SETTING})"
+            ),
+        }
+    }
+}
 
 /// Where the opener template came from.
 enum Source {
@@ -53,19 +127,27 @@ fn platform_default() -> &'static str {
     if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(windows) {
-        "cmd /c start \"\""
+        "rundll32 url.dll,FileProtocolHandler {}"
     } else {
         "xdg-open"
     }
 }
 
-fn template() -> (String, Source) {
-    let set = git::output(&["config", "--global", "--get", SETTING])
-        .filter(|o| o.code == 0 && !o.stdout.is_empty())
-        .map(|o| o.stdout);
-    match set {
-        Some(t) => (t, Source::Setting),
-        None => (platform_default().to_string(), Source::PlatformDefault),
+/// The opener template. Only git's exit 1 ("key not set") means unset; any
+/// other exit, or a git that cannot run, is an error.
+fn template() -> Result<(String, Source), OpenError> {
+    let Some(answer) = git::output(&["config", "--global", "--get", SETTING]) else {
+        return Err(OpenError::Template(format!(
+            "git could not be run to read {SETTING}; set {SETTING} once git works"
+        )));
+    };
+    match answer.code {
+        0 if !answer.stdout.is_empty() => Ok((answer.stdout, Source::Setting)),
+        0 | 1 => Ok((platform_default().to_string(), Source::PlatformDefault)),
+        code => Err(OpenError::Template(format!(
+            "git config exited {code} reading {SETTING}: {}; fix {SETTING}",
+            answer.stderr
+        ))),
     }
 }
 
@@ -105,41 +187,70 @@ fn argv(words: &[String], page: &str) -> Vec<String> {
 }
 
 /// A URL as given, or a path made absolute and turned into a `file://` URL.
-fn page_for(target: &str) -> Result<String, String> {
-    if target.contains("://") {
-        return Ok(target.to_string());
+fn page_for(target: &OsStr) -> Result<String, OpenError> {
+    if let Some(url) = target.to_str().filter(|t| t.contains("://")) {
+        return Ok(url.to_string());
     }
-    let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
+    let cwd = std::env::current_dir().map_err(OpenError::NoCwd)?;
     let absolute: PathBuf = cwd.join(target);
     if !absolute.exists() {
-        return Err(format!("{target} does not exist"));
+        return Err(OpenError::Missing(target.to_os_string()));
     }
     Ok(guide::file_url(&absolute))
 }
 
-/// Open `page` (a URL) with the machine's opener. `Ok` when the opener
-/// exited 0 or was still running after 2 s; it is never killed.
-pub fn open_url(page: &str) -> Result<(), String> {
-    let (template, _) = template();
-    let words = split(&template).map_err(|why| format!("{why}; set {SETTING}"))?;
-    let argv = argv(&words, page);
-    let stderr_path = std::env::temp_dir().join(format!(
-        "amont-agent-open-{}-{}.err",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let stderr_file = std::fs::File::create(&stderr_path)
-        .map_err(|e| format!("could not capture the opener's output: {e}"))?;
-    let result = launch(&argv, stderr_file, &stderr_path);
-    // A leftover temp file is harmless; the opener may still hold it open.
-    let _ = std::fs::remove_file(&stderr_path);
-    result.map_err(|why| format!("could not open {page}: {why} (check {SETTING})"))
+/// Create the opener's stderr capture: a new file, owner-only, never a name
+/// somebody else already made.
+fn capture_file() -> Result<(std::fs::File, PathBuf), OpenError> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or(0); // a clock before 1970 only makes the name less unique; create_new decides
+    let mut last = None;
+    for attempt in 0..CAPTURE_ATTEMPTS {
+        let path = std::env::temp_dir().join(format!(
+            "amont-agent-open-{}-{stamp}-{attempt}.err",
+            std::process::id()
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists => last = Some(cause),
+            Err(cause) => return Err(OpenError::Capture(cause)),
+        }
+    }
+    Err(OpenError::Capture(last.unwrap_or_else(|| {
+        std::io::Error::other("no free capture file name")
+    })))
 }
 
-fn launch(argv: &[String], stderr_file: std::fs::File, stderr_path: &Path) -> Result<(), String> {
+/// Open `page` (a URL) with the machine's opener. `Ok` when the opener
+/// exited 0 or was still running after 2 s; it is never killed.
+pub fn open_url(page: &str) -> Result<(), OpenError> {
+    let (template, _) = template()?;
+    let words =
+        split(&template).map_err(|why| OpenError::Template(format!("{why}; set {SETTING}")))?;
+    let argv = argv(&words, page);
+    let (stderr_file, stderr_path) = capture_file()?;
+    let launched = launch(&argv, page, stderr_file, &stderr_path);
+    // holds-until: an opener that keeps writing stderr after it was left running; the unlinked file then belongs to the browser and grows with it, until the capture is size-capped
+    let _ = std::fs::remove_file(&stderr_path); // a leftover temp file is harmless, and the opener may still hold it open
+    launched
+}
+
+fn launch(
+    argv: &[String],
+    page: &str,
+    stderr_file: std::fs::File,
+    stderr_path: &Path,
+) -> Result<(), OpenError> {
+    let program = argv[0].clone();
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
@@ -151,44 +262,61 @@ fn launch(argv: &[String], stderr_file: std::fs::File, stderr_path: &Path) -> Re
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("`{}` did not start: {e}", argv[0]))?;
+    let mut child = command.spawn().map_err(|cause| OpenError::NotStarted {
+        page: page.to_string(),
+        program: program.clone(),
+        cause,
+    })?;
     let deadline = Instant::now() + LAUNCH_WAIT;
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
-                let said = std::fs::read_to_string(stderr_path).unwrap_or_default();
+                let said = std::fs::read_to_string(stderr_path).unwrap_or_default(); // the capture is only a hint for the message
                 let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
-                return Err(if said.is_empty() {
-                    format!("`{}` exited with {status}", argv[0])
-                } else {
-                    format!("`{}` exited with {status}: {said}", argv[0])
+                return Err(OpenError::Exited {
+                    page: page.to_string(),
+                    program,
+                    status,
+                    said,
                 });
             }
             Ok(None) if Instant::now() >= deadline => return Ok(()),
             Ok(None) => std::thread::sleep(POLL_EVERY),
-            Err(e) => return Err(format!("`{}` could not be waited on: {e}", argv[0])),
+            Err(cause) => {
+                return Err(OpenError::Wait {
+                    page: page.to_string(),
+                    program,
+                    cause,
+                })
+            }
         }
     }
 }
 
+fn unknown_option(word: &OsStr) -> ExitCode {
+    eprintln!("amont-agent: unknown option {}", word.to_string_lossy());
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
+}
+
 pub fn run(args: &[OsString]) -> ExitCode {
-    let args: Vec<String> = args
-        .iter()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print!("{HELP}");
-        return ExitCode::SUCCESS;
+    let after_separator = args.first().is_some_and(|a| a == "--");
+    let operands = if after_separator { &args[1..] } else { args };
+    if !after_separator {
+        if args.iter().any(|a| a == "--help" || a == "-h") {
+            print!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        if let Some(word) = args.iter().find(|a| a.to_string_lossy().starts_with('-')) {
+            return unknown_option(word);
+        }
     }
-    let [target] = args.as_slice() else {
+    let [target] = operands else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    let outcome = page_for(target).and_then(|page| open_url(&page));
-    match outcome {
+    match page_for(target).and_then(|page| open_url(&page)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
             eprintln!("amont-agent: {why}");
@@ -213,7 +341,15 @@ fn program_found(program: &str) -> bool {
 
 /// The opener in use and where it came from.
 pub fn opener_finding() -> doctor::Finding {
-    let (template, source) = template();
+    let (template, source) = match template() {
+        Ok(found) => found,
+        Err(why) => {
+            return doctor::Finding::warn(
+                "opener: unreadable".to_string(),
+                format!("{why}; {SETTING} names the opener"),
+            )
+        }
+    };
     let remedy = "git config --global amont.agent.opener '<browser command> {}'";
     let words = match split(&template) {
         Ok(words) => words,

@@ -49,10 +49,27 @@ pub enum Verdict {
     /// These pages, as written, were not opened.
     Unopened(Vec<String>),
     /// The transcript cannot say; the pages are those named.
-    Unknown {
-        pages: Vec<String>,
-        why: &'static str,
-    },
+    Unknown { pages: Vec<String>, why: Blind },
+}
+
+/// Why the transcript cannot say whether a page was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blind {
+    NoTranscript,
+    Unreadable,
+    LineInProgress,
+    PastReadBack,
+}
+
+impl std::fmt::Display for Blind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Blind::NoTranscript => "the payload names no transcript",
+            Blind::Unreadable => "the transcript could not be read",
+            Blind::LineInProgress => "the transcript ends in a line still being written",
+            Blind::PastReadBack => "the window is longer than the hook reads back",
+        })
+    }
 }
 
 /// The pages named by a question and its options.
@@ -247,13 +264,13 @@ pub fn judge(ask: &Ask) -> Verdict {
     let Some(path) = &ask.transcript else {
         return Verdict::Unknown {
             pages: written(),
-            why: "the payload names no transcript",
+            why: Blind::NoTranscript,
         };
     };
     let Ok(file) = std::fs::File::open(path) else {
         return Verdict::Unknown {
             pages: written(),
-            why: "the transcript could not be read",
+            why: Blind::Unreadable,
         };
     };
     match unopened(file, &pages, &ask.tool_use_id) {
@@ -294,7 +311,7 @@ pub fn unopened(
     file: impl Read + Seek,
     pages: &[Page],
     current: &str,
-) -> Result<Vec<usize>, &'static str> {
+) -> Result<Vec<usize>, Blind> {
     unopened_within(file, pages, current, READ_BACK)
 }
 
@@ -303,8 +320,8 @@ fn unopened_within(
     pages: &[Page],
     current: &str,
     budget: u64,
-) -> Result<Vec<usize>, &'static str> {
-    let mut states = vec![State::Pending; pages.len()];
+) -> Result<Vec<usize>, Blind> {
+    let mut shown = Shown::new(pages);
     // Results are written after their calls, so a backwards scan meets the
     // result first and remembers it until the call turns up.
     let mut completed: HashMap<String, String> = HashMap::new();
@@ -319,39 +336,39 @@ fn unopened_within(
             return false;
         };
         let cwd = Path::new(entry.get("cwd").and_then(|c| c.as_str()).unwrap_or(""));
-        let items = entry
+        let blocks = entry
             .get("message")
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_array());
-        for item in items.into_iter().flatten() {
-            let id = item
+        for block in blocks.into_iter().flatten() {
+            let id = block
                 .get("tool_use_id")
-                .or_else(|| item.get("id"))
+                .or_else(|| block.get("id"))
                 .and_then(|i| i.as_str())
                 .unwrap_or("");
-            match item.get("type").and_then(|t| t.as_str()) {
+            match block.get("type").and_then(|t| t.as_str()) {
                 Some("tool_result") => {
-                    if item.get("is_error").and_then(|e| e.as_bool()) != Some(true) {
-                        completed.insert(id.to_string(), result_text(item));
+                    if block.get("is_error").and_then(|e| e.as_bool()) != Some(true) {
+                        completed.insert(id.to_string(), result_text(block));
                     }
                 }
                 Some("tool_use") if id != current => {
-                    let Some(result) = completed.get(id) else {
+                    let Some(tool_output) = completed.get(id) else {
                         continue;
                     };
-                    let input = item.get("input");
-                    match item.get("name").and_then(|n| n.as_str()) {
+                    let input = block.get("input");
+                    match block.get("name").and_then(|n| n.as_str()) {
                         Some("Bash") => {
                             let command = input
                                 .and_then(|i| i.get("command"))
                                 .and_then(|c| c.as_str())
                                 .unwrap_or("");
-                            let keys = opened_keys(command, cwd, result);
-                            settle(&mut states, pages, &keys, State::Opened);
+                            let keys = opened_keys(command, cwd, tool_output);
+                            shown.settle(&keys, State::Opened);
                         }
                         Some("AskUserQuestion") => {
                             let keys = input.map(|i| asked_keys(i, cwd)).unwrap_or_default();
-                            settle(&mut states, pages, &keys, State::Unopened);
+                            shown.settle(&keys, State::Unopened);
                         }
                         _ => {}
                     }
@@ -359,23 +376,47 @@ fn unopened_within(
                 _ => {}
             }
         }
-        states.iter().all(|s| *s != State::Pending)
+        shown.undecided() == 0
     })?;
-    Ok((0..pages.len())
-        .filter(|i| states[*i] != State::Opened)
-        .collect())
+    Ok(shown.not_opened())
 }
 
-fn settle(states: &mut [State], pages: &[Page], keys: &[String], to: State) {
-    for (state, page) in states.iter_mut().zip(pages) {
-        if *state == State::Pending && keys.contains(&page.key) {
-            *state = to;
+/// The state of each page being judged, owned in one place.
+struct Shown<'a> {
+    pages: &'a [Page],
+    states: Vec<State>,
+}
+
+impl<'a> Shown<'a> {
+    fn new(pages: &'a [Page]) -> Shown<'a> {
+        Shown {
+            pages,
+            states: vec![State::Pending; pages.len()],
         }
+    }
+
+    /// Settle every still-pending page whose key is in `keys`.
+    fn settle(&mut self, keys: &[String], to: State) {
+        for (state, page) in self.states.iter_mut().zip(self.pages) {
+            if *state == State::Pending && keys.contains(&page.key) {
+                *state = to;
+            }
+        }
+    }
+
+    fn undecided(&self) -> usize {
+        self.states.iter().filter(|s| **s == State::Pending).count()
+    }
+
+    fn not_opened(&self) -> Vec<usize> {
+        (0..self.states.len())
+            .filter(|i| self.states[*i] != State::Opened)
+            .collect()
     }
 }
 
-fn result_text(item: &serde_json::Value) -> String {
-    let text = match item.get("content") {
+fn result_text(block: &serde_json::Value) -> String {
+    let text = match block.get("content") {
         Some(serde_json::Value::String(s)) => s.clone(),
         Some(serde_json::Value::Array(parts)) => parts
             .iter()
@@ -411,7 +452,7 @@ fn asked_keys(input: &serde_json::Value, cwd: &Path) -> Vec<String> {
 }
 
 /// The keys a successful Bash call showed the person.
-fn opened_keys(command: &str, cwd: &Path, result: &str) -> Vec<String> {
+fn opened_keys(command: &str, cwd: &Path, tool_output: &str) -> Vec<String> {
     if !command.contains("amont-agent") {
         return Vec::new();
     }
@@ -424,28 +465,29 @@ fn opened_keys(command: &str, cwd: &Path, result: &str) -> Vec<String> {
     {
         return Vec::new();
     }
-    if clauses.iter().any(is_register_open) {
-        return registered_page(result, cwd).into_iter().collect();
-    }
+    // A page counts as shown only in the two shapes where the command's own
+    // output is what the transcript recorded: alone, or after one `cd … &&`.
+    let shown_by = |clause: &Simple, base: &Path| -> Option<String> {
+        if is_register_open(clause) {
+            registered_page(tool_output, base)
+        } else {
+            open_target(clause).map(|target| key_of(target, base))
+        }
+    };
     match clauses.as_slice() {
-        [open] if open.prev.is_none() && open.next.is_none() => open_target(open)
-            .map(|t| key_of(t, cwd))
-            .into_iter()
-            .collect(),
-        [cd, open]
+        [only] if only.prev.is_none() && only.next.is_none() => {
+            shown_by(only, cwd).into_iter().collect()
+        }
+        [cd, last]
             if cd.prev.is_none()
                 && cd.next == Some(Connector::AndAnd)
-                && open.prev == Some(Connector::AndAnd)
-                && open.next.is_none() =>
+                && last.prev == Some(Connector::AndAnd)
+                && last.next.is_none() =>
         {
             let Some(dir) = cd_target(cd) else {
                 return Vec::new();
             };
-            let moved = cwd.join(dir);
-            open_target(open)
-                .map(|t| key_of(t, &moved))
-                .into_iter()
-                .collect()
+            shown_by(last, &cwd.join(dir)).into_iter().collect()
         }
         _ => Vec::new(),
     }
@@ -501,9 +543,9 @@ fn cd_target(clause: &Simple) -> Option<&str> {
 }
 
 /// The key of the `page` a registration reported as opened.
-fn registered_page(result: &str, cwd: &Path) -> Option<String> {
-    let parsed = std::iter::once(result)
-        .chain(result.lines())
+fn registered_page(tool_output: &str, cwd: &Path) -> Option<String> {
+    let parsed = std::iter::once(tool_output)
+        .chain(tool_output.lines())
         .map(str::trim)
         .filter(|l| l.starts_with('{'))
         .find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())?;
@@ -521,22 +563,22 @@ fn scan_backwards(
     mut file: impl Read + Seek,
     budget: u64,
     mut each: impl FnMut(&[u8]) -> bool,
-) -> Result<(), &'static str> {
-    const UNREADABLE: &str = "the transcript could not be read";
+) -> Result<(), Blind> {
     const CHUNK: u64 = 256 * 1024;
-    let mut pos = file.seek(SeekFrom::End(0)).map_err(|_| UNREADABLE)?;
+    let mut pos = file.seek(SeekFrom::End(0)).map_err(|_| Blind::Unreadable)?;
     let end = pos;
     let mut carry: Vec<u8> = Vec::new();
     let mut first = true;
     loop {
         if end - pos > budget {
-            return Err("the window is longer than the hook reads back");
+            return Err(Blind::PastReadBack);
         }
-        let n = CHUNK.min(pos);
-        pos -= n;
-        let mut buf = vec![0u8; n as usize];
-        file.seek(SeekFrom::Start(pos)).map_err(|_| UNREADABLE)?;
-        file.read_exact(&mut buf).map_err(|_| UNREADABLE)?;
+        let chunk_len = CHUNK.min(pos);
+        pos -= chunk_len;
+        let mut buf = vec![0u8; chunk_len as usize];
+        file.seek(SeekFrom::Start(pos))
+            .map_err(|_| Blind::Unreadable)?;
+        file.read_exact(&mut buf).map_err(|_| Blind::Unreadable)?;
         buf.extend_from_slice(&carry);
         let cut = if pos == 0 {
             0
@@ -556,7 +598,7 @@ fn scan_backwards(
             if std::mem::take(&mut first)
                 && serde_json::from_slice::<serde_json::Value>(raw).is_err()
             {
-                return Err("the transcript ends in a line still being written");
+                return Err(Blind::LineInProgress);
             }
             if each(raw) {
                 return Ok(());

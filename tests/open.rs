@@ -10,7 +10,7 @@ impl Scratch {
     fn new(name: &str) -> Scratch {
         let dir =
             std::env::temp_dir().join(format!("amont-agent-open-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // a stale scratch directory may not exist
         std::fs::create_dir_all(dir.join("docs")).unwrap();
         // The binary reports its working directory as the OS spells it
         // (macOS: /private/var/...), so expectations use that spelling.
@@ -62,7 +62,7 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0); // cleanup is best effort
     }
 }
 
@@ -170,4 +170,35 @@ fn an_opener_that_is_not_found_exits_1() {
     let out = s.run(&["http://localhost:1/"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("amont.agent.opener"));
+}
+
+#[test]
+fn an_unknown_option_exits_2_with_the_option_and_the_usage() {
+    let s = Scratch::new("bogus");
+    let out = s.run(&["--bogus"]);
+    assert_eq!(out.status.code(), Some(2));
+    let said = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines[0], "amont-agent: unknown option --bogus", "{said}");
+    assert_eq!(lines[1], "usage: amont-agent open <url|path>", "{said}");
+}
+
+#[test]
+fn an_option_looking_word_before_the_separator_exits_2() {
+    let s = Scratch::new("optlike");
+    s.with_opener("true {}");
+    let out = s.run(&["--user-data-dir=/tmp/x://y", "--", "docs/x.html"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown option --user-data-dir"));
+}
+
+#[test]
+fn a_separator_lets_a_dash_named_file_open() {
+    let s = Scratch::new("dashfile");
+    std::fs::write(s.0.join("-x.html"), "x").unwrap();
+    let got = s.recording_opener();
+    let out = s.run(&["--", "./-x.html"]);
+    assert_eq!(out.status.code(), Some(0));
+    let expected = format!("file://{}/./-x.html", s.0.display());
+    assert_eq!(wait_for(&got), expected);
 }

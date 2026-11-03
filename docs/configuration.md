@@ -32,7 +32,7 @@ Most specific wins. See [stances](stances.md).
 |---|---|---|
 | `amont.agent.fetch` | `true` | may a session opening touch the network at all |
 | `amont.agent.agentsMdNotice` | `true` | may it mention a stale amont guidance block |
-| `amont.agent.opener` | platform opener | the command `amont-agent open` and `preview register --open` use to show a page: a template, split like shell words, `{}` replaced by the page inside each word (appended when absent), run with no shell. Unset: `open`, `xdg-open` or `cmd /c start ""` |
+| `amont.agent.opener` | platform opener | the command `amont-agent open` and `preview register --open` use to show a page: a template, split like shell words, `{}` replaced by the page inside each word (appended when absent), run with no shell. Unset: `open`, `xdg-open` or `rundll32 url.dll,FileProtocolHandler {}` |
 | `checkout.defaultRemote` | — | git's own key; which remote is *the* remote |
 
 ### Showing a page: `amont-agent open`

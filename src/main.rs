@@ -1681,16 +1681,14 @@ fn run_preview(args: &[OsString]) -> ExitCode {
         cwd.join(dir)
     };
     match preview::register(&dir, &url, std::path::Path::new(&guide)) {
-        Ok(r) => {
+        Ok(mut r) => {
             if r.unchanged {
                 eprintln!("amont-agent: before and after are byte-identical; the hook approves this preview as unchanged when it binds it, if they still are");
             }
             if open {
-                let opened = open_page(std::path::Path::new(&r.page));
-                println!("{}", with_opened(&r.to_json(), opened));
-            } else {
-                println!("{}", r.to_json());
+                r.opened = Some(open_page(std::path::Path::new(&r.page)));
             }
+            println!("{}", r.to_json());
             ExitCode::SUCCESS
         }
         Err(why) => {
@@ -1709,17 +1707,6 @@ fn open_page(page: &std::path::Path) -> bool {
             eprintln!("amont-agent: {why}");
             false
         }
-    }
-}
-
-/// The registration JSON with `opened` added after its other fields.
-fn with_opened(registration: &str, opened: bool) -> String {
-    match serde_json::from_str::<serde_json::Value>(registration) {
-        Ok(serde_json::Value::Object(mut fields)) => {
-            fields.insert("opened".into(), serde_json::Value::Bool(opened));
-            serde_json::Value::Object(fields).to_string()
-        }
-        _ => registration.to_string(),
     }
 }
 

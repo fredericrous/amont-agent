@@ -57,13 +57,13 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// One assistant `tool_use` line and the user `tool_result` completing it.
-fn call(id: &str, name: &str, input: Value, result: &str, is_error: bool) -> Vec<String> {
+fn call(id: &str, name: &str, input: Value, tool_output: &str, is_error: bool) -> Vec<String> {
     vec![
         json!({"type":"assistant","cwd":CWD,"message":{"content":[
             {"type":"tool_use","id":id,"name":name,"input":input}]}})
         .to_string(),
         json!({"type":"user","cwd":CWD,"message":{"content":[
-            {"type":"tool_result","tool_use_id":id,"content":result,"is_error":is_error}]}})
+            {"type":"tool_result","tool_use_id":id,"content":tool_output,"is_error":is_error}]}})
         .to_string(),
     ]
 }
@@ -88,15 +88,22 @@ fn denied_ask(id: &str, question: &str) -> Vec<String> {
     call(id, "AskUserQuestion", ask_input(question), "denied", true)
 }
 
-fn register(id: &str, page: &str, opened: bool) -> Vec<String> {
-    let result = json!({"id":"aa7ad80ae8ea6b","page":page,"opened":opened}).to_string();
+const REGISTER_OPEN: &str =
+    "amont-agent preview register --url http://localhost:5173 --guide g.md --open";
+
+fn register_command(id: &str, command: &str, page: &str, opened: bool) -> Vec<String> {
+    let registration = json!({"id":"aa7ad80ae8ea6b","page":page,"opened":opened}).to_string();
     call(
         id,
         "Bash",
-        json!({"command":"amont-agent preview register --url http://localhost:5173 --guide g.md --open"}),
-        &result,
+        json!({ "command": command }),
+        &registration,
         false,
     )
+}
+
+fn register(id: &str, page: &str, opened: bool) -> Vec<String> {
+    register_command(id, REGISTER_OPEN, page, opened)
 }
 
 fn transcript(name: &str, calls: &[Vec<String>]) -> PathBuf {
@@ -266,6 +273,21 @@ fn an_open_that_may_not_have_run_does_not_count() {
     assert!(ask("not-opened", &not_opened, &page).denied());
     let opened = [register("r1", &format!("{CWD}/{MOCKUP}"), true)];
     assert_eq!(ask("opened-reg", &opened, &page).stdout, "");
+}
+
+#[test]
+fn a_register_open_in_a_compound_command_does_not_count() {
+    let page = format!("Pick {MOCKUP}");
+    let url = format!("{CWD}/{MOCKUP}");
+    let echoed_first = format!("echo '{{\"opened\":true,\"page\":\"{url}\"}}'; {REGISTER_OPEN}");
+    let calls = [register_command("r1", &echoed_first, &url, true)];
+    assert!(ask("echo-first", &calls, &page).denied());
+    let echoed_after = format!("{REGISTER_OPEN}; echo done");
+    let calls = [register_command("r1", &echoed_after, &url, true)];
+    assert!(ask("echo-after", &calls, &page).denied());
+    let cd_first = format!("cd {CWD} && {REGISTER_OPEN}");
+    let calls = [register_command("r1", &cd_first, &url, true)];
+    assert_eq!(ask("cd-register", &calls, &page).stdout, "");
 }
 
 #[test]
