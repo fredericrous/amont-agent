@@ -200,8 +200,8 @@ Rollout, as the person decided: ship an `amont.pack`, and adopt it in every repo
 ## Code review
 
 - amont-agent: backend, lang:rust, unix (tui left out: the one new subcommand prints `path:line: marker` lines in the style `adr-lint check` and `amont-agent check` already use, with no interactive output)
-- decisions: none (one line of markdown)
-- fleet repos (Phase 6): none (vendored `amont.conf` pack block and regenerated AGENTS.md only)
+- decisions: none — one line of markdown
+- fleet repos (Phase 6): none — vendored `amont.conf` pack block and regenerated AGENTS.md only
 
 ## Decision log
 
