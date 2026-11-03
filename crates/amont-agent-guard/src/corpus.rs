@@ -288,6 +288,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         "heavy-build-unqueued",
         include_str!("../tests/corpus/heavy-build-unqueued.cases"),
     ),
+    (
+        "suppressions-override",
+        include_str!("../tests/corpus/suppressions-override.cases"),
+    ),
 ];
 
 /// The compiled-in corpus for a rule, if the table has one.

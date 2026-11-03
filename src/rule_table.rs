@@ -53,6 +53,7 @@ pub const RULES: &[Rule] = &[
     crate::rules::test_output_trimmed::RULE,
     crate::rules::workspace_root_write::RULE,
     crate::rules::heavy_build_unqueued::RULE,
+    crate::rules::suppressions_override::RULE,
 ];
 
 /// The tests that read the whole table live here, where the whole table is:

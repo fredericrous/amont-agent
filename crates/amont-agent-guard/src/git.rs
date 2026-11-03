@@ -228,6 +228,30 @@ pub fn cat_file_batch(dir: &std::path::Path, names: &[String]) -> std::io::Resul
     let Some(out) = bytes_in(dir, &["cat-file", "--batch"], Some(&input))? else {
         return Ok(None);
     };
+    Ok(Some(parse_batch(names, &out)))
+}
+
+/// [`cat_file_batch`] under a `deadline`, built on [`bytes_bounded`]: `None`
+/// when git fails, cannot be spawned or does not finish in time.
+pub fn cat_file_batch_bounded(
+    dir: &std::path::Path,
+    names: &[String],
+    deadline: Instant,
+) -> Option<Blobs> {
+    if names.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut input = Vec::new();
+    for n in names {
+        input.extend_from_slice(n.as_bytes());
+        input.push(b'\n');
+    }
+    let out = bytes_bounded(dir, &["cat-file", "--batch"], Some(&input), deadline)?;
+    Some(parse_batch(names, &out))
+}
+
+/// The blobs of a `cat-file --batch` answer to `names`, in order.
+fn parse_batch(names: &[String], out: &[u8]) -> Blobs {
     let mut found = Vec::new();
     let mut at = 0;
     for name in names {
@@ -250,7 +274,7 @@ pub fn cat_file_batch(dir: &std::path::Path, names: &[String]) -> std::io::Resul
         found.push((name.clone(), out[at..at + size].to_vec()));
         at += size + 1;
     }
-    Ok(Some(found))
+    found
 }
 
 pub struct Output {

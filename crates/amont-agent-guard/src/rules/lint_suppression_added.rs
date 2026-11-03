@@ -83,7 +83,7 @@ fn examine(_parsed: &Parsed) -> Option<Finding> {
 /// hook is waiting, and rebuilding costs about 22 ms per MiB (measured
 /// 2026-10-06), so 256 KiB keeps the worst rebuild near 6 ms. Configuration
 /// files, which need the whole file for their sections, are far smaller.
-const MAX_READ: u64 = 256 * 1024;
+pub const MAX_READ: u64 = 256 * 1024;
 
 /// One suppression, or one loosened setting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +232,33 @@ pub fn worth_rebuilding(path: &Path, change: &Change) -> bool {
         Change::Write { content } => names_one(content),
         Change::Edits(parts) => parts.iter().any(|p| names_one(&p.new)),
     }
+}
+
+/// Whether a lowercased Bash command names a suppression keyword of any
+/// examined kind, or the name of an examined configuration file: the
+/// no-process test that decides whether a working tree is worth looking at.
+pub fn command_names_marker(lowercased: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "noqa",
+        "type:",
+        "pyright",
+        "ruff",
+        "eslint",
+        "@ts-",
+        "#[allow",
+        "#![allow",
+        "#[expect",
+        "#![expect",
+        "cfg_attr",
+        "nolint",
+        "shellcheck",
+        "tsconfig",
+        ".eslintrc",
+        "pyproject.toml",
+        "cargo.toml",
+        ".golangci.y",
+    ];
+    WORDS.iter().any(|w| lowercased.contains(w))
 }
 
 /// Whether an extensionless `path` is a shell script: its first line is a
@@ -1393,6 +1420,8 @@ pub enum Mode {
     Exact,
     /// The fragments the tool was handed; no section context, no line numbers.
     Fragment(Reason),
+    /// The working tree against the index, after a Bash call.
+    Bash,
 }
 
 #[derive(Debug)]
@@ -1532,7 +1561,7 @@ pub fn phrase(shown: &str, hits: &[Hit], mode: &Mode) -> String {
     };
     for h in hits.iter().take(SHOWN) {
         let at = match mode {
-            Mode::Exact => format!("line {}", h.line),
+            Mode::Exact | Mode::Bash => format!("line {}", h.line),
             Mode::Fragment(_) => "(line unknown)".to_string(),
         };
         let what = match &h.origin {
@@ -1556,6 +1585,38 @@ pub fn phrase(shown: &str, hits: &[Hit], mode: &Mode) -> String {
     text
 }
 
+/// What a Bash call left in a working tree: the advice for `hits` found in
+/// `repo`, one `path:line: marker` line each. The hook cannot tell which
+/// command typed a hit, so the text does not claim that this one did.
+pub fn bash_phrase(repo: &str, hits: &[(PathBuf, Hit)]) -> String {
+    let config = hits
+        .first()
+        .is_some_and(|(_, h)| matches!(h.origin, Origin::Setting { .. }));
+    let mut text = format!(
+        "amont-agent/{}: the working tree of {repo} now holds {} lint suppression(s) the index does not:",
+        RULE.id,
+        hits.len()
+    );
+    for (path, h) in hits {
+        let what = match &h.origin {
+            Origin::Setting { section } => {
+                let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let section = if section.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{section}] ")
+                };
+                format!("loosens {file} {section}{} = {}", h.kind, h.codes)
+            }
+            Origin::Comment { shown } => shown.clone(),
+        };
+        text.push_str(&format!("\n  {}:{}: {what}", path.display(), h.line));
+    }
+    text.push('\n');
+    text.push_str(if config { REMEDY_CONFIG } else { REMEDY_MARKER });
+    text
+}
+
 /// The journal excerpt: `<path>:<line> <kind>[<codes>] (+N) exact|fragment:<reason>`,
 /// kept well inside the journal's 512-byte record by shortening the path from
 /// the front.
@@ -1564,11 +1625,12 @@ pub fn excerpt(path: &str, hits: &[Hit], mode: &Mode) -> String {
         return path.to_string();
     };
     let line = match mode {
-        Mode::Exact => first.line.to_string(),
+        Mode::Exact | Mode::Bash => first.line.to_string(),
         Mode::Fragment(_) => "?".to_string(),
     };
     let how = match mode {
         Mode::Exact => "exact".to_string(),
+        Mode::Bash => "bash".to_string(),
         Mode::Fragment(why) => format!("fragment:{}", why.as_str()),
     };
     let codes: String = first.codes.chars().take(80).collect();
@@ -2269,7 +2331,7 @@ mod tests {
         let r = reconstruct(path, change);
         match r.mode {
             Mode::Fragment(why) => (why, r.before, r.after),
-            Mode::Exact => panic!("expected a fragment for {}", path.display()),
+            Mode::Exact | Mode::Bash => panic!("expected a fragment for {}", path.display()),
         }
     }
 
