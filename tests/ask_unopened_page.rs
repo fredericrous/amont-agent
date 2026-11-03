@@ -260,9 +260,6 @@ fn another_fragment_or_route_is_another_page() {
     );
 }
 
-// POSIX fixture paths: on Windows a `/work/repo` path has no drive, and the page key does not
-// yet handle drive letters or `\\` (holds-until: Windows page keys are fixed and tested).
-#[cfg(unix)]
 #[test]
 fn an_open_that_may_not_have_run_does_not_count() {
     let page = format!("Pick {MOCKUP}");
@@ -278,9 +275,6 @@ fn an_open_that_may_not_have_run_does_not_count() {
     assert_eq!(ask("opened-reg", &opened, &page).stdout, "");
 }
 
-// POSIX fixture paths: on Windows a `/work/repo` path has no drive, and the page key does not
-// yet handle drive letters or `\\` (holds-until: Windows page keys are fixed and tested).
-#[cfg(unix)]
 #[test]
 fn a_register_open_in_a_compound_command_does_not_count() {
     let page = format!("Pick {MOCKUP}");
@@ -296,9 +290,6 @@ fn a_register_open_in_a_compound_command_does_not_count() {
     assert_eq!(ask("cd-register", &calls, &page).stdout, "");
 }
 
-// POSIX fixture paths: on Windows a `/work/repo` path has no drive, and the page key does not
-// yet handle drive letters or `\\` (holds-until: Windows page keys are fixed and tested).
-#[cfg(unix)]
 #[test]
 fn a_cd_prefixed_open_counts_for_the_page_under_that_directory() {
     let calls = [bash("b1", "cd dir && amont-agent open x.html")];

@@ -191,7 +191,7 @@ pub fn key_of(target: &str, cwd: &Path) -> String {
     if target.contains("://") {
         return target.to_string();
     }
-    let joined = if target.starts_with('/') {
+    let joined = if target.starts_with('/') || Path::new(target).is_absolute() {
         PathBuf::from(target)
     } else {
         cwd.join(target)
@@ -222,13 +222,15 @@ fn decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The `file://` URL of an absolute path, `.` and `..` read lexically, with
+/// The `file://` URL of an absolute path, split on the platform's separators
+/// (`/`, and `\` too on Windows, so a joined `C:\repo\x.html` keys like the
+/// opener's URL), `.` and `..` read lexically, with
 /// every byte outside `[A-Za-z0-9/-_.~:]` percent-encoded. The encoding is the
 /// one `amont-agent open` uses (`guide::file_url`); a test in the binary's
 /// suite pins the two together, because the guard cannot depend on that crate.
 fn file_url(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
-    for part in path.split('/') {
+    for part in path.split(std::path::is_separator) {
         match part {
             "" | "." => {}
             ".." => {
