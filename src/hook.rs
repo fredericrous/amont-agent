@@ -751,7 +751,7 @@ const SUPPRESSIONS_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 const SUPPRESSIONS_MAX_FILES: usize = 50;
 
 /// A Bash call that may have left a lint suppression in the working tree: the
-/// tree is compared with the index and what it adds is told, once per
+/// tree is compared with HEAD and what it adds is told, once per
 /// session. A command naming no suppression keyword costs no process. Every
 /// failure is journalled (`bash-slow`, `bash-git`, `bash-cap`) and silent: the
 /// commit gate is the backstop.
@@ -813,11 +813,13 @@ fn suppressions_after_bash(bash: &Bash) -> Decision {
         return Decision::Silent;
     }
 
-    // The index side: sizes first, so no blob over the rule's read limit is read.
+    // The HEAD side, not the index: a `sed -i … && git add` stages its
+    // suppression, and an index comparison would then see nothing. Sizes
+    // first, so no blob over the rule's read limit is read.
     let tracked: Vec<String> = files
         .iter()
         .filter(|f| !f.untracked)
-        .map(|f| format!(":{}", f.path))
+        .map(|f| format!("HEAD:{}", f.path))
         .collect();
     let mut oversize: Vec<String> = Vec::new();
     let mut before_blobs: amont_agent_guard::git::Blobs = Vec::new();
@@ -856,7 +858,7 @@ fn suppressions_after_bash(bash: &Bash) -> Decision {
 
     let mut texts: Vec<(std::path::PathBuf, String, String)> = Vec::new();
     for file in &files {
-        let name = format!(":{}", file.path);
+        let name = format!("HEAD:{}", file.path);
         if oversize.contains(&name) {
             continue;
         }

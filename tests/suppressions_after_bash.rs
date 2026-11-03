@@ -140,6 +140,17 @@ fn the_grh_sed_shape_is_asserted_with_path_and_line() {
 }
 
 #[test]
+fn a_suppression_staged_by_the_same_command_is_still_asserted() {
+    // `sed -i … && git add`: the index already holds it, HEAD does not.
+    let world = World::new("staged");
+    apply_the_sed(&world);
+    git(&world.repo, &["add", "src/main.rs"]);
+    let command = format!("{SED} && git add src/main.rs");
+    let out = world.send(&world.payload("PostToolUse", "s-staged", &command), None);
+    assert!(out.contains("src/main.rs:1:"), "{out}");
+}
+
+#[test]
 fn a_heredoc_adding_an_allow_is_asserted() {
     let world = World::new("heredoc");
     std::fs::write(world.repo.join("x.rs"), "#[allow(dead_code)]\nfn f() {}\n").unwrap();

@@ -1420,7 +1420,7 @@ pub enum Mode {
     Exact,
     /// The fragments the tool was handed; no section context, no line numbers.
     Fragment(Reason),
-    /// The working tree against the index, after a Bash call.
+    /// The working tree against HEAD, after a Bash call.
     Bash,
 }
 
@@ -1593,7 +1593,7 @@ pub fn bash_phrase(repo: &str, hits: &[(PathBuf, Hit)]) -> String {
         .first()
         .is_some_and(|(_, h)| matches!(h.origin, Origin::Setting { .. }));
     let mut text = format!(
-        "amont-agent/{}: the working tree of {repo} now holds {} lint suppression(s) the index does not:",
+        "amont-agent/{}: the working tree of {repo} now holds {} lint suppression(s) its last commit does not:",
         RULE.id,
         hits.len()
     );

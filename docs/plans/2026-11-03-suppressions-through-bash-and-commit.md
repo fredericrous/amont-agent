@@ -206,6 +206,9 @@ Rollout, as the person decided: ship an `amont.pack`, and adopt it in every repo
 ## Decision log
 
 - 2026-11-03: the person chose both layers (option 1), "reasonless only" at commit, and the whole fleet except happier.
+- 2026-11-03: Layer 1 compares the working tree with HEAD, not the index (deviation from the reviewed text). Found in the fails-first probe: `sed -i … && git add` stages the suppression, so an index comparison saw nothing. Its message reads "… its last commit does not:". Test `a_suppression_staged_by_the_same_command_is_still_asserted`.
+- 2026-11-03: the Rust scanner reads an attribute through its closing `]`, across lines (0f82017). Phase 1 read `#[expect(\n lint,\n reason = "…"\n)]` line by line as a bare `expect` with no code, so the commit gate would have blocked every rustfmt-wrapped reasoned one; relais's review missed it.
+- 2026-11-03: `suppressions.rs` joins the CLI-verb modules the stdout guard lists (`tests/hook.rs`), beside `open.rs`; the worker had routed around the guard with `write_fmt` alone.
 
 ## Verification
 
