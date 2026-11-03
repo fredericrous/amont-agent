@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.15.2
+## v3.16.0
 
 ### Added
 
@@ -27,6 +27,8 @@
 - `preview register --open` goes through the same opener, prints its JSON
   after the launch attempt, and adds `"opened": true|false`. An opener failure
   keeps exit 0.
+
+## v3.15.2
 
 ### Fixed
 
