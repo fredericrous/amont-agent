@@ -292,12 +292,50 @@ def paren_items(s):
     return [i for i in items if i and not i.startswith("reason")]
 
 
+ATTRIBUTE_SPAN = 40
+
+
+def attribute_text(text):
+    """The attribute opening `text` (`#[..]` / `#![..]`, after leading
+    whitespace) through its closing `]`, across lines, brackets in strings not
+    counted; its first line when it does not close within ATTRIBUTE_SPAN lines;
+    None when `text` opens no attribute. Mirrors the Rust `attribute_text`."""
+    opened = text.lstrip()
+    if not (opened.startswith("#[") or opened.startswith("#![")):
+        return None
+    first_line = opened.split("\n", 1)[0]
+    depth, quoted, escaped, newlines = 0, False, False, 0
+    for i, c in enumerate(opened):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                quoted = False
+            continue
+        if c == '"':
+            quoted = True
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            depth = max(0, depth - 1)
+            if depth == 0:
+                return opened[: i + 1]
+        elif c == "\n":
+            newlines += 1
+            if newlines >= ATTRIBUTE_SPAN:
+                return first_line
+    return first_line
+
+
 def rust(lines):
     out = []
     for number, line in enumerate(lines, 1):
-        t = line.lstrip()
-        if not t.startswith("#"):
+        if not line.lstrip().startswith("#"):
             continue
+        window = "\n".join(lines[number - 1 : number - 1 + ATTRIBUTE_SPAN])
+        t = (attribute_text(window) or line).lstrip()
         t = t[1:]
         if t.startswith("!"):
             t = t[1:]
@@ -351,9 +389,8 @@ def shellcheck_disable(comment):
     if not rest.startswith("disable="):
         return None
     listing = rest[len("disable="):]
-    words = listing.split(None, 1)
-    head = listing.split()[0] if words else ""
-    after = listing[len(head):]
+    end = next((i for i, c in enumerate(listing) if c.isspace()), len(listing))
+    head, after = listing[:end], listing[end:]
     return [c.strip() for c in head.split(",") if c.strip()], after
 
 
@@ -661,25 +698,49 @@ def comment_bodies(line_text):
     ]
 
 
-def rust_reasoned(line_text):
-    _, found, after_word = line_text.partition("reason")
-    if not found:
+def reason_item(item):
+    if not item.startswith("reason"):
         return False
-    after_word = after_word.lstrip()
-    if not after_word.startswith("="):
+    rest = item[len("reason"):].lstrip()
+    if not rest.startswith("="):
         return False
-    quoted = after_word[1:].lstrip()
-    if not quoted.startswith('"'):
-        return False
-    return bool(quoted[1:].split('"')[0].strip())
+    rest = rest[1:].lstrip()
+    return rest.startswith('"') and bool(rest[1:].split('"')[0].strip())
 
 
-def reasoned(marker, line_text):
+def rust_reasoned(text):
+    """A `reason = "<text>"` item of the attribute opening `text`, outside its
+    strings and after `(` or `,`. Mirrors the Rust `rust_reasoned`."""
+    attribute = attribute_text(text)
+    if attribute is None:
+        return False
+    quoted, escaped, previous = False, False, " "
+    for i, c in enumerate(attribute):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                quoted = False
+            continue
+        if c == '"':
+            quoted = True
+        elif previous in "(," and reason_item(attribute[i:]):
+            return True
+        if not c.isspace():
+            previous = c
+    return False
+
+
+def reasoned(marker, text):
     """Whether the marker carries a reason in its tool's own reason form, read
-    from the text of the line it was found on. A configuration setting (line 0),
+    from `text`, the file from the marker's line on (a Rust attribute's reason
+    runs to its `]`; every other marker's is on its own line). A configuration setting (line 0),
     a marker with no code, @ts-ignore, @ts-nocheck and a file-level ruff: noqa
     or pyright: comment never do."""
     kind, code, _section, line = marker
+    line_text = text.split("\n", 1)[0].rstrip("\r")
     if line == 0 or kind in ("@ts-ignore", "@ts-nocheck", "pyright", "ruff: noqa"):
         return False
     if kind == "@ts-expect-error":
@@ -692,7 +753,7 @@ def reasoned(marker, line_text):
     if kind in ("type: ignore", "pyright: ignore", "noqa"):
         return python_reasoned(kind, line_text)
     if kind in ("allow", "expect"):
-        return rust_reasoned(line_text)
+        return rust_reasoned(text)
     if kind == "nolint":
         for block, body in comment_bodies(line_text):
             if block or not body.startswith("nolint"):
@@ -780,16 +841,16 @@ def net_added(changes):
     (new_path, marker) in path then line order."""
 
     def keyed(marker, text_lines):
-        line_text = text_lines[marker[3] - 1] if marker[3] > 0 else ""
-        return (*marker[:3], reasoned(marker, line_text))
+        from_line = "\n".join(text_lines[marker[3] - 1 :]) if marker[3] > 0 else ""
+        return (*marker[:3], reasoned(marker, from_line))
 
     had = Counter()
     for old_path, before, _new_path, _after in changes:
-        text_lines = [ln.rstrip("\r") for ln in before.split("\n")]
+        text_lines = before.split("\n")
         had.update(keyed(m, text_lines) for m in markers_at(old_path, before))
     now = []
     for _old_path, _before, new_path, after in changes:
-        text_lines = [ln.rstrip("\r") for ln in after.split("\n")]
+        text_lines = after.split("\n")
         now += [(new_path, m, keyed(m, text_lines)) for m in markers_at(new_path, after)]
     now.sort(key=lambda row: (row[0], row[1][3]))
     seen = Counter()
@@ -832,7 +893,7 @@ def self_test():
         elif tag in ("r", "b"):
             sample_lines = sample.split("\n")
             hits = net_added([("", "", name, sample)])
-            flags = [reasoned(m, sample_lines[m[3] - 1]) for _path, m in hits]
+            flags = [reasoned(m, "\n".join(sample_lines[m[3] - 1 :])) for _path, m in hits]
             got = bool(flags) and all(f == (tag == "r") for f in flags)
         else:
             old, _, new = name.partition(">")

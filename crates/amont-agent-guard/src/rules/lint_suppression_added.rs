@@ -297,10 +297,10 @@ enum Keying {
     Reasoned,
 }
 
-fn keyed(marker: &Marker, line_text: &str, keying: Keying) -> MarkerKey {
+fn keyed(marker: &Marker, text: &str, keying: Keying) -> MarkerKey {
     let has_reason = match keying {
         Keying::Plain => false,
-        Keying::Reasoned => reasoned(marker, line_text),
+        Keying::Reasoned => reasoned(marker, from_line(text, marker.line)),
     };
     let (kind, codes, section) = marker.key();
     (kind, codes, section, has_reason)
@@ -314,22 +314,23 @@ pub type FileChange<'a> = (&'a Path, &'a str, &'a Path, &'a str);
 fn net_added_keyed(changes: &[FileChange<'_>], keying: Keying) -> Vec<(PathBuf, Hit)> {
     let mut had: HashMap<MarkerKey, usize> = HashMap::new();
     for (old_path, before, _, _) in changes {
-        let text_lines: Vec<&str> = lines(before).collect();
         for m in markers(old_path, before) {
-            let line_text = text_lines.get(m.line - 1).copied().unwrap_or("");
-            *had.entry(keyed(&m, line_text, keying)).or_insert(0) += 1;
+            *had.entry(keyed(&m, before, keying)).or_insert(0) += 1;
         }
     }
     let mut now: Vec<(PathBuf, Marker, MarkerKey)> = Vec::new();
     for (_, _, new_path, after) in changes {
-        let text_lines: Vec<&str> = lines(after).collect();
         for m in markers(new_path, after) {
-            let line_text = text_lines.get(m.line - 1).copied().unwrap_or("");
-            let key = keyed(&m, line_text, keying);
+            let key = keyed(&m, after, keying);
             now.push((new_path.to_path_buf(), m, key));
         }
     }
-    now.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.line.cmp(&b.1.line)));
+    // By the path's text, not its components, as the Python port sorts.
+    now.sort_by(|a, b| {
+        a.0.as_os_str()
+            .cmp(b.0.as_os_str())
+            .then(a.1.line.cmp(&b.1.line))
+    });
     let mut seen: HashMap<MarkerKey, usize> = HashMap::new();
     now.into_iter()
         .filter_map(|(path, marker, key)| {
@@ -792,10 +793,78 @@ fn paren_items(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// How many lines an attribute may span before its `]`: rustfmt wraps a long
+/// `#[expect(lint, reason = "…")]` over a handful, never dozens.
+const ATTRIBUTE_SPAN: usize = 40;
+
+/// The attribute that opens `text` (`#[…]` or `#![…]`, after leading
+/// whitespace), through its closing `]`, across lines; brackets inside a
+/// string do not count. An attribute that does not close within
+/// [`ATTRIBUTE_SPAN`] lines is its first line only. `None` when `text` does
+/// not open an attribute.
+fn attribute_text(text: &str) -> Option<&str> {
+    let start = text.len() - text.trim_start().len();
+    let opened = &text[start..];
+    if !opened.starts_with("#[") && !opened.starts_with("#![") {
+        return None;
+    }
+    let first_line = opened.split('\n').next().unwrap_or(opened);
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut newlines = 0;
+    for (i, c) in opened.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&opened[..=i]);
+                }
+            }
+            '\n' => {
+                newlines += 1;
+                if newlines >= ATTRIBUTE_SPAN {
+                    return Some(first_line);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(first_line)
+}
+
+/// `text` from the start of its 1-based `line` to the end.
+fn from_line(text: &str, line: usize) -> &str {
+    let mut rest = text;
+    for _ in 1..line {
+        match rest.split_once('\n') {
+            Some((_, tail)) => rest = tail,
+            None => return "",
+        }
+    }
+    rest
+}
+
 fn rust(text: &str) -> Vec<Marker> {
     let mut out = Vec::new();
     for (i, line) in lines(text).enumerate() {
-        let Some(t) = line.trim_start().strip_prefix('#') else {
+        if !line.trim_start().starts_with('#') {
+            continue;
+        }
+        let attribute = attribute_text(from_line(text, i + 1)).unwrap_or(line);
+        let Some(t) = attribute.trim_start().strip_prefix('#') else {
             continue;
         };
         let (open, t) = match t.strip_prefix('!') {
@@ -911,31 +980,61 @@ fn comment_bodies(line_text: &str) -> Vec<(bool, &str)> {
         .collect()
 }
 
-fn rust_reasoned(line_text: &str) -> bool {
-    let Some((_, after_word)) = line_text.split_once("reason") else {
+/// Whether the attribute that opens `text` carries a `reason = "<text>"`
+/// item: inside the attribute only, outside its strings, as an item of its own
+/// (after `(` or `,`), so a `// reason = "…"` comment after the `]` or a lint
+/// whose name holds `reason` does not count.
+fn rust_reasoned(text: &str) -> bool {
+    let Some(attribute) = attribute_text(text) else {
         return false;
     };
-    let Some(quoted) = after_word
-        .trim_start()
-        .strip_prefix('=')
-        .and_then(|r| r.trim_start().strip_prefix('"'))
-    else {
-        return false;
-    };
-    quoted
-        .split('"')
-        .next()
-        .is_some_and(|r| !r.trim().is_empty())
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut previous = ' ';
+    for (i, c) in attribute.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            quoted = true;
+        } else if matches!(previous, '(' | ',') && reason_item(&attribute[i..]) {
+            return true;
+        }
+        if !c.is_whitespace() {
+            previous = c;
+        }
+    }
+    false
+}
+
+/// `reason = "<non-empty>"` at the start of `item`.
+fn reason_item(item: &str) -> bool {
+    item.strip_prefix("reason")
+        .map(str::trim_start)
+        .and_then(|r| r.strip_prefix('='))
+        .map(str::trim_start)
+        .and_then(|r| r.strip_prefix('"'))
+        .and_then(|r| r.split('"').next())
+        .is_some_and(|why| !why.trim().is_empty())
 }
 
 /// Whether the marker carries a reason in its tool's own reason form, read
-/// from the text of the line it was found on. Never for a configuration
+/// from `text`: the file from the marker's line on. A comment marker's reason
+/// is on that line; a Rust attribute's runs to its `]`, across lines. Never for a configuration
 /// setting, a marker with no code, `@ts-ignore`, `@ts-nocheck`, or a
 /// file-level `ruff: noqa` / `pyright:` comment. Pure.
-pub fn reasoned(hit: &Hit, line_text: &str) -> bool {
+pub fn reasoned(hit: &Hit, text: &str) -> bool {
     if matches!(hit.origin, Origin::Setting { .. }) {
         return false;
     }
+    let line_text = lines(text).next().unwrap_or("");
     let kind = hit.kind.as_str();
     match kind {
         "@ts-ignore" | "@ts-nocheck" | "pyright" | "ruff: noqa" => return false,
@@ -952,7 +1051,7 @@ pub fn reasoned(hit: &Hit, line_text: &str) -> bool {
     }
     match kind {
         "type: ignore" | "pyright: ignore" | "noqa" => python_reasoned(kind, line_text),
-        "allow" | "expect" => rust_reasoned(line_text),
+        "allow" | "expect" => rust_reasoned(text),
         "nolint" => comment_bodies(line_text).iter().any(|(block, body)| {
             !block
                 && body.strip_prefix("nolint").is_some_and(|rest| {
@@ -2408,10 +2507,9 @@ mod tests {
     // ---- shell, reasons, and whole-change counting ----
 
     fn reasons(path: &str, text: &str) -> Vec<bool> {
-        let text_lines: Vec<&str> = lines(text).collect();
         markers(Path::new(path), text)
             .iter()
-            .map(|m| reasoned(m, text_lines[m.line - 1]))
+            .map(|m| reasoned(m, from_line(text, m.line)))
             .collect()
     }
 
@@ -2481,6 +2579,19 @@ mod tests {
             ("x.rs", "#[expect(unused, reason = \"upstream\")]", true),
             ("x.rs", "#[allow(dead_code)]", false),
             ("x.rs", "#[expect(unused, reason = \"\")]", false),
+            // The reason must be an item of the attribute itself.
+            ("x.rs", "#[allow(dead_code)] // reason = \"x\"", false),
+            ("x.rs", "#[allow(clippy::reasonless)]", false),
+            (
+                "x.rs",
+                "#[expect(clippy::reasonable, reason = \"upstream\")]",
+                true,
+            ),
+            (
+                "x.rs",
+                "#[cfg_attr(test, expect(dead_code, reason = \"used by tests\"))]",
+                true,
+            ),
             ("x.py", "x  # noqa: F401 -- re-export", true),
             ("x.py", "x  # noqa: F401  # re-export", true),
             ("x.py", "x  # noqa: F401, E501 -- wide line", true),
@@ -2582,6 +2693,52 @@ mod tests {
     }
 
     #[test]
+    fn a_wrapped_attribute_is_one_marker_with_its_codes_and_reason() {
+        // rustfmt's shape for a long attribute.
+        let wrapped = "#[expect(\n    clippy::too_many_arguments,\n    reason = \"the wire format fixes the arity\"\n)]\nfn f() {}\n";
+        let found = markers(Path::new("x.rs"), wrapped);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            (
+                found[0].kind.as_str(),
+                found[0].codes.as_str(),
+                found[0].line
+            ),
+            ("expect", "clippy::too_many_arguments", 1)
+        );
+        assert!(reasoned(&found[0], wrapped));
+        // Added once, at its opening line; the gate keeps it as reasoned.
+        assert_eq!(
+            net(&[(Path::new("x.rs"), "", Path::new("x.rs"), wrapped)]),
+            vec![(
+                "x.rs".to_string(),
+                1,
+                "expect[clippy::too_many_arguments]".to_string()
+            )]
+        );
+        let bare = "#[expect(\n    clippy::too_many_arguments,\n)]\nfn f() {}\n";
+        let found = markers(Path::new("x.rs"), bare);
+        assert_eq!(found.len(), 1);
+        assert!(!reasoned(&found[0], bare));
+        // A reason on a later item of another attribute is not this one's.
+        let next = "#[allow(dead_code)]\n#[expect(unused, reason = \"x\")]\n";
+        let found = markers(Path::new("x.rs"), next);
+        assert!(!reasoned(&found[0], from_line(next, found[0].line)));
+        assert!(reasoned(&found[1], from_line(next, found[1].line)));
+    }
+
+    #[test]
+    fn hits_sort_by_the_paths_text_as_the_python_port_does() {
+        let marker = "x = f()  # noqa: F401\n";
+        let got = net(&[
+            (Path::new("a/b.py"), "", Path::new("a/b.py"), marker),
+            (Path::new("a.py"), "", Path::new("a.py"), marker),
+        ]);
+        let paths: Vec<_> = got.iter().map(|g| g.0.clone()).collect();
+        assert_eq!(paths, vec!["a.py".to_string(), "a/b.py".to_string()]);
+    }
+
+    #[test]
     fn a_surplus_is_reported_at_the_new_path_in_path_then_line_order() {
         let got = net(&[
             (
@@ -2667,10 +2824,9 @@ mod tests {
                 "+" | "-" => Some(!added(file, "", &sample).is_empty()),
                 "r" | "b" => {
                     let hits = net_added(&[(Path::new(""), "", Path::new(file), &sample)]);
-                    let sample_lines: Vec<&str> = lines(&sample).collect();
                     let reasons: Vec<bool> = hits
                         .iter()
-                        .map(|(_, h)| reasoned(h, sample_lines[h.line - 1]))
+                        .map(|(_, h)| reasoned(h, from_line(&sample, h.line)))
                         .collect();
                     let want = tag == "r";
                     Some(!reasons.is_empty() && reasons.iter().all(|r| *r == want))

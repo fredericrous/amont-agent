@@ -105,3 +105,8 @@ n-	x.py	x  # noqa: E501\n@@x  # noqa: E501
 n+	a.txt>a.py	x  # noqa: F821\n@@x  # noqa: F821
 n-	a.py>a.txt	x  # noqa: F821\n@@x  # noqa: F821
 n+	x.py	x  # noqa: E501 -- why\n@@x  # noqa: E501
+-	x.sh	# shellcheck disable= SC2086
+b	x.rs	#[allow(dead_code)] // reason = "x"
+b	x.rs	#[allow(clippy::reasonless)]
+r	x.rs	#[expect(\n    clippy::too_many_arguments,\n    reason = "the wire format fixes the arity"\n)]
+b	x.rs	#[expect(\n    clippy::too_many_arguments,\n)]
