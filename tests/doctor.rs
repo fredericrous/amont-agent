@@ -806,6 +806,7 @@ fn opener_doctor_line(home_dir: &Home, name: &str, opener: Option<&str>) -> Stri
         .unwrap_or_default()
 }
 
+#[cfg(unix)] // `sh` as the opener
 #[test]
 fn doctor_reports_the_opener_and_warns_when_its_program_is_missing() {
     let home_dir = Home::new("opener");

@@ -1,4 +1,8 @@
 //! `amont-agent open <url|path>`, end to end through the real binary.
+//!
+//! Unix only: the recording openers are shell scripts made executable with
+//! a unix mode.
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

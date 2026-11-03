@@ -2106,12 +2106,14 @@ fn register_opening(name: &str, opener: &str) -> serde_json::Value {
     serde_json::from_str(stdout.trim()).expect("registration JSON")
 }
 
+#[cfg(unix)] // `true` as the opener
 #[test]
 fn register_open_reports_opened_true_with_a_working_opener() {
     let r = register_opening("opened-true", "true {}");
     assert_eq!(r["opened"], serde_json::Value::Bool(true));
 }
 
+#[cfg(unix)] // `false` as the opener
 #[test]
 fn register_open_reports_opened_false_and_still_exits_0_when_the_opener_fails() {
     let r = register_opening("opened-false", "false {}");
