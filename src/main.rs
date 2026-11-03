@@ -56,6 +56,7 @@ use amont_agent_process::push_preview;
 use amont_agent_process::review_brief;
 use amont_agent_process::review_outcomes;
 mod rule_table;
+mod suppressions;
 use amont_agent_guard::rules;
 use amont_agent_guard::session_state;
 use amont_agent_guard::settings;
@@ -111,6 +112,8 @@ usage: amont-agent <command>
   preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
                         validate a localhost preview of HEAD for approval
                         and render its guide to a page
+  suppressions --staged judge the staged change: a lint suppression it adds
+                        without a reason blocks (exit 1); the pre-commit gate
   open <url|path>       open a page for the person, through the opener in
                         `git config --global amont.agent.opener`
   plan-sha [--short] [--block [--lang <l>]] [--legacy] [--] <file|->
@@ -214,9 +217,10 @@ enum Sub {
     Shipped,
     Board,
     Open,
+    Suppressions,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 29] = [
+const SUBCOMMANDS: [(&str, Sub); 30] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -246,6 +250,7 @@ const SUBCOMMANDS: [(&str, Sub); 29] = [
     ("shipped", Sub::Shipped),
     ("board", Sub::Board),
     ("open", Sub::Open),
+    ("suppressions", Sub::Suppressions),
 ];
 
 enum Invocation {
@@ -318,6 +323,10 @@ fn die_on_sigpipe() {
 fn die_on_sigpipe() {}
 
 fn main() -> ExitCode {
+    // `suppressions --staged` must see the index git handed the hook (a
+    // temporary one on `commit -a` and `commit <path>`), so it is read here,
+    // before the scrub below removes it.
+    let hook_index = std::env::var_os("GIT_INDEX_FILE");
     // Claude Code does not spawn us from git, but a session started inside a
     // git hook still carries GIT_DIR / GIT_WORK_TREE, and those beat
     // `current_dir` for every git command we run. `crate::git` builds
@@ -446,6 +455,7 @@ fn main() -> ExitCode {
             Sub::Shipped => shipped::run(&args),
             Sub::Board => board::run(&args),
             Sub::Open => open::run(&args),
+            Sub::Suppressions => suppressions::run(&args, hook_index),
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);

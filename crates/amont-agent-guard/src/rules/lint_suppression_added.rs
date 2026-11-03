@@ -252,6 +252,11 @@ pub fn shell_by_shebang(path: &Path, text: &str) -> bool {
     matches!(program.rsplit('/').next(), Some("sh" | "bash" | "zsh"))
 }
 
+/// Whether `path` is an examined kind by its name alone.
+pub fn examined(path: &Path) -> bool {
+    file_kind(path).is_some()
+}
+
 /// The file kind of `path` holding `text`: by name and extension, else a
 /// shell shebang for an extensionless path.
 fn kind_of(path: &Path, text: &str) -> Option<File> {
@@ -846,7 +851,7 @@ fn attribute_text(text: &str) -> Option<&str> {
 }
 
 /// `text` from the start of its 1-based `line` to the end.
-fn from_line(text: &str, line: usize) -> &str {
+pub fn from_line(text: &str, line: usize) -> &str {
     let mut rest = text;
     for _ in 1..line {
         match rest.split_once('\n') {

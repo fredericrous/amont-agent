@@ -11,6 +11,14 @@
   change (a moved marker cancels; removing a reasoned one never cancels an
   added bare one). `examine_change` is unchanged. `tools/suppression-rate.py`
   and the shared fixture follow.
+- `amont-agent suppressions --staged`, the pre-commit gate: it judges the
+  staged change (net of removals anywhere, reasoned markers kept, bare and
+  blanket ones and loosened configs blocking), honours the temporary
+  `GIT_INDEX_FILE` of `commit -a` and `commit <path>`, skips blobs over
+  4 MiB, fails closed (exit 2) over a 64 MiB scan budget, and follows the
+  `lint-suppression-added` stance. Only a command-scoped
+  `git -c amont.agent.suppressions=allow` passes a blocking hit. `amont.pack`
+  declares it as a `pre-commit` check.
 
 ## v3.16.1
 

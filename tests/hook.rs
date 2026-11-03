@@ -363,12 +363,16 @@ fn only_the_emitter_writes_to_stdout() {
     // from `hook` calls them — `decide` dispatches to the rules, the journal and
     // the emitter, and to nothing here.
     // `open.rs` prints its own `--help`, under the `open` verb only.
+    // `suppressions.rs` is the commit gate, run by amont under the
+    // `suppressions` verb; the hook's after-Bash check calls the guard
+    // crate's scanner, never this module.
     const NOT_THE_HOOK_PATH: &[&str] = &[
         "decision.rs",
         "main.rs",
         "doctor.rs",
         "backtest.rs",
         "open.rs",
+        "suppressions.rs",
     ];
     let mut check = |path: &std::path::Path, text: &str| {
         if NOT_THE_HOOK_PATH.iter().any(|name| path.ends_with(name)) {
