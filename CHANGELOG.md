@@ -19,6 +19,11 @@
   `lint-suppression-added` stance. Only a command-scoped
   `git -c amont.agent.suppressions=allow` passes a blocking hit. `amont.pack`
   declares it as a `pre-commit` check.
+- `suppressions-override`, a PreToolUse Bash rule that protects that override:
+  it is default-deny (`default_stance: Deny`, `max_stance: Deny`) and the
+  override stays the person's. An agent command that sets
+  `amont.agent.suppressions`, skips the gate with `hook.skip`, lowers its
+  `amont.severity`, or writes the `lint-suppression-added` stance is denied.
 
 ## v3.16.1
 
