@@ -8,7 +8,10 @@
   a non-empty absolute `AMONT_INDEX_FILE` selects the staged index and beats
   `GIT_INDEX_FILE`; unset or empty keeps the direct Git-hook fallback, and an
   invalid non-empty value fails closed (exit 2) unless a command-scoped
-  `amont.agent.suppressions=allow` or the observe stance applies (exit 0). Only `suppressions` reads it.
+  `amont.agent.suppressions=allow` or the observe stance applies (exit 0).
+  Only `suppressions` reads it. The handoff needs released amont 1.70.0 or
+  later as the producer; this version is the minimum producer version.
+- `amont-agent suppressions` accepts `--staged` more than once.
 - `lint-suppression-added` scanner: a `Shell` file kind (`.sh`, `.bash`, `.zsh`,
   and extensionless files with a `sh`/`bash`/`zsh` shebang) with
   `# shellcheck disable=SCnnnn[,..]` markers, a pure `reasoned` check of each

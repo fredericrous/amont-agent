@@ -577,6 +577,30 @@ fn a_usage_error_is_exit_two() {
 }
 
 #[test]
+fn a_repeated_staged_flag_behaves_as_one() {
+    let repo = Repo::new();
+    repo.stage("a.py", "x = 1  # noqa: E501 -- a long URL\n");
+    let clean = repo
+        .command(BIN)
+        .args(["suppressions", "--staged", "--staged"])
+        .output()
+        .unwrap();
+    assert_eq!(code(&clean), 0, "{}", text(&clean.stderr));
+    repo.stage("b.py", BARE);
+    let blocked = repo
+        .command(BIN)
+        .args(["suppressions", "--staged", "--staged", "--staged"])
+        .output()
+        .unwrap();
+    assert_eq!(code(&blocked), 1, "{}", text(&blocked.stderr));
+    assert!(
+        text(&blocked.stdout).contains("b.py:1: "),
+        "{}",
+        text(&blocked.stdout)
+    );
+}
+
+#[test]
 fn the_pack_declares_the_one_gate() {
     let pack =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("amont.pack")).unwrap();

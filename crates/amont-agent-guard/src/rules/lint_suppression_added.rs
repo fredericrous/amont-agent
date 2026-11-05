@@ -318,8 +318,24 @@ pub fn markers(path: &Path, text: &str) -> Vec<Marker> {
 }
 
 /// A marker's identity for counting: kind, code, section, and whether it
-/// carries a reason (always false when reasons are not keyed).
-type MarkerKey = (String, String, String, bool);
+/// carries a reason (always `Absent` when reasons are not keyed).
+type MarkerKey = (String, String, String, ReasonPresence);
+
+/// Whether a marker carries a reason in its tool's own form.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ReasonPresence {
+    Absent,
+    Given,
+}
+
+/// The reason presence of `marker`, read from the text starting at its line.
+fn reason_presence(marker: &Marker, text_from_marker: &str) -> ReasonPresence {
+    if reasoned(marker, text_from_marker) {
+        ReasonPresence::Given
+    } else {
+        ReasonPresence::Absent
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Keying {
@@ -329,13 +345,13 @@ enum Keying {
     Reasoned,
 }
 
-fn keyed(marker: &Marker, has_reason: bool, keying: Keying) -> MarkerKey {
-    let has_reason = match keying {
-        Keying::Plain => false,
-        Keying::Reasoned => has_reason,
+fn keyed(marker: &Marker, reason: ReasonPresence, keying: Keying) -> MarkerKey {
+    let reason = match keying {
+        Keying::Plain => ReasonPresence::Absent,
+        Keying::Reasoned => reason,
     };
     let (kind, codes, section) = marker.key();
-    (kind, codes, section, has_reason)
+    (kind, codes, section, reason)
 }
 
 /// One file of a change: the old path and text, the new path and text. Each
@@ -360,20 +376,20 @@ fn net_added_keyed(changes: &[FileChange<'_>], keying: Keying) -> Vec<Added> {
     let mut had: HashMap<MarkerKey, usize> = HashMap::new();
     for change in changes {
         for m in markers(change.old_path, change.before) {
-            let has_reason = reasoned(&m, from_line(change.before, m.line));
-            *had.entry(keyed(&m, has_reason, keying)).or_insert(0) += 1;
+            let reason = reason_presence(&m, from_line(change.before, m.line));
+            *had.entry(keyed(&m, reason, keying)).or_insert(0) += 1;
         }
     }
     let mut now: Vec<(Added, MarkerKey)> = Vec::new();
     for change in changes {
         for m in markers(change.new_path, change.after) {
-            let has_reason = reasoned(&m, from_line(change.after, m.line));
-            let key = keyed(&m, has_reason, keying);
+            let reason = reason_presence(&m, from_line(change.after, m.line));
+            let key = keyed(&m, reason, keying);
             now.push((
                 Added {
                     path: change.new_path.to_path_buf(),
                     hit: m,
-                    reasoned: has_reason,
+                    reasoned: reason == ReasonPresence::Given,
                 },
                 key,
             ));
@@ -984,14 +1000,14 @@ fn after_brackets(tail: &str) -> &str {
 fn after_noqa_codes(tail: &str) -> &str {
     let mut rest = tail.trim_start().strip_prefix(':').unwrap_or(tail);
     loop {
-        let t = rest.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
-        let end = t
+        let remaining = rest.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
+        let end = remaining
             .find(|c: char| c == ',' || c.is_whitespace())
-            .unwrap_or(t.len());
-        if end > 0 && is_code(&t[..end]) {
-            rest = &t[end..];
+            .unwrap_or(remaining.len());
+        if end > 0 && is_code(&remaining[..end]) {
+            rest = &remaining[end..];
         } else {
-            return t;
+            return remaining;
         }
     }
 }

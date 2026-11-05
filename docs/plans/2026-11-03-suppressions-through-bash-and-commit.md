@@ -180,9 +180,11 @@ Rollout, as the person decided: ship an `amont.pack`, and adopt it in every repo
    - Git: replay `suppressions --staged` on every non-merge commit since 2026-10-25 in the fleet repos (each commit's parent tree against its tree) and compare with the expected table under Verification.
    - Record the false positives and fix them before release.
 5. **Release.**
+   - Prerequisite: the producer's separate minor release, amont >= 1.70.0, is released before any consumer deployment or pack adoption (Phases 5 and 6); this plan does not claim it released or installed.
    - Through the `tag-release` skill: CHANGELOG, minor bump, brew upgrade, `amont-agent doctor`.
    - Live check in a scratch worktree: the post-Bash Assert fires on a `sed -i` adding `#[allow(dead_code)]`, the commit is blocked, and `-c amont.agent.suppressions=allow` from an agent is denied.
 6. **Fleet adoption**, after the decisions PR from Phase 7 has merged. Every repo with an `amont.conf`, except happier.
+   - Before enabling the pack, on every machine that commits, relais runners included: check `amont --version` is >= 1.70.0 AND `amont-agent` is available on PATH at the released version.
    - The repos: activity-vision, adr-lint, amont, application-landscape, authelia-oidc-operator, aval, cluster-vision, customer-vision, ddns-updater-operator, decisions, duro-app, duro-design-system, duro-lexical-multi, fleet-lsp, grh, homelab, homelab-preview-operator, kb-vision, relais, social-planner, sre-agent, stealth-fetch, ticket-vision, trade-agents, website-builder.
    - Per repo:
      1. A worktree from `origin/main`: `amont add github:fredericrous/amont-agent`, then `amont agents-md`.

@@ -115,6 +115,8 @@ A command-scoped `git -c amont.agent.suppressions=allow commit` passes; the
 same key in repository or global config is ignored.
 A non-empty absolute `AMONT_INDEX_FILE` selects the index to judge over
 `GIT_INDEX_FILE`; a non-empty invalid one exits 2 unless that override applies.
+The hint belongs to the current check: a wrapper that switches repositories
+must clear `AMONT_INDEX_FILE` first. `--staged` may be repeated.
 ";
 
 /// Entry point. `git_index` is `GIT_INDEX_FILE` as it was before `main`
@@ -140,8 +142,8 @@ pub fn run(
         eprint!("{HELP}");
         return ExitCode::from(2);
     }
-    if args.len() != 1 {
-        eprintln!("amont-agent: suppressions takes exactly one --staged\n");
+    if args.is_empty() {
+        eprintln!("amont-agent: suppressions needs --staged\n");
         eprint!("{HELP}");
         return ExitCode::from(2);
     }

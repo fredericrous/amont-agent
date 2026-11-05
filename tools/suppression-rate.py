@@ -335,13 +335,13 @@ def rust(lines):
         if not line.lstrip().startswith("#"):
             continue
         window = "\n".join(lines[number - 1 : number - 1 + ATTRIBUTE_SPAN])
-        t = (attribute_text(window) or line).lstrip()
-        t = t[1:]
-        if t.startswith("!"):
-            t = t[1:]
-        if not t.startswith("["):
+        attribute = (attribute_text(window) or line).lstrip()
+        attribute = attribute[1:]
+        if attribute.startswith("!"):
+            attribute = attribute[1:]
+        if not attribute.startswith("["):
             continue
-        inner = t[1:].lstrip()
+        inner = attribute[1:].lstrip()
         for kind in ("allow", "expect"):
             if inner.startswith(kind + "("):
                 out += codes_of(kind, paren_items(inner[len(kind) + 1:]), number)
@@ -652,12 +652,12 @@ def after_noqa_codes(tail):
     rest = tail.lstrip()
     rest = rest[1:] if rest.startswith(":") else tail
     while True:
-        t = rest.lstrip(", \t\r\n")
-        m = re.match(r"[^,\s]+", t)
+        remaining = rest.lstrip(", \t\r\n")
+        m = re.match(r"[^,\s]+", remaining)
         if m and is_code(m.group(0)):
-            rest = t[m.end():]
+            rest = remaining[m.end():]
         else:
-            return t
+            return remaining
 
 
 def starts_a_marker(seg):
