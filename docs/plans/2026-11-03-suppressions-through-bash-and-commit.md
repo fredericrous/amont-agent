@@ -8,7 +8,7 @@ adrs: [decisions:ADR-0011]
 
 ## Review panel
 👉 **Decide:** none — approve if a reasonless-only commit gate plus a post-Bash check closes the Bash and non-Claude-Code routes.
-📍 amont-agent, decisions, 25 fleet repos · plan reviewed · next: a worktree, Phases 1–3, release, decisions PR, then fleet. Panel: backend, lang:rust, tui, unix (claude-opus-5-5), codex.
+📍 amont-agent, decisions, 25 fleet repos · Phases 1–4 verified; decisions prerequisite merged · next: land this branch, then Phase 5 after released amont >=1.70.0, live checks and fleet adoption. Panel: backend, lang:rust, tui, unix (claude-opus-5-5), codex.
 **Changed by review:** `GIT_INDEX_FILE` kept so `commit -a` is checked; the override is command-scoped only and its every channel is refused; the pack scope is `*` (amont refuses `tsconfig*.json`).
 **Verdicts:** round 1 4× approve-with-changes; round 2 backend approve; codex rework (1 blocking, 2 high applied; backend approve-with-changes on them). 3 carried into implementation.
 📄 Full reviews: [2026-11-03-suppressions-through-bash-and-commit.reviews.md](2026-11-03-suppressions-through-bash-and-commit.reviews.md)
@@ -205,6 +205,15 @@ Rollout, as the person decided: ship an `amont.pack`, and adopt it in every repo
 - decisions: none — one line of markdown
 - fleet repos (Phase 6): none — vendored `amont.conf` pack block and regenerated AGENTS.md only
 
+## Implementation review
+
+- **approve, implementation** — enum/names fixed; final test-helper output parameter removed in `163a98f`; ten candidates fine. Final repair Delta: 79,883 tokens, 48 s.
+- **approve, backend** — scan/error/integration findings and producer release prerequisite resolved; source-debug qualification retained. 86,411 tokens, 35 s.
+- **approve, unix** — bound per-worktree identity, fallback, path bytes and repeated flags resolved; external indexes retained. 83,240 tokens, 25 s.
+- **approve, lang:rust** — earlier seven findings resolved; ancestry carry applies subject to the push hook. 66,950 tokens, 47 s.
+
+Status stays active: Phases 1–4 are verified; Phase 5 requires released amont >=1.70.0 before consumer deployment, then live checks and Phase 6 adoption.
+
 ## Decision log
 
 - 2026-11-03: the person chose both layers (option 1), "reasonless only" at commit, and the whole fleet except happier.
@@ -244,5 +253,6 @@ Rollout, as the person decided: ship an `amont.pack`, and adopt it in every repo
 | paired-producer real index handoff, source-debug binaries | the exact unmarked pack checks the selected commit index in both worktree types | Passed with consumer `5210a10` and frozen producer SHA-256 `f6741a7728bc716b96d6cde65e202084f20521601ab0076b49b757c1bd7e7f92`: source, extensionless shell and config-only additions blocked; subdirectory `commit -a`, path and `--only` bad commits blocked in primary and linked worktrees (6), HEAD unchanged; reasoned `--only` passed (2); README-only commits excluded unrelated staged bare markers (2). Evidence: `attestations/suppressions-2026-11-05/paired-index-a54ao_ux/proof.json` and `bound-handoff.TVoDW1/probe-results.json`. These are source-debug proofs, not released artifacts |
 | paired-producer upgrade behind an unchanged shell wrapper | old false-clean passes cannot bypass the corrected boundary even when the declared executable is unchanged | `sh check-suppressions.sh` reproduced the broken commit and reused its old false-clean stamp with amont 1.69.0 and the preserved old scanner. Atomically replacing producer and scanner at their same fixture paths rejected the same bad tree at `x.rs:1`, exit 1, HEAD unchanged; `/bin/sh` path, size, mtime and SHA-256 stayed unchanged. Evidence: `attestations/suppressions-2026-11-05/paired-index-a54ao_ux/proof.json`. The preceding `paired-index-dqrwcxp3` fixture passed all 10 path cases but used unsupported quoted manifest arguments for its wrapper; the driver was corrected to a plain tracked shell script and rerun in a fresh fixture, not treated as a product failure |
 | bound-pair source-debug resource probe | record latency and memory; reject cumulative overflow before reading contents | Consumer `5210a10`: docs-only 20 scans p50 51.5 ms / p95 61.7 ms; 50 MiB skip passed in 0.110 s, RSS 4.13 MiB; 60 MiB total passed in 1.082 s, RSS 155.12 MiB; 66 MiB exited 2 before content reads, RSS 4.09 MiB. Evidence: `attestations/suppressions-2026-11-05/bound-handoff.TVoDW1/probe-results.json`. No release or install claimed |
+| final test-only review repair | remove the output parameter without changing production code or nested-hook assertions; full checks pass | `163a98f`: relais `run-65f8c3b857391-dc33` automatically accepted with receipt; default `make check` exited 0 and independent native review passed. The sole file changed is `tests/suppressions.rs`, +8/-8, configuring the same two inherited hints inline on both fixture commands. All 26 commit checks passed; implementation Delta approves the final tree. The earlier source-debug paired proof remains applicable to unchanged production code |
 
 <!-- panel: repos=amont-agent,decisions reviewers=backend,lang:rust,tui,unix,codex body-sha=81f46293160c -->
