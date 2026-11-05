@@ -327,6 +327,9 @@ fn main() -> ExitCode {
     // temporary one on `commit -a` and `commit <path>`), so it is read here,
     // before the scrub below removes it.
     let hook_index = std::env::var_os("GIT_INDEX_FILE");
+    // amont hands a declared pre-commit check the absolute commit index here;
+    // only `suppressions` reads it, and it wins over `GIT_INDEX_FILE`.
+    let amont_index = std::env::var_os("AMONT_INDEX_FILE");
     // Claude Code does not spawn us from git, but a session started inside a
     // git hook still carries GIT_DIR / GIT_WORK_TREE, and those beat
     // `current_dir` for every git command we run. `crate::git` builds
@@ -456,7 +459,7 @@ fn main() -> ExitCode {
             Sub::Shipped => shipped::run(&args),
             Sub::Board => board::run(&args),
             Sub::Open => open::run(&args),
-            Sub::Suppressions => suppressions::run(&args, hook_index),
+            Sub::Suppressions => suppressions::run(&args, amont_index, hook_index),
             Sub::PlanPanel => run_plan_panel(&args),
             Sub::PlanReview => {
                 let (said, code) = review_outcomes::run(&args);

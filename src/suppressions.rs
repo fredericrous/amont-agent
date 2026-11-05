@@ -9,7 +9,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -56,6 +56,9 @@ enum ScanError {
         name: String,
     },
     NewlineInPath,
+    IndexHint {
+        path: String,
+    },
 }
 
 impl fmt::Display for ScanError {
@@ -78,6 +81,12 @@ impl fmt::Display for ScanError {
             }
             ScanError::MissingName { name } => {
                 write!(out, "suppressions: git cat-file failed: {name} missing")
+            }
+            ScanError::IndexHint { path } => {
+                write!(
+                    out,
+                    "suppressions: AMONT_INDEX_FILE '{path}' is not an absolute path to an existing index file"
+                )
             }
             ScanError::NewlineInPath => {
                 write!(
@@ -104,12 +113,21 @@ anywhere) blocks unless it carries a reason in its tool's own reason form.
 Exit 0: nothing blocking. 1: a blocking hit. 2: usage error or git failure.
 A command-scoped `git -c amont.agent.suppressions=allow commit` passes; the
 same key in repository or global config is ignored.
+A non-empty absolute `AMONT_INDEX_FILE` selects the index to judge over
+`GIT_INDEX_FILE`; a non-empty invalid one exits 2 unless that override applies.
 ";
 
-/// Entry point. `index_file` is `GIT_INDEX_FILE` as it was before `main`
+/// Entry point. `git_index` is `GIT_INDEX_FILE` as it was before `main`
 /// scrubbed the environment: git hands a hook a temporary index on
-/// `commit -a`, `commit <path>` and `--only`.
-pub fn run(args: &[OsString], index_file: Option<OsString>) -> ExitCode {
+/// `commit -a`, `commit <path>` and `--only`. `amont_index` is
+/// `AMONT_INDEX_FILE`: when non-empty it must name an existing file by an
+/// absolute path, and it takes precedence over `git_index`; unset or empty
+/// leaves the direct Git-hook fallback.
+pub fn run(
+    args: &[OsString],
+    amont_index: Option<OsString>,
+    git_index: Option<OsString>,
+) -> ExitCode {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         emit(format_args!("{HELP}"));
         return ExitCode::SUCCESS;
@@ -134,7 +152,9 @@ pub fn run(args: &[OsString], index_file: Option<OsString>) -> ExitCode {
     if allowed == Override::Absent {
         note_ignored_override();
     }
-    match scan(index_file.as_deref()) {
+    let scanned =
+        select_index(amont_index, git_index).and_then(|index_file| scan(index_file.as_deref()));
+    match scanned {
         Err(why) if allowed == Override::CommandScoped => {
             eprintln!("{why}");
             eprintln!("suppressions: allowed by command-scoped {OVERRIDE_KEY}=allow");
@@ -150,6 +170,23 @@ pub fn run(args: &[OsString], index_file: Option<OsString>) -> ExitCode {
             ExitCode::from(2)
         }
         Ok(scan) => judge(&scan, allowed),
+    }
+}
+
+/// The index the scan reads: a non-empty `AMONT_INDEX_FILE` must be an
+/// absolute path to an existing file and wins; otherwise `GIT_INDEX_FILE`.
+fn select_index(
+    amont_index: Option<OsString>,
+    git_index: Option<OsString>,
+) -> Result<Option<OsString>, ScanError> {
+    match amont_index.filter(|path| !path.is_empty()) {
+        Some(path) if Path::new(&path).is_absolute() && Path::new(&path).is_file() => {
+            Ok(Some(path))
+        }
+        Some(path) => Err(ScanError::IndexHint {
+            path: path.to_string_lossy().into_owned(),
+        }),
+        None => Ok(git_index),
     }
 }
 

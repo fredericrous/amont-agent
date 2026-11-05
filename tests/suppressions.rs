@@ -11,7 +11,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
-const GIT_ENV: [&str; 8] = [
+const GIT_ENV: [&str; 9] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -20,6 +20,7 @@ const GIT_ENV: [&str; 8] = [
     "GIT_CONFIG_PARAMETERS",
     "GIT_CONFIG_COUNT",
     "AMONT_AGENT_OFF",
+    "AMONT_INDEX_FILE",
 ];
 const BARE: &str = "x = 1  # noqa: E501\n";
 
@@ -587,4 +588,163 @@ fn the_pack_declares_the_one_gate() {
         lines,
         ["pre-commit  suppressions  *  block  amont-agent suppressions --staged"]
     );
+}
+
+/// A repository whose ordinary index and HEAD are clean, and an alternate
+/// index (absolute path) staging a bare suppression in `a.py`.
+fn repo_with_alternate_index() -> (Repo, PathBuf, String) {
+    let repo = Repo::new();
+    repo.stage("a.py", "x = 1\n");
+    repo.commit("base");
+    let alternate = repo.dir.parent().unwrap().join("alternate.index");
+    fs::copy(repo.dir.join(".git/index"), &alternate).unwrap();
+    repo.write("a.py", BARE);
+    let added = repo
+        .command("git")
+        .args(["add", "--", "a.py"])
+        .env("GIT_INDEX_FILE", &alternate)
+        .output()
+        .unwrap();
+    assert!(added.status.success(), "{}", text(&added.stderr));
+    repo.git(&["checkout", "-q", "--", "a.py"]);
+    let head = repo.head();
+    (repo, alternate, head)
+}
+
+#[test]
+fn amont_index_file_selects_the_alternate_index_over_git_index_file() {
+    let (repo, alternate, head) = repo_with_alternate_index();
+    let ordinary = repo.dir.join(".git/index");
+    assert_eq!(code(&repo.gate()), 0, "ordinary index must be clean");
+
+    let out = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("AMONT_INDEX_FILE", &alternate)
+        .env("GIT_INDEX_FILE", &ordinary)
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("a.py:1: "),
+        "{}",
+        text(&out.stderr)
+    );
+
+    assert_eq!(code(&repo.gate()), 0, "ordinary index still clean");
+    assert_eq!(repo.head(), head);
+}
+
+#[test]
+fn unset_and_empty_amont_index_file_keep_the_git_index_file_fallback() {
+    let (repo, alternate, _) = repo_with_alternate_index();
+    let unset = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("GIT_INDEX_FILE", &alternate)
+        .output()
+        .unwrap();
+    assert_eq!(code(&unset), 1, "{}", text(&unset.stderr));
+    assert!(text(&unset.stdout).contains("a.py:1: "));
+
+    let empty = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("AMONT_INDEX_FILE", "")
+        .env("GIT_INDEX_FILE", &alternate)
+        .output()
+        .unwrap();
+    assert_eq!(code(&empty), 1, "{}", text(&empty.stderr));
+    assert!(text(&empty.stdout).contains("a.py:1: "));
+
+    let ordinary_empty = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("AMONT_INDEX_FILE", "")
+        .output()
+        .unwrap();
+    assert_eq!(code(&ordinary_empty), 0);
+}
+
+#[test]
+fn an_empty_amont_index_file_keeps_the_real_hook_commit_paths_working() {
+    let repo = Repo::new();
+    repo.stage("a.py", "x = 1\n");
+    repo.commit("base");
+    repo.install_hook();
+    let base = repo.head();
+    repo.write("a.py", BARE);
+    let all = repo
+        .command("git")
+        .args(["commit", "-q", "-a", "-m", "all"])
+        .env("AMONT_INDEX_FILE", "")
+        .output()
+        .unwrap();
+    assert!(!all.status.success(), "commit -a was not blocked");
+    assert!(
+        text(&all.stderr).contains("a.py:1: "),
+        "{}",
+        text(&all.stderr)
+    );
+    let only = repo
+        .command("git")
+        .args(["commit", "-q", "-m", "only", "a.py"])
+        .env("AMONT_INDEX_FILE", "")
+        .output()
+        .unwrap();
+    assert!(!only.status.success(), "commit <path> was not blocked");
+    assert_eq!(repo.head(), base);
+}
+
+#[test]
+fn an_invalid_amont_index_file_fails_closed_without_scanning_the_ordinary_index() {
+    let (repo, _, head) = repo_with_alternate_index();
+    let missing = repo.dir.parent().unwrap().join("no-such.index");
+    for value in [missing.as_os_str(), std::ffi::OsStr::new("relative.index")] {
+        let out = repo
+            .command(BIN)
+            .args(["suppressions", "--staged"])
+            .env("AMONT_INDEX_FILE", value)
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 2, "{}{}", text(&out.stdout), text(&out.stderr));
+        assert!(
+            text(&out.stderr).contains("AMONT_INDEX_FILE"),
+            "{}",
+            text(&out.stderr)
+        );
+    }
+    assert_eq!(repo.head(), head);
+}
+
+#[test]
+fn a_command_scoped_allow_passes_even_with_an_invalid_amont_index_file() {
+    let (repo, _, head) = repo_with_alternate_index();
+    let missing = repo.dir.parent().unwrap().join("no-such.index");
+    let scoped = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("AMONT_INDEX_FILE", &missing)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "amont.agent.suppressions")
+        .env("GIT_CONFIG_VALUE_0", "allow")
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&scoped),
+        0,
+        "{}{}",
+        text(&scoped.stdout),
+        text(&scoped.stderr)
+    );
+
+    repo.git(&["config", "--local", "amont.agent.suppressions", "allow"]);
+    let persistent = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("AMONT_INDEX_FILE", &missing)
+        .output()
+        .unwrap();
+    assert_eq!(code(&persistent), 2, "{}", text(&persistent.stderr));
+    assert_eq!(repo.head(), head);
 }
