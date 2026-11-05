@@ -132,24 +132,52 @@ impl Repo {
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// A `git` that logs its arguments to `log`, and answers `missing` to
-    /// every name of `cat-file --batch-check` when `missing` is set.
-    fn shim(&self, missing: bool) -> (PathBuf, PathBuf) {
+    /// A `git` that logs its arguments to `log` and runs the real one.
+    fn passthrough_shim(&self) -> (PathBuf, PathBuf) {
+        self.shim_intercepting("")
+    }
+
+    /// A `git` that logs its arguments and answers `missing` to every name of
+    /// `cat-file --batch-check`.
+    fn missing_names_shim(&self) -> (PathBuf, PathBuf) {
+        self.shim_intercepting(
+            "  *--batch-check*) while read l; do echo \"$l missing\"; done; exit 0;;\n",
+        )
+    }
+
+    /// A `git` that logs its arguments and exits 0 at once on `cat-file`,
+    /// reading none of the names it is sent.
+    fn deaf_cat_file_shim(&self) -> (PathBuf, PathBuf) {
+        self.shim_intercepting("  *cat-file*) exit 0;;\n")
+    }
+
+    /// A `git` shim whose `case` holds `arms`; anything they do not match
+    /// runs the real git.
+    fn shim_intercepting(&self, arms: &str) -> (PathBuf, PathBuf) {
         let bin = self.dir.parent().unwrap().join("shim");
         fs::create_dir_all(&bin).unwrap();
         let log = bin.join("calls.log");
         let script = format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n  *--batch-check*) if [ {} = 1 ]; then while read l; do echo \"$l missing\"; done; exit 0; fi;;\nesac\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n{arms}esac\nexec '{}' \"$@\"\n",
             log.display(),
-            i32::from(missing),
             real_git()
         );
         let path = bin.join("git");
         fs::write(&path, script).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         // Run it once so a parallel fork never meets it half-written (ETXTBSY).
-        let _ = Command::new(&path).arg("--version").output();
+        let _ = Command::new(&path).arg("--version").output(); // a priming run; its answer is not read
         (bin, log)
+    }
+
+    /// The gate with the shim directory first on `PATH`.
+    fn gate_with_shim(&self, bin: &Path) -> Output {
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        self.command(BIN)
+            .env("PATH", path)
+            .args(["suppressions", "--staged"])
+            .output()
+            .unwrap()
     }
 }
 
@@ -170,9 +198,11 @@ fn an_added_bare_marker_blocks_with_its_fix() {
     let stdout = text(&out.stdout);
     assert!(stdout.contains("a.py:1: "), "{stdout}");
     assert!(stdout.contains("add -- <why>"), "{stdout}");
-    assert!(stdout.contains("fix the cause, or stop and tell the person"));
-    assert!(stdout.contains("for the person only (an agent's attempt is refused):"));
-    assert!(stdout.contains("git -c amont.agent.suppressions=allow commit"));
+    let stderr = text(&out.stderr);
+    assert!(stderr.contains("fix the cause, or stop and tell the person"));
+    assert!(stderr.contains("for the person only (an agent's attempt is refused):"));
+    assert!(stderr.contains("git -c amont.agent.suppressions=allow commit"));
+    assert!(!stdout.contains("for the person only"), "{stdout}");
 }
 
 #[test]
@@ -289,17 +319,52 @@ fn a_name_git_reports_missing_is_exit_two() {
     repo.stage("a.py", "x = 1\n");
     repo.commit("base");
     repo.stage("a.py", "x = 2\n");
-    let (bin, _) = repo.shim(true);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let out = repo
-        .command(BIN)
-        .env("PATH", path)
-        .args(["suppressions", "--staged"])
-        .output()
-        .unwrap();
+    let (bin, _) = repo.missing_names_shim();
+    let out = repo.gate_with_shim(&bin);
     assert_eq!(code(&out), 2, "{}{}", text(&out.stdout), text(&out.stderr));
     assert!(
         text(&out.stderr).contains("missing"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn under_observe_a_scan_error_prints_its_reason_and_exits_zero() {
+    let repo = Repo::new();
+    repo.stage("a.py", "x = 1\n");
+    repo.commit("base");
+    repo.stage("a.py", "x = 2\n");
+    repo.git(&[
+        "config",
+        "--file",
+        repo.config.to_str().unwrap(),
+        "amont.agent.lint-suppression-added.stance",
+        "observe",
+    ]);
+    let (bin, _) = repo.missing_names_shim();
+    let out = repo.gate_with_shim(&bin);
+    assert_eq!(code(&out), 0, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("missing"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(text(&out.stdout), "");
+}
+
+#[test]
+fn a_git_that_exits_at_once_on_cat_file_is_exit_two_not_a_signal() {
+    let repo = Repo::new();
+    for n in 0..700 {
+        repo.write(&format!("d/{}_{n}.py", "n".repeat(100)), "x = 1\n");
+    }
+    repo.git(&["add", "."]);
+    let (bin, _) = repo.deaf_cat_file_shim();
+    let out = repo.gate_with_shim(&bin);
+    assert_eq!(code(&out), 2, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("incomplete"),
         "{}",
         text(&out.stderr)
     );
@@ -322,14 +387,8 @@ fn a_fifty_mebibyte_staged_script_is_not_read() {
         "big.js",
         &padded("// eslint-disable-next-line no-undef\n", 50 * 1024 * 1024),
     );
-    let (bin, log) = repo.shim(false);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let out = repo
-        .command(BIN)
-        .env("PATH", path)
-        .args(["suppressions", "--staged"])
-        .output()
-        .unwrap();
+    let (bin, log) = repo.passthrough_shim();
+    let out = repo.gate_with_shim(&bin);
     assert_eq!(code(&out), 0, "{}{}", text(&out.stdout), text(&out.stderr));
     assert!(
         text(&out.stderr).contains("big.js"),
@@ -364,14 +423,8 @@ fn the_cumulative_budget_is_checked_before_any_content_read() {
     assert_eq!(code(&within), 0, "{}", text(&within.stderr));
 
     stage_many(&repo, 17);
-    let (bin, log) = repo.shim(false);
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let over = repo
-        .command(BIN)
-        .env("PATH", path)
-        .args(["suppressions", "--staged"])
-        .output()
-        .unwrap();
+    let (bin, log) = repo.passthrough_shim();
+    let over = repo.gate_with_shim(&bin);
     assert_eq!(code(&over), 2, "{}", text(&over.stderr));
     assert!(
         text(&over.stderr).contains("scan budget exceeded (64 MiB); scan incomplete"),
@@ -503,6 +556,17 @@ fn a_usage_error_is_exit_two() {
     let repo = Repo::new();
     let out = repo.command(BIN).arg("suppressions").output().unwrap();
     assert_eq!(code(&out), 2);
+    let misspelled = repo
+        .command(BIN)
+        .args(["suppressions", "--stagd"])
+        .output()
+        .unwrap();
+    assert_eq!(code(&misspelled), 2);
+    assert!(
+        text(&misspelled.stderr).contains("unknown argument '--stagd'"),
+        "{}",
+        text(&misspelled.stderr)
+    );
     let help = repo
         .command(BIN)
         .args(["suppressions", "--help"])

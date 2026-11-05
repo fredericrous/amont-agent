@@ -63,14 +63,37 @@ fn examine(input: &Input) -> Option<Finding> {
     })
 }
 
+/// The word that stands for a command separator in [`loose_words`].
+const SEPARATOR: &str = ";";
+
 /// Words of a text the lexer did not read: split on whitespace and quoting
 /// characters, so `bash -c 'git -c amont.agent.suppressions=allow commit'`
-/// is still seen.
+/// is still seen. A `;`, `&`, `|` or newline becomes a [`SEPARATOR`] word, so
+/// one invocation can be told from the next.
 fn loose_words(text: &str) -> Vec<String> {
-    text.split(|c: char| c.is_whitespace() || "'\"`;&|()".contains(c))
-        .filter(|w| !w.is_empty())
-        .map(str::to_string)
-        .collect()
+    let mut words = Vec::new();
+    let mut word = String::new();
+    for c in text.chars() {
+        let separator = matches!(c, ';' | '&' | '|' | '\n');
+        if separator || c.is_whitespace() || "'\"`()".contains(c) {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            if separator && words.last().map(String::as_str) != Some(SEPARATOR) {
+                words.push(SEPARATOR.to_string());
+            }
+        } else {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+fn is_git(word: &str) -> bool {
+    word == "git" || word.ends_with("/git")
 }
 
 /// Whether one command's words reach a protected switch.
@@ -123,39 +146,44 @@ fn git_option(at: usize, lower: &[String]) -> bool {
     protected(key, value)
 }
 
-/// `git config <key> <value>` and the unset forms; a read is allowed.
+/// `git config <key> <value>` and the unset forms; a read is allowed. Only
+/// the words of the key's own git invocation count: from the nearest `git`
+/// word before it to the next separator or `git` word after it, so a
+/// `--get` in an earlier command does not excuse this one.
 fn config_write(at: usize, lower: &[String]) -> bool {
     let key = lower[at].as_str();
     if ![OVERRIDE_KEY, STANCE_KEY, SEVERITY_KEY, SKIP_KEY].contains(&key) {
         return false;
     }
-    let configures = lower
+    let Some(start) = lower[..at]
         .iter()
-        .take(at)
-        .rev()
-        .take_while(|w| *w != "git" && !w.ends_with("/git"))
-        .any(|w| w == "config")
-        && lower
-            .iter()
-            .take(at)
-            .any(|w| w == "git" || w.ends_with("/git"));
-    if !configures {
+        .rposition(|w| is_git(w) || w == SEPARATOR)
+        .filter(|start| is_git(&lower[*start]))
+    else {
+        return false;
+    };
+    let end = lower[at..]
+        .iter()
+        .position(|w| is_git(w) || w == SEPARATOR)
+        .map_or(lower.len(), |offset| at + offset);
+    let own = &lower[start..end];
+    if !own[..at - start].iter().any(|w| w == "config") {
         return false;
     }
-    let reads = lower
+    let reads = own
         .iter()
         .any(|w| ["--get", "--get-all", "--get-regexp", "--list", "-l"].contains(&w.as_str()));
     if reads {
         return false;
     }
-    let value = lower.get(at + 1).map(String::as_str);
-    let unsets = lower
+    let unsets = own
         .iter()
         .any(|w| w.starts_with("--unset") || w == "--remove-section");
     if unsets {
         return true;
     }
     // `git config <key>` with no value reads it.
+    let value = own.get(at - start + 1).map(String::as_str);
     value.is_some() && protected(key, value)
 }
 
@@ -204,6 +232,8 @@ mod tests {
             "git -c amont.agent.lint-suppression-added.stance=observe commit",
             "GIT_CONFIG_KEY_0=amont.agent.lint-suppression-added.stance git commit",
             "bash -c 'git -c amont.agent.suppressions=allow commit'",
+            "bash -c 'git config --get user.name; git config amont.agent.suppressions allow'",
+            "bash -c 'git config --get user.name && git config --unset amont.agent.suppressions'",
         ] {
             assert!(denied(command), "{command}");
         }
@@ -219,6 +249,7 @@ mod tests {
             "git commit -m \"explain -c amont.agent.suppressions=allow\"",
             "git log --grep=amont.agent.suppressions",
             "git -c amont.severity.pre-commit-suppressions=block commit",
+            "bash -c 'git config --get user.name; git config amont.agent.suppressions'",
         ] {
             assert!(!denied(command), "{command}");
         }

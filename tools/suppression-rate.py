@@ -636,7 +636,6 @@ def eslint_loose(k, v):
     return k not in ("ecmaVersion", "version") and v in ("off", "warn", "0", "1")
 
 
-# ---- reasons --------------------------------------------------------------------
 
 
 def has_text(s):

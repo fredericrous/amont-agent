@@ -121,6 +121,7 @@ fn the_rules_that_refuse_by_default() {
             "pipe-to-tail",
             "plan-phases-open",
             "plan-review-panel",
+            "suppressions-override",
             "workspace-root-write"
         ]
     );

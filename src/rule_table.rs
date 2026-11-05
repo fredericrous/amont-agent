@@ -157,15 +157,15 @@ mod tests {
         }
     }
 
-    /// The table holds every rule, in its place: 47 rules, which are the 45
+    /// The table holds every rule, in its place: 48 rules, which are the 45
     /// left after the workspace split and the observe-rule retirements, plus
-    /// `work-overlap` and `ask-unopened-page`, with `push-preview` between `push-preflight` and
+    /// `work-overlap`, `ask-unopened-page` and `suppressions-override`, with `push-preview` between `push-preflight` and
     /// `plan-review-panel`, and `implementation-review` after
     /// `plan-phases-open`. A rule a crate stopped listing would vanish here.
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 47, "{ids:?}");
+        assert_eq!(ids.len(), 48, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)

@@ -109,3 +109,10 @@ fn a_whole_pre_commit_skip_and_an_ordinary_commit_are_allowed() {
         assert!(!reason.contains("suppressions-override"), "{command}");
     }
 }
+
+#[test]
+fn a_read_in_an_earlier_command_does_not_excuse_the_write() {
+    denied_with_the_plans_text(
+        "bash -c 'git config --get user.name; git config amont.agent.suppressions allow'",
+    );
+}

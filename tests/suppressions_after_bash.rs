@@ -29,7 +29,7 @@ impl World {
     fn new(name: &str) -> World {
         let root =
             std::env::temp_dir().join(format!("amont-agent-sab-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root); // a leftover from an earlier run may or may not exist
         let repo = root.join("repo");
         std::fs::create_dir_all(repo.join("src")).expect("scratch repo");
         git(&repo, &["init", "-q"]);
@@ -55,7 +55,7 @@ impl World {
     }
 
     fn payload(&self, event: &str, session: &str, command: &str) -> String {
-        let mut v = serde_json::json!({
+        let mut body = serde_json::json!({
             "hook_event_name": event,
             "tool_name": "Bash",
             "cwd": self.repo.display().to_string(),
@@ -65,12 +65,12 @@ impl World {
             "tool_input": {"command": command},
         });
         if event == "PostToolUseFailure" {
-            v["error"] = "Exit code 1".into();
+            body["error"] = "Exit code 1".into();
         } else {
-            v["tool_response"] =
+            body["tool_response"] =
                 serde_json::json!({"stdout": "", "stderr": "", "interrupted": false});
         }
-        v.to_string()
+        body.to_string()
     }
 
     fn send(&self, payload: &str, path: Option<&Path>) -> String {
@@ -196,22 +196,36 @@ fn observe_is_silent_and_journalled_as_bash() {
 }
 
 #[cfg(unix)]
-fn fake_git(dir: &Path, log: &Path, sleeps_in_cat_file: bool) {
+fn real_git() -> String {
     let real = Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
         .expect("sh runs");
-    let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
-    let sleep = if sleeps_in_cat_file {
-        "case \"$*\" in *cat-file*) sleep 6;; esac\n"
-    } else {
-        ""
-    };
+    String::from_utf8_lossy(&real.stdout).trim().to_string()
+}
+
+/// A `git` that logs its arguments to `log` and runs the real one.
+#[cfg(unix)]
+fn fake_git(dir: &Path, log: &Path) {
     common::write_fake(
         &dir.join("git"),
         &format!(
-            "#!/bin/sh\necho \"$*\" >> {}\n{sleep}exec {real} \"$@\"\n",
-            log.display()
+            "#!/bin/sh\necho \"$*\" >> {}\nexec {} \"$@\"\n",
+            log.display(),
+            real_git()
+        ),
+    );
+}
+
+/// [`fake_git`] that sleeps six seconds before any `cat-file`.
+#[cfg(unix)]
+fn fake_git_sleeping_in_cat_file(dir: &Path, log: &Path) {
+    common::write_fake(
+        &dir.join("git"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> {}\ncase \"$*\" in *cat-file*) sleep 6;; esac\nexec {} \"$@\"\n",
+            log.display(),
+            real_git()
         ),
     );
 }
@@ -224,7 +238,7 @@ fn a_command_naming_no_keyword_spawns_no_git() {
     let bin = world.home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let log = world.home.join("git-calls.log");
-    fake_git(&bin, &log, false);
+    fake_git(&bin, &log);
     let out = world.send(
         &world.payload("PostToolUse", "s-nokw", "echo hello && ls"),
         Some(&bin),
@@ -242,7 +256,7 @@ fn a_git_that_sleeps_in_cat_file_fails_open_within_the_deadline() {
     let bin = world.home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let log = world.home.join("git-calls.log");
-    fake_git(&bin, &log, true);
+    fake_git_sleeping_in_cat_file(&bin, &log);
     let started = Instant::now();
     let out = world.send(&world.payload("PostToolUse", "s-slow", SED), Some(&bin));
     assert!(
@@ -252,4 +266,40 @@ fn a_git_that_sleeps_in_cat_file_fails_open_within_the_deadline() {
     );
     assert!(!out.contains("src/main.rs"), "{out}");
     assert!(world.journal().contains("bash-slow"), "{}", world.journal());
+}
+
+#[test]
+fn a_git_mv_of_a_file_with_markers_is_silent() {
+    let world = World::new("mv");
+    std::fs::write(
+        world.repo.join("old.rs"),
+        "#[allow(dead_code)]\nfn f() {}\n",
+    )
+    .unwrap();
+    git(&world.repo, &["add", "old.rs"]);
+    git(
+        &world.repo,
+        &["commit", "-q", "-m", "marked", "--no-verify"],
+    );
+    git(&world.repo, &["mv", "old.rs", "new.rs"]);
+    let out = world.send(
+        &world.payload("PostToolUse", "s-mv", "git mv old.rs new.rs # #[allow"),
+        None,
+    );
+    assert!(!out.contains("new.rs"), "{out}");
+    assert_eq!(out, "");
+}
+
+#[test]
+fn an_extensionless_shebang_script_written_by_heredoc_is_asserted() {
+    let world = World::new("shebang");
+    std::fs::create_dir_all(world.repo.join("bin")).unwrap();
+    std::fs::write(
+        world.repo.join("bin/x"),
+        "#!/bin/sh\n# shellcheck disable=SC2086\necho $1\n",
+    )
+    .unwrap();
+    let command = "cat > bin/x <<EOF\n#!/bin/sh\n# shellcheck disable=SC2086\necho $1\nEOF";
+    let out = world.send(&world.payload("PostToolUse", "s-shebang", command), None);
+    assert!(out.contains("bin/x:2:"), "{out}");
 }

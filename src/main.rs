@@ -364,10 +364,11 @@ fn main() -> ExitCode {
     // process: the hook then exits 141 and its decision is lost. Both keep
     // SIGPIPE ignored, so the write fails as an error the caller handles;
     // `board` already treats EPIPE on its own output as a quiet exit.
+    // `suppressions` feeds `git cat-file` the same way.
     if !matches!(
         invocation,
         Invocation::Sub {
-            name: Sub::Hook | Sub::Board,
+            name: Sub::Hook | Sub::Board | Sub::Suppressions,
             ..
         }
     ) {

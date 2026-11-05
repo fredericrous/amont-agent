@@ -329,47 +329,71 @@ enum Keying {
     Reasoned,
 }
 
-fn keyed(marker: &Marker, text: &str, keying: Keying) -> MarkerKey {
+fn keyed(marker: &Marker, has_reason: bool, keying: Keying) -> MarkerKey {
     let has_reason = match keying {
         Keying::Plain => false,
-        Keying::Reasoned => reasoned(marker, from_line(text, marker.line)),
+        Keying::Reasoned => has_reason,
     };
     let (kind, codes, section) = marker.key();
     (kind, codes, section, has_reason)
 }
 
 /// One file of a change: the old path and text, the new path and text. Each
-/// side is classified by its own path; an added or deleted file has an empty
-/// text on its absent side, so that side holds no markers.
-pub type FileChange<'a> = (&'a Path, &'a str, &'a Path, &'a str);
+/// side is classified by its own path; an added file has an empty `before`
+/// and a deleted file an empty `after`, so that side holds no markers.
+pub struct FileChange<'a> {
+    pub old_path: &'a Path,
+    pub before: &'a str,
+    pub new_path: &'a Path,
+    pub after: &'a str,
+}
 
-fn net_added_keyed(changes: &[FileChange<'_>], keying: Keying) -> Vec<(PathBuf, Hit)> {
+/// A marker a change adds, at its new path, with whether it carries a reason
+/// in its tool's own form.
+pub struct Added {
+    pub path: PathBuf,
+    pub hit: Hit,
+    pub reasoned: bool,
+}
+
+fn net_added_keyed(changes: &[FileChange<'_>], keying: Keying) -> Vec<Added> {
     let mut had: HashMap<MarkerKey, usize> = HashMap::new();
-    for (old_path, before, _, _) in changes {
-        for m in markers(old_path, before) {
-            *had.entry(keyed(&m, before, keying)).or_insert(0) += 1;
+    for change in changes {
+        for m in markers(change.old_path, change.before) {
+            let has_reason = reasoned(&m, from_line(change.before, m.line));
+            *had.entry(keyed(&m, has_reason, keying)).or_insert(0) += 1;
         }
     }
-    let mut now: Vec<(PathBuf, Marker, MarkerKey)> = Vec::new();
-    for (_, _, new_path, after) in changes {
-        for m in markers(new_path, after) {
-            let key = keyed(&m, after, keying);
-            now.push((new_path.to_path_buf(), m, key));
+    let mut now: Vec<(Added, MarkerKey)> = Vec::new();
+    for change in changes {
+        for m in markers(change.new_path, change.after) {
+            let has_reason = reasoned(&m, from_line(change.after, m.line));
+            let key = keyed(&m, has_reason, keying);
+            now.push((
+                Added {
+                    path: change.new_path.to_path_buf(),
+                    hit: m,
+                    reasoned: has_reason,
+                },
+                key,
+            ));
         }
     }
     // By the path's text, not its components, as the Python port sorts.
     now.sort_by(|a, b| {
-        a.0.as_os_str()
-            .cmp(b.0.as_os_str())
-            .then(a.1.line.cmp(&b.1.line))
+        a.0.path
+            .as_os_str()
+            .cmp(b.0.path.as_os_str())
+            .then(a.0.hit.line.cmp(&b.0.hit.line))
     });
     let mut seen: HashMap<MarkerKey, usize> = HashMap::new();
     now.into_iter()
-        .filter_map(|(path, marker, key)| {
-            let n = had.get(&key).copied().unwrap_or(0);
-            let s = seen.entry(key).or_insert(0);
-            *s += 1;
-            (*s > n).then_some((path, marker))
+        .filter_map(|(added, key)| {
+            let had_count = had.get(&key).copied().unwrap_or(0);
+            let seen_count = seen.entry(key).or_insert(0);
+            *seen_count += 1;
+            // holds-until: a move is told apart from a removal and an addition by path pairing
+            (*seen_count > had_count).then_some(added)
         })
         .collect()
 }
@@ -378,16 +402,23 @@ fn net_added_keyed(changes: &[FileChange<'_>], keying: Keying) -> Vec<(PathBuf, 
 /// are summed over every file, keyed without the path and with whether the
 /// marker carries a reason, so a marker moved between files cancels and
 /// removing a reasoned marker never cancels an added bare one. Hits are
-/// reported at their new path, in path then line order. Pure.
-pub fn net_added(changes: &[FileChange<'_>]) -> Vec<(PathBuf, Hit)> {
+/// reported at their new path, in path then line order, each with its reasoned
+/// bit. Pure.
+pub fn net_added(changes: &[FileChange<'_>]) -> Vec<Added> {
     net_added_keyed(changes, Keying::Reasoned)
 }
 
 /// The markers `after` has more of than `before`. Pure.
 pub fn examine_change(path: &Path, before: &str, after: &str) -> Vec<Hit> {
-    net_added_keyed(&[(path, before, path, after)], Keying::Plain)
+    let change = FileChange {
+        old_path: path,
+        before,
+        new_path: path,
+        after,
+    };
+    net_added_keyed(&[change], Keying::Plain)
         .into_iter()
-        .map(|(_, hit)| hit)
+        .map(|added| added.hit)
         .collect()
 }
 
@@ -896,14 +927,14 @@ fn rust(text: &str) -> Vec<Marker> {
             continue;
         }
         let attribute = attribute_text(from_line(text, i + 1)).unwrap_or(line);
-        let Some(t) = attribute.trim_start().strip_prefix('#') else {
+        let Some(after_hash) = attribute.trim_start().strip_prefix('#') else {
             continue;
         };
-        let (open, t) = match t.strip_prefix('!') {
-            Some(r) => ("#![", r),
-            None => ("#[", t),
+        let (open, after_open) = match after_hash.strip_prefix('!') {
+            Some(rest) => ("#![", rest),
+            None => ("#[", after_hash),
         };
-        let Some(inner) = t.strip_prefix('[').map(str::trim_start) else {
+        let Some(inner) = after_open.strip_prefix('[').map(str::trim_start) else {
             continue;
         };
         for kind in ["allow", "expect"] {
@@ -934,8 +965,6 @@ fn rust(text: &str) -> Vec<Marker> {
     }
     out
 }
-
-// ---- reasons ------------------------------------------------------------------
 
 /// Non-empty text once separators are trimmed.
 fn has_text(s: &str) -> bool {
@@ -1057,34 +1086,59 @@ fn reason_item(item: &str) -> bool {
         .is_some_and(|why| !why.trim().is_empty())
 }
 
+/// The form in which a marker's tool takes a reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasonForm {
+    /// A Rust attribute's `reason = "…"` item.
+    Attribute,
+    /// Text after `--` (`noqa`, `type: ignore`, `eslint-disable`).
+    TrailingDashes,
+    /// Text after the tag itself (`@ts-expect-error`).
+    AfterTag,
+    /// A `// …` comment after the directive (`nolint`).
+    SlashSlash,
+    /// A `# …` comment after the directive (`shellcheck disable`).
+    Hash,
+    /// No form: a setting, a blanket marker, or a marker with no code.
+    Never,
+}
+
+/// How `hit` can carry a reason. One answer for the check ([`reasoned`]) and
+/// for the advice the commit gate prints.
+pub fn reason_form(hit: &Hit) -> ReasonForm {
+    if matches!(hit.origin, Origin::Setting { .. }) {
+        return ReasonForm::Never;
+    }
+    let kind = hit.kind.as_str();
+    match kind {
+        "@ts-ignore" | "@ts-nocheck" | "pyright" | "ruff: noqa" => ReasonForm::Never,
+        "@ts-expect-error" => ReasonForm::AfterTag,
+        _ if hit.codes.is_empty() => ReasonForm::Never,
+        "type: ignore" | "pyright: ignore" | "noqa" => ReasonForm::TrailingDashes,
+        "allow" | "expect" => ReasonForm::Attribute,
+        "nolint" => ReasonForm::SlashSlash,
+        "shellcheck disable" => ReasonForm::Hash,
+        _ if kind.starts_with("eslint-disable") => ReasonForm::TrailingDashes,
+        _ => ReasonForm::Never,
+    }
+}
+
 /// Whether the marker carries a reason in its tool's own reason form, read
 /// from `text`: the file from the marker's line on. A comment marker's reason
 /// is on that line; a Rust attribute's runs to its `]`, across lines. Never for a configuration
 /// setting, a marker with no code, `@ts-ignore`, `@ts-nocheck`, or a
 /// file-level `ruff: noqa` / `pyright:` comment. Pure.
 pub fn reasoned(hit: &Hit, text: &str) -> bool {
-    if matches!(hit.origin, Origin::Setting { .. }) {
-        return false;
-    }
     let line_text = lines(text).next().unwrap_or("");
     let kind = hit.kind.as_str();
-    match kind {
-        "@ts-ignore" | "@ts-nocheck" | "pyright" | "ruff: noqa" => return false,
-        "@ts-expect-error" => {
-            return comment_bodies(line_text).iter().any(|(_, body)| {
-                body.strip_prefix(kind)
-                    .is_some_and(|r| boundary(r) && has_text(r))
-            });
-        }
-        _ => {}
-    }
-    if hit.codes.is_empty() {
-        return false;
-    }
-    match kind {
-        "type: ignore" | "pyright: ignore" | "noqa" => python_reasoned(kind, line_text),
-        "allow" | "expect" => rust_reasoned(text),
-        "nolint" => comment_bodies(line_text).iter().any(|(block, body)| {
+    match reason_form(hit) {
+        ReasonForm::Never => false,
+        ReasonForm::AfterTag => comment_bodies(line_text).iter().any(|(_, body)| {
+            body.strip_prefix(kind)
+                .is_some_and(|rest| boundary(rest) && has_text(rest))
+        }),
+        ReasonForm::Attribute => rust_reasoned(text),
+        ReasonForm::SlashSlash => comment_bodies(line_text).iter().any(|(block, body)| {
             !block
                 && body.strip_prefix("nolint").is_some_and(|rest| {
                     let rest = rest.strip_prefix(':').unwrap_or(rest);
@@ -1092,19 +1146,19 @@ pub fn reasoned(hit: &Hit, text: &str) -> bool {
                     after_list.is_some_and(|(_, tail)| {
                         tail.trim_start()
                             .strip_prefix("//")
-                            .is_some_and(|t| !t.trim().is_empty())
+                            .is_some_and(|reason| !reason.trim().is_empty())
                     })
                 })
         }),
-        "shellcheck disable" => shell_comment(line_text)
+        ReasonForm::Hash => shell_comment(line_text)
             .and_then(shellcheck_disable)
             .is_some_and(|(_, after)| {
                 after
                     .trim_start()
                     .strip_prefix('#')
-                    .is_some_and(|t| !t.trim().is_empty())
+                    .is_some_and(|reason| !reason.trim().is_empty())
             }),
-        _ if kind.starts_with("eslint-disable") => {
+        ReasonForm::TrailingDashes if kind.starts_with("eslint-disable") => {
             comment_bodies(line_text).iter().any(|(_, body)| {
                 body.strip_prefix(kind).is_some_and(|rest| {
                     boundary(rest)
@@ -1114,7 +1168,7 @@ pub fn reasoned(hit: &Hit, text: &str) -> bool {
                 })
             })
         }
-        _ => false,
+        ReasonForm::TrailingDashes => python_reasoned(kind, line_text),
     }
 }
 
@@ -2571,8 +2625,6 @@ mod tests {
         );
     }
 
-    // ---- shell, reasons, and whole-change counting ----
-
     fn reasons(path: &str, text: &str) -> Vec<bool> {
         markers(Path::new(path), text)
             .iter()
@@ -2730,14 +2782,23 @@ mod tests {
         }
     }
 
-    fn net(changes: &[FileChange<'_>]) -> Vec<(String, usize, String)> {
-        net_added(changes)
+    fn net(changes: &[(&Path, &str, &Path, &str)]) -> Vec<(String, usize, String)> {
+        let changes: Vec<FileChange<'_>> = changes
+            .iter()
+            .map(|&(old_path, before, new_path, after)| FileChange {
+                old_path,
+                before,
+                new_path,
+                after,
+            })
+            .collect();
+        net_added(&changes)
             .into_iter()
-            .map(|(p, h)| {
+            .map(|added| {
                 (
-                    p.display().to_string(),
-                    h.line,
-                    format!("{}[{}]", h.kind, h.codes),
+                    added.path.display().to_string(),
+                    added.hit.line,
+                    format!("{}[{}]", added.hit.kind, added.hit.codes),
                 )
             })
             .collect()
@@ -2890,18 +2951,25 @@ mod tests {
             let got = match tag {
                 "+" | "-" => Some(!added(file, "", &sample).is_empty()),
                 "r" | "b" => {
-                    let hits = net_added(&[(Path::new(""), "", Path::new(file), &sample)]);
-                    let reasons: Vec<bool> = hits
-                        .iter()
-                        .map(|(_, h)| reasoned(h, from_line(&sample, h.line)))
-                        .collect();
+                    let hits = net_added(&[FileChange {
+                        old_path: Path::new(""),
+                        before: "",
+                        new_path: Path::new(file),
+                        after: &sample,
+                    }]);
+                    let reasons: Vec<bool> = hits.iter().map(|added| added.reasoned).collect();
                     let want = tag == "r";
                     Some(!reasons.is_empty() && reasons.iter().all(|r| *r == want))
                 }
                 "n+" | "n-" => {
                     let (old, new) = file.split_once('>').unwrap_or((file, file));
                     let (before, after) = sample.split_once("@@").unwrap_or(("", &sample));
-                    let hits = net_added(&[(Path::new(old), before, Path::new(new), after)]);
+                    let hits = net_added(&[FileChange {
+                        old_path: Path::new(old),
+                        before,
+                        new_path: Path::new(new),
+                        after,
+                    }]);
                     Some(!hits.is_empty())
                 }
                 other => panic!("line {}: unknown tag {other}", n + 1),

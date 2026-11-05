@@ -6,14 +6,16 @@
 //! `git -c amont.agent.suppressions=allow commit`, which the person types and
 //! the `suppressions-override` rule keeps from an agent.
 
-use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use amont_agent_guard::rules::lint_suppression_added::{
-    self as lint, FileChange, Hit, Origin, RULE,
+    self as lint, FileChange, Hit, Origin, ReasonForm, RULE,
 };
 use amont_agent_guard::rules::Stance;
 use amont_agent_guard::stance;
@@ -26,6 +28,73 @@ const BUDGET: u64 = 64 * 1024 * 1024;
 /// Room for one `cat-file` header and its trailing newline.
 const HEADER_ALLOWANCE: usize = 160;
 const SKIPPED_NOTE: &str = "over 4 MiB";
+/// How long any one git call gets.
+const GIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Whether the person's command line carried `amont.agent.suppressions=allow`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Override {
+    CommandScoped,
+    Absent,
+}
+
+/// Why the staged change could not be fully looked at. `Display` is the line
+/// printed on stderr.
+#[derive(Debug)]
+enum ScanError {
+    /// A git call that failed, with its leading arguments and what it said.
+    Git {
+        command: String,
+        detail: String,
+    },
+    BudgetExceeded,
+    /// A `cat-file` answer shorter or odder than the names sent.
+    IncompleteAnswer {
+        answer: &'static str,
+    },
+    MissingName {
+        name: String,
+    },
+    NewlineInPath,
+}
+
+impl fmt::Display for ScanError {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScanError::Git { command, detail } => {
+                write!(out, "suppressions: git {command} failed: {detail}")
+            }
+            ScanError::BudgetExceeded => {
+                write!(
+                    out,
+                    "suppressions: scan budget exceeded (64 MiB); scan incomplete"
+                )
+            }
+            ScanError::IncompleteAnswer { answer } => {
+                write!(
+                    out,
+                    "suppressions: git cat-file failed: incomplete {answer} answer"
+                )
+            }
+            ScanError::MissingName { name } => {
+                write!(out, "suppressions: git cat-file failed: {name} missing")
+            }
+            ScanError::NewlineInPath => {
+                write!(
+                    out,
+                    "suppressions: a staged path holds a newline; scan incomplete"
+                )
+            }
+        }
+    }
+}
+
+fn git_failed(command: &str, detail: impl Into<String>) -> ScanError {
+    ScanError::Git {
+        command: command.to_string(),
+        detail: detail.into(),
+    }
+}
 
 pub const HELP: &str = "\
 usage: amont-agent suppressions --staged
@@ -45,8 +114,16 @@ pub fn run(args: &[OsString], index_file: Option<OsString>) -> ExitCode {
         emit(format_args!("{HELP}"));
         return ExitCode::SUCCESS;
     }
-    if args.len() != 1 || args[0] != "--staged" {
-        eprintln!("amont-agent: suppressions takes exactly --staged\n");
+    if let Some(unknown) = args.iter().find(|a| *a != "--staged") {
+        eprintln!(
+            "amont-agent: suppressions: unknown argument '{}'\n",
+            unknown.to_string_lossy()
+        );
+        eprint!("{HELP}");
+        return ExitCode::from(2);
+    }
+    if args.len() != 1 {
+        eprintln!("amont-agent: suppressions takes exactly one --staged\n");
         eprint!("{HELP}");
         return ExitCode::from(2);
     }
@@ -54,13 +131,18 @@ pub fn run(args: &[OsString], index_file: Option<OsString>) -> ExitCode {
         std::env::var("GIT_CONFIG_PARAMETERS").ok().as_deref(),
         &|name| std::env::var(name).ok(),
     );
-    if !allowed {
+    if allowed == Override::Absent {
         note_ignored_override();
     }
     match scan(index_file.as_deref()) {
-        Err(why) if allowed => {
+        Err(why) if allowed == Override::CommandScoped => {
             eprintln!("{why}");
             eprintln!("suppressions: allowed by command-scoped {OVERRIDE_KEY}=allow");
+            ExitCode::SUCCESS
+        }
+        Err(why) if stance::resolve(&RULE) == Stance::Observe => {
+            eprintln!("{why}");
+            eprintln!("suppressions: stance observe, not blocking");
             ExitCode::SUCCESS
         }
         Err(why) => {
@@ -84,7 +166,7 @@ struct Scan {
     kept: usize,
 }
 
-fn judge(scan: &Scan, allowed: bool) -> ExitCode {
+fn judge(scan: &Scan, allowed: Override) -> ExitCode {
     if scan.blocking.is_empty() {
         let mut line = format!(
             "suppressions: {} files, 0 added ({} kept with a reason)",
@@ -105,22 +187,20 @@ fn judge(scan: &Scan, allowed: bool) -> ExitCode {
             fix(hit)
         ));
     }
-    if allowed {
+    if allowed == Override::CommandScoped {
         eprintln!(
             "suppressions: {} blocking hit(s) let through by command-scoped {OVERRIDE_KEY}=allow",
             scan.blocking.len()
         );
         return ExitCode::SUCCESS;
     }
-    emit(format_args!("fix the cause, or stop and tell the person\n"));
-    emit(format_args!(
-        "for the person only (an agent's attempt is refused):\n"
-    ));
-    emit(format_args!("  git -c {OVERRIDE_KEY}=allow commit\n"));
     if stance::resolve(&RULE) == Stance::Observe {
         eprintln!("suppressions: stance observe, not blocking");
         return ExitCode::SUCCESS;
     }
+    eprintln!("fix the cause, or stop and tell the person");
+    eprintln!("for the person only (an agent's attempt is refused):");
+    eprintln!("  git -c {OVERRIDE_KEY}=allow commit");
     ExitCode::from(1)
 }
 
@@ -143,31 +223,24 @@ fn fix(hit: &Hit) -> &'static str {
     if matches!(hit.origin, Origin::Setting { .. }) {
         return "loosened lint configuration, never passes";
     }
-    let kind = hit.kind.as_str();
-    if hit.codes.is_empty()
-        || matches!(
-            kind,
-            "@ts-ignore" | "@ts-nocheck" | "pyright" | "ruff: noqa"
-        )
-    {
-        return "blanket, never passes";
-    }
-    match kind {
-        "allow" | "expect" => "add reason = \"…\"",
-        "@ts-expect-error" => "add the reason as text after the tag",
-        "nolint" => "add // <why>",
-        "shellcheck disable" => "add # <why>",
-        _ => "add -- <why>",
+    match lint::reason_form(hit) {
+        ReasonForm::Never => "blanket, never passes",
+        ReasonForm::Attribute => "add reason = \"…\"",
+        ReasonForm::AfterTag => "add the reason as text after the tag",
+        ReasonForm::SlashSlash => "add // <why>",
+        ReasonForm::Hash => "add # <why>",
+        ReasonForm::TrailingDashes => "add -- <why>",
     }
 }
-
-// ---- override ----------------------------------------------------------------
 
 /// Whether the command line itself said `amont.agent.suppressions=allow`:
 /// `git -c` arrives in `GIT_CONFIG_PARAMETERS`, the environment form in
 /// `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`.
 /// The last value set wins.
-fn command_scoped_allow(parameters: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> bool {
+fn command_scoped_allow(
+    parameters: Option<&str>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Override {
     let mut last: Option<String> = None;
     for word in parameters.map(shell_words).unwrap_or_default() {
         if let Some((key, value)) = word.split_once('=') {
@@ -185,7 +258,11 @@ fn command_scoped_allow(parameters: Option<&str>, env: &dyn Fn(&str) -> Option<S
             last = env(&format!("GIT_CONFIG_VALUE_{n}"));
         }
     }
-    last.is_some_and(|v| v.trim().eq_ignore_ascii_case("allow"))
+    if last.is_some_and(|value| value.trim().eq_ignore_ascii_case("allow")) {
+        Override::CommandScoped
+    } else {
+        Override::Absent
+    }
 }
 
 /// Words of git's single-quote-escaped `GIT_CONFIG_PARAMETERS`
@@ -236,7 +313,7 @@ fn note_ignored_override() {
         None,
         1 << 16,
     ) else {
-        return;
+        return; // a note about ignored config is a courtesy; the scan reports git failures itself
     };
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let Some((scope, value)) = line.split_once('\t') else {
@@ -250,8 +327,6 @@ fn note_ignored_override() {
     }
 }
 
-// ---- git ---------------------------------------------------------------------
-
 struct GitOutput {
     code: i32,
     stdout: Vec<u8>,
@@ -260,17 +335,14 @@ struct GitOutput {
 
 /// Run git in the current directory with `GIT_INDEX_FILE` as the hook was
 /// given it. stdout is read under `ceiling` bytes; more kills git and is an
-/// error, never a short answer.
+/// error, never a short answer. The call has [`GIT_DEADLINE`] to finish.
 fn run_git(
     args: &[&str],
     input: Option<Vec<u8>>,
     index_file: Option<&OsStr>,
     ceiling: usize,
-) -> Result<GitOutput, String> {
-    let label = format!(
-        "git {}",
-        args.iter().take(2).copied().collect::<Vec<_>>().join(" ")
-    );
+) -> Result<GitOutput, ScanError> {
+    let command = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
     let mut cmd = Command::new("git");
     cmd.args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -285,44 +357,69 @@ fn run_git(
     if let Some(index) = index_file {
         cmd.env("GIT_INDEX_FILE", index);
     }
+    let deadline = Instant::now() + GIT_DEADLINE;
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("suppressions: {label} failed: {e}"))?;
-    let writer = match (input, child.stdin.take()) {
-        (Some(bytes), Some(mut stdin)) => Some(std::thread::spawn(move || {
+        .map_err(|error| git_failed(&command, error.to_string()))?;
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        // Detached: a grandchild holding the pipe open must not hold this call.
+        std::thread::spawn(move || {
             let _ = stdin.write_all(&bytes); // git stopping early is read from its exit status
-        })),
-        _ => None,
-    };
-    let stderr_reader = child.stderr.take().map(|mut s| {
+        });
+    }
+    let stderr_answer = child.stderr.take().map(|mut pipe| {
+        let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let mut text = String::new();
-            let _ = s.by_ref().take(1 << 16).read_to_string(&mut text); // diagnostics only; a lossy read is enough
-            text
-        })
+            let _ = pipe.by_ref().take(1 << 16).read_to_string(&mut text); // diagnostics only; a lossy read is enough
+            let _ = sender.send(text); // a receiver past its deadline has gone
+        });
+        receiver
     });
-    let mut stdout = Vec::new();
-    if let Some(pipe) = child.stdout.take() {
-        let read = pipe.take(ceiling as u64 + 1).read_to_end(&mut stdout);
-        if read.is_err() || stdout.len() > ceiling {
+    let stdout_answer = child.stdout.take().map(|pipe| {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = pipe.take(ceiling as u64 + 1).read_to_end(&mut bytes);
+            let _ = sender.send((bytes, read.is_ok())); // a receiver past its deadline has gone
+        });
+        receiver
+    });
+    let timed_out = || git_failed(&command, "timed out");
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => return Err(git_failed(&command, error.to_string())),
+        }
+        if Instant::now() >= deadline {
             let _ = child.kill(); // the answer is already refused
             let _ = child.wait(); // reaping only
-            return Err(format!(
-                "suppressions: {label} failed: output over its {ceiling}-byte ceiling"
-            ));
+            return Err(timed_out());
         }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let remaining = || deadline.saturating_duration_since(Instant::now());
+    let (stdout, read_whole) = match stdout_answer {
+        Some(receiver) => receiver
+            .recv_timeout(remaining())
+            .map_err(|_| timed_out())?,
+        None => (Vec::new(), true),
+    };
+    if !read_whole || stdout.len() > ceiling {
+        return Err(git_failed(
+            &command,
+            format!("output over its {ceiling}-byte ceiling"),
+        ));
     }
-    let status = child
-        .wait()
-        .map_err(|e| format!("suppressions: {label} failed: {e}"))?;
-    if let Some(writer) = writer {
-        let _ = writer.join(); // a panicked writer shows as a short git answer
-    }
-    let stderr = stderr_reader
-        .and_then(|h| h.join().ok())
-        .unwrap_or_default();
+    let stderr = match stderr_answer {
+        Some(receiver) => receiver
+            .recv_timeout(remaining())
+            .map_err(|_| timed_out())?,
+        None => String::new(),
+    };
     let Some(code) = status.code() else {
-        return Err(format!("suppressions: {label} failed: killed by a signal"));
+        return Err(git_failed(&command, "killed by a signal"));
     };
     Ok(GitOutput {
         code,
@@ -331,27 +428,63 @@ fn run_git(
     })
 }
 
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or("").trim().to_string()
+}
+
 fn checked(
     args: &[&str],
     input: Option<Vec<u8>>,
     index_file: Option<&OsStr>,
     ceiling: usize,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, ScanError> {
     let out = run_git(args, input, index_file, ceiling)?;
     if out.code != 0 {
-        let first = out.stderr.lines().next().unwrap_or("").trim();
-        return Err(format!(
-            "suppressions: git {} failed: {first}",
-            args.iter().take(2).copied().collect::<Vec<_>>().join(" ")
-        ));
+        let command = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
+        return Err(git_failed(&command, first_line(&out.stderr)));
     }
     Ok(out.stdout)
 }
 
-// ---- the staged change -------------------------------------------------------
+/// What `git diff --name-status` says happened to a path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Staged {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+impl Staged {
+    /// `C` (a copy) is not asked for and is not accepted.
+    fn from_letter(letter: u8) -> Option<Staged> {
+        match letter {
+            b'A' => Some(Staged::Added),
+            b'M' => Some(Staged::Modified),
+            b'D' => Some(Staged::Deleted),
+            b'R' => Some(Staged::Renamed),
+            _ => None,
+        }
+    }
+
+    /// Whether HEAD holds the old path.
+    fn has_before(self) -> bool {
+        match self {
+            Staged::Added => false,
+            Staged::Modified | Staged::Deleted | Staged::Renamed => true,
+        }
+    }
+
+    fn has_after(self) -> bool {
+        match self {
+            Staged::Deleted => false,
+            Staged::Added | Staged::Modified | Staged::Renamed => true,
+        }
+    }
+}
 
 struct Entry {
-    status: u8,
+    status: Staged,
     old: Vec<u8>,
     new: Vec<u8>,
 }
@@ -368,39 +501,35 @@ struct Request {
     name: Vec<u8>,
 }
 
-fn parse_name_status(raw: &[u8]) -> Result<Vec<Entry>, String> {
+fn parse_name_status(raw: &[u8]) -> Result<Vec<Entry>, ScanError> {
     let mut tokens = raw.split(|b| *b == 0).filter(|t| !t.is_empty());
     let mut entries = Vec::new();
-    while let Some(status) = tokens.next() {
-        let letter = status[0];
+    while let Some(token) = tokens.next() {
+        let letter = token[0];
+        let Some(status) = Staged::from_letter(letter) else {
+            return Err(git_failed(
+                "diff",
+                format!("unexpected status {}", letter as char),
+            ));
+        };
         let mut next = || {
             tokens
                 .next()
                 .map(<[u8]>::to_vec)
-                .ok_or_else(|| "suppressions: git diff failed: truncated name-status".to_string())
+                .ok_or_else(|| git_failed("diff", "truncated name-status"))
         };
-        let (old, new) = match letter {
-            b'R' | b'C' => {
+        let (old, new) = match status {
+            Staged::Renamed => {
                 let old = next()?;
                 let new = next()?;
                 (old, new)
             }
-            b'A' | b'M' | b'D' => {
+            Staged::Added | Staged::Modified | Staged::Deleted => {
                 let path = next()?;
                 (path.clone(), path)
             }
-            other => {
-                return Err(format!(
-                    "suppressions: git diff failed: unexpected status {}",
-                    other as char
-                ));
-            }
         };
-        entries.push(Entry {
-            status: letter,
-            old,
-            new,
-        });
+        entries.push(Entry { status, old, new });
     }
     Ok(entries)
 }
@@ -418,7 +547,7 @@ fn wanted(entry: &Entry) -> bool {
     })
 }
 
-fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
+fn scan(index_file: Option<&OsStr>) -> Result<Scan, ScanError> {
     let head = run_git(
         &["rev-parse", "--verify", "--quiet", "HEAD"],
         None,
@@ -428,10 +557,7 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
     let head_exists = match head.code {
         0 => true,
         1 => false,
-        _ => {
-            let first = head.stderr.lines().next().unwrap_or("").trim().to_string();
-            return Err(format!("suppressions: git rev-parse failed: {first}"));
-        }
+        _ => return Err(git_failed("rev-parse", first_line(&head.stderr))),
     };
     let listing = checked(
         &[
@@ -440,7 +566,7 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
             "--name-status",
             "-z",
             "-M",
-            "--diff-filter=ACMRD",
+            "--diff-filter=AMRD",
         ],
         None,
         index_file,
@@ -453,7 +579,7 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
 
     let mut requests = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
-        if head_exists && matches!(entry.status, b'M' | b'R' | b'D') {
+        if head_exists && entry.status.has_before() {
             let mut name = b"HEAD:".to_vec();
             name.extend_from_slice(&entry.old);
             requests.push(Request {
@@ -462,7 +588,7 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
                 name,
             });
         }
-        if entry.status != b'D' {
+        if entry.status.has_after() {
             let mut name = b":".to_vec();
             name.extend_from_slice(&entry.new);
             requests.push(Request {
@@ -473,7 +599,7 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
         }
     }
     if requests.iter().any(|r| r.name.contains(&b'\n')) {
-        return Err("suppressions: a staged path holds a newline; scan incomplete".to_string());
+        return Err(ScanError::NewlineInPath);
     }
 
     let sizes = blob_sizes(&requests, index_file)?;
@@ -498,7 +624,7 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
         .collect();
     let total: u64 = wanted_reads.iter().map(|(_, size)| *size).sum();
     if total > BUDGET {
-        return Err("suppressions: scan budget exceeded (64 MiB); scan incomplete".to_string());
+        return Err(ScanError::BudgetExceeded);
     }
     let texts = read_blobs(&wanted_reads, total, index_file)?;
 
@@ -519,29 +645,21 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
         .collect();
     let changes: Vec<FileChange<'_>> = kept_entries
         .iter()
-        .map(|&i| {
-            (
-                paths[i].0.as_path(),
-                before[i].as_str(),
-                paths[i].1.as_path(),
-                after[i].as_str(),
-            )
+        .map(|&i| FileChange {
+            old_path: paths[i].0.as_path(),
+            before: before[i].as_str(),
+            new_path: paths[i].1.as_path(),
+            after: after[i].as_str(),
         })
         .collect();
-    let hits = lint::net_added(&changes);
 
-    let after_of: HashMap<&Path, &str> = kept_entries
-        .iter()
-        .map(|&i| (paths[i].1.as_path(), after[i].as_str()))
-        .collect();
     let mut blocking = Vec::new();
     let mut kept = 0;
-    for (path, hit) in hits {
-        let text = after_of.get(path.as_path()).copied().unwrap_or("");
-        if lint::reasoned(&hit, lint::from_line(text, hit.line)) {
+    for added in lint::net_added(&changes) {
+        if added.reasoned {
             kept += 1;
         } else {
-            blocking.push((path, hit));
+            blocking.push((added.path, added.hit));
         }
     }
     Ok(Scan {
@@ -554,7 +672,7 @@ fn scan(index_file: Option<&OsStr>) -> Result<Scan, String> {
 
 /// One `cat-file --batch-check` for every requested name. A name git reports
 /// missing is an error: the diff said it exists.
-fn blob_sizes(requests: &[Request], index_file: Option<&OsStr>) -> Result<Vec<u64>, String> {
+fn blob_sizes(requests: &[Request], index_file: Option<&OsStr>) -> Result<Vec<u64>, ScanError> {
     if requests.is_empty() {
         return Ok(Vec::new());
     }
@@ -569,23 +687,22 @@ fn blob_sizes(requests: &[Request], index_file: Option<&OsStr>) -> Result<Vec<u6
     let text = String::from_utf8_lossy(&out);
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() != requests.len() {
-        return Err("suppressions: git cat-file failed: incomplete batch-check answer".to_string());
+        return Err(ScanError::IncompleteAnswer {
+            answer: "batch-check",
+        });
     }
     let mut sizes = Vec::with_capacity(requests.len());
     for (request, line) in requests.iter().zip(lines) {
         if line.ends_with(" missing") {
-            return Err(format!(
-                "suppressions: git cat-file failed: {} missing",
-                String::from_utf8_lossy(&request.name)
-            ));
+            return Err(ScanError::MissingName {
+                name: String::from_utf8_lossy(&request.name).into_owned(),
+            });
         }
         let size = line
             .rsplit(' ')
             .next()
             .and_then(|s| s.parse::<u64>().ok())
-            .ok_or_else(|| {
-                format!("suppressions: git cat-file failed: unreadable answer `{line}`")
-            })?;
+            .ok_or_else(|| git_failed("cat-file", format!("unreadable answer `{line}`")))?;
         sizes.push(size);
     }
     Ok(sizes)
@@ -606,7 +723,7 @@ fn read_blobs(
     reads: &[(&Request, u64)],
     total: u64,
     index_file: Option<&OsStr>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, ScanError> {
     if reads.is_empty() {
         return Ok(Vec::new());
     }
@@ -616,7 +733,7 @@ fn read_blobs(
         + reads.len() * HEADER_ALLOWANCE
         + 1024;
     let out = checked(&["cat-file", "--batch"], Some(input), index_file, ceiling)?;
-    let incomplete = || "suppressions: git cat-file failed: incomplete batch answer".to_string();
+    let incomplete = || ScanError::IncompleteAnswer { answer: "batch" };
     let mut at = 0;
     let mut texts = Vec::with_capacity(reads.len());
     for (_, size) in reads {
@@ -654,19 +771,19 @@ mod tests {
 
     #[test]
     fn both_parameter_formats_are_read() {
-        assert!(command_scoped_allow(
-            Some("'amont.agent.suppressions=allow'"),
-            &no_env
-        ));
-        assert!(command_scoped_allow(
-            Some("'amont.agent.suppressions'='allow'"),
-            &no_env
-        ));
-        assert!(!command_scoped_allow(
-            Some("'amont.agent.suppressions=deny'"),
-            &no_env
-        ));
-        assert!(!command_scoped_allow(None, &no_env));
+        assert_eq!(
+            command_scoped_allow(Some("'amont.agent.suppressions=allow'"), &no_env),
+            Override::CommandScoped
+        );
+        assert_eq!(
+            command_scoped_allow(Some("'amont.agent.suppressions'='allow'"), &no_env),
+            Override::CommandScoped
+        );
+        assert_eq!(
+            command_scoped_allow(Some("'amont.agent.suppressions=deny'"), &no_env),
+            Override::Absent
+        );
+        assert_eq!(command_scoped_allow(None, &no_env), Override::Absent);
     }
 
     #[test]
@@ -679,6 +796,6 @@ mod tests {
             "GIT_CONFIG_VALUE_0" => Some("x".to_string()),
             _ => None,
         };
-        assert!(command_scoped_allow(None, &env));
+        assert_eq!(command_scoped_allow(None, &env), Override::CommandScoped);
     }
 }
