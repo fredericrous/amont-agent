@@ -950,10 +950,6 @@ fn primary_and_linked_worktrees_sharing_a_common_dir_are_different_identities() 
 #[test]
 fn a_nested_fixture_commit_under_the_inherited_outer_pair_is_judged_on_its_own_index() {
     let (outer, outer_alternate, _) = repo_with_alternate_index();
-    let inherit = |cmd: &mut Command| {
-        cmd.env("AMONT_INDEX_FILE", &outer_alternate)
-            .env("AMONT_INDEX_GIT_DIR", outer.dir.join(".git"));
-    };
     let fixture = Repo::new();
     fixture.stage("a.py", "x = 1\n");
     fixture.commit("base");
@@ -962,8 +958,10 @@ fn a_nested_fixture_commit_under_the_inherited_outer_pair_is_judged_on_its_own_i
 
     fixture.write("a.py", BARE);
     let mut blocked = fixture.command("git");
-    blocked.args(["commit", "-q", "-a", "-m", "bare"]);
-    inherit(&mut blocked);
+    blocked
+        .args(["commit", "-q", "-a", "-m", "bare"])
+        .env("AMONT_INDEX_FILE", &outer_alternate)
+        .env("AMONT_INDEX_GIT_DIR", outer.dir.join(".git"));
     let blocked = blocked.output().unwrap();
     assert!(!blocked.status.success(), "{}", text(&blocked.stderr));
     assert!(text(&blocked.stderr).contains("a.py:1: "));
@@ -971,8 +969,10 @@ fn a_nested_fixture_commit_under_the_inherited_outer_pair_is_judged_on_its_own_i
 
     fixture.write("a.py", "x = 2\n");
     let mut allowed = fixture.command("git");
-    allowed.args(["commit", "-q", "-a", "-m", "clean"]);
-    inherit(&mut allowed);
+    allowed
+        .args(["commit", "-q", "-a", "-m", "clean"])
+        .env("AMONT_INDEX_FILE", &outer_alternate)
+        .env("AMONT_INDEX_GIT_DIR", outer.dir.join(".git"));
     let allowed = allowed.output().unwrap();
     assert!(allowed.status.success(), "{}", text(&allowed.stderr));
     assert_ne!(fixture.head(), base);
