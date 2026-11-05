@@ -4,6 +4,7 @@
 //! Unix only: the fixtures use `#!/bin/sh` hooks and a `git` shim.
 #![cfg(unix)]
 
+use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
-const GIT_ENV: [&str; 9] = [
+const GIT_ENV: [&str; 10] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -21,6 +22,7 @@ const GIT_ENV: [&str; 9] = [
     "GIT_CONFIG_COUNT",
     "AMONT_AGENT_OFF",
     "AMONT_INDEX_FILE",
+    "AMONT_INDEX_GIT_DIR",
 ];
 const BARE: &str = "x = 1  # noqa: E501\n";
 
@@ -56,11 +58,15 @@ fn real_git() -> String {
 
 impl Repo {
     fn new() -> Repo {
+        Repo::named(OsStr::new("work"))
+    }
+
+    fn named(directory_name: &OsStr) -> Repo {
         let dir = scratch();
         let config = dir.join("global.gitconfig");
         fs::write(&config, "").unwrap();
         let repo = Repo {
-            dir: dir.join("work"),
+            dir: dir.join(directory_name),
             config,
         };
         fs::create_dir_all(&repo.dir).unwrap();
@@ -617,7 +623,10 @@ fn the_pack_declares_the_one_gate() {
 /// A repository whose ordinary index and HEAD are clean, and an alternate
 /// index (absolute path) staging a bare suppression in `a.py`.
 fn repo_with_alternate_index() -> (Repo, PathBuf, String) {
-    let repo = Repo::new();
+    with_alternate_index(Repo::new())
+}
+
+fn with_alternate_index(repo: Repo) -> (Repo, PathBuf, String) {
     repo.stage("a.py", "x = 1\n");
     repo.commit("base");
     let alternate = repo.dir.parent().unwrap().join("alternate.index");
@@ -645,6 +654,7 @@ fn amont_index_file_selects_the_alternate_index_over_git_index_file() {
         .command(BIN)
         .args(["suppressions", "--staged"])
         .env("AMONT_INDEX_FILE", &alternate)
+        .env("AMONT_INDEX_GIT_DIR", repo.dir.join(".git"))
         .env("GIT_INDEX_FILE", &ordinary)
         .output()
         .unwrap();
@@ -729,6 +739,7 @@ fn an_invalid_amont_index_file_fails_closed_without_scanning_the_ordinary_index(
             .command(BIN)
             .args(["suppressions", "--staged"])
             .env("AMONT_INDEX_FILE", value)
+            .env("AMONT_INDEX_GIT_DIR", repo.dir.join(".git"))
             .output()
             .unwrap();
         assert_eq!(code(&out), 2, "{}{}", text(&out.stdout), text(&out.stderr));
@@ -749,6 +760,7 @@ fn a_command_scoped_allow_passes_even_with_an_invalid_amont_index_file() {
         .command(BIN)
         .args(["suppressions", "--staged"])
         .env("AMONT_INDEX_FILE", &missing)
+        .env("AMONT_INDEX_GIT_DIR", repo.dir.join(".git"))
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "amont.agent.suppressions")
         .env("GIT_CONFIG_VALUE_0", "allow")
@@ -767,8 +779,302 @@ fn a_command_scoped_allow_passes_even_with_an_invalid_amont_index_file() {
         .command(BIN)
         .args(["suppressions", "--staged"])
         .env("AMONT_INDEX_FILE", &missing)
+        .env("AMONT_INDEX_GIT_DIR", repo.dir.join(".git"))
         .output()
         .unwrap();
     assert_eq!(code(&persistent), 2, "{}", text(&persistent.stderr));
     assert_eq!(repo.head(), head);
+}
+
+/// The gate with an index hint and the owner it names; `GIT_INDEX_FILE` is
+/// left to the caller.
+fn hinted_gate(repo: &Repo, index: &OsStr, owner: &OsStr) -> Command {
+    let mut cmd = repo.command(BIN);
+    cmd.args(["suppressions", "--staged"])
+        .env("AMONT_INDEX_FILE", index)
+        .env("AMONT_INDEX_GIT_DIR", owner);
+    cmd
+}
+
+/// A copy of the repository's current ordinary index, kept beside it.
+fn index_copy(repo: &Repo, name: &str) -> PathBuf {
+    let copy = repo.dir.parent().unwrap().join(name);
+    fs::copy(repo.dir.join(".git/index"), &copy).unwrap();
+    copy
+}
+
+fn ignored_hint_notes(out: &Output) -> usize {
+    text(&out.stderr)
+        .matches("AMONT_INDEX_FILE ignored")
+        .count()
+}
+
+/// A committed `a.py` whose ordinary index then stages a bare suppression;
+/// the clean index copy was taken before that.
+fn repo_staging_bare_with_clean_copy() -> (Repo, PathBuf) {
+    let repo = Repo::new();
+    repo.stage("a.py", "x = 1\n");
+    repo.commit("base");
+    let clean = index_copy(&repo, "clean.index");
+    repo.stage("a.py", BARE);
+    (repo, clean)
+}
+
+#[test]
+fn a_foreign_clean_hint_cannot_hide_this_repositorys_bare_suppression() {
+    let (repo, clean) = repo_staging_bare_with_clean_copy();
+    let (foreign, _, _) = repo_with_alternate_index();
+    let out = hinted_gate(
+        &repo,
+        clean.as_os_str(),
+        foreign.dir.join(".git").as_os_str(),
+    )
+    .output()
+    .unwrap();
+    assert_eq!(code(&out), 1, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(text(&out.stdout).contains("a.py:1: "));
+    assert_eq!(ignored_hint_notes(&out), 1, "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout).matches("a.py:1: ").count(), 1);
+}
+
+#[test]
+fn a_clean_local_fixture_passes_under_a_foreign_bare_hint() {
+    let repo = Repo::new();
+    repo.stage("a.py", "x = 1\n");
+    repo.commit("base");
+    repo.stage("a.py", "x = 2\n");
+    let (foreign, bare_alternate, _) = repo_with_alternate_index();
+    let out = hinted_gate(
+        &repo,
+        bare_alternate.as_os_str(),
+        foreign.dir.join(".git").as_os_str(),
+    )
+    .output()
+    .unwrap();
+    assert_eq!(code(&out), 0, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert_eq!(ignored_hint_notes(&out), 1);
+    assert_eq!(text(&out.stdout).matches("a.py:1: ").count(), 0);
+}
+
+#[test]
+fn an_unbound_or_mismatched_hint_keeps_the_direct_git_index_file_fallback() {
+    let (repo, alternate, _) = repo_with_alternate_index();
+    let clean = index_copy(&repo, "clean.index");
+    let missing = repo.dir.parent().unwrap().join("no-such.git");
+    let (foreign, _, _) = repo_with_alternate_index();
+    let foreign_git_dir = foreign.dir.join(".git");
+    let owners: [Option<&OsStr>; 5] = [
+        None,
+        Some(OsStr::new("")),
+        Some(OsStr::new("relative/.git")),
+        Some(missing.as_os_str()),
+        Some(foreign_git_dir.as_os_str()),
+    ];
+    for owner in owners {
+        let mut cmd = repo.command(BIN);
+        cmd.args(["suppressions", "--staged"])
+            .env("AMONT_INDEX_FILE", &clean)
+            .env("GIT_INDEX_FILE", &alternate);
+        if let Some(owner) = owner {
+            cmd.env("AMONT_INDEX_GIT_DIR", owner);
+        }
+        let out = cmd.output().unwrap();
+        assert_eq!(
+            code(&out),
+            1,
+            "owner {owner:?}: {}{}",
+            text(&out.stdout),
+            text(&out.stderr)
+        );
+        assert!(text(&out.stdout).contains("a.py:1: "), "owner {owner:?}");
+        assert_eq!(ignored_hint_notes(&out), 1, "owner {owner:?}");
+        assert!(!text(&out.stdout).contains("AMONT_INDEX_FILE ignored"));
+    }
+}
+
+#[test]
+fn a_symlink_alias_of_the_owner_git_dir_is_the_same_identity() {
+    let (repo, alternate, _) = repo_with_alternate_index();
+    let alias = repo.dir.parent().unwrap().join("git-dir-alias");
+    std::os::unix::fs::symlink(repo.dir.join(".git"), &alias).unwrap();
+    let out = hinted_gate(&repo, alternate.as_os_str(), alias.as_os_str())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert_eq!(ignored_hint_notes(&out), 0);
+}
+
+#[test]
+fn primary_and_linked_worktrees_sharing_a_common_dir_are_different_identities() {
+    let repo = Repo::new();
+    repo.stage("a.py", "x = 1\n");
+    repo.commit("base");
+    let clean = index_copy(&repo, "clean.index");
+    let linked_dir = repo.dir.parent().unwrap().join("linked");
+    repo.git(&["worktree", "add", "-q", linked_dir.to_str().unwrap()]);
+    let linked = Repo {
+        dir: linked_dir.clone(),
+        config: repo.config.clone(),
+    };
+    linked.stage("a.py", BARE);
+    let primary_git_dir = repo.dir.join(".git");
+    let linked_git_dir = PathBuf::from(linked.git(&["rev-parse", "--absolute-git-dir"]).trim());
+    assert_ne!(primary_git_dir.canonicalize().unwrap(), linked_git_dir);
+
+    let primary_owner = hinted_gate(&linked, clean.as_os_str(), primary_git_dir.as_os_str())
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&primary_owner),
+        1,
+        "{}{}",
+        text(&primary_owner.stdout),
+        text(&primary_owner.stderr)
+    );
+    assert_eq!(ignored_hint_notes(&primary_owner), 1);
+
+    let own_owner = hinted_gate(&linked, clean.as_os_str(), linked_git_dir.as_os_str())
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&own_owner),
+        0,
+        "{}{}",
+        text(&own_owner.stdout),
+        text(&own_owner.stderr)
+    );
+    assert_eq!(ignored_hint_notes(&own_owner), 0);
+    std::mem::forget(linked); // the primary repository's scratch directory owns the cleanup
+}
+
+#[test]
+fn a_nested_fixture_commit_under_the_inherited_outer_pair_is_judged_on_its_own_index() {
+    let (outer, outer_alternate, _) = repo_with_alternate_index();
+    let inherit = |cmd: &mut Command| {
+        cmd.env("AMONT_INDEX_FILE", &outer_alternate)
+            .env("AMONT_INDEX_GIT_DIR", outer.dir.join(".git"));
+    };
+    let fixture = Repo::new();
+    fixture.stage("a.py", "x = 1\n");
+    fixture.commit("base");
+    fixture.install_hook();
+    let base = fixture.head();
+
+    fixture.write("a.py", BARE);
+    let mut blocked = fixture.command("git");
+    blocked.args(["commit", "-q", "-a", "-m", "bare"]);
+    inherit(&mut blocked);
+    let blocked = blocked.output().unwrap();
+    assert!(!blocked.status.success(), "{}", text(&blocked.stderr));
+    assert!(text(&blocked.stderr).contains("a.py:1: "));
+    assert_eq!(fixture.head(), base);
+
+    fixture.write("a.py", "x = 2\n");
+    let mut allowed = fixture.command("git");
+    allowed.args(["commit", "-q", "-a", "-m", "clean"]);
+    inherit(&mut allowed);
+    let allowed = allowed.output().unwrap();
+    assert!(allowed.status.success(), "{}", text(&allowed.stderr));
+    assert_ne!(fixture.head(), base);
+    assert_eq!(
+        text(
+            &fixture
+                .command("git")
+                .args(["rev-parse", "HEAD^"])
+                .output()
+                .unwrap()
+                .stdout
+        )
+        .trim(),
+        base
+    );
+}
+
+#[test]
+fn a_selected_index_lock_is_only_read() {
+    let (repo, alternate, _) = repo_with_alternate_index();
+    let lock = repo.dir.parent().unwrap().join("index.lock");
+    fs::copy(&alternate, &lock).unwrap();
+    let before = fs::read(&lock).unwrap();
+    let out = hinted_gate(&repo, lock.as_os_str(), repo.dir.join(".git").as_os_str())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert_eq!(fs::read(&lock).unwrap(), before);
+    assert!(lock.exists());
+}
+
+/// APFS refuses a name that is not UTF-8, so only Linux can hold this path.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_matching_owner_in_a_non_utf8_repository_path_is_honoured() {
+    use std::os::unix::ffi::OsStrExt;
+    let (repo, alternate, _) =
+        with_alternate_index(Repo::named(OsStr::from_bytes(b"work-\xff-repo")));
+    let owner = repo.dir.join(".git");
+    assert!(owner.to_str().is_none());
+    let out = hinted_gate(&repo, alternate.as_os_str(), owner.as_os_str())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert_eq!(ignored_hint_notes(&out), 0);
+    assert!(!text(&out.stderr).contains('\u{fffd}'));
+}
+
+#[test]
+fn a_failed_identity_query_is_exit_two_unless_scoped_allow_or_observe() {
+    let (repo, alternate, _) = repo_with_alternate_index();
+    let (bin, _) = repo.shim_intercepting("  *--absolute-git-dir*) echo boom >&2; exit 1;;\n");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let owner = repo.dir.join(".git");
+    let plain = hinted_gate(&repo, alternate.as_os_str(), owner.as_os_str())
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&plain),
+        2,
+        "{}{}",
+        text(&plain.stdout),
+        text(&plain.stderr)
+    );
+    assert!(
+        text(&plain.stderr).contains("rev-parse"),
+        "{}",
+        text(&plain.stderr)
+    );
+
+    let scoped = hinted_gate(&repo, alternate.as_os_str(), owner.as_os_str())
+        .env("PATH", &path)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "amont.agent.suppressions")
+        .env("GIT_CONFIG_VALUE_0", "allow")
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&scoped),
+        0,
+        "{}{}",
+        text(&scoped.stdout),
+        text(&scoped.stderr)
+    );
+
+    repo.git(&[
+        "config",
+        "--file",
+        repo.config.to_str().unwrap(),
+        "amont.agent.lint-suppression-added.stance",
+        "observe",
+    ]);
+    let observed = hinted_gate(&repo, alternate.as_os_str(), owner.as_os_str())
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&observed),
+        0,
+        "{}{}",
+        text(&observed.stdout),
+        text(&observed.stderr)
+    );
 }

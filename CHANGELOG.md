@@ -4,12 +4,21 @@
 
 ### Added
 
-- `amont-agent suppressions --staged` reads amont's temporary-index handoff:
-  a non-empty absolute `AMONT_INDEX_FILE` selects the staged index and beats
-  `GIT_INDEX_FILE`; unset or empty keeps the direct Git-hook fallback, and an
-  invalid non-empty value fails closed (exit 2) unless a command-scoped
-  `amont.agent.suppressions=allow` or the observe stance applies (exit 0).
-  Only `suppressions` reads it. The handoff needs released amont 1.70.0 or
+- `amont-agent suppressions --staged` reads amont's temporary-index handoff
+  as a bound pair: `AMONT_INDEX_FILE` and `AMONT_INDEX_GIT_DIR`, the absolute
+  per-worktree `git rev-parse --absolute-git-dir` of the owner. A non-empty
+  index hint beats `GIT_INDEX_FILE` only when the owner, canonicalized (symlink
+  aliases included), equals this command's own canonical per-worktree git-dir;
+  the common dir and the index location are never compared. An absent or empty
+  index hint silently keeps the direct Git-hook fallback. A non-empty hint whose
+  owner is absent, empty, relative, nonexistent or foreign is ignored with one
+  stderr note, and `GIT_INDEX_FILE` (or the default index) is kept. A matching
+  owner with a missing, relative or non-file index fails closed (exit 2), as
+  does a failed identity query, unless a command-scoped
+  `amont.agent.suppressions=allow` or the observe stance applies (exit 0). The
+  selected index, an external alternate or an `index.lock` included, is only
+  read. A wrapper that switches repositories clears and recomputes both hints.
+  Only `suppressions` reads them. The handoff needs released amont 1.70.0 or
   later as the producer; this version is the minimum producer version.
 - `amont-agent suppressions` accepts `--staged` more than once.
 - `lint-suppression-added` scanner: a `Shell` file kind (`.sh`, `.bash`, `.zsh`,

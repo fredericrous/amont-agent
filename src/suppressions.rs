@@ -113,23 +113,28 @@ anywhere) blocks unless it carries a reason in its tool's own reason form.
 Exit 0: nothing blocking. 1: a blocking hit. 2: usage error or git failure.
 A command-scoped `git -c amont.agent.suppressions=allow commit` passes; the
 same key in repository or global config is ignored.
-A non-empty absolute `AMONT_INDEX_FILE` selects the index to judge over
-`GIT_INDEX_FILE`; a non-empty invalid one exits 2 unless that override applies.
-The hint belongs to the current check: a wrapper that switches repositories
-must clear `AMONT_INDEX_FILE` first. `--staged` may be repeated.
+`AMONT_INDEX_FILE` is a bound pair with `AMONT_INDEX_GIT_DIR`, the absolute
+per-worktree `git rev-parse --absolute-git-dir` of the owner (amont >= 1.70.0
+supplies both). A non-empty index hint is honoured over `GIT_INDEX_FILE` only
+when that owner, canonicalized, equals this command's own canonical
+`git rev-parse --absolute-git-dir` (the per-worktree git-dir, never the common
+dir or the index location). A hint whose owner is absent, empty, relative,
+nonexistent or foreign is ignored with one stderr note and `GIT_INDEX_FILE`
+(or the default index) is kept. A matching but missing, relative or non-file
+index exits 2 unless the override applies; so does a failed identity query.
+The selected index, an external alternate one included, is only read.
+A wrapper that switches repositories must clear and recompute both hints.
+`--staged` may be repeated.
 ";
 
 /// Entry point. `git_index` is `GIT_INDEX_FILE` as it was before `main`
 /// scrubbed the environment: git hands a hook a temporary index on
 /// `commit -a`, `commit <path>` and `--only`. `amont_index` is
-/// `AMONT_INDEX_FILE`: when non-empty it must name an existing file by an
-/// absolute path, and it takes precedence over `git_index`; unset or empty
-/// leaves the direct Git-hook fallback.
-pub fn run(
-    args: &[OsString],
-    amont_index: Option<OsString>,
-    git_index: Option<OsString>,
-) -> ExitCode {
+/// `AMONT_INDEX_FILE` with its owner `AMONT_INDEX_GIT_DIR`: when non-empty and
+/// owned by this repository's worktree it must name an existing file by an
+/// absolute path, and it takes precedence over `git_index`; otherwise the
+/// direct Git-hook fallback stays.
+pub fn run(args: &[OsString], handoff: IndexHandoff, git_index: Option<OsString>) -> ExitCode {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         emit(format_args!("{HELP}"));
         return ExitCode::SUCCESS;
@@ -155,7 +160,7 @@ pub fn run(
         note_ignored_override();
     }
     let scanned =
-        select_index(amont_index, git_index).and_then(|index_file| scan(index_file.as_deref()));
+        select_index(handoff, git_index).and_then(|index_file| scan(index_file.as_deref()));
     match scanned {
         Err(why) if allowed == Override::CommandScoped => {
             eprintln!("{why}");
@@ -175,21 +180,82 @@ pub fn run(
     }
 }
 
-/// The index the scan reads: a non-empty `AMONT_INDEX_FILE` must be an
-/// absolute path to an existing file and wins; otherwise `GIT_INDEX_FILE`.
+/// `AMONT_INDEX_FILE` and `AMONT_INDEX_GIT_DIR` as `main` captured them: the
+/// index amont's commit gate selected, and the absolute per-worktree git-dir
+/// of the repository that owns it. The pair is one hint; the index is honoured
+/// only where the owner is this command's own repository.
+#[derive(Debug, Default)]
+pub struct IndexHandoff {
+    pub index_file: Option<OsString>,
+    pub owner_git_dir: Option<OsString>,
+}
+
+/// The index the scan reads. An absent or empty index hint keeps
+/// `GIT_INDEX_FILE`. A non-empty one is honoured when its owning git-dir is
+/// this command's own per-worktree git-dir, and then it must be an absolute
+/// path to an existing file; an unbound or foreign hint is ignored with one
+/// stderr note and `GIT_INDEX_FILE` is kept.
 fn select_index(
-    amont_index: Option<OsString>,
+    handoff: IndexHandoff,
     git_index: Option<OsString>,
 ) -> Result<Option<OsString>, ScanError> {
-    match amont_index.filter(|path| !path.is_empty()) {
-        Some(path) if Path::new(&path).is_absolute() && Path::new(&path).is_file() => {
-            Ok(Some(path))
-        }
-        Some(path) => Err(ScanError::IndexHint {
-            path: path.to_string_lossy().into_owned(),
-        }),
-        None => Ok(git_index),
+    let Some(index) = handoff.index_file.filter(|path| !path.is_empty()) else {
+        return Ok(git_index);
+    };
+    let Some(owner) = usable_owner(handoff.owner_git_dir) else {
+        note_ignored_hint("AMONT_INDEX_GIT_DIR is absent, empty, relative or missing");
+        return Ok(git_index);
+    };
+    if own_git_dir()? != owner {
+        note_ignored_hint("it belongs to another repository");
+        return Ok(git_index);
     }
+    if Path::new(&index).is_absolute() && Path::new(&index).is_file() {
+        Ok(Some(index))
+    } else {
+        Err(ScanError::IndexHint {
+            path: index.to_string_lossy().into_owned(),
+        })
+    }
+}
+
+/// The canonical owner git-dir, when the hint names an absolute existing one.
+fn usable_owner(owner: Option<OsString>) -> Option<PathBuf> {
+    let owner = PathBuf::from(owner.filter(|path| !path.is_empty())?);
+    if !owner.is_absolute() {
+        return None;
+    }
+    owner.canonicalize().ok()
+}
+
+fn note_ignored_hint(reason: &str) {
+    eprintln!("suppressions: AMONT_INDEX_FILE ignored: {reason}; keeping the direct index");
+}
+
+/// This command's own per-worktree git-dir, canonical, from git's bytes with
+/// the one protocol newline removed.
+fn own_git_dir() -> Result<PathBuf, ScanError> {
+    let mut answer = checked(&["rev-parse", "--absolute-git-dir"], None, None, 1 << 16)?;
+    if answer.last() == Some(&b'\n') {
+        answer.pop();
+    }
+    let reported = path_from_git_bytes(answer)?;
+    reported
+        .canonicalize()
+        .map_err(|error| git_failed("rev-parse", format!("{}: {error}", reported.display())))
+}
+
+#[cfg(unix)]
+fn path_from_git_bytes(bytes: Vec<u8>) -> Result<PathBuf, ScanError> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(PathBuf::from(OsString::from_vec(bytes)))
+}
+
+#[cfg(not(unix))]
+fn path_from_git_bytes(bytes: Vec<u8>) -> Result<PathBuf, ScanError> {
+    String::from_utf8(bytes)
+        .map(PathBuf::from)
+        .map_err(|_| git_failed("rev-parse", "git-dir is not valid UTF-8"))
 }
 
 /// The gate's stdout, written by the module that owns it rather than by a
