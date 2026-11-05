@@ -457,7 +457,7 @@ fn peers_in_dir(dir: &Path, session: &str, repo_identity: &Path, cutoff: SystemT
             })
         })
         .collect();
-    found.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+    found.sort_by_key(|entry| std::cmp::Reverse(entry.last_seen));
     found
 }
 

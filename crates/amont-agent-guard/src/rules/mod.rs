@@ -63,6 +63,7 @@ pub mod sed_in_place;
 pub mod stale_base;
 pub mod stat_bsd_format;
 pub mod stdin_hang;
+pub mod suppressions_override;
 pub mod symbol_grep_not_lsp;
 pub mod tag_after_commit;
 pub mod test_output_trimmed;

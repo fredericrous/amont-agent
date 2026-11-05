@@ -1,0 +1,2 @@
+# amont-agent: the lint suppressions a commit adds (general.no-disabled-safety)
+pre-commit  suppressions  *  block  amont-agent suppressions --staged

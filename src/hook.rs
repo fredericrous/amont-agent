@@ -526,7 +526,13 @@ fn on_bash(bash: &Bash) -> Decision {
             None => (finding.reason.as_str(), None, finding.remedy.as_str()),
         };
         let text = decision::phrase(rule.id, reason, remedy);
-        let stance = final_stance(stance, floor, ceiling, reading_of(&parsed), rule.max_stance);
+        let stance = final_stance(
+            stance,
+            floor,
+            ceiling,
+            reading_for(rule, &parsed),
+            rule.max_stance,
+        );
         match stance {
             Stance::Observe => note_with(rule, "observe", "watched", bash, finding, excerpt),
             Stance::Advise => {
@@ -580,6 +586,26 @@ fn joined_output(bash: &Bash) -> Option<String> {
 /// There is nothing left to refuse, so `deny` speaks like `advise`, the same
 /// way it does at a session opening.
 fn on_post_bash(bash: &Bash) -> Decision {
+    let claims = on_post_bash_claims(bash);
+    match (claims, suppressions_after_bash(bash)) {
+        (Decision::Assert(a), Some(b)) => Decision::Assert(format!("{a}\n\n{b}")),
+        (Decision::Silent, Some(b)) => Decision::Assert(b),
+        (
+            claims @ (Decision::Advise(_)
+            | Decision::Deny(_)
+            | Decision::Ask(_)
+            | Decision::Context(_)
+            | Decision::AssertAfterFailure(_)
+            | Decision::Continue(_)
+            | Decision::UserNote(_)),
+            Some(_),
+        ) => claims,
+        (claims, None) => claims,
+    }
+}
+
+/// The claims a successful call made, checked against the world.
+fn on_post_bash_claims(bash: &Bash) -> Decision {
     let parsed = shell::lex(&bash.command);
     if matches!(parsed, Parsed::Opaque(_)) {
         return Decision::Silent;
@@ -669,6 +695,27 @@ fn on_post_bash(bash: &Bash) -> Decision {
 /// A Bash call that FAILED: only [`assertions::AFTER_FAILURE`] run, with the
 /// same verdict handling as [`on_post_bash`]. A detached call has not ended.
 fn on_post_bash_failure(bash: &Bash) -> Decision {
+    let claims = on_post_bash_failure_claims(bash);
+    match (claims, suppressions_after_bash(bash)) {
+        (Decision::AssertAfterFailure(a), Some(b)) => {
+            Decision::AssertAfterFailure(format!("{a}\n\n{b}"))
+        }
+        (Decision::Silent, Some(b)) => Decision::AssertAfterFailure(b),
+        (
+            claims @ (Decision::Advise(_)
+            | Decision::Deny(_)
+            | Decision::Ask(_)
+            | Decision::Context(_)
+            | Decision::Assert(_)
+            | Decision::Continue(_)
+            | Decision::UserNote(_)),
+            Some(_),
+        ) => claims,
+        (claims, None) => claims,
+    }
+}
+
+fn on_post_bash_failure_claims(bash: &Bash) -> Decision {
     if bash.background {
         return Decision::Silent;
     }
@@ -722,6 +769,319 @@ fn on_post_bash_failure(bash: &Bash) -> Decision {
     } else {
         Decision::AssertAfterFailure(spoken.join("\n\n"))
     }
+}
+
+/// How long the after-Bash suppression check gets, git included.
+const SUPPRESSIONS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
+/// The most changed files the after-Bash suppression check examines.
+const SUPPRESSIONS_MAX_FILES: usize = 50;
+
+/// A Bash call that may have left a lint suppression in the working tree: the
+/// tree is compared with HEAD and what it adds is told, once per
+/// session. A command naming no suppression keyword costs no process. Every
+/// failure is journalled (`bash-slow`, `bash-git`, `bash-cap`) and silent, and
+/// so is a HEAD blob that is not UTF-8 (`bash-skip`): the commit gate is the
+/// backstop. The answer is the text to tell, if any.
+fn suppressions_after_bash(bash: &Bash) -> Option<String> {
+    use rules::lint_suppression_added as lsa;
+    if bash.background || !lsa::command_names_marker(&bash.command.to_ascii_lowercase()) {
+        return None;
+    }
+    if matches!(shell::lex(&bash.command), Parsed::Opaque(_)) {
+        return None;
+    }
+    let rule = &lsa::RULE;
+    let stance = crate::stance::resolve(rule);
+    let repo = repo_name(&bash.cwd);
+    let journal_outcome = |outcome: &str, excerpt: &str| {
+        journal::record(&journal::Entry {
+            rule: rule.id,
+            stance: stance.as_str(),
+            outcome,
+            session: &bash.session,
+            repo: &repo,
+            mode: &bash.permission_mode,
+            excerpt,
+        });
+    };
+    let deadline = std::time::Instant::now() + SUPPRESSIONS_DEADLINE;
+    let failure = |what: &str| {
+        let outcome = if std::time::Instant::now() >= deadline {
+            "bash-slow"
+        } else {
+            "bash-git"
+        };
+        journal_outcome(outcome, what);
+    };
+    let Some(top) = amont_agent_guard::git::stdout_bounded(
+        &bash.cwd,
+        &["rev-parse", "--show-toplevel"],
+        deadline,
+    ) else {
+        failure("rev-parse");
+        return None;
+    };
+    let root = std::path::PathBuf::from(top);
+    let Some(status) = amont_agent_guard::git::bytes_bounded(
+        &root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        None,
+        deadline,
+    ) else {
+        failure("status");
+        return None;
+    };
+    let files = changed_examined_files(&status);
+    if files.is_empty() {
+        return None;
+    }
+    if files.len() > SUPPRESSIONS_MAX_FILES {
+        journal_outcome("bash-cap", &format!("{} files", files.len()));
+        return None;
+    }
+
+    // The HEAD side, not the index: a `sed -i … && git add` stages its
+    // suppression, and an index comparison would then see nothing. Sizes
+    // first, so no blob over the rule's read limit is read. A renamed or
+    // deleted file is read at its old path.
+    let tracked: Vec<String> = files
+        .iter()
+        .filter_map(|f| f.before_path().map(|path| format!("HEAD:{path}")))
+        .collect();
+    let mut oversize: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut unborn: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut before_blobs: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    if !tracked.is_empty() {
+        let mut input = Vec::new();
+        for name in &tracked {
+            input.extend_from_slice(name.as_bytes());
+            input.push(b'\n');
+        }
+        let Some(sizes) = amont_agent_guard::git::bytes_bounded(
+            &root,
+            &["cat-file", "--batch-check=%(objectsize)"],
+            Some(&input),
+            deadline,
+        ) else {
+            failure("cat-file");
+            return None;
+        };
+        let sizes = String::from_utf8_lossy(&sizes).into_owned();
+        let answers: Vec<&str> = sizes.lines().collect();
+        if answers.len() != tracked.len() {
+            failure("cat-file");
+            return None;
+        }
+        let mut readable = Vec::new();
+        for (name, answer) in tracked.iter().zip(answers) {
+            let answer = answer.trim();
+            // With a custom format git answers `<name> missing` for a name
+            // HEAD does not hold (a file added to the index only): no before side.
+            if answer.ends_with(" missing") {
+                unborn.insert(name.clone());
+                continue;
+            }
+            match answer.parse::<u64>() {
+                Ok(size) if size > lsa::MAX_READ => {
+                    oversize.insert(name.clone());
+                }
+                Ok(_) => readable.push(name.clone()),
+                Err(_) => {
+                    failure("cat-file");
+                    return None;
+                }
+            }
+        }
+        let Some(blobs) =
+            amont_agent_guard::git::cat_file_batch_bounded(&root, &readable, deadline)
+        else {
+            failure("cat-file");
+            return None;
+        };
+        before_blobs = blobs.into_iter().collect();
+    }
+
+    let mut texts: Vec<(std::path::PathBuf, String, std::path::PathBuf, String)> = Vec::new();
+    for file in &files {
+        let before = match file.before_path() {
+            Some(path) => {
+                let name = format!("HEAD:{path}");
+                if oversize.contains(&name) {
+                    continue;
+                }
+                if unborn.contains(&name) {
+                    String::new()
+                } else {
+                    match before_blobs.remove(&name).map(String::from_utf8) {
+                        Some(Ok(text)) => text,
+                        Some(Err(_)) => {
+                            journal_outcome("bash-skip", path);
+                            continue;
+                        }
+                        None => {
+                            failure("cat-file");
+                            return None;
+                        }
+                    }
+                }
+            }
+            None => String::new(),
+        };
+        let after = if file.deleted {
+            String::new()
+        } else {
+            match read_small(&root.join(&file.path)) {
+                Some(text) => text,
+                None => continue,
+            }
+        };
+        let old_path = file.old_path.as_deref().unwrap_or(&file.path);
+        texts.push((
+            std::path::PathBuf::from(old_path),
+            before,
+            std::path::PathBuf::from(&file.path),
+            after,
+        ));
+    }
+    let changes: Vec<lsa::FileChange<'_>> = texts
+        .iter()
+        .map(|(old_path, before, new_path, after)| lsa::FileChange {
+            old_path: old_path.as_path(),
+            before: before.as_str(),
+            new_path: new_path.as_path(),
+            after: after.as_str(),
+        })
+        .collect();
+    let hits = lsa::net_added(&changes);
+    if hits.is_empty() {
+        return None;
+    }
+
+    let shown_root = root.to_string_lossy().into_owned();
+    let mut ordinals: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut fresh = Vec::new();
+    for added in hits {
+        let marker = format!("{}[{}]", added.hit.kind, added.hit.codes);
+        let counter = ordinals
+            .entry(format!("{}\t{marker}", added.path.display()))
+            .or_insert(0);
+        *counter += 1;
+        let key = format!(
+            "suppression\t{shown_root}\t{}\t{marker}\t{counter}",
+            added.path.display()
+        );
+        let first = stance == Stance::Observe
+            || first_telling(rule, &bash.session, &key, &bash.cwd, &bash.permission_mode);
+        if first {
+            fresh.push(added);
+        }
+    }
+    if fresh.is_empty() {
+        journal_outcome("told-before", &shown_root);
+        return None;
+    }
+    let first_path = fresh[0].path.to_string_lossy().into_owned();
+    let hits_only: Vec<lsa::Hit> = fresh.iter().map(|added| added.hit.clone()).collect();
+    journal::record(&journal::Entry {
+        rule: rule.id,
+        stance: stance.as_str(),
+        outcome: outcome_of(stance),
+        session: &bash.session,
+        repo: &repo,
+        mode: &bash.permission_mode,
+        excerpt: &lsa::excerpt(&first_path, &hits_only, &lsa::Mode::Bash),
+    });
+    match stance {
+        Stance::Observe => None,
+        Stance::Advise | Stance::Deny => {
+            let fresh_hits: Vec<(std::path::PathBuf, lsa::Hit)> = fresh
+                .into_iter()
+                .map(|added| (added.path, added.hit))
+                .collect();
+            Some(lsa::bash_phrase(&repo, &fresh_hits))
+        }
+    }
+}
+
+/// A file `git status` reports as changed, of a kind the rule examines.
+struct ChangedFile {
+    path: String,
+    /// The path HEAD knew it by, when the change is a rename.
+    old_path: Option<String>,
+    untracked: bool,
+    deleted: bool,
+}
+
+impl ChangedFile {
+    /// The path to read from HEAD: none for a file HEAD never held.
+    fn before_path(&self) -> Option<&str> {
+        if self.untracked {
+            None
+        } else {
+            Some(self.old_path.as_deref().unwrap_or(&self.path))
+        }
+    }
+}
+
+/// A path worth reading: an examined kind by name, or extensionless, which only
+/// its content (a shell shebang) can tell.
+fn candidate_path(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    rules::lint_suppression_added::examined(path)
+        || (path.file_name().is_some() && path.extension().is_none())
+}
+
+/// The candidate files of a `status --porcelain=v1 -z` listing, deletions and
+/// the old side of a rename included: they are before-only sides of the net
+/// count, so a moved marker cancels.
+fn changed_examined_files(status: &[u8]) -> Vec<ChangedFile> {
+    let mut out = Vec::new();
+    let mut fields = status.split(|b| *b == 0).filter(|f| !f.is_empty());
+    while let Some(field) = fields.next() {
+        if field.len() < 4 {
+            continue;
+        }
+        let (code, path) = field.split_at(3);
+        let renamed = code[0] == b'R' || code[0] == b'C' || code[1] == b'R' || code[1] == b'C';
+        let old_path = if renamed { fields.next() } else { None };
+        if code[..2] == *b"!!" {
+            continue;
+        }
+        let Ok(path) = std::str::from_utf8(path) else {
+            continue;
+        };
+        let old_path = old_path.and_then(|old| std::str::from_utf8(old).ok());
+        if path.contains('\n') || old_path.is_some_and(|old| old.contains('\n')) {
+            continue;
+        }
+        if !candidate_path(path) && !old_path.is_some_and(candidate_path) {
+            continue;
+        }
+        out.push(ChangedFile {
+            path: path.to_string(),
+            old_path: old_path.map(str::to_string),
+            untracked: code[..2] == *b"??",
+            deleted: code[0] == b'D' || code[1] == b'D',
+        });
+    }
+    out
+}
+
+/// A regular UTF-8 file within the rule's read limit, else `None`.
+fn read_small(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > rules::lint_suppression_added::MAX_READ {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(rules::lint_suppression_added::MAX_READ + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 fn note_claim(assertion: &Assertion, stance: &str, outcome: &str, bash: &Bash, claim: &Claim) {
@@ -1872,6 +2232,16 @@ pub enum Reading {
     Partial,
 }
 
+/// How much of the command a rule's finding stands on. The override rule
+/// reads the raw text of a clause the lexer left opaque (`bash -c '…'`), so
+/// its finding is not a partial reading and may refuse.
+fn reading_for(rule: &Rule, parsed: &Parsed) -> Reading {
+    if rule.id == rules::suppressions_override::RULE.id {
+        return Reading::Whole;
+    }
+    reading_of(parsed)
+}
+
 fn reading_of(parsed: &Parsed) -> Reading {
     if parsed.fully_read() {
         Reading::Whole
@@ -1943,7 +2313,7 @@ pub fn confirmed_for_check(
         resolved,
         floor,
         ceiling,
-        reading_of(parsed),
+        reading_for(rule, parsed),
         rule.max_stance,
     );
     Ok(Checked {

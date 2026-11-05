@@ -33,8 +33,9 @@ suppression and a lint configuration made looser. Closes amont-agent#65.
   no suppressions there.
 - No linter-side enforcement: that is `general.linters-police-suppressions`,
   set up per repository.
-- No Bash writes (`sed -i`, heredocs). The transcripts show these edits go
-  through Edit and Write.
+- Bash writes (`sed -i`, heredocs) were out of scope here. They are now
+  handled by the active plan
+  [2026-11-03-suppressions-through-bash-and-commit.md](2026-11-03-suppressions-through-bash-and-commit.md).
 - No judgement of the reason text. The advice asks for a cause outside the
   repository; the rule cannot verify one.
 - No new crate. TOML, YAML and JSON are scanned by hand, line by line, and

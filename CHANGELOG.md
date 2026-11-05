@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `amont-agent suppressions --staged` reads amont's temporary-index handoff
+  as a bound pair: `AMONT_INDEX_FILE` and `AMONT_INDEX_GIT_DIR`, the absolute
+  per-worktree `git rev-parse --absolute-git-dir` of the owner. A non-empty
+  index hint beats `GIT_INDEX_FILE` only when the owner, canonicalized (symlink
+  aliases included), equals this command's own canonical per-worktree git-dir;
+  the common dir and the index location are never compared. An absent or empty
+  index hint silently keeps the direct Git-hook fallback. A non-empty hint whose
+  owner is absent, empty, relative, nonexistent or foreign is ignored with one
+  stderr note, and `GIT_INDEX_FILE` (or the default index) is kept. A matching
+  owner with a missing, relative or non-file index fails closed (exit 2), as
+  does a failed identity query, unless a command-scoped
+  `amont.agent.suppressions=allow` or the observe stance applies (exit 0). The
+  selected index, an external alternate or an `index.lock` included, is only
+  read. A wrapper that switches repositories clears and recomputes both hints.
+  Only `suppressions` reads them. The handoff needs released amont 1.70.0 or
+  later as the producer; this version is the minimum producer version.
+- `amont-agent suppressions` accepts `--staged` more than once.
+- `lint-suppression-added` scanner: a `Shell` file kind (`.sh`, `.bash`, `.zsh`,
+  and extensionless files with a `sh`/`bash`/`zsh` shebang) with
+  `# shellcheck disable=SCnnnn[,..]` markers, a pure `reasoned` check of each
+  tool's own reason form, and `net_added`, which counts markers over a whole
+  change (a moved marker cancels; removing a reasoned one never cancels an
+  added bare one). `examine_change` is unchanged. `tools/suppression-rate.py`
+  and the shared fixture follow.
+- `amont-agent suppressions --staged`, the pre-commit gate: it judges the
+  staged change (net of removals anywhere, reasoned markers kept, bare and
+  blanket ones and loosened configs blocking), honours the temporary
+  `GIT_INDEX_FILE` of `commit -a` and `commit <path>`, skips blobs over
+  4 MiB, fails closed (exit 2) over a 64 MiB scan budget, and follows the
+  `lint-suppression-added` stance. Only a command-scoped
+  `git -c amont.agent.suppressions=allow` passes a blocking hit. `amont.pack`
+  declares it as a `pre-commit` check.
+- `suppressions-override`, a PreToolUse Bash rule that protects that override:
+  it is default-deny (`default_stance: Deny`, `max_stance: Deny`) and the
+  override stays the person's. An agent command that sets
+  `amont.agent.suppressions`, skips the gate with `hook.skip`, lowers its
+  `amont.severity`, or writes the `lint-suppression-added` stance is denied.
+
 ## v3.16.1
 
 ### Fixed
