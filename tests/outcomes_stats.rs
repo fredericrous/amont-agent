@@ -27,6 +27,51 @@ fn review(role: &str, model: &str, findings: &str) -> String {
 }
 
 #[test]
+fn stats_shows_a_seats_cost_from_the_rows_that_carry_it() {
+    let r = root("cost");
+    // Written the way `record` writes them: integer tokens, float seconds.
+    let row = |tokens: &str, seconds: &str, findings: &str| {
+        format!(
+            "{{\"schema\":\"amont-agent-review-outcome-v1\",\"role\":\"unix\",\"model\":\"m1\",\"tokens\":{tokens},\"seconds\":{seconds},\"findings\":{findings}}}\n"
+        )
+    };
+    let plan = row(
+        "30000",
+        "12.5",
+        r#"[{"severity":"high","disposition":"accepted"}]"#,
+    ) + &row(
+        "50000",
+        "20.0",
+        r#"[{"severity":"low","disposition":"accepted"}]"#,
+    );
+    std::fs::write(
+        r.join("claude/amont-agent/plan-review/outcomes.jsonl"),
+        plan,
+    )
+    .unwrap();
+
+    let out = bin(&r).args(["plan-review", "stats"]).output().unwrap();
+    assert!(out.status.success());
+    // 80,000 tokens over 2 reviews is 40 ktok; 32.5 s over 2 is 16 s;
+    // 80,000 tokens over the 1 serious finding is 80 ktok.
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "unix\tm1\treviews=2\tfound=0/1/0/1\taccepted=0/1/0/1\tserious/review=0.50\tktok/review=40\ts/review=16\tktok/serious=80\n"
+    );
+
+    let out = bin(&r)
+        .args(["plan-review", "stats", "--json"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["tokens"], 80_000);
+    assert_eq!(v[0]["seconds"], 32.5);
+    assert_eq!(v[0]["seconds_rows"], 2);
+    assert_eq!(v[0]["cost_missing"], 0);
+    assert_eq!(v[0]["tokens_per_serious"], 80_000.0);
+}
+
+#[test]
 fn stats_gives_a_row_per_role_and_model_and_marks_one_retire_candidate() {
     let r = root("stats");
     let mut plan = String::new();
