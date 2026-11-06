@@ -1703,6 +1703,38 @@ fn a_stale_review_names_the_head_a_delta_starts_from() {
 }
 
 #[test]
+fn a_stale_rework_gets_no_head_to_start_a_delta_from() {
+    // A pass records its head; a later review of another tree says rework
+    // and records nothing, so the stale line names no delta head.
+    let world = World::new("interdiff-no-hint");
+    let repo = world.repo("app");
+    let mut transcript = Transcript::default();
+    transcript.review(
+        &world,
+        AGENT,
+        &world.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let first = world.transcript("t1", &transcript);
+    assert_eq!(world.push(&repo, "s1", Some(&first)), Said::Silent);
+    world.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 4; }\n")]);
+    transcript.review(
+        &world,
+        AGENT,
+        &world.block(&repo),
+        "Verdict: rework",
+        Done::Foreground,
+    );
+    world.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 5; }\n")]);
+    let second = world.transcript("t2", &transcript);
+    let said = world.push(&repo, "s1", Some(&second));
+    let advice = advised(&said);
+    assert!(advice.contains("(stale)"), "{said:?}");
+    assert!(!advice.contains("--interdiff"), "{advice}");
+}
+
+#[test]
 fn a_rebase_that_changes_the_patch_or_the_rules_needs_a_new_review() {
     // A context line of the patch changed on main.
     let w = World::new("bypatch-context");

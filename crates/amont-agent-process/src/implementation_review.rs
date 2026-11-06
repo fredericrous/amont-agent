@@ -663,9 +663,48 @@ fn remember_patch(
     Some(())
 }
 
-/// Where the head a fresh review of `dst` (a remote branch ref) read is
-/// kept, so a later miss can name it: `by-branch/<repo>/<sha256(dst)>.json`.
-fn branch_file(repo: &str, dst: &str) -> Option<PathBuf> {
+/// What a passed review of a branch read: the pushed head, its merge-base
+/// and the tree. `review-brief --interdiff` starts a delta from `head`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchPass {
+    pub head: String,
+    pub base: String,
+    pub tree: String,
+}
+
+impl BranchPass {
+    /// A record whose three fields are object ids; anything else is no
+    /// record, so a damaged file never names a head.
+    fn from_record(record: &serde_json::Value) -> Option<Self> {
+        let id = |field: &str| {
+            record
+                .get(field)?
+                .as_str()
+                .filter(|value| {
+                    (40..=64).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+                .map(str::to_string)
+        };
+        Some(Self {
+            head: id("head")?,
+            base: id("base")?,
+            tree: id("tree")?,
+        })
+    }
+}
+
+/// The store directory of a role's branch records: the implementation
+/// review's, or a code-review profile's slug.
+fn role_dir(profile: Option<&str>) -> Option<String> {
+    match profile {
+        None => Some(AGENT.to_string()),
+        Some(profile) => crate::code_review::slug(profile),
+    }
+}
+
+/// `by-branch/<repo>/<role>/<sha256(dst)>.json`: what this role's last pass
+/// of the remote branch `dst` read.
+fn branch_file(repo: &str, profile: Option<&str>, dst: &str) -> Option<PathBuf> {
     if repo.contains('/') || repo.contains("..") || dst.is_empty() {
         return None;
     }
@@ -673,22 +712,23 @@ fn branch_file(repo: &str, dst: &str) -> Option<PathBuf> {
         store()?
             .join("by-branch")
             .join(repo)
+            .join(role_dir(profile)?)
             .join(format!("{}.json", hex(&sha256(dst.as_bytes())))),
     )
 }
 
-/// Records the head, merge-base and tree a review of this branch read and
-/// passed. Last writer wins: a branch's newest pass is the one a delta
-/// starts from. Written atomically; a failure only loses the hint.
-fn remember_branch(repo: &str, dst: &str, head: &str, base: &str, tree: &str) -> Option<()> {
-    let file = branch_file(repo, dst)?;
+/// Records what a fresh pass of this role read. Last writer wins: a
+/// branch's newest pass is the one a delta starts from. Written
+/// atomically; a failure only loses the hint.
+fn remember_branch(repo: &str, profile: Option<&str>, dst: &str, pass: &BranchPass) -> Option<()> {
+    let file = branch_file(repo, profile, dst)?;
     private_dir(file.parent()?)?;
     let body = serde_json::json!({
         "repo": repo,
         "branch": dst,
-        "head": head,
-        "base": base,
-        "tree": tree,
+        "head": pass.head,
+        "base": pass.base,
+        "tree": pass.tree,
     })
     .to_string();
     amont_agent_guard::atomic::write_atomic(&file, &body).ok()?;
@@ -696,15 +736,30 @@ fn remember_branch(repo: &str, dst: &str, head: &str, base: &str, tree: &str) ->
     Some(())
 }
 
-/// The head and tree the last passed review of `dst` read, when one is
-/// recorded: what `review-brief --interdiff` starts from.
-pub fn reviewed_head(repo: &str, dst: &str) -> Option<(String, String)> {
+/// What this role's last pass of the remote branch `dst` read, when a
+/// well-formed record is kept.
+pub fn reviewed_head(repo: &str, profile: Option<&str>, dst: &str) -> Option<BranchPass> {
     let record: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(branch_file(repo, dst)?).ok()?).ok()?;
-    Some((
-        record.get("head")?.as_str()?.to_string(),
-        record.get("tree")?.as_str()?.to_string(),
-    ))
+        serde_json::from_str(&std::fs::read_to_string(branch_file(repo, profile, dst)?).ok()?)
+            .ok()?;
+    BranchPass::from_record(&record)
+}
+
+/// The remote ref a push of the current branch updates, as the push check
+/// sees it (`target.dst`): the upstream's ref on its remote, else the
+/// branch of the same name. `None` on a detached HEAD.
+pub fn branch_ref(repo: &Path) -> Option<String> {
+    let branch = git::stdout_in(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    let upstream = git::stdout_in(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:remoteref)",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .filter(|remote| !remote.is_empty());
+    Some(upstream.unwrap_or_else(|| format!("refs/heads/{branch}")))
 }
 
 // The code-review profiles (ADR-0052).
@@ -997,6 +1052,8 @@ struct ProfileGate<'a> {
     plans: &'a [String],
     pushed: &'a str,
     merge_base: &'a str,
+    /// The remote ref the push updates: the key of the by-branch record.
+    dst: &'a str,
     transcript: Option<&'a Path>,
     stance: Stance,
     /// The branch changes nothing outside docs/plans/ (a successful
@@ -1388,6 +1445,16 @@ impl ProfileGate<'_> {
                         },
                     );
                 }
+                remember_branch(
+                    name,
+                    Some(profile),
+                    self.dst,
+                    &BranchPass {
+                        head: self.pushed.to_string(),
+                        base: self.merge_base.to_string(),
+                        tree: tree.to_string(),
+                    },
+                );
                 Standing::Passed(ProfileHow::Reviewed, tree.to_string())
             }
             other => Standing::Reworked(
@@ -1646,6 +1713,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         plans: &plans,
         pushed,
         merge_base: &merge_base,
+        dst: &target.dst,
         transcript: ctx.transcript,
         stance,
         plan_only,
@@ -1775,7 +1843,16 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                     &prompt_rules,
                     candidates,
                 );
-                remember_branch(&name, &target.dst, pushed, &merge_base, &tree);
+                remember_branch(
+                    &name,
+                    None,
+                    &target.dst,
+                    &BranchPass {
+                        head: pushed.to_string(),
+                        base: merge_base.to_string(),
+                        tree: tree.to_string(),
+                    },
+                );
                 if let Some(k) = &key {
                     remember_patch(
                         &name,
@@ -1804,12 +1881,12 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     if let Some(older) = mine.last() {
         // The head that stale review read, when this branch's last pass
         // recorded it: a delta then reads only what changed since.
-        let delta = reviewed_head(&name, &target.dst)
-            .filter(|(_, read)| *read == older.sha)
-            .map(|(head, _)| {
+        let delta = reviewed_head(&name, None, &target.dst)
+            .filter(|pass| pass.tree == older.sha)
+            .map(|pass| {
                 format!(
-                    " A delta reads only what changed: `amont-agent review-brief --interdiff {}`.",
-                    short(&head)
+                    " A delta reads only what changed: `amont-agent review-brief --interdiff {}` (a profile seat adds `--profile <role>`).",
+                    short(&pass.head)
                 )
             })
             .unwrap_or_default();
@@ -2272,7 +2349,7 @@ pub fn on_post_ask(ask: &amont_agent_guard::payload::Ask) -> Option<String> {
 }
 
 /// One journal line under the rule's id, for what happens away from a push.
-fn note(outcome: &str, session: &str, repo: &str, excerpt: &str) {
+pub(crate) fn note(outcome: &str, session: &str, repo: &str, excerpt: &str) {
     journal::record(&journal::Entry {
         rule: RULE_ID,
         stance: "-",
@@ -2786,6 +2863,7 @@ mod tests {
             plans: &plans,
             pushed: &valid,
             merge_base: &base,
+            dst: "refs/heads/x",
             transcript: None,
             stance: Stance::Deny,
             plan_only: false,

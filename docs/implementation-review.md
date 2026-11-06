@@ -163,16 +163,21 @@ the diff between the two branch patches after a rebase. `git range-diff`
 is not used: it lists a commit added on top without its patch, which would
 hide the fix. The plan, the full diff and the rules are not repeated.
 
-It is refused (exit 1, one stderr line naming the full brief) when `<head>`
-or its merge-base cannot be read, when the rule files changed since it,
-when this branch's last passed review read another head, or when what
-changed is 60 KB or more. It is never cut.
+`<head>` is 7 to 64 hex digits; anything else is a usage error (exit 2).
+The brief is refused (exit 1, one stderr line naming the brief to build)
+when `<head>` or its merge-base cannot be read, when the rule files
+changed since it, when this role's last passed review of the branch read
+another head (the line names that head and its `--interdiff` command), or
+when what changed is 60 KB or more. It is never cut. Each brief built is
+journalled `interdiff-brief` with the head, its size and its shape.
 
-The head comes from the stale line. Each fresh pass records the head,
-merge-base and tree it read under `by-branch/<repo>/<sha256 of the remote
-ref>.json` (last writer wins), and a push whose review is stale says
-"A delta reads only what changed: `amont-agent review-brief --interdiff
-<head>`" when that record matches the stale review's tree.
+The head comes from the stale line. Each fresh pass records, per role, the
+head, merge-base and tree it read under `by-branch/<repo>/<role>/<sha256
+of the remote ref>.json` (last writer wins). A push whose review is stale
+then says "A delta reads only what changed: `amont-agent review-brief
+--interdiff <head>` (a profile seat adds `--profile <role>`)" when that
+record matches the stale review's tree. The brief looks the record up by
+the same remote ref: the upstream's, else the branch of the same name.
 
 ## The person's overrule
 

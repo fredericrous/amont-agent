@@ -1293,13 +1293,15 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
                   whose `Reviewed by:` names that role. Without it the plan
                   section carries the plan's declared code review.
   --interdiff <head>
-                  a delta brief: the same headers, then only the
-                  `git range-diff` from <head> (the head an earlier review
-                  read, as the push check's stale line names it) to HEAD.
-                  Refused (exit 1, naming the full brief) when <head> cannot
-                  be read, the rule files changed since it, this branch's
-                  last passed review read another head, or the interdiff is
-                  60 KB or more; it is never cut.
+                  a delta brief: the same headers, then only what changed
+                  since <head> (7-64 hex digits: the head an earlier review
+                  read, as the push check's stale line names it): the plain
+                  diff when <head> is an ancestor of HEAD, else the diff
+                  between the two branch patches. Refused (exit 1, naming
+                  the brief to build) when <head> cannot be read, the rule
+                  files changed since it, this branch's last passed review
+                  read another head, or what changed is 60 KB or more; it
+                  is never cut.
 
 Exit 0; 1 when the repository or its base cannot be read; 3 when aval is missing or fails (nothing on
 stdout); 2 on a usage error.
@@ -1403,7 +1405,16 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
             "-C" => flags.dir = std::path::PathBuf::from(value),
             "--plan" => flags.plan = Some(std::path::PathBuf::from(value)),
             "--base" => flags.base = Some(value),
-            "--interdiff" => flags.interdiff = Some(value),
+            "--interdiff" => {
+                let hex = value.bytes().all(|b| b.is_ascii_hexdigit());
+                if !hex || !(7..=64).contains(&value.len()) {
+                    eprintln!(
+                        "amont-agent: {name}: --interdiff takes a commit id (7 to 64 hex digits), not `{value}`"
+                    );
+                    return Err(ExitCode::from(2));
+                }
+                flags.interdiff = Some(value);
+            }
             "--profile" => {
                 if !code_review::valid_profile(&value) {
                     eprintln!(
@@ -1464,6 +1475,10 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
         }
         Err(review_brief::BriefError::Repository(why)) => {
             eprintln!("amont-agent: {why}");
+            ExitCode::from(1)
+        }
+        Err(review_brief::BriefError::DeltaRefused(why)) => {
+            eprintln!("amont-agent: review-brief: {why}");
             ExitCode::from(1)
         }
     }

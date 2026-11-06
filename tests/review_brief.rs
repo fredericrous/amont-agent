@@ -891,6 +891,16 @@ fn delta_repo(name: &str, fix: &[(&str, &str)]) -> (PathBuf, String) {
 /// `review-brief --interdiff <head>` with the fake aval and a private store.
 #[cfg(unix)]
 fn interdiff(bin: &std::path::Path, repo: &std::path::Path, head: &str) -> Output {
+    interdiff_with(bin, repo, head, &[])
+}
+
+#[cfg(unix)]
+fn interdiff_with(
+    bin: &std::path::Path,
+    repo: &std::path::Path,
+    head: &str,
+    more: &[&str],
+) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
     cmd.args([
         "review-brief",
@@ -901,6 +911,7 @@ fn interdiff(bin: &std::path::Path, repo: &std::path::Path, head: &str) -> Outpu
         "--interdiff",
         head,
     ]);
+    cmd.args(more);
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs = vec![bin.to_path_buf()];
     dirs.extend(std::env::split_paths(&inherited));
@@ -970,18 +981,48 @@ fn an_interdiff_from_another_head_than_the_last_pass_is_refused() {
         .join("amont-agent")
         .join("implementation-review")
         .join("by-branch")
-        .join(&name);
+        .join(&name)
+        .join("implementation-review");
     std::fs::create_dir_all(&dir).unwrap();
     let other = "1".repeat(40);
     std::fs::write(
         dir.join(format!("{key}.json")),
-        format!(r#"{{"head":"{other}","tree":"t","base":"b"}}"#),
+        format!(
+            r#"{{"head":"{other}","tree":"{}","base":"{}"}}"#,
+            "2".repeat(64),
+            "3".repeat(40)
+        ),
     )
     .unwrap();
     let out = interdiff(&bin, &repo, &reviewed);
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
-    assert!(err.contains("last passed review of feat"), "{err}");
+    assert!(
+        err.contains("last passed review read `111111111111`")
+            && err.contains("--interdiff 111111111111"),
+        "{err}"
+    );
+    // A profile seat reads its own record, not the implementation review's.
+    let out = interdiff_with(&bin, &repo, &reviewed, &["--profile", "backend"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        err.contains("no passed review of this branch is recorded"),
+        "{err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interdiff_head_that_is_not_hex_is_a_usage_error() {
+    let bin = scratch("interdiff-usage-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let (repo, _) = delta_repo("interdiff-usage", &[("a.txt", "three\n")]);
+    for value in ["-x", "HEAD~1", "abc", ""] {
+        let out = interdiff(&bin, &repo, value);
+        assert_eq!(out.status.code(), Some(2), "{value}: {out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+    }
 }
 
 #[cfg(unix)]
