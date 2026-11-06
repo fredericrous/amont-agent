@@ -6,6 +6,11 @@
 
 ### Added
 
+- `amont-agent plan-review stats` shows each seat's cost beside its findings:
+  `ktok/review`, `s/review` and `ktok/serious` in text, and `tokens`,
+  `seconds`, `cost_missing` and `tokens_per_serious` in `--json`. A review
+  without `tokens` (every implementation review) counts in `cost_missing`
+  and is left out of the sums and their denominators.
 - `amont-agent review-brief --interdiff <head>` prints a delta brief: the
   usual headers, then only what changed since the head an earlier review
   read (the plain diff for a fix on top, the diff between the two branch
