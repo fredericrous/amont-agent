@@ -758,11 +758,12 @@ fn interdiff_brief(delta: &Delta) -> Result<Brief, BriefError> {
     let Some(old_base) = git::stdout_in(repo, &["merge-base", &old_head, base]) else {
         return refuse(format!("`git merge-base {old} {base}` failed"));
     };
-    let rules = |rev: &str| crate::implementation_review::rules_fingerprint(repo, rev);
-    match (rules(&old_head), rules("HEAD")) {
-        (Ok(then), Ok(now)) if then == now => {}
-        (Ok(_), Ok(_)) => return refuse(format!("the rule files changed since `{old}`")),
-        (Err(why), _) | (_, Err(why)) => return refuse(why),
+    let rules = |rev: &str| {
+        crate::implementation_review::rules_fingerprint(repo, rev)
+            .map_err(|why| BriefError::Repository(format!("{why}; {full}")))
+    };
+    if rules(&old_head)? != rules("HEAD")? {
+        return refuse(format!("the rule files changed since `{old}`"));
     }
     if let Some(branch) = git::stdout_in(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
         if let Some((head, _)) =

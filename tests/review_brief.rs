@@ -859,8 +859,6 @@ fn a_profile_without_a_corpus_says_it_has_no_rules() {
     );
 }
 
-// ------------------------------------------------ --interdiff (ADR-0059)
-
 /// A branch `feat` off `main`: a reviewed commit, then a fix on top. Returns
 /// the repository and the reviewed head.
 #[cfg(unix)]
