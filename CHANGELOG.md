@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-## v3.20.0
-
 ### Added
 
 - `amont-agent plan-review stats` shows each seat's cost beside its findings:
@@ -13,6 +11,11 @@
   `cost_missing` and is left out of the token sum and its denominators;
   `seconds` has its own denominator, `seconds_rows`. `tokens` reads 0 when
   `cost_missing` equals `reviews`.
+
+## v3.20.0
+
+### Added
+
 - `amont-agent review-brief --interdiff <head>` prints a delta brief: the
   usual headers, then only what changed since the head an earlier review
   read (the plain diff for a fix on top, the diff between the two branch
