@@ -134,9 +134,11 @@ pub fn shape(parsed: &Parsed, cmd: &Simple, background: bool) -> Result<(), &'st
     Ok(())
 }
 
-/// A tag name the land can be judged by: not empty, not a flag.
+/// A tag name the land can be judged by: not empty, not a flag, and nothing
+/// the shell would still expand (`$TAG`, a backtick): a guard never judges a
+/// name it cannot resolve.
 fn plain_name(name: &str) -> bool {
-    !name.is_empty() && !name.starts_with('-')
+    !name.is_empty() && !name.starts_with('-') && !name.contains(['$', '`'])
 }
 
 /// What `amont land --dry-run --json` answered.
