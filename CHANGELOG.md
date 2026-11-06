@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v3.19.0
+
+### Fixed
+
+- The push guards read `amont land --tag <name> [--json]` (also `--tag=<name>`) as a land, alongside `amont land [--json] [--force]` (#204). On amont 2.0 it is the only way to push a `v*` tag that owes release audits, and it was held as unreadable. The guard asks `amont land --tag <name> --dry-run --json` what it would push, and judges the `refs/tags/…` target as a tag push: no implementation review and no preview, as for `git push origin <tag>`. A forced tag land, two `--tag`s, or a name in a variable is still not read.
+
 ## v3.18.0
 
 ### Changed

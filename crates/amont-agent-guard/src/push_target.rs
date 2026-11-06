@@ -540,15 +540,22 @@ pub fn resolve_for(context: &crate::rules::Context, cmd: &Simple) -> Push {
             shape,
         };
     }
-    match crate::land::dry_run(&cwd) {
+    let tag = crate::land::tag_of(cmd);
+    match crate::land::dry_run(&cwd, tag.as_deref()) {
         crate::land::Answer::Would(l) => match toplevel(&cwd) {
             Some(repo) => Push::Resolved {
                 repo,
                 targets: vec![Target {
                     remote: l.remote,
                     src: l.pushed,
+                    // A tag land is judged as a tag push: excluded from
+                    // review and preview, as `git push origin <tag>` is.
+                    kind: if l.dst.starts_with("refs/tags/") {
+                        Kind::Tag
+                    } else {
+                        Kind::Branch
+                    },
                     dst: l.dst,
-                    kind: Kind::Branch,
                 }],
             },
             None => Push::Unresolvable {

@@ -1985,7 +1985,10 @@ pub fn record_before(
     if amont_agent_guard::land::is_land(cmd) {
         if let (Some(t), amont_agent_guard::land::Answer::Would(l)) = (
             targets.first(),
-            amont_agent_guard::land::dry_run(&ctx.cwd_at(cmd.at)),
+            amont_agent_guard::land::dry_run(
+                &ctx.cwd_at(cmd.at),
+                amont_agent_guard::land::tag_of(cmd).as_deref(),
+            ),
         ) {
             amont_agent_guard::push_record::record_land(&bash.tool_use_id, &t.src, &l);
         }

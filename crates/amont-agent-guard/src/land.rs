@@ -8,8 +8,9 @@
 //! amont answers the question itself: `amont land --dry-run --json` (1.54.0)
 //! says what a land would push, reading local git state only.
 //!
-//! Only one shape is read: `amont land [--json] [--force]`, optionally after
-//! one `cd <literal path> &&`, alone in the command, in the foreground.
+//! Only one shape is read: `amont land [--json] [--force]`, or
+//! `amont land --tag <name> [--json]` (amont 2.0, one existing tag), optionally
+//! after one `cd <literal path> &&`, alone in the command, in the foreground.
 //! Anything around it could change what the land does between this hook and
 //! the push (a `git commit` before it moves HEAD, `git fetch --set-upstream`
 //! moves its upstream), change what it runs against (`GIT_DIR=…`, `env`,
@@ -35,11 +36,24 @@ const BUDGET: Duration = Duration::from_secs(3);
 
 /// The one shape, named in every refusal.
 pub const SHAPE: &str =
-    "only `amont land [--json] [--force]`, alone in the command or after one `cd <dir> &&`, in the foreground, is read";
+    "only `amont land [--json] [--force]` or `amont land --tag <name> [--json]`, alone in the command or after one `cd <dir> &&`, in the foreground, is read";
 
 /// Is this clause an `amont land`?
 pub fn is_land(cmd: &Simple) -> bool {
     cmd.program() == Some("amont") && cmd.subcommand() == Some("land")
+}
+
+/// The tag an `amont land --tag <name>` (or `--tag=<name>`) pushes, if it
+/// names one. A land without `--tag` pushes the branch.
+pub fn tag_of(cmd: &Simple) -> Option<String> {
+    let words = &cmd.words;
+    words.iter().enumerate().find_map(|(i, w)| {
+        if w.text == "--tag" {
+            words.get(i + 1).map(|n| n.text.clone())
+        } else {
+            w.text.strip_prefix("--tag=").map(str::to_string)
+        }
+    })
 }
 
 /// Is `cmd`, an `amont land` clause of `parsed`, the one shape that is read?
@@ -80,17 +94,49 @@ pub fn shape(parsed: &Parsed, cmd: &Simple, background: bool) -> Result<(), &'st
     // `sudo`, `timeout`) would make the dry-run below answer for another
     // repository or identity than the land's.
     let words = &cmd.words;
-    let plain = words.len() >= 2
+    let head = words.len() >= 2
         && words[0].text == "amont"
         && words[1].text == "land"
-        && words.iter().all(|w| !w.quoted && !w.expanded)
-        && words[2..]
-            .iter()
-            .all(|w| matches!(w.text.as_str(), "--json" | "--force"));
-    if !plain || !cmd.redirects.is_empty() || cmd.heredoc {
+        && words.iter().all(|w| !w.quoted && !w.expanded);
+    if !head || !cmd.redirects.is_empty() || cmd.heredoc {
+        return Err(SHAPE);
+    }
+    // Flags: `--json`, `--force`, and one `--tag <name>` / `--tag=<name>`
+    // whose name is a plain word. A tag is never forced: amont refuses it.
+    let rest = &words[2..];
+    let mut tags = 0;
+    let mut forced = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].text.as_str() {
+            "--json" => {}
+            "--force" => forced = true,
+            "--tag" => {
+                let Some(name) = rest.get(i + 1) else {
+                    return Err(SHAPE);
+                };
+                if !plain_name(&name.text) {
+                    return Err(SHAPE);
+                }
+                tags += 1;
+                i += 1;
+            }
+            other => match other.strip_prefix("--tag=") {
+                Some(name) if plain_name(name) => tags += 1,
+                _ => return Err(SHAPE),
+            },
+        }
+        i += 1;
+    }
+    if tags > 1 || (tags == 1 && forced) {
         return Err(SHAPE);
     }
     Ok(())
+}
+
+/// A tag name the land can be judged by: not empty, not a flag.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('-')
 }
 
 /// What `amont land --dry-run --json` answered.
@@ -114,28 +160,35 @@ pub struct Landing {
     pub receipt_dir: PathBuf,
 }
 
-/// The dry-run for a land that runs in `dir`. Asked once per directory per
-/// hook process: the implementation review, the preview and the pre-push
-/// record all resolve the same land.
-pub fn dry_run(dir: &Path) -> Answer {
-    static MEMO: OnceLock<Mutex<HashMap<PathBuf, Answer>>> = OnceLock::new();
+/// The dry-run for a land that runs in `dir`, of `tag` when it names one.
+/// Asked once per directory and tag per hook process: the implementation
+/// review, the preview and the pre-push record all resolve the same land.
+pub fn dry_run(dir: &Path, tag: Option<&str>) -> Answer {
+    type Key = (PathBuf, Option<String>);
+    static MEMO: OnceLock<Mutex<HashMap<Key, Answer>>> = OnceLock::new();
     let memo = MEMO.get_or_init(Default::default);
-    if let Some(a) = memo.lock().unwrap_or_else(|p| p.into_inner()).get(dir) {
+    let key = (dir.to_path_buf(), tag.map(str::to_string));
+    if let Some(a) = memo.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return a.clone();
     }
-    let answer = ask(dir);
+    let answer = ask(dir, tag);
     memo.lock()
         .unwrap_or_else(|p| p.into_inner())
-        .insert(dir.to_path_buf(), answer.clone());
+        .insert(key, answer.clone());
     answer
 }
 
-fn ask(dir: &Path) -> Answer {
+fn ask(dir: &Path, tag: Option<&str>) -> Answer {
     if !dir.is_dir() {
         return Answer::Unknown("the land's directory does not exist");
     }
+    let mut args = vec!["land", "--dry-run", "--json"];
+    if let Some(name) = tag {
+        args.push("--tag");
+        args.push(name);
+    }
     let Ok(mut child) = Command::new("amont")
-        .args(["land", "--dry-run", "--json"])
+        .args(&args)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -207,7 +260,11 @@ pub fn read_answer(code: Option<i32>, stdout: &str, stderr: &str) -> Answer {
                 dst: field("dst"),
                 receipt_dir: PathBuf::from(field("receipt_dir")),
             };
-            if landing.pushed.is_empty() || !landing.dst.starts_with("refs/heads/") {
+            // A branch land names `refs/heads/…`; a tag land (amont 2.0,
+            // `--tag`) names `refs/tags/…` and no branch.
+            let target =
+                landing.dst.starts_with("refs/heads/") || landing.dst.starts_with("refs/tags/");
+            if landing.pushed.is_empty() || !target {
                 return Answer::Unknown("`amont land --dry-run` named no commit or branch");
             }
             Answer::Would(landing)
@@ -316,6 +373,40 @@ mod tests {
             "echo $(amont land)",
         ] {
             assert!(read(cmd, false).is_err(), "{cmd} must not be read");
+        }
+    }
+
+    #[test]
+    fn a_tag_land_is_read_and_names_its_tag() {
+        for cmd in [
+            "amont land --tag v1.2.3",
+            "amont land --tag v1.2.3 --json",
+            "amont land --json --tag=v1.2.3",
+            "cd /x/wt && amont land --tag v1.2.3 --json",
+        ] {
+            assert_eq!(read(cmd, false), Ok(()), "{cmd}");
+            let parsed = lex(cmd);
+            let land = parsed.judgeable().find(|c| is_land(c)).unwrap();
+            assert_eq!(tag_of(land).as_deref(), Some("v1.2.3"), "{cmd}");
+        }
+        for cmd in [
+            "amont land --tag",
+            "amont land --tag=",
+            "amont land --tag --json",
+            "amont land --tag v1 --tag v2",
+            "amont land --tag v1 --force",
+            "amont land --tag $TAG",
+        ] {
+            assert!(read(cmd, false).is_err(), "{cmd} must not be read");
+        }
+    }
+
+    #[test]
+    fn a_tag_answer_names_the_tag_ref() {
+        let out = r#"{"branch":"","remote":"origin","push_url":"u","pushed":"abc123","dst":"refs/tags/v1.2.3","ref":"refs/tags/v1.2.3","retried":false,"status":"would-land","receipt_dir":"/r/.git/amont/land","lease":false}"#;
+        match read_answer(Some(0), out, "") {
+            Answer::Would(l) => assert_eq!(l.dst, "refs/tags/v1.2.3"),
+            other => panic!("{other:?}"),
         }
     }
 
