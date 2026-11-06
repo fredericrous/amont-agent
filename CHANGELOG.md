@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.21.0
+
 ### Added
 
 - `amont-agent plan-review stats` shows each seat's cost beside its findings:
