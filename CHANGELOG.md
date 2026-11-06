@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.17.0
+
 ### Added
 
 - `amont-agent suppressions --staged` reads amont's temporary-index handoff
