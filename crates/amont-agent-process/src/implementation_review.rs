@@ -111,7 +111,7 @@ impl PatchKey {
 
 /// Which key a remembered pass was found under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PatchMatch {
+pub(crate) enum PatchMatch {
     /// The same branch patch.
     Exact,
     /// Only the root `CHANGELOG.md`'s context or blank lines moved.
@@ -331,8 +331,7 @@ pub fn rules_fingerprint(repo: &Path, rev: &str) -> Result<String, String> {
 pub fn patch_key(repo: &Path, merge_base: &str, pushed: &str) -> Result<PatchKey, String> {
     Ok(PatchKey {
         patch: branch_patch(repo, merge_base, pushed)?,
-        // A notes key git cannot compute is a clean miss, never a carry.
-        notes: notes_patch(repo, merge_base, pushed).ok().flatten(),
+        notes: notes_patch(repo, merge_base, pushed).ok().flatten(), // a notes key git cannot compute is a clean miss, never a carry
         rules: rules_fingerprint(repo, pushed)?,
     })
 }
@@ -2508,8 +2507,16 @@ mod tests {
     /// The notes key of a throwaway repository whose base commit holds
     /// `base` and whose branch commit holds `head` (path, content pairs).
     fn notes_key(tag: &str, base: &[(&str, &str)], head: &[(&str, &str)]) -> Option<String> {
-        let dir =
-            std::env::temp_dir().join(format!("amont-agent-notes-{tag}-{}", std::process::id()));
+        let dir = {
+            // Tests run in parallel and two of them build the same scenario:
+            // each call gets its own directory.
+            static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::env::temp_dir().join(format!(
+                "amont-agent-notes-{tag}-{}-{call}",
+                std::process::id()
+            ))
+        };
         let _ = std::fs::remove_dir_all(&dir); // absent on a first run, which is fine
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
