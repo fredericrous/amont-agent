@@ -1,0 +1,20 @@
+amont-provenance-v1
+commit 27e63a6b536ad967f3dddd541a1166a1a300dcae
+tree 61255b151aaffff8262ea60608e4162e394429ff
+canon 9948387f73371f59c05a9ae971f736cd8243665e
+patch 8b236aa987b372ee5141deb9d413c4ded7cd2283
+plan docs/plans/2026-11-06-harness-part-reports-its-cost.md cc6fec196076d3ec14d8cfce69a172d6066094b87602fd5ab9f9b20182e4485e
+review reviewed d392929e2e830bbc5a2b94a7ebd67788f69ac92d073d768beb776a423c8ade67
+code-review backend reviewed d392929e2e830bbc5a2b94a7ebd67788f69ac92d073d768beb776a423c8ade67
+code-review lang:rust reviewed d392929e2e830bbc5a2b94a7ebd67788f69ac92d073d768beb776a423c8ade67
+code-review unix reviewed d392929e2e830bbc5a2b94a7ebd67788f69ac92d073d768beb776a423c8ade67
+code-review tui reviewed d392929e2e830bbc5a2b94a7ebd67788f69ac92d073d768beb776a423c8ade67
+preview not-required
+producer amont-agent 3.20.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEDFHgLJRRq07I6K+8yzuRVcl4kCGzydN9NrW6N+YeU9AfOft2
+HLhq8OOmw4wf13myweLPe5eYVEjBCVezx4od8N
+-----END SSH SIGNATURE-----
