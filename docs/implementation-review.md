@@ -176,8 +176,9 @@ head, merge-base and tree it read under `by-branch/<repo>/<role>/<sha256
 of the remote ref>.json` (last writer wins). A push whose review is stale
 then says "A delta reads only what changed: `amont-agent review-brief
 --interdiff <head>` (a profile seat adds `--profile <role>`)" when that
-record matches the stale review's tree. The brief looks the record up by
-the same remote ref: the upstream's, else the branch of the same name.
+record matches the stale review's tree. The brief looks the record up
+under the branch of the same name, which is what `git push` and `amont
+land` update; a push to another name finds no record, and the brief says so.
 
 ## The person's overrule
 

@@ -1703,6 +1703,36 @@ fn a_stale_review_names_the_head_a_delta_starts_from() {
 }
 
 #[test]
+fn the_head_a_pass_records_is_the_one_a_delta_brief_requires() {
+    // End to end: the hook records the head at the push, the brief reads it.
+    let world = World::new("interdiff-e2e");
+    let repo = world.repo("app");
+    reviewed(&world, &repo);
+    let read = git(&repo, &["rev-parse", "HEAD"]);
+    let first = git(&repo, &["rev-parse", "HEAD~1"]);
+    world.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 6; }\n")]);
+    let brief = |head: &str| {
+        world
+            .bin()
+            .args(["review-brief", "-C"])
+            .arg(&repo)
+            .args(["--base", "origin/main", "--interdiff", head])
+            .output()
+            .unwrap()
+    };
+    let other = brief(&first);
+    let err = String::from_utf8_lossy(&other.stderr);
+    assert_eq!(other.status.code(), Some(1), "{other:?}");
+    assert!(
+        err.contains(&format!("--interdiff {}", &read[..12])),
+        "{err}"
+    );
+    let same = brief(&read);
+    assert!(same.status.success(), "{same:?}");
+    assert!(String::from_utf8_lossy(&same.stdout).contains("6; }"));
+}
+
+#[test]
 fn a_stale_rework_gets_no_head_to_start_a_delta_from() {
     // A pass records its head; a later review of another tree says rework
     // and records nothing, so the stale line names no delta head.

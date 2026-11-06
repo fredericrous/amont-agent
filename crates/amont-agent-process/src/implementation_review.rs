@@ -746,20 +746,13 @@ pub fn reviewed_head(repo: &str, profile: Option<&str>, dst: &str) -> Option<Bra
 }
 
 /// The remote ref a push of the current branch updates, as the push check
-/// sees it (`target.dst`): the upstream's ref on its remote, else the
-/// branch of the same name. `None` on a detached HEAD.
+/// sees it (`target.dst`) for `git push` and `amont land`: the branch of the
+/// same name. A push to another name (`HEAD:refs/heads/other`) is keyed
+/// there, and the brief then finds no record and says so. `None` on a
+/// detached HEAD.
 pub fn branch_ref(repo: &Path) -> Option<String> {
     let branch = git::stdout_in(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
-    let upstream = git::stdout_in(
-        repo,
-        &[
-            "for-each-ref",
-            "--format=%(upstream:remoteref)",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-    .filter(|remote| !remote.is_empty());
-    Some(upstream.unwrap_or_else(|| format!("refs/heads/{branch}")))
+    Some(format!("refs/heads/{branch}"))
 }
 
 // The code-review profiles (ADR-0052).

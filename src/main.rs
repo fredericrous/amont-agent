@@ -1299,8 +1299,8 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
                   diff when <head> is an ancestor of HEAD, else the diff
                   between the two branch patches. Refused (exit 1, naming
                   the brief to build) when <head> cannot be read, the rule
-                  files changed since it, this branch's last passed review
-                  read another head, or what changed is 60 KB or more; it
+                  files changed since it, this role's last passed review of
+                  the branch read another head, or what changed is 60 KB or more; it
                   is never cut.
 
 Exit 0; 1 when the repository or its base cannot be read; 3 when aval is missing or fails (nothing on
