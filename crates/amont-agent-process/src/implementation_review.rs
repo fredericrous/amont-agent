@@ -37,6 +37,10 @@
 //! `git patch-id --verbatim`; the rules are `AGENTS.md`, `CLAUDE.md`,
 //! `.adr.yaml`, `.adr/` and `.claude/` in the pushed tree. A pass is filed
 //! under `by-patch/` too, and a hit there is journalled `reviewed-by-patch`.
+//! When the branch changes the root `CHANGELOG.md`, the pass is also filed
+//! under a release-notes-tolerant key ([`notes_patch`]): a release that only
+//! moved that file's context keeps it, journalled
+//! `reviewed-by-patch-notes-moved` (ADR-0059).
 //!
 //! The verdict is read, not assumed: a review that said `rework` and got
 //! no later delta on the same tree is not a pass. Only the hook writes a
@@ -87,7 +91,182 @@ const RULE_DIRS: &[&[u8]] = &[b".adr/", b".claude/"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchKey {
     pub patch: String,
+    /// The release-notes-tolerant patch ([`notes_patch`]), when the branch
+    /// changes the root `CHANGELOG.md`: the same pass also holds when only
+    /// that file's context or blank lines moved (ADR-0059).
+    pub notes: Option<String>,
     pub rules: String,
+}
+
+impl PatchKey {
+    /// The ids a pass is filed and looked up under, exact first.
+    fn ids(&self) -> impl Iterator<Item = (&str, PatchMatch)> {
+        std::iter::once((self.patch.as_str(), PatchMatch::Exact)).chain(
+            self.notes
+                .as_deref()
+                .map(|notes| (notes, PatchMatch::NotesMoved)),
+        )
+    }
+}
+
+/// Which key a remembered pass was found under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PatchMatch {
+    /// The same branch patch.
+    Exact,
+    /// Only the root `CHANGELOG.md`'s context or blank lines moved.
+    NotesMoved,
+}
+
+impl PatchMatch {
+    /// The store directory the key's passes live in.
+    fn dir(self) -> &'static str {
+        match self {
+            PatchMatch::Exact => "by-patch",
+            PatchMatch::NotesMoved => "by-notes-patch",
+        }
+    }
+
+    /// The word a carried pass's `how` starts with.
+    fn how(self) -> &'static str {
+        match self {
+            PatchMatch::Exact => "patch",
+            PatchMatch::NotesMoved => "patch-notes-moved",
+        }
+    }
+}
+
+/// Whether filing a pass under its patch keys replaces a record already
+/// there: a new review does; refiling a pass found by tree does not, so the
+/// record keeps naming the tree that was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refile {
+    All,
+    Missing,
+}
+
+/// How a pass is filed under its patch keys: the `how` it records and
+/// whether it replaces a record already there.
+#[derive(Debug, Clone, Copy)]
+struct Filing<'a> {
+    how: &'a str,
+    refile: Refile,
+}
+
+/// The one release-notes file whose context may move under a pass: a
+/// release rewrites the lines around a branch's `## Unreleased` entry.
+const NOTES_FILE: &str = "CHANGELOG.md";
+
+/// The patch with the root `CHANGELOG.md` read by its changed text only:
+/// the sha256 of the `git patch-id --verbatim` of everything else (without
+/// `docs/plans/`) and of that file's changed lines inside its `-U0` hunks,
+/// in order, blank ones left out (`\ No newline` markers count).
+///
+/// `Ok(None)` when the branch leaves the file alone (the exact key says it
+/// all) or when the file is not a regular file of the same mode on both
+/// sides. `Err` when git cannot answer. Either way only the exact key holds:
+/// the push gets a clean miss, never a carry.
+pub fn notes_patch(repo: &Path, merge_base: &str, pushed: &str) -> Result<Option<String>, String> {
+    let run = |args: &[&str], stdin: Option<&[u8]>| -> Result<Vec<u8>, String> {
+        git::bytes_in(repo, args, stdin)
+            .map_err(|e| format!("git could not be run: {e}"))?
+            .ok_or_else(|| format!("`git {}` failed", args[0]))
+    };
+    let status = run(
+        &[
+            "diff",
+            "--name-status",
+            "--no-renames",
+            merge_base,
+            pushed,
+            "--",
+            NOTES_FILE,
+        ],
+        None,
+    )?;
+    if String::from_utf8_lossy(&status).trim() != format!("M\t{NOTES_FILE}") {
+        return Ok(None);
+    }
+    let mode = |rev: &str| -> Result<String, String> {
+        let entry = run(&["ls-tree", rev, "--", NOTES_FILE], None)?;
+        String::from_utf8_lossy(&entry)
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
+            .ok_or_else(|| format!("no {NOTES_FILE} at {rev}"))
+    };
+    let (before, after) = (mode(merge_base)?, mode(pushed)?);
+    if before != after || !matches!(before.as_str(), "100644" | "100755") {
+        return Ok(None);
+    }
+    let rest = run(
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            merge_base,
+            pushed,
+            "--",
+            ".",
+            &format!(":!{PLANS_PATH}"),
+            &format!(":!{NOTES_FILE}"),
+        ],
+        None,
+    )?;
+    let rest_id = if rest.is_empty() {
+        String::new()
+    } else {
+        let out = run(&["patch-id", "--verbatim"], Some(&rest))?;
+        String::from_utf8_lossy(&out)
+            .split_whitespace()
+            .next()
+            .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_string)
+            .ok_or("`git patch-id` printed no id")?
+    };
+    // `--text`: a file git would call binary still shows its lines, so an
+    // edit to it can never hash to nothing.
+    let notes = run(
+        &[
+            "diff",
+            "-U0",
+            "--text",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            merge_base,
+            pushed,
+            "--",
+            NOTES_FILE,
+        ],
+        None,
+    )?;
+    let mut bytes = b"notes-patch v1\0".to_vec();
+    bytes.extend_from_slice(rest_id.as_bytes());
+    bytes.push(0);
+    // The file header comes before the first hunk; inside hunks every line
+    // is content, whatever it starts with (`----` is a removed `---`).
+    let mut hunks = 0usize;
+    for line in notes.split(|byte| *byte == b'\n') {
+        if line.starts_with(b"@@") {
+            hunks += 1;
+            continue;
+        }
+        if hunks == 0 {
+            continue;
+        }
+        let content = matches!(line.first(), Some(b'+' | b'-' | b'\\'));
+        if content && !line[1..].iter().all(u8::is_ascii_whitespace) {
+            bytes.extend_from_slice(line);
+            bytes.push(b'\n');
+        }
+    }
+    if hunks == 0 {
+        return Err(format!("`git diff` showed no hunk for {NOTES_FILE}"));
+    }
+    Ok(Some(hex(&sha256(&bytes))))
 }
 
 /// The `git patch-id --verbatim` of the branch's diff since `merge_base`,
@@ -152,6 +331,7 @@ pub fn rules_fingerprint(repo: &Path, rev: &str) -> Result<String, String> {
 pub fn patch_key(repo: &Path, merge_base: &str, pushed: &str) -> Result<PatchKey, String> {
     Ok(PatchKey {
         patch: branch_patch(repo, merge_base, pushed)?,
+        notes: notes_patch(repo, merge_base, pushed).ok().flatten(), // a notes key git cannot compute is a clean miss, never a carry
         rules: rules_fingerprint(repo, pushed)?,
     })
 }
@@ -414,7 +594,7 @@ fn remember(
     Some(())
 }
 
-fn patch_file(repo: &str, patch: &str) -> Option<PathBuf> {
+fn patch_file(repo: &str, patch: &str, kind: PatchMatch) -> Option<PathBuf> {
     if repo.contains('/')
         || repo.contains("..")
         || patch.is_empty()
@@ -424,49 +604,62 @@ fn patch_file(repo: &str, patch: &str) -> Option<PathBuf> {
     }
     Some(
         store()?
-            .join("by-patch")
+            .join(kind.dir())
             .join(repo)
             .join(format!("{patch}.json")),
     )
 }
 
-/// The pass remembered for this patch, when its rules match: the verdict
-/// and the tree it was given for.
-fn remembered_patch(repo: &str, key: &PatchKey) -> Option<(Pass, String)> {
-    let f = patch_file(repo, &key.patch)?;
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()?;
-    if v.get("rules")?.as_str()? != key.rules {
-        return None;
-    }
-    Some((pass_of(&v)?, v.get("tree")?.as_str()?.to_string()))
+/// The pass remembered for this patch, when its rules match: the verdict,
+/// the tree it was given for, and the key it was found under, exact first.
+fn remembered_patch(repo: &str, key: &PatchKey) -> Option<(Pass, String, PatchMatch)> {
+    key.ids().find_map(|(id, kind)| {
+        let file = patch_file(repo, id, kind)?;
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+        if record.get("rules")?.as_str()? != key.rules {
+            return None;
+        }
+        Some((
+            pass_of(&record)?,
+            record.get("tree")?.as_str()?.to_string(),
+            kind,
+        ))
+    })
 }
 
-/// Files a pass under its patch too, so a conflict-free rebase keeps it.
+/// Files a pass under its patch too, so a conflict-free rebase keeps it,
+/// and under the release-notes-tolerant key when there is one.
 fn remember_patch(
     repo: &str,
     key: &PatchKey,
     tree: &str,
     verdict: &str,
-    how: &str,
+    filing: Filing,
     prompt_rules: &PromptRules,
     candidates: &Reviewed,
 ) -> Option<()> {
-    let f = patch_file(repo, &key.patch)?;
-    private_dir(f.parent()?)?;
-    let body = serde_json::json!({
-        "repo": repo,
-        "patch": key.patch,
-        "rules": key.rules,
-        "tree": tree,
-        "verdict": verdict,
-        "agent": AGENT,
-        "how": how,
-        "prompt_rules_sha": prompt_rules.stored(),
-        "candidates": candidates.to_json(),
-    })
-    .to_string();
-    amont_agent_guard::atomic::write_atomic(&f, &body).ok()?;
-    journal::private(&f, 0o600);
+    for (id, kind) in key.ids() {
+        let file = patch_file(repo, id, kind)?;
+        if filing.refile == Refile::Missing && file.exists() {
+            continue;
+        }
+        private_dir(file.parent()?)?;
+        let body = serde_json::json!({
+            "repo": repo,
+            "patch": id,
+            "rules": key.rules,
+            "tree": tree,
+            "verdict": verdict,
+            "agent": AGENT,
+            "how": filing.how,
+            "prompt_rules_sha": prompt_rules.stored(),
+            "candidates": candidates.to_json(),
+        })
+        .to_string();
+        amont_agent_guard::atomic::write_atomic(&file, &body).ok()?;
+        journal::private(&file, 0o600);
+    }
     Some(())
 }
 
@@ -553,7 +746,7 @@ fn profile_pass_file(profile: &str, repo: &str, sha: &str) -> Option<PathBuf> {
     )
 }
 
-fn profile_patch_file(profile: &str, repo: &str, patch: &str) -> Option<PathBuf> {
+fn profile_patch_file(profile: &str, repo: &str, patch: &str, kind: PatchMatch) -> Option<PathBuf> {
     if repo.contains('/')
         || repo.contains("..")
         || patch.is_empty()
@@ -565,7 +758,7 @@ fn profile_patch_file(profile: &str, repo: &str, patch: &str) -> Option<PathBuf>
         store()?
             .join("by-profile")
             .join(crate::code_review::slug(profile)?)
-            .join("by-patch")
+            .join(kind.dir())
             .join(repo)
             .join(format!("{patch}.json")),
     )
@@ -659,17 +852,26 @@ fn remember_profile(
     write_profile_pass(&profile_pass_file(profile, repo, sha)?, &body)
 }
 
-fn remembered_profile_patch(profile: &str, repo: &str, key: &PatchKey) -> Option<(String, String)> {
-    let file = profile_patch_file(profile, repo, &key.patch)?;
-    let record: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
-    if record.get("rules")?.as_str()? != key.rules {
-        return None;
-    }
-    Some((
-        record.get("verdict")?.as_str()?.to_string(),
-        record.get("tree")?.as_str()?.to_string(),
-    ))
+/// A profile's pass remembered for this patch: verdict, tree, and the key
+/// it was found under, exact first.
+fn remembered_profile_patch(
+    profile: &str,
+    repo: &str,
+    key: &PatchKey,
+) -> Option<(String, String, PatchMatch)> {
+    key.ids().find_map(|(id, kind)| {
+        let file = profile_patch_file(profile, repo, id, kind)?;
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+        if record.get("rules")?.as_str()? != key.rules {
+            return None;
+        }
+        Some((
+            record.get("verdict")?.as_str()?.to_string(),
+            record.get("tree")?.as_str()?.to_string(),
+            kind,
+        ))
+    })
 }
 
 fn remember_profile_patch(
@@ -678,21 +880,28 @@ fn remember_profile_patch(
     key: &PatchKey,
     tree: &str,
     verdict: &str,
-    how: &str,
+    filing: Filing,
 ) -> Option<()> {
-    write_profile_pass(
-        &profile_patch_file(profile, repo, &key.patch)?,
-        &serde_json::json!({
-            "repo": repo,
-            "patch": key.patch,
-            "rules": key.rules,
-            "tree": tree,
-            "profile": profile,
-            "verdict": verdict,
-            "agent": crate::code_review::agent_for(profile)?.0,
-            "how": how,
-        }),
-    )
+    for (id, kind) in key.ids() {
+        let file = profile_patch_file(profile, repo, id, kind)?;
+        if filing.refile == Refile::Missing && file.exists() {
+            continue;
+        }
+        write_profile_pass(
+            &file,
+            &serde_json::json!({
+                "repo": repo,
+                "patch": id,
+                "rules": key.rules,
+                "tree": tree,
+                "profile": profile,
+                "verdict": verdict,
+                "agent": crate::code_review::agent_for(profile)?.0,
+                "how": filing.how,
+            }),
+        )?;
+    }
+    Some(())
 }
 
 /// Where a declared profile stands on the pushed tree.
@@ -1033,16 +1242,24 @@ impl ProfileGate<'_> {
         let (name, tree) = (self.name, self.tree);
         if let Some(verdict) = remembered_profile(profile, name, tree) {
             if let Some(key) = self.key {
-                if remembered_profile_patch(profile, name, key).is_none() {
-                    remember_profile_patch(profile, name, key, tree, &verdict, "tree");
-                }
+                remember_profile_patch(
+                    profile,
+                    name,
+                    key,
+                    tree,
+                    &verdict,
+                    Filing {
+                        how: "tree",
+                        refile: Refile::Missing,
+                    },
+                );
             }
             return Standing::Passed(
                 remembered_how(profile, name, tree),
                 remembered_read(profile, name, tree),
             );
         }
-        if let Some((verdict, old_tree)) = self
+        if let Some((verdict, old_tree, kind)) = self
             .key
             .and_then(|key| remembered_profile_patch(profile, name, key))
         {
@@ -1051,7 +1268,7 @@ impl ProfileGate<'_> {
                 name,
                 tree,
                 &verdict,
-                &format!("patch {}", short(&old_tree)),
+                &format!("{} {}", kind.how(), short(&old_tree)),
                 // The review read `old_tree`, not this one: no commit here
                 // is what it read, so this pass cannot carry.
                 &old_tree,
@@ -1121,7 +1338,10 @@ impl ProfileGate<'_> {
                         key,
                         tree,
                         verdict.as_str(),
-                        "transcript",
+                        Filing {
+                            how: "transcript",
+                            refile: Refile::All,
+                        },
                     );
                 }
                 Standing::Passed(ProfileHow::Reviewed, tree.to_string())
@@ -1393,17 +1613,18 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
     }) = remembered_pass(&name, &tree)
     {
         if let Some(k) = &key {
-            if remembered_patch(&name, k).is_none() {
-                remember_patch(
-                    &name,
-                    k,
-                    &tree,
-                    &verdict,
-                    "tree",
-                    &prompt_rules,
-                    &candidates,
-                );
-            }
+            remember_patch(
+                &name,
+                k,
+                &tree,
+                &verdict,
+                Filing {
+                    how: "tree",
+                    refile: Refile::Missing,
+                },
+                &prompt_rules,
+                &candidates,
+            );
         }
         let profiles = match gate.hold() {
             Ok(profiles) => profiles,
@@ -1426,7 +1647,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         }
         return Judged::Decline(if overruled { "overruled" } else { "reviewed" });
     }
-    if let Some((pass, old_tree)) = key.as_ref().and_then(|k| remembered_patch(&name, k)) {
+    if let Some((pass, old_tree, kind)) = key.as_ref().and_then(|k| remembered_patch(&name, k)) {
         let Pass {
             verdict,
             prompt_rules,
@@ -1436,7 +1657,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &name,
             &tree,
             &verdict,
-            &format!("patch {}", short(&old_tree)),
+            &format!("{} {}", kind.how(), short(&old_tree)),
             &prompt_rules,
             &candidates,
         );
@@ -1459,10 +1680,11 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             check_remembered_rules(&repo, &name, &tree, &prompt_rules);
             check_candidates(&name, &tree, &candidates);
         }
-        return Judged::Decline(if overruled {
-            "overruled-by-patch"
-        } else {
-            "reviewed-by-patch"
+        return Judged::Decline(match (overruled, kind) {
+            (true, PatchMatch::Exact) => "overruled-by-patch",
+            (true, PatchMatch::NotesMoved) => "overruled-by-patch-notes-moved",
+            (false, PatchMatch::Exact) => "reviewed-by-patch",
+            (false, PatchMatch::NotesMoved) => "reviewed-by-patch-notes-moved",
         });
     }
     let Some(transcript) = ctx.transcript else {
@@ -1515,7 +1737,10 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                         k,
                         &tree,
                         v.as_str(),
-                        "transcript",
+                        Filing {
+                            how: "transcript",
+                            refile: Refile::All,
+                        },
                         &prompt_rules,
                         candidates,
                     );
@@ -2277,6 +2502,181 @@ mod tests {
         assert!(!names_store(
             "~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl"
         ));
+    }
+
+    /// The notes key of a throwaway repository whose base commit holds
+    /// `base` and whose branch commit holds `head` (path, content pairs).
+    fn notes_key(tag: &str, base: &[(&str, &str)], head: &[(&str, &str)]) -> Option<String> {
+        let dir = {
+            // Tests run in parallel and two of them build the same scenario:
+            // each call gets its own directory.
+            static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::env::temp_dir().join(format!(
+                "amont-agent-notes-{tag}-{}-{call}",
+                std::process::id()
+            ))
+        };
+        let _ = std::fs::remove_dir_all(&dir); // absent on a first run, which is fine
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        let commit = |files: &[(&str, &str)]| {
+            for (path, body) in files {
+                std::fs::write(dir.join(path), body).unwrap();
+            }
+            git(&["add", "."]);
+            git(&["commit", "-qm", "c"]);
+            git(&["rev-parse", "HEAD"])
+        };
+        let (from, to) = (commit(base), commit(head));
+        let key = notes_patch(&dir, &from, &to).unwrap();
+        let _ = std::fs::remove_dir_all(&dir); // best effort: a temp dir
+        key
+    }
+
+    const BASE: &str = "# Changelog\nintro\n## Unreleased\n## v1\n- old\n";
+    const ENTRY: &str = "# Changelog\nintro\n## Unreleased\n- new\n## v1\n- old\n";
+
+    fn reviewed_key() -> String {
+        notes_key(
+            "reviewed",
+            &[("CHANGELOG.md", BASE), ("a.rs", "1\n")],
+            &[("CHANGELOG.md", ENTRY), ("a.rs", "2\n")],
+        )
+        .expect("a changelog edit has a notes key")
+    }
+
+    #[test]
+    fn moved_changelog_context_or_a_blank_line_keeps_the_notes_key() {
+        let moved = notes_key(
+            "moved",
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro, longer\n## Unreleased\n## v2\n## v1\n- old\n",
+                ),
+                ("a.rs", "1\n"),
+            ],
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro, longer\n## Unreleased\n- new\n\n## v2\n## v1\n- old\n",
+                ),
+                ("a.rs", "2\n"),
+            ],
+        );
+        assert_eq!(moved.as_deref(), Some(reviewed_key().as_str()));
+        // An entry that landed under another heading, same text: carried,
+        // as ADR-0059 accepts.
+        let heading = notes_key(
+            "heading",
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n## v2\n## v1\n- old\n",
+                ),
+                ("a.rs", "1\n"),
+            ],
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n## v2\n- new\n## v1\n- old\n",
+                ),
+                ("a.rs", "2\n"),
+            ],
+        );
+        assert_eq!(heading.as_deref(), Some(reviewed_key().as_str()));
+    }
+
+    #[test]
+    fn an_edited_or_reordered_entry_a_removed_rule_or_a_code_change_changes_it() {
+        let reviewed = reviewed_key();
+        let edited = notes_key(
+            "edited",
+            &[("CHANGELOG.md", BASE), ("a.rs", "1\n")],
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n- newer\n## v1\n- old\n",
+                ),
+                ("a.rs", "2\n"),
+            ],
+        );
+        assert_ne!(edited.as_deref(), Some(reviewed.as_str()));
+        let two = "# Changelog\n## Unreleased\n- a\n- b\n## v1\n";
+        let swapped = "# Changelog\n## Unreleased\n- b\n- a\n## v1\n";
+        let base = "# Changelog\n## Unreleased\n## v1\n";
+        assert_ne!(
+            notes_key(
+                "order-a",
+                &[("CHANGELOG.md", base)],
+                &[("CHANGELOG.md", two)]
+            ),
+            notes_key(
+                "order-b",
+                &[("CHANGELOG.md", base)],
+                &[("CHANGELOG.md", swapped)]
+            ),
+        );
+        // A removed `---` line shows as `----`: content, not a file header.
+        let ruled = "# Changelog\nintro\n## Unreleased\n---\n## v1\n- old\n";
+        let unruled = "# Changelog\nintro\n## Unreleased\n- new\n## v1\n- old\n";
+        let removed = notes_key(
+            "rule",
+            &[("CHANGELOG.md", ruled), ("a.rs", "1\n")],
+            &[("CHANGELOG.md", unruled), ("a.rs", "2\n")],
+        );
+        assert_ne!(removed.as_deref(), Some(reviewed.as_str()));
+        let code = notes_key(
+            "code",
+            &[("CHANGELOG.md", BASE), ("a.rs", "1\n")],
+            &[("CHANGELOG.md", ENTRY), ("a.rs", "3\n")],
+        );
+        assert_ne!(code.as_deref(), Some(reviewed.as_str()));
+    }
+
+    #[test]
+    fn a_changelog_git_calls_binary_still_hashes_its_lines() {
+        let attrs = (".gitattributes", "CHANGELOG.md binary\n");
+        let entry = notes_key(
+            "bin-a",
+            &[attrs, ("CHANGELOG.md", BASE)],
+            &[attrs, ("CHANGELOG.md", ENTRY)],
+        );
+        let other = notes_key(
+            "bin-b",
+            &[attrs, ("CHANGELOG.md", BASE)],
+            &[
+                attrs,
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n- other\n## v1\n- old\n",
+                ),
+            ],
+        );
+        assert!(entry.is_some());
+        assert_ne!(entry, other);
+    }
+
+    #[test]
+    fn an_untouched_changelog_has_no_notes_key() {
+        assert_eq!(
+            notes_key("none", &[("a.rs", "1\n")], &[("a.rs", "2\n")]),
+            None
+        );
     }
 
     /// A pointer whose own section does not declare this repository gives

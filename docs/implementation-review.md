@@ -50,7 +50,15 @@ The rules are the entries of `AGENTS.md`, `CLAUDE.md`, `.adr.yaml`, `.adr/`
 and `.claude/` in the pushed tree. So a rebase onto a moved `main` that
 does not touch the patch or the rules keeps the review. A rebase that
 resolved a conflict, changed a line of the patch's context, or brought new
-rules does not. A person's overrule carries over on the same terms, once
+rules does not, with one exception: the root `CHANGELOG.md` (ADR-0059).
+A release rewrites the lines around a branch's `## Unreleased` entry, so a
+pass is also filed, under `by-notes-patch/`, by a second key that ignores
+where the changelog entry sits: the `git patch-id --verbatim` of every
+other file, plus the changelog's changed non-blank lines inside its hunks,
+in order. A rebase that only moved the changelog's context or blank lines
+keeps the review, journalled `reviewed-by-patch-notes-moved`. An entry whose
+text or order changed, any other file, a mode change or a rename does not.
+A person's overrule carries over on the same terms, once
 the overruled tree itself has been pushed (the push files it under its
 patch); journalled `overruled-by-patch`. When the patch cannot be computed,
 the held message says why.
@@ -97,8 +105,10 @@ on stderr); 2 on a usage error.
 7. **No binding for this tree**: looks the branch patch up under
    `by-patch/`. A pass there whose rules fingerprint matches is copied to
    `by-tree/` for this tree (`"how": "patch <old tree>"`), and the push
-   passes as `reviewed-by-patch`. A patch or fingerprint that cannot be
-   computed is a miss.
+   passes as `reviewed-by-patch`. The exact patch is tried first, then the
+   changelog key under `by-notes-patch/` (`"how": "patch-notes-moved <old
+   tree>"`, `reviewed-by-patch-notes-moved`). A patch or fingerprint that
+   cannot be computed is a miss.
 
 | situation | `advise` (ships) | `deny` |
 |---|---|---|
@@ -187,9 +197,10 @@ declared profile writes no such line. `amont-agent doctor` (and `doctor
 (`code-review-<role>.md`, `code-review-language.md`, `interface-review.md`)
 that no agents directory carries, and says nothing when all eight are there.
 
-It is written on `reviewed`, `reviewed-by-patch`, `overruled`,
-`overruled-by-patch` and on a transcript pass; never for a held push or a push
-declined as no-plan, no-branch, dry-run or nothing-new. A write that fails is
+It is written on `reviewed`, `reviewed-by-patch`,
+`reviewed-by-patch-notes-moved`, `overruled`, `overruled-by-patch`,
+`overruled-by-patch-notes-moved` and on a transcript pass; never for a held
+push or a push declined as no-plan, no-branch, dry-run or nothing-new. A write that fails is
 journalled `provenance-write-failed` and never changes the judgment; a write
 that lands is journalled `provenance-written`. The record is written once
 per repository and commit: a re-push of the same commit finds the file and
@@ -205,9 +216,11 @@ directory is hook-only: Write, Edit and Bash writes are refused.
 
 Every push writes its decision line, under the rule's id, in the buckets
 `amont-agent status` counts: a declined push as `unconfirmed` with the reason
-(`reviewed`, `reviewed-by-patch`, `overruled`, `overruled-by-patch`,
-`no-plan`, `dry-run`, `no-branch`, `unresolvable`), a spoken one as `advised`, `denied` or `watched`. The
-excerpt of a spoken line is structured:
+(`reviewed`, `reviewed-by-patch`, `reviewed-by-patch-notes-moved`,
+`overruled`, `overruled-by-patch`, `overruled-by-patch-notes-moved`,
+`no-plan`, `dry-run`, `no-branch`, `unresolvable`), a spoken one as
+`advised`, `denied` or `watched`. The excerpt of a spoken line is
+structured:
 
 ```
 tree=<12 hex> review=<stale|rework|missing|unknown> verdict=<approve|approve-with-changes|rework|->

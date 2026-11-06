@@ -1586,6 +1586,106 @@ fn a_conflict_free_rebase_keeps_the_review_by_patch() {
     );
 }
 
+/// A `feat/x` that adds a code line and a `## Unreleased` entry to the
+/// root `CHANGELOG.md` that `main` already has.
+fn with_notes(world: &World, repo: &Path) {
+    git(repo, &["checkout", "-q", "main"]);
+    world.commit(
+        repo,
+        &[(
+            "CHANGELOG.md",
+            "# Changelog\nintro\n## Unreleased\n## v1\n- old\n",
+        )],
+    );
+    git(repo, &["push", "-q", "origin", "main"]);
+    git(repo, &["fetch", "-q", "origin"]);
+    git(repo, &["checkout", "-q", "feat/x"]);
+    git(repo, &["rebase", "-q", "origin/main"]);
+    world.commit(
+        repo,
+        &[(
+            "CHANGELOG.md",
+            "# Changelog\nintro\n## Unreleased\n- new entry\n## v1\n- old\n",
+        )],
+    );
+}
+
+/// A release on `main` rewrites a context line near the entry: the exact
+/// patch changes, the entry's own text does not.
+const RELEASED: &[(&str, &str)] = &[(
+    "CHANGELOG.md",
+    "# Changelog\nintro, now longer\n## Unreleased\n## v1\n- old\n",
+)];
+
+#[test]
+fn a_rebase_that_only_moves_changelog_context_keeps_the_review() {
+    let world = World::new("notes-moved");
+    let repo = world.repo("app");
+    with_notes(&world, &repo);
+    let transcript = reviewed(&world, &repo);
+    advance_main_and_rebase(&world, &repo, RELEASED);
+    assert_eq!(world.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let line = world.last_line();
+    assert!(
+        line.contains(" unconfirmed reviewed-by-patch-notes-moved "),
+        "{line}"
+    );
+    let pass = world.pass_file("app", &world.tree(&repo));
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pass).unwrap()).unwrap();
+    assert!(
+        record["how"]
+            .as_str()
+            .unwrap()
+            .starts_with("patch-notes-moved "),
+        "{record}"
+    );
+}
+
+#[test]
+fn an_edited_changelog_entry_or_a_pass_without_a_notes_key_needs_a_new_review() {
+    // The entry's own text changed after the review.
+    let world = World::new("notes-edited");
+    let repo = world.repo("app");
+    with_notes(&world, &repo);
+    let transcript = reviewed(&world, &repo);
+    advance_main_and_rebase(&world, &repo, RELEASED);
+    world.commit(
+        &repo,
+        &[(
+            "CHANGELOG.md",
+            "# Changelog\nintro, now longer\n## Unreleased\n- new entry, edited\n## v1\n- old\n",
+        )],
+    );
+    let said = world.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+
+    // A pass filed before the notes key existed: only the exact key, a
+    // clean miss rather than a carry.
+    let world = World::new("notes-old-pass");
+    let repo = world.repo("app");
+    with_notes(&world, &repo);
+    let transcript = reviewed(&world, &repo);
+    let notes = world.store().join("by-notes-patch").join("app");
+    assert!(notes.is_dir(), "the review was filed under its notes key");
+    std::fs::remove_dir_all(&notes).unwrap();
+    advance_main_and_rebase(&world, &repo, RELEASED);
+    let said = world.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+}
+
+#[test]
+fn a_code_change_beside_moved_changelog_context_needs_a_new_review() {
+    let world = World::new("notes-code");
+    let repo = world.repo("app");
+    with_notes(&world, &repo);
+    let transcript = reviewed(&world, &repo);
+    advance_main_and_rebase(&world, &repo, RELEASED);
+    world.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 2; }\n")]);
+    let said = world.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+}
+
 #[test]
 fn a_rebase_that_changes_the_patch_or_the_rules_needs_a_new_review() {
     // A context line of the patch changed on main.
@@ -3393,6 +3493,27 @@ fn a_rebased_branch_does_not_carry_by_ancestry() {
     let said = w.push(&repo, "s2", Some(&transcript));
     assert!(advised(&said).contains("code-review-backend"), "{said:?}");
     assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn a_profile_pass_survives_a_rebase_that_only_moves_changelog_context() {
+    let world = World::new("notes-profile");
+    let repo = world.repo("app");
+    with_notes(&world, &repo);
+    pushed_at_a(&world, &repo, "Verdict: approve");
+    advance_main_and_rebase(&world, &repo, RELEASED);
+    assert_eq!(world.push(&repo, "s2", None), Said::Silent);
+    let tree = world.tree(&repo);
+    let pass = profile_pass_file(&world, "backend", "app", &tree);
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pass).unwrap()).unwrap();
+    assert!(
+        record["how"]
+            .as_str()
+            .unwrap()
+            .starts_with("patch-notes-moved "),
+        "{record}"
+    );
 }
 
 #[test]
