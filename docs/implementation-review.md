@@ -148,6 +148,38 @@ round whose notification names another task, or a notification typed or
 echoed rather than queued by Claude Code does not count. Only this rule
 reads resumes: the plan-review panel counts fresh launches alone.
 
+## A delta brief
+
+A resumed reviewer brings its whole first round with it, 50-80k tokens
+each time. A delta after a rebase or a small fix can instead be a fresh
+launch that reads only what changed:
+
+    amont-agent review-brief --interdiff <head> [--profile <role>]
+
+prints the same `<<<TREE>>>`, `<<<RULES>>>` and `<<<CANDIDATES>>>` headers
+as the full brief, then what changed since `<head>`, `docs/plans/` left
+out: the plain diff when `<head>` is an ancestor of HEAD (a fix on top), or
+the diff between the two branch patches after a rebase. `git range-diff`
+is not used: it lists a commit added on top without its patch, which would
+hide the fix. The plan, the full diff and the rules are not repeated.
+
+`<head>` is 7 to 64 hex digits; anything else is a usage error (exit 2).
+The brief is refused (exit 1, one stderr line naming the brief to build)
+when `<head>` or its merge-base cannot be read, when the rule files
+changed since it, when this role's last passed review of the branch read
+another head (the line names that head and its `--interdiff` command), or
+when what changed is 60 KB or more. It is never cut. Each brief built is
+journalled `interdiff-brief` with the head, its size and its shape.
+
+The head comes from the stale line. Each fresh pass records, per role, the
+head, merge-base and tree it read under `by-branch/<repo>/<role>/<sha256
+of the remote ref>.json` (last writer wins). A push whose review is stale
+then says "A delta reads only what changed: `amont-agent review-brief
+--interdiff <head>` (a profile seat adds `--profile <role>`)" when that
+record matches the stale review's tree. The brief looks the record up
+under the branch of the same name, which is what `git push` and `amont
+land` update; a push to another name finds no record, and the brief says so.
+
 ## The person's overrule
 
 A `rework` that survives the delta goes to the person on a marked

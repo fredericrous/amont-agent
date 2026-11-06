@@ -1269,6 +1269,7 @@ command on stderr, nothing on stdout); 2 on a usage error.
 
 const REVIEW_BRIEF_USAGE: &str = "\
 usage: amont-agent review-brief [-C <dir>] [--plan <path>] [--base <ref>] [--profile <role>]
+                                [--interdiff <head>]
 
 The markdown brief an implementation reviewer is launched with: the
 <<<TREE ...>>> block, the <<<RULES sha=...>>> line and adr-lint's
@@ -1291,6 +1292,16 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
                   <role>` line and, after the code rules, the judge rules
                   whose `Reviewed by:` names that role. Without it the plan
                   section carries the plan's declared code review.
+  --interdiff <head>
+                  a delta brief: the same headers, then only what changed
+                  since <head> (7-64 hex digits: the head an earlier review
+                  read, as the push check's stale line names it): the plain
+                  diff when <head> is an ancestor of HEAD, else the diff
+                  between the two branch patches. Refused (exit 1, naming
+                  the brief to build) when <head> cannot be read, the rule
+                  files changed since it, this role's last passed review of
+                  the branch read another head, or what changed is 60 KB or more; it
+                  is never cut.
 
 Exit 0; 1 when the repository or its base cannot be read; 3 when aval is missing or fails (nothing on
 stdout); 2 on a usage error.
@@ -1302,6 +1313,7 @@ struct BriefFlags {
     plan: Option<std::path::PathBuf>,
     base: Option<String>,
     profile: Option<String>,
+    interdiff: Option<String>,
 }
 
 /// One subcommand's name, usage and accepted flags, kept together.
@@ -1321,7 +1333,7 @@ const RULES_SHA_COMMAND: BriefCommand = BriefCommand {
 const REVIEW_BRIEF_COMMAND: BriefCommand = BriefCommand {
     name: "review-brief",
     usage: REVIEW_BRIEF_USAGE,
-    flags: &["-C", "--plan", "--base", "--profile"],
+    flags: &["-C", "--plan", "--base", "--profile", "--interdiff"],
 };
 
 fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, ExitCode> {
@@ -1343,6 +1355,7 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
         plan: None,
         base: None,
         profile: None,
+        interdiff: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -1392,6 +1405,16 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
             "-C" => flags.dir = std::path::PathBuf::from(value),
             "--plan" => flags.plan = Some(std::path::PathBuf::from(value)),
             "--base" => flags.base = Some(value),
+            "--interdiff" => {
+                let hex = value.bytes().all(|b| b.is_ascii_hexdigit());
+                if !hex || !(7..=64).contains(&value.len()) {
+                    eprintln!(
+                        "amont-agent: {name}: --interdiff takes a commit id (7 to 64 hex digits), not `{value}`"
+                    );
+                    return Err(ExitCode::from(2));
+                }
+                flags.interdiff = Some(value);
+            }
             "--profile" => {
                 if !code_review::valid_profile(&value) {
                     eprintln!(
@@ -1401,7 +1424,9 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
                 }
                 flags.profile = Some(value);
             }
-            _ => unreachable!("`accepted` holds only -C, --plan, --base and --profile"),
+            _ => {
+                unreachable!("`accepted` holds only -C, --plan, --base, --profile and --interdiff")
+            }
         }
     }
     Ok(flags)
@@ -1434,6 +1459,7 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
         plan: flags.plan,
         base: flags.base,
         profile: flags.profile,
+        interdiff: flags.interdiff,
     };
     match review_brief::build(&request) {
         Ok(brief) => {
@@ -1449,6 +1475,10 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
         }
         Err(review_brief::BriefError::Repository(why)) => {
             eprintln!("amont-agent: {why}");
+            ExitCode::from(1)
+        }
+        Err(review_brief::BriefError::DeltaRefused(why)) => {
+            eprintln!("amont-agent: review-brief: {why}");
             ExitCode::from(1)
         }
     }

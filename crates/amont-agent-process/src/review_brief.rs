@@ -50,6 +50,8 @@ impl std::fmt::Display for AvalFailed {
 pub enum BriefError {
     Aval(AvalFailed),
     Repository(String),
+    /// A delta brief was refused: the full brief is the answer.
+    DeltaRefused(DeltaRefusal),
 }
 
 impl std::fmt::Display for BriefError {
@@ -57,6 +59,51 @@ impl std::fmt::Display for BriefError {
         match self {
             BriefError::Aval(why) => why.fmt(f),
             BriefError::Repository(why) => f.write_str(why),
+            BriefError::DeltaRefused(why) => why.fmt(f),
+        }
+    }
+}
+
+/// Why `review-brief --interdiff` refused. A delta brief is never cut: each
+/// refusal names the brief to build instead.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeltaRefusal {
+    /// The given head, or its merge-base with the base, cannot be read here.
+    UnreadableHead(String),
+    /// The rule files changed since the given head.
+    RulesChanged(String),
+    /// This role's last passed review of the branch read another head.
+    OtherHead {
+        recorded: String,
+        profile: Option<String>,
+    },
+    /// What changed is 60 KB or more.
+    TooLarge,
+}
+
+impl std::fmt::Display for DeltaRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let full = "run `amont-agent review-brief` without --interdiff for the full brief";
+        match self {
+            DeltaRefusal::UnreadableHead(head) => write!(
+                f,
+                "`{head}` is not a commit this repository can read: fetch it, or {full}"
+            ),
+            DeltaRefusal::RulesChanged(head) => {
+                write!(f, "the rule files changed since `{head}`: {full}")
+            }
+            DeltaRefusal::OtherHead { recorded, profile } => {
+                let short = recorded.get(..12).unwrap_or(recorded);
+                let role = profile
+                    .as_deref()
+                    .map(|p| format!(" --profile {p}"))
+                    .unwrap_or_default();
+                write!(
+                    f,
+                    "this branch's last passed review read `{short}`: run `amont-agent review-brief --interdiff {short}{role}`, or {full}"
+                )
+            }
+            DeltaRefusal::TooLarge => write!(f, "what changed is 60 KB or more: {full}"),
         }
     }
 }
@@ -389,6 +436,9 @@ pub struct BriefRequest {
     /// A code-review profile (`backend`, `lang:rust`, …): adds the judge
     /// rules that role reviews.
     pub profile: Option<String>,
+    /// The head an earlier review read: the brief is then the headers and
+    /// only what changed since it, not the whole review again.
+    pub interdiff: Option<String>,
 }
 
 /// The brief, whole, or why it could not be built. Nothing is partial.
@@ -438,6 +488,18 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         .ok_or_else(|| BriefError::Repository("no default branch of `origin` is known".into()))?;
     let merge_base = git::stdout_in(&repo, &["merge-base", &base, "HEAD"])
         .ok_or_else(|| BriefError::Repository(format!("`git merge-base {base} HEAD` failed")))?;
+    if let Some(old) = &request.interdiff {
+        return interdiff_brief(&Delta {
+            repo: &repo,
+            name: &name,
+            tree: &tree,
+            base: &base,
+            merge_base: &merge_base,
+            old,
+            rules_sha: code_rules.as_ref().map(|(sha, _)| sha.as_str()),
+            profile: request.profile.as_deref(),
+        });
+    }
     let range = format!("{merge_base}...HEAD");
     let exclude_plans = format!(":!{PLANS_DIR}");
 
@@ -692,6 +754,200 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
         out.push_str("(none)\n");
     }
     Ok(out)
+}
+
+/// What a delta brief is built from.
+struct Delta<'a> {
+    repo: &'a Path,
+    name: &'a str,
+    tree: &'a str,
+    base: &'a str,
+    merge_base: &'a str,
+    /// The head the earlier review read, as given.
+    old: &'a str,
+    rules_sha: Option<&'a str>,
+    profile: Option<&'a str>,
+}
+
+/// The diff options every patch of a delta brief is taken with, so a
+/// person's diff configuration never changes its bytes.
+const DIFF_PINNED: [&str; 5] = [
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
+/// The delta brief after a rebase or a small fix: the same headers as the
+/// full brief, then what changed since the head the earlier review read,
+/// `docs/plans/` left out: the plain diff when that head is an ancestor of
+/// HEAD, else the diff between the two branch patches. (`git range-diff`
+/// lists a commit added on top without its patch, so it would hide a fix.)
+/// The plan, the full diff and the rules are not repeated.
+///
+/// Refused ([`DeltaRefusal`]) when the head or its merge-base cannot be
+/// read, when the rule files changed since it, when this role's last pass
+/// of the branch read another head, or when what changed is 60 KB or more.
+fn interdiff_brief(delta: &Delta) -> Result<Brief, BriefError> {
+    let Delta {
+        repo,
+        name,
+        tree,
+        base,
+        merge_base,
+        old,
+        rules_sha,
+        profile,
+    } = *delta;
+    let refuse = |why: DeltaRefusal| Err(BriefError::DeltaRefused(why));
+    let Some(old_head) = git::stdout_in(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{old}^{{commit}}"),
+        ],
+    ) else {
+        return refuse(DeltaRefusal::UnreadableHead(old.to_string()));
+    };
+    let Some(old_base) = git::stdout_in(repo, &["merge-base", &old_head, base]) else {
+        return refuse(DeltaRefusal::UnreadableHead(old.to_string()));
+    };
+    let rules = |rev: &str| {
+        crate::implementation_review::rules_fingerprint(repo, rev).map_err(BriefError::Repository)
+    };
+    if rules(&old_head)? != rules("HEAD")? {
+        return refuse(DeltaRefusal::RulesChanged(old.to_string()));
+    }
+    let mut notices = Vec::new();
+    let recorded = crate::implementation_review::branch_ref(repo)
+        .and_then(|dst| crate::implementation_review::reviewed_head(name, profile, &dst));
+    match recorded {
+        Some(pass) if pass.head != old_head => {
+            return refuse(DeltaRefusal::OtherHead {
+                recorded: pass.head,
+                profile: profile.map(str::to_string),
+            })
+        }
+        Some(_) => {}
+        None => notices.push(format!(
+            "no passed review of this branch is recorded here; `{old}` is taken as given"
+        )),
+    }
+    let exclude_plans = format!(":!{PLANS_DIR}");
+    let patch = |from: &str, to: &str| {
+        let mut args = vec!["diff"];
+        args.extend(DIFF_PINNED);
+        args.extend([from, to, "--", ".", &exclude_plans]);
+        git::bytes_in(repo, &args, None)
+            .ok()
+            .flatten()
+            .ok_or_else(|| BriefError::Repository(format!("`git diff {from} {to}` failed")))
+    };
+    let on_top =
+        git::stdout_in(repo, &["merge-base", "--is-ancestor", &old_head, "HEAD"]).is_some();
+    let (shape, interdiff) = if on_top {
+        ("the diff from it to HEAD", patch(&old_head, "HEAD")?)
+    } else {
+        let before = patch(&old_base, &old_head)?;
+        let after = patch(merge_base, "HEAD")?;
+        let between = diff_of(&before, &after).map_err(|e| {
+            BriefError::Repository(format!("the two branch patches could not be compared: {e}"))
+        })?;
+        ("the diff between its branch patch and HEAD's", between)
+    };
+    if interdiff.len() >= FULL_DIFF_LIMIT_BYTES {
+        return refuse(DeltaRefusal::TooLarge);
+    }
+
+    let mut brief = String::new();
+    brief.push_str("# Implementation review delta brief\n\n");
+    brief.push_str(&crate::implementation_review::block(name, tree));
+    brief.push('\n');
+    if let Some(sha) = rules_sha {
+        brief.push_str(&rules_line(sha));
+        brief.push('\n');
+    }
+    match profile {
+        None => match candidates(repo, merge_base) {
+            Candidates::Answered(document) => {
+                brief.push_str(&crate::candidates_block::block(&document));
+                brief.push_str("\n\n");
+            }
+            Candidates::Unavailable(why) => {
+                brief.push_str(crate::candidates_block::UNAVAILABLE);
+                brief.push_str("\n\n");
+                notices.push(format!("candidates unavailable: {why}"));
+            }
+        },
+        Some(role) => brief.push_str(&format!("\nProfile: {role}\n\n")),
+    }
+    brief.push_str(&format!(
+        "## Interdiff since {old}\n\n\
+         The earlier review read `{old_head}` on base `{old_base}`. This is \
+         {shape} (base `{merge_base}`), docs/plans left out. Your prompt \
+         carries `Delta.` and your round-1 findings: judge what changed \
+         against them. Everything else is what the earlier review read.\n\n\
+         ```diff\n{}\n```\n",
+        String::from_utf8_lossy(&interdiff)
+    ));
+    crate::implementation_review::note(
+        "interdiff-brief",
+        "-",
+        name,
+        &format!(
+            "head={} bytes={} shape={}",
+            old_head.get(..12).unwrap_or(&old_head),
+            interdiff.len(),
+            if on_top { "on-top" } else { "rebased" }
+        ),
+    );
+    Ok(Brief {
+        text: brief,
+        notices,
+    })
+}
+
+/// The unified diff from one branch patch to another: what a rebase changed
+/// in what the reviewer read. `git diff --no-index` over two files in a
+/// directory made for this call alone (mode 0700, refused if it exists).
+fn diff_of(before: &[u8], after: &[u8]) -> std::io::Result<Vec<u8>> {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.subsec_nanos());
+    let dir = std::env::temp_dir().join(format!(
+        "amont-agent-interdiff-{}-{call}-{nanos}",
+        std::process::id()
+    ));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    let compared = (|| {
+        std::fs::write(dir.join("reviewed.patch"), before)?;
+        std::fs::write(dir.join("pushed.patch"), after)?;
+        let mut args = vec!["diff", "--no-index"];
+        args.extend(DIFF_PINNED);
+        args.extend(["reviewed.patch", "pushed.patch"]);
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&dir)
+            .output()
+    })();
+    let _ = std::fs::remove_dir_all(&dir); // best effort: this call's own temp dir
+    let out = compared?;
+    // `--no-index` exits 1 when the files differ: that is the answer.
+    match out.status.code() {
+        Some(0 | 1) => Ok(out.stdout),
+        _ => Err(std::io::Error::other(format!(
+            "`git diff --no-index` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+    }
 }
 
 #[cfg(test)]

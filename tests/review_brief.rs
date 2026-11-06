@@ -858,3 +858,200 @@ fn a_profile_without_a_corpus_says_it_has_no_rules() {
         "{brief}"
     );
 }
+
+/// A branch `feat` off `main`: a reviewed commit, then a fix on top. Returns
+/// the repository and the reviewed head.
+#[cfg(unix)]
+fn delta_repo(name: &str, fix: &[(&str, &str)]) -> (PathBuf, String) {
+    let repo = scratch(name);
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join(".adr.yaml"), "x: 1\n").unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "base"]);
+    git(&repo, &["checkout", "-qb", "feat"]);
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    git(&repo, &["commit", "-qam", "reviewed"]);
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let reviewed = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    for (path, body) in fix {
+        std::fs::write(repo.join(path), body).unwrap();
+    }
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "fix"]);
+    (repo, reviewed)
+}
+
+/// `review-brief --interdiff <head>` with the fake aval and a private store.
+#[cfg(unix)]
+fn interdiff(bin: &std::path::Path, repo: &std::path::Path, head: &str) -> Output {
+    interdiff_with(bin, repo, head, &[])
+}
+
+#[cfg(unix)]
+fn interdiff_with(
+    bin: &std::path::Path,
+    repo: &std::path::Path,
+    head: &str,
+    more: &[&str],
+) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    cmd.args([
+        "review-brief",
+        "-C",
+        repo.to_str().unwrap(),
+        "--base",
+        "main",
+        "--interdiff",
+        head,
+    ]);
+    cmd.args(more);
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![bin.to_path_buf()];
+    dirs.extend(std::env::split_paths(&inherited));
+    cmd.env("PATH", std::env::join_paths(dirs).unwrap());
+    cmd.env("AMONT_AGENT_ADR_LINT", bin.join("adr-lint"));
+    cmd.env("CLAUDE_CONFIG_DIR", bin.join("config"));
+    cmd.output().expect("amont-agent runs")
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interdiff_brief_carries_the_headers_and_only_what_changed() {
+    let bin = scratch("interdiff-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let (repo, reviewed) = delta_repo("interdiff", &[("a.txt", "three\n")]);
+    let out = interdiff(&bin, &repo, &reviewed);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{out:?}");
+    assert!(text.contains("<<<TREE repo="), "{text}");
+    assert!(text.contains("<<<RULES sha="), "{text}");
+    assert!(text.contains("## Interdiff since"), "{text}");
+    assert!(
+        text.contains("+three"),
+        "the fix is in the interdiff: {text}"
+    );
+    assert!(!text.contains("## Diff stat"), "no full diff: {text}");
+    assert!(!text.contains("## Code rules"), "no rules text: {text}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interdiff_is_refused_never_cut() {
+    let bin = scratch("interdiff-refused-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let refused = |out: &Output, why: &str| {
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+        assert!(
+            err.contains(why) && err.contains("without --interdiff"),
+            "{err}"
+        );
+    };
+    // A head this repository cannot read.
+    let (repo, _) = delta_repo("interdiff-unknown", &[("a.txt", "three\n")]);
+    refused(&interdiff(&bin, &repo, &"0".repeat(40)), "is not a commit");
+    // The rule files changed since the reviewed head.
+    let (repo, reviewed) = delta_repo("interdiff-rules", &[("AGENTS.md", "# new rules\n")]);
+    refused(&interdiff(&bin, &repo, &reviewed), "rule files changed");
+    // An interdiff of 60 KB or more.
+    let big = "x".repeat(70 * 1024) + "\n";
+    let (repo, reviewed) = delta_repo("interdiff-big", &[("big.txt", big.as_str())]);
+    refused(&interdiff(&bin, &repo, &reviewed), "60 KB or more");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interdiff_from_another_head_than_the_last_pass_is_refused() {
+    let bin = scratch("interdiff-branch-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let (repo, reviewed) = delta_repo("interdiff-branch", &[("a.txt", "three\n")]);
+    let name = repo.file_name().unwrap().to_string_lossy().to_string();
+    let key =
+        amont_agent_guard::sha256::hex(&amont_agent_guard::sha256::sha256(b"refs/heads/feat"));
+    let dir = bin
+        .join("config")
+        .join("amont-agent")
+        .join("implementation-review")
+        .join("by-branch")
+        .join(&name)
+        .join("implementation-review");
+    std::fs::create_dir_all(&dir).unwrap();
+    let other = "1".repeat(40);
+    std::fs::write(
+        dir.join(format!("{key}.json")),
+        format!(
+            r#"{{"head":"{other}","tree":"{}","base":"{}"}}"#,
+            "2".repeat(64),
+            "3".repeat(40)
+        ),
+    )
+    .unwrap();
+    let out = interdiff(&bin, &repo, &reviewed);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        err.contains("last passed review read `111111111111`")
+            && err.contains("--interdiff 111111111111"),
+        "{err}"
+    );
+    // A profile seat reads its own record, not the implementation review's.
+    let out = interdiff_with(&bin, &repo, &reviewed, &["--profile", "backend"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        err.contains("no passed review of this branch is recorded"),
+        "{err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interdiff_head_that_is_not_hex_is_a_usage_error() {
+    let bin = scratch("interdiff-usage-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let (repo, _) = delta_repo("interdiff-usage", &[("a.txt", "three\n")]);
+    for value in ["-x", "HEAD~1", "abc", ""] {
+        let out = interdiff(&bin, &repo, value);
+        assert_eq!(out.status.code(), Some(2), "{value}: {out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_interdiff_after_a_rebase_shows_what_the_rebase_changed_in_the_patch() {
+    let bin = scratch("interdiff-rebase-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let (repo, reviewed) = delta_repo("interdiff-rebase", &[("a.txt", "three\n")]);
+    // `main` moves on; the branch is rebased onto it, so the reviewed head
+    // is no longer an ancestor of HEAD.
+    git(&repo, &["checkout", "-q", "main"]);
+    std::fs::write(repo.join("b.txt"), "main moved\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "main"]);
+    git(&repo, &["checkout", "-q", "feat"]);
+    git(&repo, &["rebase", "-q", "main"]);
+    let out = interdiff(&bin, &repo, &reviewed);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        text.contains("between its branch patch and HEAD's"),
+        "{text}"
+    );
+    assert!(
+        text.contains("three"),
+        "the fix is in the interdiff: {text}"
+    );
+    assert!(
+        !text.contains("main moved"),
+        "main's own change is not the branch's: {text}"
+    );
+}
