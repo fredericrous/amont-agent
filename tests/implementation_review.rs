@@ -1586,6 +1586,95 @@ fn a_conflict_free_rebase_keeps_the_review_by_patch() {
     );
 }
 
+/// A `feat/x` that adds a code line and a `## Unreleased` entry to the
+/// root `CHANGELOG.md` that `main` already has.
+fn with_notes(w: &World, repo: &Path) {
+    git(repo, &["checkout", "-q", "main"]);
+    w.commit(
+        repo,
+        &[(
+            "CHANGELOG.md",
+            "# Changelog\nintro\n## Unreleased\n## v1\n- old\n",
+        )],
+    );
+    git(repo, &["push", "-q", "origin", "main"]);
+    git(repo, &["fetch", "-q", "origin"]);
+    git(repo, &["checkout", "-q", "feat/x"]);
+    git(repo, &["rebase", "-q", "origin/main"]);
+    w.commit(
+        repo,
+        &[(
+            "CHANGELOG.md",
+            "# Changelog\nintro\n## Unreleased\n- new entry\n## v1\n- old\n",
+        )],
+    );
+}
+
+/// A release on `main` rewrites a context line near the entry: the exact
+/// patch changes, the entry's own text does not.
+const RELEASED: &[(&str, &str)] = &[(
+    "CHANGELOG.md",
+    "# Changelog\nintro, now longer\n## Unreleased\n## v1\n- old\n",
+)];
+
+#[test]
+fn a_rebase_that_only_moves_changelog_context_keeps_the_review() {
+    let w = World::new("notes-moved");
+    let repo = w.repo("app");
+    with_notes(&w, &repo);
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, RELEASED);
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    let line = w.last_line();
+    assert!(
+        line.contains(" unconfirmed reviewed-by-patch-notes-moved "),
+        "{line}"
+    );
+    let f = w.pass_file("app", &w.tree(&repo));
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    assert!(
+        v["how"].as_str().unwrap().starts_with("notes-patch "),
+        "{v}"
+    );
+}
+
+#[test]
+fn an_edited_changelog_entry_or_a_pass_without_a_notes_key_needs_a_new_review() {
+    // The entry's own text changed after the review.
+    let w = World::new("notes-edited");
+    let repo = w.repo("app");
+    with_notes(&w, &repo);
+    let transcript = reviewed(&w, &repo);
+    advance_main_and_rebase(&w, &repo, RELEASED);
+    w.commit(
+        &repo,
+        &[(
+            "CHANGELOG.md",
+            "# Changelog\nintro, now longer\n## Unreleased\n- new entry, edited\n## v1\n- old\n",
+        )],
+    );
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+
+    // A pass filed before the notes key existed: only the exact key, a
+    // clean miss rather than a carry.
+    let w = World::new("notes-old-pass");
+    let repo = w.repo("app");
+    with_notes(&w, &repo);
+    let transcript = reviewed(&w, &repo);
+    let by_patch = w.store().join("by-patch").join("app");
+    for e in std::fs::read_dir(&by_patch).unwrap() {
+        let path = e.unwrap().path();
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        if stem.len() == 64 {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+    advance_main_and_rebase(&w, &repo, RELEASED);
+    let said = w.push(&repo, "s1", Some(&transcript));
+    assert!(advised(&said).contains("(stale)"), "{said:?}");
+}
+
 #[test]
 fn a_rebase_that_changes_the_patch_or_the_rules_needs_a_new_review() {
     // A context line of the patch changed on main.
@@ -3393,6 +3482,23 @@ fn a_rebased_branch_does_not_carry_by_ancestry() {
     let said = w.push(&repo, "s2", Some(&transcript));
     assert!(advised(&said).contains("code-review-backend"), "{said:?}");
     assert!(carried_lines(&w).is_empty());
+}
+
+#[test]
+fn a_profile_pass_survives_a_rebase_that_only_moves_changelog_context() {
+    let w = World::new("notes-profile");
+    let repo = w.repo("app");
+    with_notes(&w, &repo);
+    pushed_at_a(&w, &repo, "Verdict: approve");
+    advance_main_and_rebase(&w, &repo, RELEASED);
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    let tree = w.tree(&repo);
+    let f = profile_pass_file(&w, "backend", "app", &tree);
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    assert!(
+        v["how"].as_str().unwrap().starts_with("notes-patch "),
+        "{v}"
+    );
 }
 
 #[test]

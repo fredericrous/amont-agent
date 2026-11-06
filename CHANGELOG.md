@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed
+
+- An implementation review, and each declared code-review profile, now
+  survives a rebase that only moved the root `CHANGELOG.md`'s context or
+  blank lines (ADR-0052). A release rewrites the lines around a branch's
+  `## Unreleased` entry, so the exact branch patch changed on nearly every
+  rebase over a release and every reviewer had to run again. A pass is now
+  also filed under a key made of the patch of every other file and the
+  changelog's own added and removed non-blank lines; such a push is
+  journalled `reviewed-by-patch-notes-moved`. An edited or reordered entry,
+  a change to any other file, a mode change or a rename still needs a new
+  review.
+
 ## v3.17.0
 
 ### Added
