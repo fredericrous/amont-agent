@@ -32,6 +32,16 @@ fn git(dir: &Path, args: &[&str]) -> String {
 const RULE: &str = "amont-agent/implementation-review";
 const AGENT: &str = "implementation-review";
 
+/// One AskUserQuestion hook call the tests make.
+struct Asked<'a> {
+    stage: &'a str,
+    tool_use_id: &'a str,
+    question: &'a str,
+    answer: Option<&'a str>,
+    prefill: bool,
+    transcript: Option<&'a Path>,
+}
+
 struct World {
     root: PathBuf,
     ids: std::cell::Cell<u32>,
@@ -289,21 +299,54 @@ printf '{"branch":"%s","remote":"origin","push_url":"u","pushed":"%s","dst":"ref
         }))
     }
 
-    // holds-until: amont-agent#149 groups these parameters into a struct.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an existing arity, until amont-agent#149 groups these parameters into a struct"
-    )]
-    fn ask(
+    /// The AskUserQuestion PreToolUse hook, in session `s1`; `prefill`
+    /// answers Overrule in the input, as a client that pre-fills does.
+    fn ask_pre(
         &self,
-        stage: &str,
-        session: &str,
         tool_use_id: &str,
         question: &str,
-        answer: Option<&str>,
         prefill: bool,
         transcript: Option<&Path>,
     ) -> Said {
+        self.ask(Asked {
+            stage: "PreToolUse",
+            tool_use_id,
+            question,
+            answer: None,
+            prefill,
+            transcript,
+        })
+    }
+
+    /// The AskUserQuestion PostToolUse hook, in session `s1`, answered
+    /// `answer`.
+    fn ask_post(
+        &self,
+        tool_use_id: &str,
+        question: &str,
+        answer: &str,
+        transcript: Option<&Path>,
+    ) -> Said {
+        self.ask(Asked {
+            stage: "PostToolUse",
+            tool_use_id,
+            question,
+            answer: Some(answer),
+            prefill: false,
+            transcript,
+        })
+    }
+
+    fn ask(&self, a: Asked<'_>) -> Said {
+        let Asked {
+            stage,
+            tool_use_id,
+            question,
+            answer,
+            prefill,
+            transcript,
+        } = a;
+        let session = "s1";
         let mut input = serde_json::json!({"questions": [{"question": question, "options": [
             {"label": "Overrule"}, {"label": "Fix"}, {"label": "Hold"}]}]});
         if prefill {
@@ -968,36 +1011,20 @@ fn the_person_may_overrule_a_rework_and_nothing_else_can() {
     let q = format!("[implementation-review app@{tree}] Overrule the review?");
 
     // Pre-filled: recorded as such, and the answer binds nothing.
-    w.ask("PreToolUse", "s1", "q0", &q, None, true, Some(&transcript));
-    w.ask(
-        "PostToolUse",
-        "s1",
-        "q0",
-        &q,
-        Some("Overrule"),
-        false,
-        Some(&transcript),
-    );
+    w.ask_pre("q0", &q, true, Some(&transcript));
+    w.ask_post("q0", &q, "Overrule", Some(&transcript));
     assert!(
         !w.pass_file("app", &tree).exists(),
         "a pre-filled answer approves nothing"
     );
 
     // No PreToolUse record: nothing proves the answer was the person's.
-    w.ask(
-        "PostToolUse",
-        "s1",
-        "q1",
-        &q,
-        Some("Overrule"),
-        false,
-        Some(&transcript),
-    );
+    w.ask_post("q1", &q, "Overrule", Some(&transcript));
     assert!(!w.pass_file("app", &tree).exists());
 
     // No transcript on the answer event: the rework cannot be seen.
-    w.ask("PreToolUse", "s1", "q2", &q, None, false, None);
-    let said = w.ask("PostToolUse", "s1", "q2", &q, Some("Overrule"), false, None);
+    w.ask_pre("q2", &q, false, None);
+    let said = w.ask_post("q2", &q, "Overrule", None);
     assert!(
         matches!(said, Said::Assert(ref t) if t.contains("bound NOTHING")),
         "{said:?}"
@@ -1008,24 +1035,8 @@ fn the_person_may_overrule_a_rework_and_nothing_else_can() {
     // A tree nobody reviewed as rework: nothing to overrule.
     let other = "b".repeat(64);
     let q_other = format!("[implementation-review app@{other}] Overrule?");
-    w.ask(
-        "PreToolUse",
-        "s1",
-        "q3",
-        &q_other,
-        None,
-        false,
-        Some(&transcript),
-    );
-    let said = w.ask(
-        "PostToolUse",
-        "s1",
-        "q3",
-        &q_other,
-        Some("Overrule"),
-        false,
-        Some(&transcript),
-    );
+    w.ask_pre("q3", &q_other, false, Some(&transcript));
+    let said = w.ask_post("q3", &q_other, "Overrule", Some(&transcript));
     assert!(
         matches!(said, Said::Assert(ref t) if t.contains("bound NOTHING")),
         "{said:?}"
@@ -1033,34 +1044,15 @@ fn the_person_may_overrule_a_rework_and_nothing_else_can() {
     assert!(!w.pass_file("app", &other).exists());
 
     // Fix and Hold change nothing.
-    w.ask("PreToolUse", "s1", "q4", &q, None, false, Some(&transcript));
-    assert_eq!(
-        w.ask(
-            "PostToolUse",
-            "s1",
-            "q4",
-            &q,
-            Some("Fix"),
-            false,
-            Some(&transcript)
-        ),
-        Said::Silent
-    );
+    w.ask_pre("q4", &q, false, Some(&transcript));
+    assert_eq!(w.ask_post("q4", &q, "Fix", Some(&transcript)), Said::Silent);
     assert!(!w.pass_file("app", &tree).exists());
 
     // The person's own Overrule of a real rework: remembered, and the push
     // is silent under its own reason.
-    w.ask("PreToolUse", "s1", "q5", &q, None, false, Some(&transcript));
+    w.ask_pre("q5", &q, false, Some(&transcript));
     assert_eq!(
-        w.ask(
-            "PostToolUse",
-            "s1",
-            "q5",
-            &q,
-            Some("Overrule"),
-            false,
-            Some(&transcript)
-        ),
+        w.ask_post("q5", &q, "Overrule", Some(&transcript)),
         Said::Silent
     );
     let f = w.pass_file("app", &tree);
@@ -1779,16 +1771,8 @@ fn an_overrule_carries_over_by_patch() {
     );
     let transcript = w.transcript("t", &t);
     let q = format!("[implementation-review app@{tree}] Overrule the review?");
-    w.ask("PreToolUse", "s1", "q", &q, None, false, Some(&transcript));
-    w.ask(
-        "PostToolUse",
-        "s1",
-        "q",
-        &q,
-        Some("Overrule"),
-        false,
-        Some(&transcript),
-    );
+    w.ask_pre("q", &q, false, Some(&transcript));
+    w.ask_post("q", &q, "Overrule", Some(&transcript));
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
     advance_main_and_rebase(&w, &repo, &[("src/other.rs", "fn o() {}\n")]);
     assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
@@ -3316,17 +3300,9 @@ fn the_person_may_overrule_a_profile_rework() {
     );
     let transcript = w.transcript("t", &t);
     let q = format!("[implementation-review app@{tree} profile=backend] Overrule?");
-    w.ask("PreToolUse", "s1", "q1", &q, None, false, Some(&transcript));
+    w.ask_pre("q1", &q, false, Some(&transcript));
     assert_eq!(
-        w.ask(
-            "PostToolUse",
-            "s1",
-            "q1",
-            &q,
-            Some("Overrule"),
-            false,
-            Some(&transcript)
-        ),
+        w.ask_post("q1", &q, "Overrule", Some(&transcript)),
         Said::Silent
     );
     let pass = profile_pass_file(&w, "backend", "app", &tree);
