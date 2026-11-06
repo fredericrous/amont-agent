@@ -28,7 +28,7 @@ fn review(role: &str, model: &str, findings: &str) -> String {
 
 #[test]
 fn stats_shows_a_seats_cost_from_the_rows_that_carry_it() {
-    let r = root("cost");
+    let state_root = root("cost");
     // Written the way `record` writes them: integer tokens, float seconds.
     let row = |tokens: &str, seconds: &str, findings: &str| {
         format!(
@@ -45,12 +45,15 @@ fn stats_shows_a_seats_cost_from_the_rows_that_carry_it() {
         r#"[{"severity":"low","disposition":"accepted"}]"#,
     );
     std::fs::write(
-        r.join("claude/amont-agent/plan-review/outcomes.jsonl"),
+        state_root.join("claude/amont-agent/plan-review/outcomes.jsonl"),
         plan,
     )
     .unwrap();
 
-    let out = bin(&r).args(["plan-review", "stats"]).output().unwrap();
+    let out = bin(&state_root)
+        .args(["plan-review", "stats"])
+        .output()
+        .unwrap();
     assert!(out.status.success());
     // 80,000 tokens over 2 reviews is 40 ktok; 32.5 s over 2 is 16 s;
     // 80,000 tokens over the 1 serious finding is 80 ktok.
@@ -59,16 +62,16 @@ fn stats_shows_a_seats_cost_from_the_rows_that_carry_it() {
         "unix\tm1\treviews=2\tfound=0/1/0/1\taccepted=0/1/0/1\tserious/review=0.50\tktok/review=40\ts/review=16\tktok/serious=80\n"
     );
 
-    let out = bin(&r)
+    let out = bin(&state_root)
         .args(["plan-review", "stats", "--json"])
         .output()
         .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v[0]["tokens"], 80_000);
-    assert_eq!(v[0]["seconds"], 32.5);
-    assert_eq!(v[0]["seconds_rows"], 2);
-    assert_eq!(v[0]["cost_missing"], 0);
-    assert_eq!(v[0]["tokens_per_serious"], 80_000.0);
+    let stats_json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(stats_json[0]["tokens"], 80_000);
+    assert_eq!(stats_json[0]["seconds"], 32.5);
+    assert_eq!(stats_json[0]["seconds_rows"], 2);
+    assert_eq!(stats_json[0]["cost_missing"], 0);
+    assert_eq!(stats_json[0]["tokens_per_serious"], 80_000.0);
 }
 
 #[test]

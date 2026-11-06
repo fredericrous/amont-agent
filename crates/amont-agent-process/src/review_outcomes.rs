@@ -1334,18 +1334,19 @@ mod tests {
             plan_row(Some(30_000), Some(100.0), &["blocking", "high"]),
             plan_row(Some(50_000), None, &["low"]),
             plan_row(None, Some(51.5), &["blocking"]),
+            plan_row(None, Some(48.5), &["low"]),
         ];
         let text = stats_report(&rows, None, Format::Text);
         assert_eq!(
             text,
-            "architect\topus\treviews=3\tfound=2/1/0/1\taccepted=2/1/0/1\tserious/review=1.00\tktok/review=40\ts/review=75\tktok/serious=40\tcost-missing=1\n"
+            "architect\topus\treviews=4\tfound=2/1/0/2\taccepted=2/1/0/2\tserious/review=0.75\tktok/review=40\ts/review=66\tktok/serious=40\tcost-missing=2\n"
         );
         let json: serde_json::Value =
             serde_json::from_str(&stats_report(&rows, None, Format::Json)).unwrap();
         assert_eq!(json[0]["tokens"], 80_000);
-        assert_eq!(json[0]["seconds"], 151.5);
-        assert_eq!(json[0]["seconds_rows"], 2);
-        assert_eq!(json[0]["cost_missing"], 1);
+        assert_eq!(json[0]["seconds"], 200.0);
+        assert_eq!(json[0]["seconds_rows"], 3);
+        assert_eq!(json[0]["cost_missing"], 2);
         assert_eq!(json[0]["tokens_per_serious"], 40_000.0);
     }
 
