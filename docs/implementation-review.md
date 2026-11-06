@@ -148,6 +148,32 @@ round whose notification names another task, or a notification typed or
 echoed rather than queued by Claude Code does not count. Only this rule
 reads resumes: the plan-review panel counts fresh launches alone.
 
+## A delta brief
+
+A resumed reviewer brings its whole first round with it, 50-80k tokens
+each time. A delta after a rebase or a small fix can instead be a fresh
+launch that reads only what changed:
+
+    amont-agent review-brief --interdiff <head> [--profile <role>]
+
+prints the same `<<<TREE>>>`, `<<<RULES>>>` and `<<<CANDIDATES>>>` headers
+as the full brief, then what changed since `<head>`, `docs/plans/` left
+out: the plain diff when `<head>` is an ancestor of HEAD (a fix on top), or
+the diff between the two branch patches after a rebase. `git range-diff`
+is not used: it lists a commit added on top without its patch, which would
+hide the fix. The plan, the full diff and the rules are not repeated.
+
+It is refused (exit 1, one stderr line naming the full brief) when `<head>`
+or its merge-base cannot be read, when the rule files changed since it,
+when this branch's last passed review read another head, or when what
+changed is 60 KB or more. It is never cut.
+
+The head comes from the stale line. Each fresh pass records the head,
+merge-base and tree it read under `by-branch/<repo>/<sha256 of the remote
+ref>.json` (last writer wins), and a push whose review is stale says
+"A delta reads only what changed: `amont-agent review-brief --interdiff
+<head>`" when that record matches the stale review's tree.
+
 ## The person's overrule
 
 A `rework` that survives the delta goes to the person on a marked

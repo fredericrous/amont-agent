@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- `amont-agent review-brief --interdiff <head>` prints a delta brief: the
+  usual headers, then only what changed since the head an earlier review
+  read (the plain diff for a fix on top, the diff between the two branch
+  patches after a rebase), `docs/plans/` left out. A delta reviewer can be
+  a small fresh launch instead of a resumed 50-80k-token context. It is
+  refused, never cut, when the head cannot be read, the rule files changed,
+  the branch's last pass read another head, or the change is 60 KB or more.
+- A stale implementation review now names that head: each fresh pass
+  records it under `by-branch/`, and the stale line ends with the
+  `review-brief --interdiff <head>` to run.
+
 ## v3.19.0
 
 ### Fixed

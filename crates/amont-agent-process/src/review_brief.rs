@@ -389,6 +389,9 @@ pub struct BriefRequest {
     /// A code-review profile (`backend`, `lang:rust`, …): adds the judge
     /// rules that role reviews.
     pub profile: Option<String>,
+    /// The head an earlier review read: the brief is then the delta from
+    /// it, `git range-diff` and the headers, not the whole review again.
+    pub interdiff: Option<String>,
 }
 
 /// The brief, whole, or why it could not be built. Nothing is partial.
@@ -438,6 +441,18 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         .ok_or_else(|| BriefError::Repository("no default branch of `origin` is known".into()))?;
     let merge_base = git::stdout_in(&repo, &["merge-base", &base, "HEAD"])
         .ok_or_else(|| BriefError::Repository(format!("`git merge-base {base} HEAD` failed")))?;
+    if let Some(old) = &request.interdiff {
+        return interdiff_brief(&Delta {
+            repo: &repo,
+            name: &name,
+            tree: &tree,
+            base: &base,
+            merge_base: &merge_base,
+            old,
+            rules_sha: code_rules.as_ref().map(|(sha, _)| sha.as_str()),
+            profile: request.profile.as_deref(),
+        });
+    }
     let range = format!("{merge_base}...HEAD");
     let exclude_plans = format!(":!{PLANS_DIR}");
 
@@ -692,6 +707,178 @@ fn decisions(repo: &Path, range: &str) -> Result<String, BriefError> {
         out.push_str("(none)\n");
     }
     Ok(out)
+}
+
+/// What a delta brief is built from.
+struct Delta<'a> {
+    repo: &'a Path,
+    name: &'a str,
+    tree: &'a str,
+    base: &'a str,
+    merge_base: &'a str,
+    /// The head the earlier review read.
+    old: &'a str,
+    rules_sha: Option<&'a str>,
+    profile: Option<&'a str>,
+}
+
+/// The delta brief after a rebase or a small fix: the same headers as the
+/// full brief, then what changed since the head the earlier review read,
+/// `docs/plans/` left out. The plan, the diff and the rules
+/// are not repeated: the reviewer read them in its first round.
+///
+/// Refused, naming the full brief, when `old` or its merge-base cannot be
+/// read here, when the rule files changed since `old`, when this branch's
+/// last pass read another head, or when the interdiff is 60 KB or more: a
+/// delta brief is never cut.
+fn interdiff_brief(delta: &Delta) -> Result<Brief, BriefError> {
+    let Delta {
+        repo,
+        name,
+        tree,
+        base,
+        merge_base,
+        old,
+        rules_sha,
+        profile,
+    } = *delta;
+    let full = "run `amont-agent review-brief` without --interdiff for the full brief";
+    let refuse = |why: String| Err(BriefError::Repository(format!("{why}; {full}")));
+    let Some(old_head) = git::stdout_in(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{old}^{{commit}}"),
+        ],
+    ) else {
+        return refuse(format!("`{old}` is not a commit this repository can read"));
+    };
+    let Some(old_base) = git::stdout_in(repo, &["merge-base", &old_head, base]) else {
+        return refuse(format!("`git merge-base {old} {base}` failed"));
+    };
+    let rules = |rev: &str| crate::implementation_review::rules_fingerprint(repo, rev);
+    match (rules(&old_head), rules("HEAD")) {
+        (Ok(then), Ok(now)) if then == now => {}
+        (Ok(_), Ok(_)) => return refuse(format!("the rule files changed since `{old}`")),
+        (Err(why), _) | (_, Err(why)) => return refuse(why),
+    }
+    if let Some(branch) = git::stdout_in(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        if let Some((head, _)) =
+            crate::implementation_review::reviewed_head(name, &format!("refs/heads/{branch}"))
+        {
+            if head != old_head {
+                return refuse(format!(
+                    "the last passed review of {branch} read {head}, not `{old}`"
+                ));
+            }
+        }
+    }
+    let exclude_plans = format!(":!{PLANS_DIR}");
+    let patch = |from: &str, to: &str| {
+        git::bytes_in(
+            repo,
+            &["diff", "--no-color", from, to, "--", ".", &exclude_plans],
+            None,
+        )
+        .ok()
+        .flatten()
+        .ok_or_else(|| BriefError::Repository(format!("`git diff {from} {to}` failed; {full}")))
+    };
+    // A fix on top of the reviewed head: what changed is the plain diff
+    // since it. After a rebase the commits differ: what changed is the
+    // diff between the two branch patches. (`git range-diff` lists a commit
+    // added on top without its patch, so it would hide the fix.)
+    let on_top =
+        git::stdout_in(repo, &["merge-base", "--is-ancestor", &old_head, "HEAD"]).is_some();
+    let (shape, interdiff) = if on_top {
+        ("the diff from it to HEAD", patch(&old_head, "HEAD")?)
+    } else {
+        let before = patch(&old_base, &old_head)?;
+        let after = patch(merge_base, "HEAD")?;
+        (
+            "the diff between its branch patch and HEAD's",
+            diff_of(&before, &after)
+                .map_err(|why| BriefError::Repository(format!("{why}; {full}")))?,
+        )
+    };
+    if interdiff.len() >= FULL_DIFF_LIMIT_BYTES {
+        return refuse("the interdiff is 60 KB or more".into());
+    }
+
+    let mut brief = String::new();
+    let mut notices = Vec::new();
+    brief.push_str("# Implementation review delta brief\n\n");
+    brief.push_str(&crate::implementation_review::block(name, tree));
+    brief.push('\n');
+    if let Some(sha) = rules_sha {
+        brief.push_str(&rules_line(sha));
+        brief.push('\n');
+    }
+    match profile {
+        None => match candidates(repo, merge_base) {
+            Candidates::Answered(document) => {
+                brief.push_str(&crate::candidates_block::block(&document));
+                brief.push_str("\n\n");
+            }
+            Candidates::Unavailable(why) => {
+                brief.push_str(crate::candidates_block::UNAVAILABLE);
+                brief.push_str("\n\n");
+                notices.push(format!("candidates unavailable: {why}"));
+            }
+        },
+        Some(role) => brief.push_str(&format!("\nProfile: {role}\n\n")),
+    }
+    brief.push_str(&format!(
+        "## Interdiff since {old}\n\n\
+         The earlier review read `{old_head}` on base `{old_base}`. This is \
+         {shape} (base `{merge_base}`), docs/plans left out. Judge what \
+         changed; your earlier findings stand otherwise.\n\n\
+         ```diff\n{}\n```\n",
+        String::from_utf8_lossy(&interdiff)
+    ));
+    Ok(Brief {
+        text: brief,
+        notices,
+    })
+}
+
+/// The unified diff from one branch patch to another: what a rebase changed
+/// in what the reviewer read. `git diff --no-index` over two private files.
+fn diff_of(before: &[u8], after: &[u8]) -> Result<Vec<u8>, String> {
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "amont-agent-interdiff-{}-{call}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    let (old, new) = (dir.join("reviewed.patch"), dir.join("pushed.patch"));
+    let written = std::fs::write(&old, before).and_then(|()| std::fs::write(&new, after));
+    // `--no-index` exits 1 when the files differ: that is the answer, not a failure.
+    let out = written.map_err(|e| e.to_string()).and_then(|()| {
+        std::process::Command::new("git")
+            .args([
+                "diff",
+                "--no-index",
+                "--no-color",
+                "reviewed.patch",
+                "pushed.patch",
+            ])
+            .current_dir(&dir)
+            .output()
+            .map_err(|e| format!("git could not be run: {e}"))
+    });
+    let _ = std::fs::remove_dir_all(&dir); // best effort: a private temp dir
+    let out = out?;
+    match out.status.code() {
+        Some(0 | 1) => Ok(out.stdout),
+        _ => Err(format!(
+            "`git diff --no-index` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
 }
 
 #[cfg(test)]

@@ -663,6 +663,50 @@ fn remember_patch(
     Some(())
 }
 
+/// Where the head a fresh review of `dst` (a remote branch ref) read is
+/// kept, so a later miss can name it: `by-branch/<repo>/<sha256(dst)>.json`.
+fn branch_file(repo: &str, dst: &str) -> Option<PathBuf> {
+    if repo.contains('/') || repo.contains("..") || dst.is_empty() {
+        return None;
+    }
+    Some(
+        store()?
+            .join("by-branch")
+            .join(repo)
+            .join(format!("{}.json", hex(&sha256(dst.as_bytes())))),
+    )
+}
+
+/// Records the head, merge-base and tree a review of this branch read and
+/// passed. Last writer wins: a branch's newest pass is the one a delta
+/// starts from. Written atomically; a failure only loses the hint.
+fn remember_branch(repo: &str, dst: &str, head: &str, base: &str, tree: &str) -> Option<()> {
+    let file = branch_file(repo, dst)?;
+    private_dir(file.parent()?)?;
+    let body = serde_json::json!({
+        "repo": repo,
+        "branch": dst,
+        "head": head,
+        "base": base,
+        "tree": tree,
+    })
+    .to_string();
+    amont_agent_guard::atomic::write_atomic(&file, &body).ok()?;
+    journal::private(&file, 0o600);
+    Some(())
+}
+
+/// The head and tree the last passed review of `dst` read, when one is
+/// recorded: what `review-brief --interdiff` starts from.
+pub fn reviewed_head(repo: &str, dst: &str) -> Option<(String, String)> {
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(branch_file(repo, dst)?).ok()?).ok()?;
+    Some((
+        record.get("head")?.as_str()?.to_string(),
+        record.get("tree")?.as_str()?.to_string(),
+    ))
+}
+
 // The code-review profiles (ADR-0052).
 
 /// A completed review by one code-review profile's agent (ADR-0052), bound
@@ -1731,6 +1775,7 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                     &prompt_rules,
                     candidates,
                 );
+                remember_branch(&name, &target.dst, pushed, &merge_base, &tree);
                 if let Some(k) = &key {
                     remember_patch(
                         &name,
@@ -1757,9 +1802,20 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
         };
     }
     if let Some(older) = mine.last() {
+        // The head that stale review read, when this branch's last pass
+        // recorded it: a delta then reads only what changed since.
+        let delta = reviewed_head(&name, &target.dst)
+            .filter(|(_, read)| *read == older.sha)
+            .map(|(head, _)| {
+                format!(
+                    " A delta reads only what changed: `amont-agent review-brief --interdiff {}`.",
+                    short(&head)
+                )
+            })
+            .unwrap_or_default();
         return Judged::Say {
             reason: format!(
-                "the implementation review of {name} read tree {}; this push carries tree {} (stale).{unkeyed}",
+                "the implementation review of {name} read tree {}; this push carries tree {} (stale).{unkeyed}{delta}",
                 short(&older.sha),
                 short(&tree)
             ),

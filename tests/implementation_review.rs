@@ -1687,6 +1687,22 @@ fn a_code_change_beside_moved_changelog_context_needs_a_new_review() {
 }
 
 #[test]
+fn a_stale_review_names_the_head_a_delta_starts_from() {
+    let world = World::new("interdiff-hint");
+    let repo = world.repo("app");
+    let transcript = reviewed(&world, &repo);
+    let read = git(&repo, &["rev-parse", "HEAD"]);
+    world.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 3; }\n")]);
+    let said = world.push(&repo, "s1", Some(&transcript));
+    let advice = advised(&said);
+    assert!(advice.contains("(stale)"), "{said:?}");
+    assert!(
+        advice.contains(&format!("review-brief --interdiff {}", &read[..12])),
+        "{advice}"
+    );
+}
+
+#[test]
 fn a_rebase_that_changes_the_patch_or_the_rules_needs_a_new_review() {
     // A context line of the patch changed on main.
     let w = World::new("bypatch-context");
