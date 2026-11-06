@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.20.0
+
 ### Added
 
 - `amont-agent review-brief --interdiff <head>` prints a delta brief: the
