@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- `amont-agent plan-review stats` shows each seat's cost beside its findings:
+  `ktok/review`, `s/review` and `ktok/serious` in text, and `tokens`,
+  `seconds`, `seconds_rows`, `cost_missing` and `tokens_per_serious` in
+  `--json`. A review without `tokens` (every implementation review) counts in
+  `cost_missing` and is left out of the token sum and its denominators;
+  `seconds` has its own denominator, `seconds_rows`. `tokens` reads 0 when
+  `cost_missing` equals `reviews`.
+
 ## v3.20.0
 
 ### Added

@@ -40,7 +40,10 @@ review `accepted`, implementation review `fixed`), unresolved findings and
 accepted-plus-unresolved high-or-blocking findings per review. A parsed
 finding is `accepted` when a merge row of its body applied `role#n`, else
 `unresolved`; a later disposition row wins. A row with 20 or more reviews and
-under 0.05 per review is marked `retire-candidate` (ADR-0042). Stats also list
+under 0.05 per review is marked `retire-candidate` (ADR-0042). Each row also
+shows its cost: `ktok/review` and `ktok/serious` over the reviews that carry
+`tokens`, `s/review` over those that carry `seconds`, `-` where none does, and
+`cost-missing=N` for the reviews without `tokens`. Stats also list
 reviews that predate finding parsing, seats whose verdict has no parsed
 finding, and plans whose hook record was skipped. --json prints one array;
 --model keeps one model.
@@ -867,6 +870,8 @@ pub(crate) const IMPL_SCHEMA: &str = "amont-agent-impl-review-outcome-v1";
 const IMPL_ROLE: &str = "implementation-review";
 const RETIRE_MIN_REVIEWS: u64 = 20;
 const RETIRE_BELOW: f64 = 0.05;
+/// The severity indexes that count as serious: blocking and high.
+const SERIOUS: std::ops::Range<usize> = 0..2;
 
 /// One (role, model) line of `plan-review stats`.
 #[derive(Default, Debug, PartialEq)]
@@ -882,6 +887,18 @@ pub struct Stat {
     /// Reviews that closed approve-with-changes or rework with no parsed
     /// finding, though the parser ran.
     pub verdict_without_findings: u64,
+    /// Sum of `tokens` over the reviews that carry it.
+    pub tokens: u64,
+    /// Sum of `seconds` over the reviews that carry it, whether or not they
+    /// carry `tokens`: `s/review` divides by [`Stat::seconds_rows`].
+    pub seconds: f64,
+    /// Reviews with no `tokens`: in neither the token sum nor its denominators.
+    pub cost_missing: u64,
+    /// Reviews that carry `seconds`.
+    pub seconds_rows: u64,
+    /// Accepted plus unresolved blocking and high findings of the reviews
+    /// that carry `tokens`.
+    pub serious_in_cost_rows: u64,
 }
 
 impl Stat {
@@ -899,8 +916,34 @@ impl Stat {
         if self.reviews == 0 {
             return 0.0;
         }
-        (self.accepted[0] + self.accepted[1] + self.unresolved[0] + self.unresolved[1]) as f64
-            / self.reviews as f64
+        let serious: u64 = SERIOUS.map(|i| self.accepted[i] + self.unresolved[i]).sum();
+        serious as f64 / self.reviews as f64
+    }
+
+    /// Reviews that carry `tokens`.
+    fn cost_rows(&self) -> u64 {
+        self.reviews - self.cost_missing
+    }
+
+    /// Thousands of tokens per review, over the reviews that carry `tokens`.
+    pub fn ktok_per_review(&self) -> Option<u64> {
+        (self.cost_rows() > 0).then(|| self.tokens / (1000 * self.cost_rows()))
+    }
+
+    /// Seconds per review, over the reviews that carry `seconds`.
+    pub fn seconds_per_review(&self) -> Option<u64> {
+        (self.seconds_rows > 0).then(|| (self.seconds / self.seconds_rows as f64) as u64)
+    }
+
+    /// Thousands of tokens per serious finding of the reviews that carry `tokens`.
+    pub fn ktok_per_serious(&self) -> Option<u64> {
+        (self.serious_in_cost_rows > 0).then(|| self.tokens / (1000 * self.serious_in_cost_rows))
+    }
+
+    /// Tokens per serious finding of the reviews that carry `tokens`.
+    pub fn tokens_per_serious(&self) -> Option<f64> {
+        (self.serious_in_cost_rows > 0)
+            .then(|| self.tokens as f64 / self.serious_in_cost_rows as f64)
     }
 
     pub fn retire_candidate(&self) -> bool {
@@ -1000,6 +1043,7 @@ pub fn tally(rows: &[serde_json::Value]) -> std::collections::BTreeMap<(String, 
         };
         let stat = out.entry((role, text("model").to_string())).or_default();
         stat.reviews += 1;
+        let mut row_serious = 0;
         let list = r.get("findings").and_then(|f| f.as_array());
         if plan_review && list.is_none_or(|l| l.is_empty()) {
             if r.get("findings_unparsed").is_none() {
@@ -1024,9 +1068,22 @@ pub fn tally(rows: &[serde_json::Value]) -> std::collections::BTreeMap<(String, 
             };
             if disposition == accepted_word {
                 stat.accepted[i] += 1;
+                row_serious += u64::from(SERIOUS.contains(&i));
             } else if disposition == "unresolved" {
                 stat.unresolved[i] += 1;
+                row_serious += u64::from(SERIOUS.contains(&i));
             }
+        }
+        match r.get("tokens").and_then(|t| t.as_u64()) {
+            Some(tokens) => {
+                stat.tokens += tokens;
+                stat.serious_in_cost_rows += row_serious;
+            }
+            None => stat.cost_missing += 1,
+        }
+        if let Some(seconds) = r.get("seconds").and_then(|t| t.as_f64()) {
+            stat.seconds += seconds;
+            stat.seconds_rows += 1;
         }
     }
     out
@@ -1129,6 +1186,11 @@ pub fn stats_report_with(
                     "unresolved": by(&s.unresolved),
                     "accepted_high_or_blocking_per_review": s.accepted_per_review(),
                     "serious_per_review": s.serious_per_review(),
+                    "tokens": s.tokens,
+                    "seconds": s.seconds,
+                    "seconds_rows": s.seconds_rows,
+                    "cost_missing": s.cost_missing,
+                    "tokens_per_serious": s.tokens_per_serious(),
                     "predate_change": s.predating,
                     "verdict_without_findings": s.verdict_without_findings,
                     "retire_candidate": s.retire_candidate(),
@@ -1154,8 +1216,18 @@ pub fn stats_report_with(
             out.push_str(&format!("\tunresolved={}", sev(&s.unresolved)));
         }
         out.push_str(&format!("\tserious/review={:.2}", s.serious_per_review()));
+        let whole = |n: Option<u64>| n.map_or_else(|| "-".to_string(), |n| n.to_string());
+        out.push_str(&format!(
+            "\tktok/review={}\ts/review={}\tktok/serious={}",
+            whole(s.ktok_per_review()),
+            whole(s.seconds_per_review()),
+            whole(s.ktok_per_serious()),
+        ));
         if s.predating > 0 {
             out.push_str(&format!("\tpredate-change={}", s.predating));
+        }
+        if s.cost_missing > 0 {
+            out.push_str(&format!("\tcost-missing={}", s.cost_missing));
         }
         if s.retire_candidate() {
             out.push_str("\tretire-candidate");
@@ -1239,6 +1311,67 @@ fn run_stats(args: &[String]) -> (String, ExitCode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_row(
+        tokens: Option<u64>,
+        seconds: Option<f64>,
+        severities: &[&str],
+    ) -> serde_json::Value {
+        let findings: Vec<_> = severities
+            .iter()
+            .enumerate()
+            .map(|(n, s)| serde_json::json!({"n": n + 1, "severity": s, "disposition": "accepted"}))
+            .collect();
+        serde_json::json!({
+            "schema": SCHEMA, "role": "architect", "model": "opus",
+            "findings": findings, "tokens": tokens, "seconds": seconds,
+        })
+    }
+
+    #[test]
+    fn a_seats_cost_sums_only_the_rows_that_carry_it() {
+        let rows = [
+            plan_row(Some(30_000), Some(100.0), &["blocking", "high"]),
+            plan_row(Some(50_000), None, &["low"]),
+            plan_row(None, Some(51.5), &["blocking"]),
+            plan_row(None, Some(48.5), &["low"]),
+        ];
+        let text = stats_report(&rows, None, Format::Text);
+        assert_eq!(
+            text,
+            "architect\topus\treviews=4\tfound=2/1/0/2\taccepted=2/1/0/2\tserious/review=0.75\tktok/review=40\ts/review=66\tktok/serious=40\tcost-missing=2\n"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&stats_report(&rows, None, Format::Json)).unwrap();
+        assert_eq!(json[0]["tokens"], 80_000);
+        assert_eq!(json[0]["seconds"], 200.0);
+        assert_eq!(json[0]["seconds_rows"], 3);
+        assert_eq!(json[0]["cost_missing"], 2);
+        assert_eq!(json[0]["tokens_per_serious"], 40_000.0);
+    }
+
+    #[test]
+    fn no_serious_finding_prints_a_dash_and_null() {
+        let rows = [plan_row(Some(12_000), Some(10.0), &["low"])];
+        let text = stats_report(&rows, None, Format::Text);
+        assert!(
+            text.contains("\tktok/review=12\ts/review=10\tktok/serious=-\n"),
+            "{text}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&stats_report(&rows, None, Format::Json)).unwrap();
+        assert!(json[0]["tokens_per_serious"].is_null());
+    }
+
+    #[test]
+    fn an_implementation_review_row_has_no_cost() {
+        let rows = [serde_json::json!({"schema": IMPL_SCHEMA, "model": "opus", "findings": []})];
+        let text = stats_report(&rows, None, Format::Text);
+        assert_eq!(
+            text,
+            "implementation-review\topus\treviews=1\tfound=0/0/0/0\taccepted=0/0/0/0\tserious/review=0.00\tktok/review=-\ts/review=-\tktok/serious=-\tcost-missing=1\n"
+        );
+    }
 
     #[test]
     fn the_output_contract_example_parses() {

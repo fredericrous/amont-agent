@@ -27,6 +27,54 @@ fn review(role: &str, model: &str, findings: &str) -> String {
 }
 
 #[test]
+fn stats_shows_a_seats_cost_from_the_rows_that_carry_it() {
+    let state_root = root("cost");
+    // Written the way `record` writes them: integer tokens, float seconds.
+    let row = |tokens: &str, seconds: &str, findings: &str| {
+        format!(
+            "{{\"schema\":\"amont-agent-review-outcome-v1\",\"role\":\"unix\",\"model\":\"m1\",\"tokens\":{tokens},\"seconds\":{seconds},\"findings\":{findings}}}\n"
+        )
+    };
+    let plan = row(
+        "30000",
+        "12.5",
+        r#"[{"severity":"high","disposition":"accepted"}]"#,
+    ) + &row(
+        "50000",
+        "20.0",
+        r#"[{"severity":"low","disposition":"accepted"}]"#,
+    );
+    std::fs::write(
+        state_root.join("claude/amont-agent/plan-review/outcomes.jsonl"),
+        plan,
+    )
+    .unwrap();
+
+    let out = bin(&state_root)
+        .args(["plan-review", "stats"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    // 80,000 tokens over 2 reviews is 40 ktok; 32.5 s over 2 is 16 s;
+    // 80,000 tokens over the 1 serious finding is 80 ktok.
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "unix\tm1\treviews=2\tfound=0/1/0/1\taccepted=0/1/0/1\tserious/review=0.50\tktok/review=40\ts/review=16\tktok/serious=80\n"
+    );
+
+    let out = bin(&state_root)
+        .args(["plan-review", "stats", "--json"])
+        .output()
+        .unwrap();
+    let stats_json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(stats_json[0]["tokens"], 80_000);
+    assert_eq!(stats_json[0]["seconds"], 32.5);
+    assert_eq!(stats_json[0]["seconds_rows"], 2);
+    assert_eq!(stats_json[0]["cost_missing"], 0);
+    assert_eq!(stats_json[0]["tokens_per_serious"], 80_000.0);
+}
+
+#[test]
 fn stats_gives_a_row_per_role_and_model_and_marks_one_retire_candidate() {
     let r = root("stats");
     let mut plan = String::new();
@@ -66,19 +114,19 @@ fn stats_gives_a_row_per_role_and_model_and_marks_one_retire_candidate() {
     assert_eq!(lines.len(), 4, "{text}");
     assert_eq!(
         lines[0],
-        "implementation-review\tm1\treviews=1\tfound=1/0/0/0\taccepted=1/0/0/0\tserious/review=1.00"
+        "implementation-review\tm1\treviews=1\tfound=1/0/0/0\taccepted=1/0/0/0\tserious/review=1.00\tktok/review=-\ts/review=-\tktok/serious=-\tcost-missing=1"
     );
     assert_eq!(
         lines[1],
-        "security\tm1\treviews=2\tfound=0/1/1/0\taccepted=0/1/0/0\tserious/review=0.50\tpredate-change=1"
+        "security\tm1\treviews=2\tfound=0/1/1/0\taccepted=0/1/0/0\tserious/review=0.50\tktok/review=-\ts/review=-\tktok/serious=-\tpredate-change=1\tcost-missing=2"
     );
     assert_eq!(
         lines[2],
-        "security\tm2\treviews=1\tfound=0/0/0/0\taccepted=0/0/0/0\tserious/review=0.00\tpredate-change=1"
+        "security\tm2\treviews=1\tfound=0/0/0/0\taccepted=0/0/0/0\tserious/review=0.00\tktok/review=-\ts/review=-\tktok/serious=-\tpredate-change=1\tcost-missing=1"
     );
     assert_eq!(
         lines[3],
-        "tui\tm1\treviews=20\tfound=0/0/0/20\taccepted=0/0/0/20\tserious/review=0.00\tretire-candidate"
+        "tui\tm1\treviews=20\tfound=0/0/0/20\taccepted=0/0/0/20\tserious/review=0.00\tktok/review=-\ts/review=-\tktok/serious=-\tcost-missing=20\tretire-candidate"
     );
     assert_eq!(text.matches("retire-candidate").count(), 1);
 
@@ -367,7 +415,7 @@ fn a_merge_row_appended_after_the_reviews_makes_the_applied_finding_accepted() {
     let text = stats_text(&ledger, "derive");
     assert_eq!(
         text,
-        "rust\tm1\treviews=1\tfound=0/2/0/0\taccepted=0/1/0/0\tunresolved=0/1/0/0\tserious/review=2.00\n"
+        "rust\tm1\treviews=1\tfound=0/2/0/0\taccepted=0/1/0/0\tunresolved=0/1/0/0\tserious/review=2.00\tktok/review=-\ts/review=-\tktok/serious=-\tcost-missing=1\n"
     );
 }
 
@@ -398,7 +446,7 @@ fn a_disposition_row_after_the_hook_wins_over_the_derived_value() {
     let text = stats_text(&ledger, "disposition");
     assert_eq!(
         text,
-        "rust\tm1\treviews=1\tfound=0/2/0/0\taccepted=0/1/0/0\tserious/review=1.00\n"
+        "rust\tm1\treviews=1\tfound=0/2/0/0\taccepted=0/1/0/0\tserious/review=1.00\tktok/review=-\ts/review=-\tktok/serious=-\tcost-missing=1\n"
     );
 }
 
