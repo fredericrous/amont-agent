@@ -323,7 +323,17 @@ impl Interp<'_> {
                 step,
                 body,
                 span,
-            } => self.arith_for(init, cond, step, body, span, state, ctx),
+            } => self.arith_for(
+                ArithLoop {
+                    init,
+                    cond,
+                    step,
+                    body,
+                    span,
+                },
+                state,
+                ctx,
+            ),
             Cmd::Loop {
                 kind,
                 cond,
@@ -1050,10 +1060,12 @@ impl Interp<'_> {
         };
         let desc = format!("{} items", count);
         self.iterate(
-            count,
-            desc,
-            body,
-            span,
+            Counted {
+                count,
+                desc,
+                body,
+                span,
+            },
             state,
             ctx,
             effects,
@@ -1061,21 +1073,14 @@ impl Interp<'_> {
         )
     }
 
-    // holds-until: amont-agent#149 groups these parameters into a struct.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an existing arity, until amont-agent#149 groups these parameters into a struct"
-    )]
-    fn arith_for(
-        &mut self,
-        init: &Option<ArithExpr>,
-        cond: &Option<ArithExpr>,
-        step: &Option<ArithExpr>,
-        body: &Cmd,
-        span: &Span,
-        state: State,
-        ctx: Ctx,
-    ) -> R<Res> {
+    fn arith_for(&mut self, l: ArithLoop<'_>, state: State, ctx: Ctx) -> R<Res> {
+        let ArithLoop {
+            init,
+            cond,
+            step,
+            body,
+            span,
+        } = l;
         let mut state = state;
         if let Some(e) = init {
             eval_arith(e, &mut state);
@@ -1092,10 +1097,12 @@ impl Interp<'_> {
         };
         let writes: Vec<String> = step.as_ref().map(arith_writes).unwrap_or_default();
         self.iterate(
-            count,
-            desc,
-            body,
-            span,
+            Counted {
+                count,
+                desc,
+                body,
+                span,
+            },
             state,
             ctx,
             Effects::default(),
@@ -1113,22 +1120,20 @@ impl Interp<'_> {
 
     /// A counted loop (`for`, `for ((…))`): the first iteration from the entry
     /// state, the rest from a fixpoint, `count` iterations in all.
-    // holds-until: amont-agent#149 groups these parameters into a struct.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an existing arity, until amont-agent#149 groups these parameters into a struct"
-    )]
     fn iterate(
         &mut self,
-        count: Count,
-        desc: String,
-        body: &Cmd,
-        span: &Span,
+        l: Counted<'_>,
         state: State,
         ctx: Ctx,
         effects: Effects,
         each: impl Fn(&mut State, bool),
     ) -> R<Res> {
+        let Counted {
+            count,
+            desc,
+            body,
+            span,
+        } = l;
         let mut effects = effects;
         let mut outs = Vec::new();
         if count.is_zero() {
@@ -2778,6 +2783,24 @@ fn arith_writes(e: &ArithExpr) -> Vec<String> {
 }
 
 /// `for ((…; i < N; i++))` with nothing else writing `i`.
+/// One `for ((init; cond; step))` loop's syntax, as `arith_for` reads it.
+struct ArithLoop<'a> {
+    init: &'a Option<ArithExpr>,
+    cond: &'a Option<ArithExpr>,
+    step: &'a Option<ArithExpr>,
+    body: &'a Cmd,
+    span: &'a Span,
+}
+
+/// A counted loop for `iterate`: how many times its body runs, that bound
+/// described for a finding, the body, and where the loop is.
+struct Counted<'a> {
+    count: Count,
+    desc: String,
+    body: &'a Cmd,
+    span: &'a Span,
+}
+
 fn arith_counter(cond: &ArithExpr, step: &ArithExpr, state: &State, body: &Cmd) -> Option<u64> {
     let (var, inclusive, limit) = match cond {
         ArithExpr::Binary(op @ (ArithBinOp::Lt | ArithBinOp::Le), a, b) => match (&**a, &**b) {
