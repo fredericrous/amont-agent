@@ -1630,11 +1630,12 @@ fn a_rebase_that_only_moves_changelog_context_keeps_the_review() {
         line.contains(" unconfirmed reviewed-by-patch-notes-moved "),
         "{line}"
     );
-    let f = w.pass_file("app", &w.tree(&repo));
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    let pass = w.pass_file("app", &w.tree(&repo));
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pass).unwrap()).unwrap();
     assert!(
-        v["how"].as_str().unwrap().starts_with("notes-patch "),
-        "{v}"
+        record["how"].as_str().unwrap().starts_with("notes-patch "),
+        "{record}"
     );
 }
 
@@ -1663,8 +1664,8 @@ fn an_edited_changelog_entry_or_a_pass_without_a_notes_key_needs_a_new_review() 
     with_notes(&w, &repo);
     let transcript = reviewed(&w, &repo);
     let by_patch = w.store().join("by-patch").join("app");
-    for e in std::fs::read_dir(&by_patch).unwrap() {
-        let path = e.unwrap().path();
+    for entry in std::fs::read_dir(&by_patch).unwrap() {
+        let path = entry.unwrap().path();
         let stem = path.file_stem().unwrap().to_string_lossy().to_string();
         if stem.len() == 64 {
             std::fs::remove_file(&path).unwrap();
@@ -3493,11 +3494,12 @@ fn a_profile_pass_survives_a_rebase_that_only_moves_changelog_context() {
     advance_main_and_rebase(&w, &repo, RELEASED);
     assert_eq!(w.push(&repo, "s2", None), Said::Silent);
     let tree = w.tree(&repo);
-    let f = profile_pass_file(&w, "backend", "app", &tree);
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    let pass = profile_pass_file(&w, "backend", "app", &tree);
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pass).unwrap()).unwrap();
     assert!(
-        v["how"].as_str().unwrap().starts_with("notes-patch "),
-        "{v}"
+        record["how"].as_str().unwrap().starts_with("notes-patch "),
+        "{record}"
     );
 }
 

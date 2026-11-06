@@ -545,12 +545,17 @@ fn patch_file(repo: &str, patch: &str) -> Option<PathBuf> {
 /// key matched. The exact key is tried first.
 fn remembered_patch(repo: &str, key: &PatchKey) -> Option<(Pass, String, bool)> {
     key.ids().find_map(|(id, notes)| {
-        let f = patch_file(repo, id)?;
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()?;
-        if v.get("rules")?.as_str()? != key.rules {
+        let file = patch_file(repo, id)?;
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+        if record.get("rules")?.as_str()? != key.rules {
             return None;
         }
-        Some((pass_of(&v)?, v.get("tree")?.as_str()?.to_string(), notes))
+        Some((
+            pass_of(&record)?,
+            record.get("tree")?.as_str()?.to_string(),
+            notes,
+        ))
     })
 }
 
@@ -566,8 +571,8 @@ fn remember_patch(
     candidates: &Reviewed,
 ) -> Option<()> {
     for (id, _) in key.ids() {
-        let f = patch_file(repo, id)?;
-        private_dir(f.parent()?)?;
+        let file = patch_file(repo, id)?;
+        private_dir(file.parent()?)?;
         let body = serde_json::json!({
             "repo": repo,
             "patch": id,
@@ -580,8 +585,8 @@ fn remember_patch(
             "candidates": candidates.to_json(),
         })
         .to_string();
-        amont_agent_guard::atomic::write_atomic(&f, &body).ok()?;
-        journal::private(&f, 0o600);
+        amont_agent_guard::atomic::write_atomic(&file, &body).ok()?;
+        journal::private(&file, 0o600);
     }
     Some(())
 }
