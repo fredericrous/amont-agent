@@ -1053,6 +1053,7 @@ So a formatter such as prettier keeps the sha, unless it rewrites code.
                      a slice; on any other plan it gets the plain block, and
                      stderr says it binds the whole body. --slice lang:<x>
                      implies --lang <x>
+                     (--lang=<l> and --slice=<role> work too)
   --legacy           the byte sha from before 2.25, to check a plan whose
                      machine comment was written then; temporary, removed
                      after the transition (not with --block)

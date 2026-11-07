@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.23.0
+
 ### Changed
 
 - A review seat that a file type earned (`lang:<x>`, `react`, `ui-design`,
@@ -19,6 +21,8 @@
   too. Baselines keep each slice's sha and one sha per span; a baseline
   written before this release keeps the old rule (`slices=unknown`). The
   journal line carries `sliced=` and `slice-stale=`.
+- `plan-sha` reads `--lang=<l>` and `--slice=<role>` as well as the two-word
+  forms, and `--help` wins over every other flag.
 
 ## v3.22.0
 
