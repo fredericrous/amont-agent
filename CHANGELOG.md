@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.22.0
+
 ### Changed
 
 - The review panel is seated from the file types of the paths a plan's
