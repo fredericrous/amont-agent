@@ -38,12 +38,12 @@
 //! baseline, so a change the person asks for needs only its delta: the
 //! backend reviewer plus the reviewers of any area that is new.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 pub(crate) use crate::plan_text::is_machine_comment;
-use crate::plan_text::{canonical, shas, Fence, Shas, REVIEW_SECTION};
+use crate::plan_text::{canonical, shas, Fence, ShaError, Shas, Slice, REVIEW_SECTION};
 use amont_agent_guard::decision::{self, Decision};
 use amont_agent_guard::journal;
 use amont_agent_guard::payload::PlanExit;
@@ -127,10 +127,11 @@ pub(crate) fn title(text: &str) -> Option<String> {
 }
 
 /// The review block a reviewer's prompt carries.
-pub fn block(path: &Path, sha: &str, lang: Option<&str>) -> String {
+pub fn block(path: &Path, sha: &str, lang: Option<&str>, slice: Option<&str>) -> String {
     let lang = lang.map(|l| format!(" lang={l}")).unwrap_or_default();
+    let slice = slice.map(|s| format!(" slice={s}")).unwrap_or_default();
     format!(
-        "{BLOCK_OPEN}path={} sha={sha}{lang}{BLOCK_CLOSE}",
+        "{BLOCK_OPEN}path={} sha={sha}{lang}{slice}{BLOCK_CLOSE}",
         path.display()
     )
 }
@@ -297,6 +298,21 @@ pub fn roles(classes: &BTreeSet<String>) -> BTreeSet<String> {
     }
     r
 }
+
+/// Every role [`roles`] can seat, `lang:<language>` aside: what an error
+/// naming a role lists.
+pub const NAMED_ROLES: &[&str] = &[
+    "backend",
+    "architect",
+    "po",
+    "platform",
+    "react",
+    "ui-design",
+    "unix",
+    "tui",
+    "ux-research",
+    "game-ux",
+];
 
 /// The areas that make the panel ask for `role`: [`roles`] read backwards.
 /// `backend` is always asked, so it answers for every area (`*`). The
@@ -662,6 +678,8 @@ pub struct Binding {
     pub role: String,
     pub path: String,
     pub sha: String,
+    /// The slice sha the block carried (`slice=`), for a sliced role.
+    pub slice: Option<String>,
 }
 
 /// The completed reviews in a transcript, streamed: the review blocks of
@@ -1083,7 +1101,22 @@ pub(crate) fn parse_blocks(agent: &str, prompt: &str) -> Vec<Binding> {
         let Some(sha) = tail.next().filter(|s| s.len() == 64) else {
             continue;
         };
-        let lang = tail.find_map(|t| t.strip_prefix("lang="));
+        let (mut lang, mut slice, mut bad) = (None, None, false);
+        for t in tail {
+            if let Some(l) = t.strip_prefix("lang=") {
+                lang = Some(l);
+            } else if let Some(v) = t.strip_prefix("slice=") {
+                if v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    slice = Some(v.to_ascii_lowercase());
+                } else {
+                    bad = true;
+                }
+            }
+        }
+        // A malformed slice sha binds nothing, rather than a guess.
+        if bad {
+            continue;
+        }
         let role = match (role, lang) {
             ("language", Some(l)) => format!("lang:{l}"),
             ("language", None) => continue,
@@ -1093,6 +1126,7 @@ pub(crate) fn parse_blocks(agent: &str, prompt: &str) -> Vec<Binding> {
             role,
             path,
             sha: sha.to_ascii_lowercase(),
+            slice,
         });
     }
     out
@@ -1106,6 +1140,97 @@ pub struct Baseline {
     pub sha: String,
     pub roles: BTreeSet<String>,
     pub classes: BTreeSet<String>,
+    /// The slice of each sliced role at that pass. `None` is a baseline
+    /// written before 3.23.0, which kept no slices (decision 3: its delta
+    /// keeps the old rule); `Some` of an empty map had nothing sliced.
+    pub slices: Option<BTreeMap<String, SliceRecord>>,
+}
+
+/// A sliced role's slice as a baseline keeps it: its sha and one sha per
+/// span, so a refusal can name the span that moved.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SliceRecord {
+    pub sha: String,
+    pub spans: BTreeMap<String, String>,
+}
+
+impl From<&Slice> for SliceRecord {
+    fn from(s: &Slice) -> Self {
+        SliceRecord {
+            sha: s.sha.clone(),
+            spans: s.spans.clone(),
+        }
+    }
+}
+
+/// Why a role binds the whole body rather than a slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WholeBody {
+    /// Its file types are not in the table (backend, architect, unix, …).
+    NotFileTyped,
+    /// The plan has no `## Phases` items.
+    NoPhases,
+    /// A phase names no file, so the panel is seated from areas.
+    SeatedFromAreas,
+    /// No phase names a file of its types.
+    NoPhaseOfItsOwn,
+}
+
+impl WholeBody {
+    /// The reason in the words `plan-sha --slice` prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WholeBody::NotFileTyped => "not a file-type seat",
+            WholeBody::NoPhases => "no phases",
+            WholeBody::SeatedFromAreas => "seats=areas",
+            WholeBody::NoPhaseOfItsOwn => "no phase of its own",
+        }
+    }
+}
+
+/// What a role is bound to: its slice, or the whole body and why.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SliceFor {
+    Slice(Slice),
+    WholeBody(WholeBody),
+}
+
+/// What a role is bound to (ADR-0061 `work.review-slices`): a slice for a
+/// role whose file types the table knows ([`file_types::profile_reads`]), on
+/// a plan seated from its paths (every phase names one, as [`seat`]
+/// decides), with a phase of its own; the whole body for every other role.
+/// Decided by the body alone.
+pub fn slice_for(body: &str, role: &str) -> Result<SliceFor, ShaError> {
+    let Some(reads) = crate::file_types::profile_reads(role) else {
+        return Ok(SliceFor::WholeBody(WholeBody::NotFileTyped));
+    };
+    let phases = crate::file_types::phases(body);
+    if phases.is_empty() {
+        return Ok(SliceFor::WholeBody(WholeBody::NoPhases));
+    }
+    if phases.iter().any(|p| p.paths.is_empty()) {
+        return Ok(SliceFor::WholeBody(WholeBody::SeatedFromAreas));
+    }
+    let s = crate::plan_text::slice(body, |paths: &[String]| paths.iter().any(|p| reads(p)))?;
+    Ok(if s.kept.is_empty() {
+        SliceFor::WholeBody(WholeBody::NoPhaseOfItsOwn)
+    } else {
+        SliceFor::Slice(s)
+    })
+}
+
+/// The slice of every role that has one.
+pub fn sliced_roles(
+    body: &str,
+    roles: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Slice>, ShaError> {
+    let mut out = BTreeMap::new();
+    for r in roles {
+        if let SliceFor::Slice(s) = slice_for(body, r)? {
+            out.insert(r.clone(), s);
+        }
+    }
+    Ok(out)
 }
 
 pub struct Facts<'a> {
@@ -1116,18 +1241,112 @@ pub struct Facts<'a> {
     pub classes: &'a BTreeSet<String>,
     pub bindings: &'a [Binding],
     pub baseline: Option<&'a Baseline>,
+    /// This body's slice of each sliced role ([`sliced_roles`]).
+    pub slices: &'a BTreeMap<String, Slice>,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
     /// Every required review bound; the roles that did.
     Pass(BTreeSet<String>),
-    /// Roles never reviewed for this plan, and roles whose review is of an
-    /// older body.
+    /// Roles never reviewed for this plan, roles whose review is of an
+    /// older body, and sliced roles required again because their slice
+    /// moved, each with the spans that moved.
     Short {
         missing: BTreeSet<String>,
         stale: BTreeSet<String>,
+        sliced: BTreeMap<String, Moved>,
     },
+}
+
+/// How a sliced role's binding moved since the baseline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Moved {
+    /// Its slice changed: the spans whose text moved (empty when only their
+    /// order did).
+    Spans(Vec<String>),
+    /// It bound the whole body then and has a slice now.
+    NewSlice,
+    /// It had a slice then and binds the whole body now.
+    NowWhole,
+}
+
+impl Moved {
+    /// The refusal's words for it: `stale (<this>) for repos=…`.
+    pub fn describe(&self) -> String {
+        match self {
+            Moved::Spans(s) if s.is_empty() => "its slice changed: the order of its phases".into(),
+            Moved::Spans(s) => format!("its slice changed: {}", s.join(", ")),
+            Moved::NewSlice => "it has a new slice".into(),
+            Moved::NowWhole => "it now binds the whole body".into(),
+        }
+    }
+}
+
+/// What a delta requires: backend, the roles of new areas, and every sliced
+/// role whose slice moved since the baseline (with the spans that moved).
+/// Shared by [`judge`] and [`panel`], so `plan-panel` and the hook never
+/// disagree.
+#[derive(Debug, Default, PartialEq)]
+pub struct Delta {
+    pub roles: BTreeSet<String>,
+    pub moved: BTreeMap<String, Moved>,
+    /// The baseline kept no slices (written before 3.23.0) while this body
+    /// has some: today's rule applies (decision 3).
+    pub unknown: bool,
+}
+
+pub fn delta_needs(
+    baseline: &Baseline,
+    classes: &BTreeSet<String>,
+    slices: &BTreeMap<String, Slice>,
+) -> Delta {
+    let new: BTreeSet<String> = classes.difference(&baseline.classes).cloned().collect();
+    let mut roles_now = roles(&new);
+    roles_now.insert("backend".into());
+    let mut moved: BTreeMap<String, Moved> = BTreeMap::new();
+    let mut unknown = false;
+    match &baseline.slices {
+        None => unknown = !slices.is_empty(),
+        Some(old) => {
+            for (role, slice) in slices {
+                if !baseline.roles.contains(role) {
+                    continue;
+                }
+                match old.get(role) {
+                    None => {
+                        moved.insert(role.clone(), Moved::NewSlice);
+                    }
+                    Some(then) if then.sha != slice.sha => {
+                        let labels: BTreeSet<&String> =
+                            then.spans.keys().chain(slice.spans.keys()).collect();
+                        let spans: Vec<String> = labels
+                            .into_iter()
+                            .filter(|l| then.spans.get(*l) != slice.spans.get(*l))
+                            .cloned()
+                            .collect();
+                        moved.insert(role.clone(), Moved::Spans(spans));
+                    }
+                    Some(_) => {}
+                }
+            }
+            let seated = roles(classes);
+            for role in old.keys() {
+                if seated.contains(role)
+                    && !slices.contains_key(role)
+                    && baseline.roles.contains(role)
+                {
+                    moved.insert(role.clone(), Moved::NowWhole);
+                }
+            }
+        }
+    }
+    roles_now.extend(moved.keys().cloned());
+    Delta {
+        roles: roles_now,
+        moved,
+        unknown,
+    }
 }
 
 /// Pure: whether the reviews in hand cover this plan.
@@ -1137,9 +1356,10 @@ pub enum Outcome {
 ///   always re-runs on the final one.
 /// * A baseline with this body, and no area it lacks: a re-presented plan or
 ///   a metadata-only write. Passes.
-/// * Otherwise a delta: backend, plus every role of an area new since the
-///   baseline, bound to this body. The floor is computed here, never taken
-///   from the plan's own listing.
+/// * Otherwise a delta ([`delta_needs`]): backend, every role of an area new
+///   since the baseline, and every sliced role whose slice moved, bound to
+///   this body or, for a sliced role, to its current slice. The floor is
+///   computed here, never taken from the plan's own listing.
 pub fn judge(f: &Facts) -> Outcome {
     let of_plan = |r: &str| -> Vec<&Binding> {
         f.bindings
@@ -1147,10 +1367,20 @@ pub fn judge(f: &Facts) -> Outcome {
             .filter(|b| b.role == r && b.path == f.path)
             .collect()
     };
-    let now = |r: &str| of_plan(r).iter().any(|b| of_body(&b.sha, f.sha, f.legacy));
+    // Current: a review of this body, or, for a sliced role, of its slice
+    // as it stands. A whole-body role's `slice=` is ignored.
+    let now = |r: &str| {
+        of_plan(r).iter().any(|b| {
+            of_body(&b.sha, f.sha, f.legacy)
+                || f.slices
+                    .get(r)
+                    .is_some_and(|s| b.slice.as_deref() == Some(s.sha.as_str()))
+        })
+    };
     let ever = |r: &str| !of_plan(r).is_empty();
     let need_now: BTreeSet<String>;
     let need_ever: BTreeSet<String>;
+    let mut moved: BTreeMap<String, Moved> = BTreeMap::new();
     match f.baseline {
         None => {
             need_ever = roles(f.classes);
@@ -1160,30 +1390,41 @@ pub fn judge(f: &Facts) -> Outcome {
             return Outcome::Pass(b.roles.clone());
         }
         Some(b) => {
-            let new: BTreeSet<String> = f.classes.difference(&b.classes).cloned().collect();
-            let mut need = roles(&new);
-            need.insert("backend".into());
-            need_now = need;
+            let d = delta_needs(b, f.classes, f.slices);
+            need_now = d.roles;
+            moved = d.moved;
             need_ever = BTreeSet::new();
         }
     }
     let mut missing = BTreeSet::new();
     let mut stale = BTreeSet::new();
+    let mut sliced = BTreeMap::new();
     for r in need_ever.iter().chain(need_now.iter()) {
         if !ever(r) {
             missing.insert(r.clone());
         } else if need_now.contains(r) && !now(r) {
-            stale.insert(r.clone());
+            match moved.get(r) {
+                Some(how) => {
+                    sliced.insert(r.clone(), how.clone());
+                }
+                None => {
+                    stale.insert(r.clone());
+                }
+            }
         }
     }
-    if missing.is_empty() && stale.is_empty() {
+    if missing.is_empty() && stale.is_empty() && sliced.is_empty() {
         let mut bound: BTreeSet<String> = need_ever.union(&need_now).cloned().collect();
         if let Some(b) = f.baseline {
             bound.extend(b.roles.iter().cloned());
         }
         Outcome::Pass(bound)
     } else {
-        Outcome::Short { missing, stale }
+        Outcome::Short {
+            missing,
+            stale,
+            sliced,
+        }
     }
 }
 
@@ -1205,6 +1446,26 @@ const NAMES: u64 = 2;
 
 fn key(text: &str) -> String {
     hex(&sha256(text.as_bytes()))
+}
+
+/// A baseline's `slices`, when it has the shape [`save`] writes: an object
+/// of role → `{sha, spans}`, every sha 64 hex. Any other shape reads as
+/// absent, so its delta keeps the old rule, never a lost baseline.
+fn slice_records(v: &serde_json::Value) -> Option<BTreeMap<String, SliceRecord>> {
+    let hex64 = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut out = BTreeMap::new();
+    for (role, rec) in v.as_object()? {
+        let sha = rec.get("sha")?.as_str().filter(|s| hex64(s))?.to_string();
+        let mut spans = BTreeMap::new();
+        for (label, span) in rec.get("spans")?.as_object()? {
+            spans.insert(
+                label.clone(),
+                span.as_str().filter(|s| hex64(s))?.to_string(),
+            );
+        }
+        out.insert(role.clone(), SliceRecord { sha, spans });
+    }
+    Some(out)
 }
 
 fn load(file: &Path) -> Option<Baseline> {
@@ -1229,6 +1490,7 @@ fn load(file: &Path) -> Option<Baseline> {
         sha: v.get("sha")?.as_str()?.to_string(),
         roles: set("roles"),
         classes,
+        slices: v.get("slices").and_then(slice_records),
     })
 }
 
@@ -1276,6 +1538,11 @@ fn save(path: &str, title: Option<&str>, b: &Baseline) -> Option<()> {
         "classes": b.classes,
         "names": NAMES,
         "path": path,
+        "slices": b.slices.as_ref().map(|m| {
+            m.iter()
+                .map(|(r, s)| (r.clone(), serde_json::json!({"sha": s.sha, "spans": s.spans})))
+                .collect::<serde_json::Map<String, serde_json::Value>>()
+        }),
     })
     .to_string();
     let mut places = vec![
@@ -1582,9 +1849,36 @@ fn judged(ev: &PlanExit) -> Result<Judged, Early> {
     };
     let advice = seating.advice();
     let classes = seating.classes;
+    let slices = match sliced_roles(&text, &roles(&classes)) {
+        Ok(s) => s,
+        Err(why) => {
+            return Err((
+                Said::Ask(format!(
+                    "{why}; approve only to accept the plan unreviewed."
+                )),
+                repos,
+                format!("{short} slice unavailable"),
+            ))
+        }
+    };
 
     let title = title_key(&text, &m.repos);
     let base = baseline(&path, &sha, &legacy, title.as_deref());
+    // The slice part of the journal excerpt: which roles are sliced, and
+    // whether the baseline predates slices (decision 3).
+    let slice_note = {
+        let mut n = String::new();
+        if !slices.is_empty() {
+            n.push_str(&format!(
+                " sliced={}",
+                slices.keys().cloned().collect::<Vec<_>>().join(",")
+            ));
+        }
+        if base.as_ref().is_some_and(|b| b.slices.is_none()) && !slices.is_empty() {
+            n.push_str(" slices=unknown");
+        }
+        n
+    };
     let facts = Facts {
         sha: &sha,
         legacy: &legacy,
@@ -1592,6 +1886,7 @@ fn judged(ev: &PlanExit) -> Result<Judged, Early> {
         classes: &classes,
         bindings: &found,
         baseline: base.as_ref(),
+        slices: &slices,
     };
     match judge(&facts) {
         Outcome::Pass(bound) => {
@@ -1625,19 +1920,35 @@ fn judged(ev: &PlanExit) -> Result<Judged, Early> {
                     sha: sha.clone(),
                     roles: bound.clone(),
                     classes: classes
-                        .union(&base.map(|b| b.classes).unwrap_or_default())
+                        .union(&base.as_ref().map(|b| b.classes.clone()).unwrap_or_default())
                         .cloned()
                         .collect(),
+                    // A pass on a baseline from before slices records none: its
+                    // delta asked backend alone, so no sliced seat reviewed
+                    // the slices as they stand. The old rule holds until a
+                    // fresh panel (migration.expand-migrate-contract).
+                    slices: match &base {
+                        Some(b) if b.slices.is_none() => None,
+                        _ => Some(slices.iter().map(|(r, s)| (r.clone(), s.into())).collect()),
+                    },
                 },
             );
             let listed = bound.into_iter().collect::<Vec<_>>().join(",");
             Ok((
                 (Said::Pass, advice),
                 repos,
-                format!("match={matched} {short} {listed}"),
+                format!("match={matched} {short} {listed}{slice_note}"),
             ))
         }
-        Outcome::Short { missing, stale } => {
+        Outcome::Short {
+            missing,
+            stale,
+            sliced,
+        } => {
+            let stale: BTreeSet<String> = stale
+                .union(&sliced.keys().cloned().collect())
+                .cloned()
+                .collect();
             if sec.unreviewed {
                 return Ok((
                     (
@@ -1655,14 +1966,48 @@ fn judged(ev: &PlanExit) -> Result<Judged, Early> {
             if !missing.is_empty() {
                 parts.push(format!("missing for repos={repos}: {}", list(&missing)));
             }
-            if !stale.is_empty() {
+            let older: BTreeSet<String> = stale
+                .iter()
+                .filter(|r| !sliced.contains_key(*r))
+                .cloned()
+                .collect();
+            if !older.is_empty() {
                 parts.push(format!(
                     "stale (reviewed an older body) for repos={repos}: {}",
-                    list(&stale)
+                    list(&older)
                 ));
             }
+            for (role, how) in &sliced {
+                let lang = role
+                    .strip_prefix("lang:")
+                    .map(|l| format!(" --lang {l}"))
+                    .unwrap_or_default();
+                let slice = if slices.contains_key(role) {
+                    format!(" --slice {role}")
+                } else {
+                    String::new()
+                };
+                let path = plan_file.display().to_string();
+                let path = if path.contains(char::is_whitespace) {
+                    format!("'{path}'")
+                } else {
+                    path
+                };
+                parts.push(format!(
+                    "stale ({}) for repos={repos}: {role}; re-run: `amont-agent plan-sha --block{lang}{slice} {path}`",
+                    how.describe()
+                ));
+            }
+            let slice_stale = if sliced.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " slice-stale={}",
+                    sliced.keys().cloned().collect::<Vec<_>>().join(",")
+                )
+            };
             let excerpt = format!(
-                "{short} short {}",
+                "{short} short {}{slice_note}{slice_stale}",
                 list(&missing.union(&stale).cloned().collect())
             );
             Ok((
@@ -1897,6 +2242,9 @@ pub struct Panel {
     pub source: SeatSource,
     /// `plan-names-no-paths`'s advice, for stderr.
     pub advice: Option<String>,
+    /// The roles bound to a slice of the plan: `plan-panel` prints
+    /// ` --slice <role>` on their lines.
+    pub sliced: BTreeSet<String>,
 }
 
 pub fn panel(plan_file: &Path) -> Result<Panel, String> {
@@ -1908,16 +2256,12 @@ pub fn panel(plan_file: &Path) -> Result<Panel, String> {
     let (classes, source) = (seated.classes, seated.source);
     let path = real(plan_file).display().to_string();
     let Shas { sha, legacy } = shas(&text).map_err(|e| e.to_string())?;
+    let slices = sliced_roles(&text, &roles(&classes)).map_err(|e| e.to_string())?;
     let title = title_key(&text, &m.repos);
     let (mode, needed) = match baseline(&path, &sha, &legacy, title.as_deref()) {
         None => ("full", roles(&classes)),
         Some(b) if is_current(&b, &sha, &legacy, &classes) => ("current", BTreeSet::new()),
-        Some(b) => {
-            let new: BTreeSet<String> = classes.difference(&b.classes).cloned().collect();
-            let mut need = roles(&new);
-            need.insert("backend".into());
-            ("delta", need)
-        }
+        Some(b) => ("delta", delta_needs(&b, &classes, &slices).roles),
     };
     Ok(Panel {
         repos: m.repos.join(","),
@@ -1927,6 +2271,7 @@ pub fn panel(plan_file: &Path) -> Result<Panel, String> {
         needed,
         source,
         advice,
+        sliced: slices.into_keys().collect(),
     })
 }
 
@@ -2250,11 +2595,14 @@ mod tests {
         );
     }
 
+    static NONE: BTreeMap<String, Slice> = BTreeMap::new();
+
     fn b(role: &str, sha: &str) -> Binding {
         Binding {
             role: role.into(),
             path: "/p.md".into(),
             sha: sha.into(),
+            slice: None,
         }
     }
 
@@ -2276,12 +2624,14 @@ mod tests {
             classes: &classes,
             bindings: &bs,
             baseline: None,
+            slices: &NONE,
         };
         assert_eq!(
             judge(&f),
             Outcome::Short {
                 missing: set(&[]),
-                stale: set(&["backend"])
+                stale: set(&["backend"]),
+                sliced: BTreeMap::new(),
             }
         );
         let mut bs2 = bs.clone();
@@ -2307,12 +2657,14 @@ mod tests {
             classes: &classes,
             bindings: &bs,
             baseline: None,
+            slices: &NONE,
         };
         assert_eq!(
             judge(&f),
             Outcome::Short {
                 missing: set(&["backend"]),
-                stale: set(&[])
+                stale: set(&[]),
+                sliced: BTreeMap::new(),
             }
         );
     }
@@ -2323,6 +2675,7 @@ mod tests {
             sha: "1".repeat(64),
             roles: set(&["backend", "lang:rust"]),
             classes: set(&["lang:rust"]),
+            slices: None,
         };
         let new = "2".repeat(64);
         let classes = set(&["lang:rust", "ui", "screen"]);
@@ -2334,12 +2687,14 @@ mod tests {
             classes: &classes,
             bindings: &bs,
             baseline: Some(&base),
+            slices: &NONE,
         };
         assert_eq!(
             judge(&f),
             Outcome::Short {
                 missing: set(&["react", "ui-design", "ux-research", "game-ux"]),
-                stale: set(&[])
+                stale: set(&[]),
+                sliced: BTreeMap::new(),
             }
         );
         // Same body, no new area: passes with nothing new bound.
@@ -2366,6 +2721,7 @@ mod tests {
             classes: &classes,
             bindings: &bs,
             baseline: None,
+            slices: &NONE,
         };
         assert!(
             matches!(judge(&f), Outcome::Pass(_)),
@@ -2386,6 +2742,7 @@ mod tests {
             sha: old.clone(),
             roles: set(&["backend", "lang:rust"]),
             classes: classes.clone(),
+            slices: None,
         };
         assert!(is_current(&base, &new, &old, &classes));
         assert!(!is_current(&base, &new, "-", &classes));
@@ -2397,8 +2754,225 @@ mod tests {
             classes: &classes,
             bindings: &[],
             baseline: Some(&base),
+            slices: &NONE,
         };
         assert!(matches!(judge(&f), Outcome::Pass(_)));
+    }
+
+    fn sl(sha: char, phase: char) -> Slice {
+        Slice {
+            text: String::new(),
+            kept: vec!["Phase 1".into()],
+            sha: sha.to_string().repeat(64),
+            spans: BTreeMap::from([
+                ("Phase 1".to_string(), phase.to_string().repeat(64)),
+                ("shared".to_string(), "e".repeat(64)),
+            ]),
+        }
+    }
+
+    fn rec(s: &Slice) -> SliceRecord {
+        s.into()
+    }
+
+    /// A paths-seated plan with a Rust and a TypeScript seat, after a pass.
+    fn two_seats(rust: &Slice, ts: &Slice) -> Baseline {
+        Baseline {
+            sha: "1".repeat(64),
+            roles: set(&["backend", "lang:rust", "lang:typescript"]),
+            classes: set(&["lang:rust", "lang:typescript"]),
+            slices: Some(BTreeMap::from([
+                ("lang:rust".to_string(), rec(rust)),
+                ("lang:typescript".to_string(), rec(ts)),
+            ])),
+        }
+    }
+
+    #[test]
+    fn a_delta_requires_the_sliced_seat_whose_slice_moved_and_names_the_span() {
+        let (rust, ts) = (sl('a', 'b'), sl('c', 'd'));
+        let base = two_seats(&rust, &ts);
+        let classes = set(&["lang:rust", "lang:typescript"]);
+        let new = "2".repeat(64);
+        // Only the Rust phase changed.
+        let now = BTreeMap::from([
+            ("lang:rust".to_string(), sl('f', '9')),
+            ("lang:typescript".to_string(), ts.clone()),
+        ]);
+        let bs = vec![b("backend", &new), b("lang:rust", "1".repeat(64).as_str())];
+        let facts = Facts {
+            sha: &new,
+            legacy: "-",
+            path: "/p.md",
+            classes: &classes,
+            bindings: &bs,
+            baseline: Some(&base),
+            slices: &now,
+        };
+        assert_eq!(
+            judge(&facts),
+            Outcome::Short {
+                missing: set(&[]),
+                stale: set(&[]),
+                sliced: BTreeMap::from([(
+                    "lang:rust".to_string(),
+                    Moved::Spans(vec!["Phase 1".to_string()]),
+                )]),
+            }
+        );
+        // A review of the Rust seat's current slice, on any body, binds it;
+        // the TypeScript seat stays current without a re-run.
+        let mut bs2 = bs.clone();
+        let mut r = b("lang:rust", &"3".repeat(64));
+        r.slice = Some("f".repeat(64));
+        bs2.push(r);
+        let facts = Facts {
+            bindings: &bs2,
+            ..facts
+        };
+        assert!(matches!(judge(&facts), Outcome::Pass(_)));
+    }
+
+    #[test]
+    fn a_delta_from_a_baseline_without_slices_keeps_the_old_rule() {
+        let mut base = two_seats(&sl('a', 'b'), &sl('c', 'd'));
+        base.slices = None;
+        let classes = set(&["lang:rust", "lang:typescript"]);
+        let new = "2".repeat(64);
+        let now = BTreeMap::from([("lang:rust".to_string(), sl('f', '9'))]);
+        let delta = delta_needs(&base, &classes, &now);
+        assert_eq!(delta.roles, set(&["backend"]));
+        assert!(delta.unknown);
+        let bs = vec![b("backend", &new)];
+        let facts = Facts {
+            sha: &new,
+            legacy: "-",
+            path: "/p.md",
+            classes: &classes,
+            bindings: &bs,
+            baseline: Some(&base),
+            slices: &now,
+        };
+        assert!(matches!(judge(&facts), Outcome::Pass(_)));
+    }
+
+    #[test]
+    fn a_seat_that_gains_or_loses_its_slice_is_required_again() {
+        let rust = sl('a', 'b');
+        let classes = set(&["lang:rust", "lang:typescript"]);
+        // Sliced before, whole body now (its last phase removed).
+        let base = two_seats(&rust, &sl('c', 'd'));
+        let now = BTreeMap::from([("lang:rust".to_string(), rust.clone())]);
+        let delta = delta_needs(&base, &classes, &now);
+        assert_eq!(delta.moved["lang:typescript"], Moved::NowWhole);
+        // Whole body before (the baseline has slices, none for it), sliced now.
+        let mut base = two_seats(&rust, &sl('c', 'd'));
+        base.slices.as_mut().unwrap().remove("lang:typescript");
+        let now = BTreeMap::from([
+            ("lang:rust".to_string(), rust.clone()),
+            ("lang:typescript".to_string(), sl('c', 'd')),
+        ]);
+        let delta = delta_needs(&base, &classes, &now);
+        assert_eq!(delta.moved["lang:typescript"], Moved::NewSlice);
+        assert!(!delta.moved.contains_key("lang:rust"));
+        // An empty map is a baseline with nothing sliced, not an old one.
+        let mut base = two_seats(&rust, &sl('c', 'd'));
+        base.slices = Some(BTreeMap::new());
+        let delta = delta_needs(&base, &classes, &now);
+        assert!(!delta.unknown && delta.moved.len() == 2);
+    }
+
+    #[test]
+    fn a_slice_whose_spans_kept_their_text_names_their_order() {
+        assert_eq!(
+            Moved::Spans(vec![]).describe(),
+            "its slice changed: the order of its phases"
+        );
+        assert_eq!(
+            Moved::Spans(vec!["Phase 2".into()]).describe(),
+            "its slice changed: Phase 2"
+        );
+    }
+
+    #[test]
+    fn a_whole_body_role_ignores_a_slice_it_carries() {
+        let classes = set(&[]);
+        let new = "2".repeat(64);
+        let mut bk = b("backend", &"1".repeat(64));
+        bk.slice = Some("a".repeat(64));
+        let now = BTreeMap::new();
+        let bs = [bk];
+        let facts = Facts {
+            sha: &new,
+            legacy: "-",
+            path: "/p.md",
+            classes: &classes,
+            bindings: &bs,
+            baseline: None,
+            slices: &now,
+        };
+        assert!(
+            matches!(judge(&facts), Outcome::Short { ref stale, .. } if stale.contains("backend"))
+        );
+    }
+
+    #[test]
+    fn a_baseline_slices_value_of_the_wrong_shape_reads_as_absent() {
+        let good = serde_json::json!({"lang:rust": {"sha": "a".repeat(64), "spans": {"shared": "b".repeat(64)}}});
+        assert_eq!(
+            slice_records(&good).unwrap()["lang:rust"].sha,
+            "a".repeat(64)
+        );
+        for bad in [
+            serde_json::json!("x"),
+            serde_json::json!({"lang:rust": {"sha": "short", "spans": {}}}),
+            serde_json::json!({"lang:rust": {"sha": "a".repeat(64)}}),
+        ] {
+            assert_eq!(slice_records(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_slice_is_read_from_a_block_beside_lang_in_either_order() {
+        let (sha, sl) = ("a".repeat(64), "b".repeat(64));
+        for p in [
+            format!("<<<PLAN path=/x.md sha={sha} lang=rust slice={sl}>>>"),
+            format!("<<<PLAN path=/x.md sha={sha} slice={sl} lang=rust>>>"),
+        ] {
+            let got = parse_blocks("plan-review-language", &p);
+            assert_eq!(got[0].role, "lang:rust");
+            assert_eq!(got[0].slice.as_deref(), Some(sl.as_str()));
+        }
+        let bad = format!("<<<PLAN path=/x.md sha={sha} slice=nothex>>>");
+        assert!(parse_blocks("plan-review-backend", &bad).is_empty());
+        let old = format!("<<<PLAN path=/x.md sha={sha}>>>");
+        assert_eq!(parse_blocks("plan-review-backend", &old)[0].slice, None);
+    }
+
+    #[test]
+    fn only_a_typed_seat_on_a_paths_plan_with_its_own_phase_is_sliced() {
+        let plan = "# T\n## Goal\ng\n## Phases\n- Phase 1 — `src/a.rs`\n- Phase 2 — `web/b.ts`\n";
+        assert!(matches!(
+            slice_for(plan, "lang:rust").unwrap(),
+            SliceFor::Slice(_)
+        ));
+        assert_eq!(
+            slice_for(plan, "backend").unwrap(),
+            SliceFor::WholeBody(WholeBody::NotFileTyped)
+        );
+        assert_eq!(
+            slice_for(plan, "lang:go").unwrap(),
+            SliceFor::WholeBody(WholeBody::NoPhaseOfItsOwn)
+        );
+        let areas = plan.replace("- Phase 2 — `web/b.ts`", "- Phase 2 — release");
+        assert_eq!(
+            slice_for(&areas, "lang:rust").unwrap(),
+            SliceFor::WholeBody(WholeBody::SeatedFromAreas)
+        );
+        assert_eq!(
+            slice_for("# T\n## Goal\ng\n", "lang:rust").unwrap(),
+            SliceFor::WholeBody(WholeBody::NoPhases)
+        );
     }
 
     #[test]
@@ -2410,7 +2984,8 @@ mod tests {
             vec![Binding {
                 role: "lang:rust".into(),
                 path: "/x/my plan.md".into(),
-                sha: sha.clone()
+                sha: sha.clone(),
+                slice: None,
             }]
         );
         assert!(parse_blocks("plan-review-language", &p.replace(" lang=rust", "")).is_empty());

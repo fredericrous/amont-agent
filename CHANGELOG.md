@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Changed
+
+- A review seat that a file type earned (`lang:<x>`, `react`, `ui-design`,
+  `platform`) on a plan whose every phase names a file is bound to its
+  slice of the plan (ADR-0061, `work.review-slices`): Goal, Non-goals,
+  Behaviour, Code review, the Phases preamble and decisions, and the phases
+  that name its files, with the reference definitions they use.
+  `plan-sha --block --slice <role>` adds `slice=<64 hex>` to the block (the
+  `sha=` stays the body's) and prints a second line naming the slice;
+  `plan-panel` prints ` --slice <role>` on those seats' lines.
+- In a delta, the plan-review hook also requires each sliced seat whose
+  slice moved since the last pass, naming the span that moved and the
+  command to re-run; before, a delta asked backend alone even when a seat's
+  own phase was rewritten. A seat that gained or lost its slice is required
+  too. Baselines keep each slice's sha and one sha per span; a baseline
+  written before this release keeps the old rule (`slices=unknown`). The
+  journal line carries `sliced=` and `slice-stale=`.
+
 ## v3.22.0
 
 ### Changed

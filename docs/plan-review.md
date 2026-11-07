@@ -115,7 +115,7 @@ baseline stored before 3.22.0 reads in today's class names (`large` as
 
 ## Binding a review to the plan
 
-`amont-agent plan-sha --block [--lang <l>] <plan.md>` prints the review
+`amont-agent plan-sha --block [--lang <l>] [--slice <role>] <plan.md>` prints the review
 block that each reviewer's prompt carries:
 
 ```
@@ -145,6 +145,53 @@ journal line for a pass starts `match=legacy` when it rested on one, and
 written before. Both go once the journal shows no `match=legacy` for
 14 days.
 
+**A seat bound to its slice** (3.23.0, ADR-0061 `work.review-slices`). On
+a plan whose every phase names a file, a seat that a file type earned
+(`lang:<x>`, `react`, `ui-design`, `platform`) and that has a phase of its
+own is bound to its **slice**: the lines before the first `##`, the Goal,
+Non-goals, Behaviour and Code review sections, the `## Phases` text before
+its first item, every `🧑` decision, and the phases that name a file of its
+types. A reference definition that kept text uses travels with the slice.
+Every other section (Context, Tests, Decision log, Verification, Outcome)
+is outside every slice: backend, which binds the whole body, reviews it.
+Backend, architect, product owner, unix, tui, ux-research and game-ux always
+bind the whole body, and so does every seat on a plan seated from areas.
+
+`amont-agent plan-sha --block --slice <role> <plan.md>` prints two lines:
+
+```
+<<<PLAN path=… sha=<body sha> lang=rust slice=<64 hex>>>>
+Your slice: Phase 1, Phase 3 and the shared sections. The other phases belong to other seats: …
+```
+
+Paste both, stdout only. `sha=` stays the body sha, so `plan-apply` and the
+outcome ledger keep working; `slice=` is what a later delta compares. For a
+seat with no slice the command prints the plain block and says why on
+stderr (`binds the whole body (<why>)`: `seats=areas`, `no phases`, `no
+phase of its own`), exit 0. `--slice=<role>` and `--lang=<l>` work too. `plan-panel` prints
+` --slice <role>` on each sliced seat's line.
+
+A sliced review counts when it reviewed this body, or when its `slice=` is
+the role's slice as it stands. In a delta the hook also requires every
+sliced seat whose slice moved since the last pass, and names the moved span
+with the command to re-run:
+``stale (its slice changed: Phase 2) for repos=…: lang:typescript; re-run: `amont-agent plan-sha --block --lang typescript --slice lang:typescript <plan.md>` ``
+(the command is in backticks, so it copies alone; a path with a space is
+quoted).
+A seat that was whole-body at the last pass and is sliced now (`it has a
+new slice`), or the reverse (`it now binds the whole body`), is required
+too; a slice whose spans only changed order says `the order of its
+phases`. The
+baseline keeps each sliced seat's slice sha and one sha per span. A baseline
+written before 3.23.0 has none, and its delta keeps the old rule
+(`slices=unknown` in the journal); a pass on it records none either, so the
+old rule holds until a fresh panel. The journal line carries `sliced=` and,
+on a refusal, `slice-stale=`.
+
+This tightens the hook: it saves no seat, since a delta already asked only
+backend, and it adds re-runs where a seat's own phase changed. A 14-day
+measure (due 2026-11-21) counts them and the findings they make.
+
 **A delta in a new session.** A plan's baseline is found by its path, by
 its body, and, last, by its H1 and `repos=`: the same plan presented from a
 new session has a new file name, and after an edit only its title still
@@ -169,7 +216,7 @@ have reviewed.
 | situation | answer |
 |---|---|
 | first presentation | the whole panel, each role bound to this plan's path; `backend` bound to this body |
-| body changed since the last pass | `backend` plus every area new since then, bound to this body |
+| body changed since the last pass | `backend` plus every area new since then, bound to this body, plus every sliced seat whose slice moved, bound to this body or its current slice |
 | same body, no new area | passes (a re-presentation, or a metadata-only write) |
 | no machine comment, bad `repos=`, no review section | refused |
 | no transcript, no plan path, git failed | the person is asked (`ask`) |

@@ -519,9 +519,24 @@ fn a_full_review_then_five_successive_deltas() {
         why.contains("stale (reviewed an older body) for repos=tool: backend"),
         "{why}"
     );
+    // The new phase is Rust: the Rust seat's slice moved, so it is asked
+    // again (ADR-0061 work.review-slices; before 3.23.0 only backend was).
     assert!(
-        !why.contains("unix") && !why.contains("lang:rust"),
-        "only the delta: {why}"
+        why.contains("stale (its slice changed: Phase 2) for repos=tool: lang:rust"),
+        "{why}"
+    );
+    assert!(!why.contains("unix"), "only the delta: {why}");
+    let rust = w
+        .bin()
+        .args(["plan-sha", "--block", "--slice", "lang:rust"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    t.review(
+        &w,
+        "plan-review-language",
+        &String::from_utf8(rust.stdout).unwrap(),
+        Done::Foreground,
     );
     for agent in [
         "plan-review-backend",
@@ -1001,7 +1016,7 @@ fn plan_panel_lists_what_the_hook_will_require() {
         )),
         "{full}"
     );
-    assert!(full.ends_with("plan-review-backend\nplan-review-language --lang rust\nplan-review-tui\nplan-review-unix\n"), "{full}");
+    assert!(full.ends_with("plan-review-backend\nplan-review-language --lang rust --slice lang:rust\nplan-review-tui\nplan-review-unix\n"), "{full}");
 
     // Launching exactly what it lists passes the hook.
     let mut t = Transcript::default();
@@ -1427,7 +1442,7 @@ fn a_plan_is_seated_from_the_files_its_phases_name_not_every_area() {
         out.lines().skip(1).collect::<Vec<_>>(),
         [
             "plan-review-backend",
-            "plan-review-language --lang rust",
+            "plan-review-language --lang rust --slice lang:rust",
             "plan-review-tui",
             "plan-review-unix"
         ]
@@ -1445,7 +1460,7 @@ fn a_plan_is_seated_from_the_files_its_phases_name_not_every_area() {
     );
     assert!(
         out.contains(
-            "plan-review-react\nplan-review-tui\nplan-review-ui-design\nplan-review-unix\n"
+            "plan-review-react --slice react\nplan-review-tui\nplan-review-ui-design --slice ui-design\nplan-review-unix\n"
         ),
         "{out}"
     );
@@ -1605,4 +1620,265 @@ fn a_baseline_stored_before_the_split_stays_current() {
     let out = w.bin().arg("plan-panel").arg(&plan).output().unwrap();
     let panel = String::from_utf8(out.stdout).unwrap();
     assert!(panel.contains(" panel=current seats=areas\n"), "{panel}");
+}
+
+/// A plan over a Rust and a TypeScript file, every phase naming one: each
+/// language seat is bound to its slice.
+const TWO_LANGS: &str = "# Plan\n\n## Review panel\n\n👉 Decide: none\n\n## Goal\n\nThe goal.\n\n## Context\n\nThe work.\n\n## Phases\n\n- [ ] Phase 1 — `src/main.rs`: the Rust part.\n- [ ] Phase 2 — `web/app.ts`: the TypeScript part.\n";
+
+fn rust_and_ts(world: &World) {
+    world.repo(
+        "tool",
+        &[
+            ("Cargo.toml", "[package]\nname = \"tool\"\n"),
+            ("src/main.rs", "fn main() {}\n"),
+            ("web/app.ts", "export {};\n"),
+        ],
+    );
+}
+
+fn slice_block(world: &World, plan: &Path, role: &str) -> (String, std::process::Output) {
+    let out = world
+        .bin()
+        .args(["plan-sha", "--block", "--slice", role])
+        .arg(plan)
+        .output()
+        .unwrap();
+    (String::from_utf8(out.stdout.clone()).unwrap(), out)
+}
+
+#[test]
+fn plan_sha_slice_prints_the_block_and_the_slice_line() {
+    let world = World::new("slice-cli");
+    let plan = world.plan("p.md", TWO_LANGS, "repos=tool");
+    let (stdout, out) = slice_block(&world, &plan, "lang:rust");
+    assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert!(lines[0].contains(&format!(
+        "sha={}",
+        world
+            .block(&plan, None)
+            .split("sha=")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(">>>")
+    )));
+    assert!(lines[0].contains(" lang=rust slice="), "{}", lines[0]);
+    assert!(
+        lines[1].starts_with("Your slice: Phase 1 and the shared sections."),
+        "{}",
+        lines[1]
+    );
+
+    // A plan seated from areas: the plain block, and why on stderr.
+    let areas = world.plan("a.md", NO_PATHS, "repos=tool");
+    let (stdout, out) = slice_block(&world, &areas, "lang:rust");
+    assert!(out.status.success());
+    assert_eq!(stdout.lines().count(), 1);
+    assert!(!stdout.contains("slice="));
+    assert!(String::from_utf8_lossy(&out.stderr)
+        .contains("lang:rust binds the whole body (seats=areas)"));
+
+    for (args, msg) in [
+        (
+            vec!["--block", "--slice", "backend"],
+            "backend binds the whole body; drop --slice",
+        ),
+        (vec!["--slice", "lang:rust"], "--slice needs --block"),
+        (
+            vec!["--block", "--lang", "rust", "--slice", "lang:go"],
+            "--slice lang:go conflicts with --lang rust",
+        ),
+        (vec!["--block", "--slice", "nope"], "unknown role nope"),
+    ] {
+        let out = world
+            .bin()
+            .arg("plan-sha")
+            .args(&args)
+            .arg(&plan)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(msg),
+            "{args:?}: {out:?}"
+        );
+    }
+    let out = world
+        .bin()
+        .args(["plan-sha", "--block"])
+        .arg(&plan)
+        .arg("--slice")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--slice needs a value"));
+}
+
+#[test]
+fn a_delta_to_one_language_phase_re_requires_that_seat_alone() {
+    let world = World::new("slice-delta");
+    rust_and_ts(&world);
+    let plan = world.plan("p.md", TWO_LANGS, "repos=tool");
+    let out = world.bin().arg("plan-panel").arg(&plan).output().unwrap();
+    let panel = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        panel.contains("plan-review-language --lang rust --slice lang:rust\n"),
+        "{panel}"
+    );
+    assert!(
+        panel.contains("plan-review-language --lang typescript --slice lang:typescript\n"),
+        "{panel}"
+    );
+    assert!(
+        panel.contains("plan-review-unix\n"),
+        "unix binds the whole body: {panel}"
+    );
+
+    let mut transcript = Transcript::default();
+    for line in panel.lines().skip(1) {
+        let agent = line.split_whitespace().next().unwrap();
+        let block = match line.split(" --slice ").nth(1) {
+            Some(role) => slice_block(&world, &plan, role).0,
+            None => world.block(&plan, None),
+        };
+        transcript.review(&world, agent, &block, Done::Foreground);
+    }
+    assert_eq!(world.present(&plan, &transcript), Said::Silent);
+
+    // The person asks for a change to the TypeScript phase only.
+    let plan = world.plan(
+        "p.md",
+        &TWO_LANGS.replace("the TypeScript part.", "the TypeScript part, changed."),
+        "repos=tool",
+    );
+    let said = world.present(&plan, &transcript);
+    let Said::Deny(why) = &said else {
+        panic!("{said:?}")
+    };
+    assert!(why.contains("stale (its slice changed: Phase 2) for repos=tool: lang:typescript; re-run: `amont-agent plan-sha --block --lang typescript --slice lang:typescript"), "{why}");
+    assert!(
+        !why.contains("lang:rust"),
+        "the Rust seat stays current: {why}"
+    );
+    transcript.review(
+        &world,
+        "plan-review-backend",
+        &world.block(&plan, None),
+        Done::Foreground,
+    );
+    transcript.review(
+        &world,
+        "plan-review-language",
+        &slice_block(&world, &plan, "lang:typescript").0,
+        Done::Foreground,
+    );
+    assert_eq!(world.present(&plan, &transcript), Said::Silent);
+
+    // A change to Context, outside every slice: backend alone.
+    let plan = world.plan(
+        "p.md",
+        &TWO_LANGS
+            .replace("the TypeScript part.", "the TypeScript part, changed.")
+            .replace("The work.", "The work, explained."),
+        "repos=tool",
+    );
+    let said = world.present(&plan, &transcript);
+    assert!(
+        matches!(said, Said::Deny(ref why) if why.contains("stale (reviewed an older body) for repos=tool: backend") && !why.contains("lang:")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn plan_sha_takes_the_equals_forms_and_help_wins() {
+    let world = World::new("slice-eq");
+    let plan = world.plan("p.md", TWO_LANGS, "repos=tool");
+    let two = world
+        .bin()
+        .args(["plan-sha", "--block", "--slice", "lang:rust"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    let eq = world
+        .bin()
+        .args(["plan-sha", "--block", "--slice=lang:rust", "--lang=rust"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert!(eq.status.success(), "{eq:?}");
+    assert_eq!(eq.stdout, two.stdout);
+    let empty = world
+        .bin()
+        .args(["plan-sha", "--block", "--slice="])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(empty.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("--slice needs a value"));
+    let help = world
+        .bin()
+        .args(["plan-sha", "--block", "--slice", "--help"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert!(
+        help.status.success()
+            && String::from_utf8_lossy(&help.stdout).starts_with("usage: amont-agent plan-sha")
+    );
+}
+
+#[test]
+fn a_pass_on_a_baseline_from_before_slices_keeps_the_old_rule() {
+    let world = World::new("slice-old");
+    rust_and_ts(&world);
+    let plan = world.plan("p.md", TWO_LANGS, "repos=tool");
+    let mut transcript = Transcript::default();
+    for agent in ["plan-review-backend", "plan-review-unix", "plan-review-tui"] {
+        transcript.review(&world, agent, &world.block(&plan, None), Done::Foreground);
+    }
+    for lang in ["rust", "typescript"] {
+        transcript.review(
+            &world,
+            "plan-review-language",
+            &world.block(&plan, Some(lang)),
+            Done::Foreground,
+        );
+    }
+    assert_eq!(world.present(&plan, &transcript), Said::Silent);
+    // Make the stored baseline one written before slices.
+    for dir in ["by-path", "by-body", "by-title"] {
+        for entry in std::fs::read_dir(world.store().join(dir)).unwrap() {
+            let file = entry.unwrap().path();
+            let mut v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            v.as_object_mut().unwrap().remove("slices");
+            std::fs::write(&file, v.to_string()).unwrap();
+        }
+    }
+    // A delta to the Rust phase: backend alone, as before slices.
+    let once = TWO_LANGS.replace("the Rust part.", "the Rust part, changed.");
+    let plan = world.plan("p.md", &once, "repos=tool");
+    let said = world.present(&plan, &transcript);
+    assert!(
+        matches!(said, Said::Deny(ref why) if why.contains("stale (reviewed an older body) for repos=tool: backend") && !why.contains("lang:")),
+        "{said:?}"
+    );
+    transcript.review(
+        &world,
+        "plan-review-backend",
+        &world.block(&plan, None),
+        Done::Foreground,
+    );
+    assert_eq!(world.present(&plan, &transcript), Said::Silent);
+    // That pass recorded no slices nobody reviewed: a second Rust delta is
+    // still judged by the old rule, never against slices it never read.
+    let twice = once.replace("the Rust part, changed.", "the Rust part, changed twice.");
+    let plan = world.plan("p.md", &twice, "repos=tool");
+    let said = world.present(&plan, &transcript);
+    assert!(
+        matches!(said, Said::Deny(ref why) if !why.contains("lang:rust")),
+        "{said:?}"
+    );
 }

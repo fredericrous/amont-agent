@@ -1023,7 +1023,7 @@ fn run_analyze(args: &[OsString]) -> ExitCode {
 }
 
 const PLAN_SHA_USAGE: &str = "\
-usage: amont-agent plan-sha [--short] [--block [--lang <language>]] [--legacy] [--] <file|->
+usage: amont-agent plan-sha [--short] [--block [--lang <language>] [--slice <role>]] [--legacy] [--] <file|->
 
 The sha256 of what a plan says, which its review binds to (ADR-0022,
 work.plan-review-panel). The plan is read without its YAML front matter,
@@ -1045,15 +1045,46 @@ So a formatter such as prettier keeps the sha, unless it rewrites code.
   --block            the review block a plan-review-* agent's prompt carries:
                      <<<PLAN path=<realpath> sha=<64 hex>>>>
   --lang <language>  with --block, for plan-review-language: adds lang=<l>
+  --slice <role>     with --block, for a seat bound to its slice of the plan
+                     (ADR-0061 work.review-slices): adds slice=<64 hex> and
+                     prints a second line naming the phases of the slice.
+                     A seat of a file type (lang:<x>, react, ui-design,
+                     platform) on a plan whose every phase names a file has
+                     a slice; on any other plan it gets the plain block, and
+                     stderr says it binds the whole body. --slice lang:<x>
+                     implies --lang <x>
   --legacy           the byte sha from before 2.25, to check a plan whose
                      machine comment was written then; temporary, removed
                      after the transition (not with --block)
   -                  read the plan from stdin (not with --block, which
                      needs the file's path)
 
-Prints one line on stdout. Exit 0, 1 when the file cannot be read or its
-sha cannot be computed (the reason on stderr), 2 on a usage error.
+Prints one line on stdout, or two with --slice. Exit 0, 1 when the file
+cannot be read or its sha cannot be computed (the reason on stderr), 2 on a
+usage error.
 ";
+
+/// The `--slice <role>` checks that need no plan: a known role whose file
+/// types the table knows, agreeing with `--lang`. Returns the `--lang` the
+/// block carries: `--slice lang:<x>` implies `--lang <x>`.
+fn slice_lang(role: &str, lang: Option<&str>) -> Result<Option<String>, String> {
+    if plan_review::remit(role).is_empty() {
+        return Err(format!(
+            "unknown role {role}; roles: {}, lang:<language>",
+            plan_review::NAMED_ROLES.join(", ")
+        ));
+    }
+    if amont_agent_process::file_types::profile_reads(role).is_none() {
+        return Err(format!("{role} binds the whole body; drop --slice"));
+    }
+    match (role.strip_prefix("lang:"), lang) {
+        (Some(want), Some(have)) if have != want => Err(format!(
+            "--slice {role} conflicts with --lang {have}; pass --lang {want} or drop --lang"
+        )),
+        (Some(want), None) => Ok(Some(want.to_string())),
+        (_, have) => Ok(have.map(str::to_string)),
+    }
+}
 
 fn run_plan_sha(args: &[OsString]) -> ExitCode {
     let args: Vec<String> = args
@@ -1062,10 +1093,37 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         .collect();
     let (mut short, mut block, mut lang, mut file) = (false, false, None, None);
     let mut legacy = false;
+    let mut slice: Option<String> = None;
+    // Help wins over every other flag, as in plan-panel.
+    if args
+        .iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| a == "--help" || a == "-h")
+    {
+        print!("{PLAN_SHA_USAGE}");
+        return ExitCode::SUCCESS;
+    }
     let mut i = 0;
     let mut operands_only = false;
     while i < args.len() {
         let a = args[i].as_str();
+        // `--lang=x` and `--slice=x` are the GNU spellings of the two-word ones.
+        if let Some((flag, value)) = a
+            .split_once('=')
+            .filter(|(f, _)| !operands_only && (*f == "--lang" || *f == "--slice"))
+        {
+            if value.is_empty() {
+                eprintln!("amont-agent: {flag} needs a value");
+                return ExitCode::from(2);
+            }
+            if flag == "--lang" {
+                lang = Some(value.to_string());
+            } else {
+                slice = Some(value.to_string());
+            }
+            i += 1;
+            continue;
+        }
         match a {
             _ if operands_only || a == "-" || !a.starts_with('-') => {
                 if file.is_some() {
@@ -1094,6 +1152,16 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
                     }
                 }
             }
+            "--slice" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) if !v.starts_with('-') => slice = Some(v.clone()),
+                    _ => {
+                        eprintln!("amont-agent: --slice needs a value");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             other => {
                 eprintln!("amont-agent: unknown flag `{other}`; try `amont-agent plan-sha --help`");
                 return ExitCode::from(2);
@@ -1113,12 +1181,23 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         Some("--block needs the plan's file, not stdin")
     } else if block && legacy {
         Some("--legacy only prints a sha; drop --block")
+    } else if slice.is_some() && !block {
+        Some("--slice needs --block: amont-agent plan-sha --block --slice <role> <plan.md>")
     } else {
         None
     };
     if let Some(why) = conflict {
         eprintln!("amont-agent: {why}; try `amont-agent plan-sha --help`");
         return ExitCode::from(2);
+    }
+    if let Some(role) = slice.as_deref() {
+        match slice_lang(role, lang.as_deref()) {
+            Ok(l) => lang = l,
+            Err(why) => {
+                eprintln!("amont-agent: {why}; try `amont-agent plan-sha --help`");
+                return ExitCode::from(2);
+            }
+        }
     }
     let text = if file == "-" {
         use std::io::Read;
@@ -1151,7 +1230,34 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
     };
     if block {
         let path = plan_review::real(std::path::Path::new(&file));
-        println!("{}", plan_review::block(&path, &sha, lang.as_deref()));
+        let cut = match slice.as_deref() {
+            None => None,
+            Some(role) => match plan_review::slice_for(&text, role) {
+                Ok(s) => Some((role, s)),
+                Err(why) => {
+                    eprintln!("amont-agent: {why}");
+                    return ExitCode::from(1);
+                }
+            },
+        };
+        let slice_sha = match &cut {
+            Some((_, plan_review::SliceFor::Slice(s))) => Some(s.sha.as_str()),
+            _ => None,
+        };
+        println!(
+            "{}",
+            plan_review::block(&path, &sha, lang.as_deref(), slice_sha)
+        );
+        match &cut {
+            Some((_, plan_review::SliceFor::Slice(s))) => println!(
+                "Your slice: {} and the shared sections. The other phases belong to other seats: read them only to follow yours, and raise a finding there only if it blocks.",
+                s.kept.join(", ")
+            ),
+            Some((role, plan_review::SliceFor::WholeBody(why))) => {
+                eprintln!("amont-agent: {role} binds the whole body ({})", why.as_str());
+            }
+            None => {}
+        }
     } else if short {
         println!("{}", &sha[..12]);
     } else {
@@ -1582,9 +1688,14 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
                 eprintln!("amont-agent: plan-panel: {advice}");
             }
             for role in &p.needed {
+                let cut = if p.sliced.contains(role) {
+                    format!(" --slice {role}")
+                } else {
+                    String::new()
+                };
                 match plan_review::agent_for(role) {
-                    (agent, Some(lang)) => println!("{agent} --lang {lang}"),
-                    (agent, None) => println!("{agent}"),
+                    (agent, Some(lang)) => println!("{agent} --lang {lang}{cut}"),
+                    (agent, None) => println!("{agent}{cut}"),
                 }
             }
             ExitCode::SUCCESS
