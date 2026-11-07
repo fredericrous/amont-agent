@@ -117,19 +117,59 @@ pub struct Phase {
 /// `🧑` decision is not a phase. Only Phases count: Context and evidence
 /// cite files a plan does not change.
 pub fn phases(body: &str) -> Vec<Phase> {
+    phase_spans(body)
+        .into_iter()
+        .filter(|s| !s.label.is_empty())
+        .map(|s| Phase {
+            label: s.label,
+            paths: s.paths,
+        })
+        .collect()
+}
+
+/// One top-level item of `## Phases` and the lines it covers, as indices
+/// into `body.lines()`: from its own line to the next top-level item or the
+/// end of the section, so its continuation lines and fenced examples are its
+/// own. A `🧑` decision has an empty label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseSpan {
+    pub label: String,
+    pub paths: Vec<String>,
+    pub lines: std::ops::Range<usize>,
+}
+
+/// Every top-level item of `## Phases`, `🧑` decisions included, with the
+/// lines each covers. The section's text before its first item belongs to
+/// no item. [`phases`] is this without the decisions.
+pub fn phase_spans(body: &str) -> Vec<PhaseSpan> {
     let mut fence = crate::plan_text::Fence::default();
     let mut inside = false;
-    let mut out: Vec<Phase> = Vec::new();
-    for line in body.lines() {
+    let mut out: Vec<PhaseSpan> = Vec::new();
+    let close = |out: &mut Vec<PhaseSpan>, at: usize| {
+        if let Some(last) = out.last_mut() {
+            if last.lines.end == usize::MAX {
+                last.lines.end = at;
+            }
+        }
+    };
+    let mut count = 0;
+    for (i, line) in body.lines().enumerate() {
+        count = i + 1;
         if let Some(title) = fence.h2(line) {
+            if inside {
+                close(&mut out, i);
+            }
             inside = title == "Phases";
             continue;
         }
         if !inside || fence.open.is_some() {
+            // A fenced example belongs to its phase's lines, but the paths
+            // it shows are an example's, not the phase's (as before).
             continue;
         }
         let top = line.starts_with("- ") || line.starts_with("* ");
         if top {
+            close(&mut out, i);
             let after_marker = line[2..].trim_start();
             let item_text = ["[ ] ", "[x] ", "[X] "]
                 .iter()
@@ -149,9 +189,10 @@ pub fn phases(body: &str) -> Vec<Phase> {
                 let place = out.iter().filter(|p| !p.label.is_empty()).count() + 1;
                 format!("phase {place}")
             };
-            out.push(Phase {
+            out.push(PhaseSpan {
                 label,
                 paths: Vec::new(),
+                lines: i..usize::MAX,
             });
         }
         if let Some(current) = out.last_mut() {
@@ -164,7 +205,7 @@ pub fn phases(body: &str) -> Vec<Phase> {
             }
         }
     }
-    out.retain(|p| !p.label.is_empty());
+    close(&mut out, count);
     out
 }
 
@@ -377,6 +418,17 @@ mod tests {
         // Only a checkbox is stripped: an item's own leading `x ` stays, so
         // `x Phase 7` is not read as Phase 7.
         assert_eq!(phases(body)[2].label, "phase 3");
+    }
+
+    #[test]
+    fn spans_cover_each_phases_line_once_and_keep_fences_and_decisions() {
+        let body = "# T\n## Phases\nIntro.\n- Phase 1 — `a.rs`\n  ```\n  - not an item `b.ts`\n  ```\n- 🧑 decide\n- Phase 2 — `c.ts`\n## After\n- not a phase\n";
+        let s = phase_spans(body);
+        let ranges: Vec<_> = s.iter().map(|p| p.lines.clone()).collect();
+        assert_eq!(ranges, vec![3..7, 7..8, 8..9]);
+        assert_eq!(s[0].paths, vec!["a.rs".to_string()]);
+        assert_eq!(s[1].label, "");
+        assert_eq!(phases(body).len(), 2);
     }
 
     #[test]
