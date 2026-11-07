@@ -226,8 +226,10 @@ sessions consume (the panel list the hook enforces).
   `seats=paths` and the hook accepts that panel.
 
 ## Outcome
-- Built phases 1–4 in `a72d4ab` and the follow-up commit; the backtest above
-  decided the partial-phase rule.
+- Built phases 1–4 in `a72d4ab` and `da3b366`; the backtest above decided
+  the partial-phase rule; review fixes in `67081d1` and `4e7481c`. Phase 5's
+  docs are in; its release and install of 3.22.0 follow the merge, with the
+  post-install `plan-panel` check.
 - Where the build differs from the text above:
   - Literal paths go through `git --literal-pathspecs` with bare paths, not
     `:(literal)` prefixes: the same literal matching, and it holds whether
@@ -235,8 +237,9 @@ sessions consume (the panel list the hook enforces).
   - A repository tree that cannot be read still asks the person, as before:
     attribution reads the same `ls_tree_z` listing as the areas, so a failed
     read leaves no areas to seat from either.
-  - `none` lines also give `no code file` (named files, none of them code)
-    and `no file named` (no named path is attributed to that repository).
+  - `none` lines also give `no reviewed file type` (named files, none of a
+    type a profile reviews) and `no file named` (no named path is attributed
+    to that repository).
   - A list item under Phases without a `Phase <n>` label counts as a phase
     and is named by its place (`phase 3`); a `🧑` item is not a phase.
   - Baselines carry `"names": 2`; one without it is read in the old names
@@ -257,5 +260,11 @@ sessions consume (the panel list the hook enforces).
     empty selection, a 1500-path batch and a pre-3.22.0 ledger row: tests in
     `tests/plan_review.rs`, `tests/review_brief.rs` and
     `crates/amont-agent-process/src/review_outcomes.rs`.
+
+## Implementation review
+- implementation-review (opus): awc → awc → approve. Fixed: bool flags, a swallowed discard, weak names, a test that could not fail. 55k+70k+29k, 31/79/14 s.
+- backend: awc → awc → approve. Fixed: typed `seat_source` and stderr, batch errors, delta no-patch line, byte test, YAML ceiling. Deliberate: git stderr (`bytes_in` drops it), no drop guard. 91k+41k+25k.
+- lang:rust: awc → awc → approve. Fixed: `Proposal`/`NoReviewReason`, `SeatSource::Areas { unnamed }`, `run_git`, checkbox trim. Deliberate: string classes, ceiling on `roles()`. 91k+41k+25k.
+- unix: awc → approve. Fixed: `--code-review` help, non-UTF-8 names listed, plans left out by prefix. Deliberate: git stderr. 85k+41k. tui: awc → approve. Fixed: help, 80 columns, `no reviewed file type`. Deliberate: advice wording is the plan's. 84k+40k.
 
 <!-- panel: repos=amont-agent adds= reviewers=backend,language,tui,unix,codex body-sha=4b4cc92612da -->
