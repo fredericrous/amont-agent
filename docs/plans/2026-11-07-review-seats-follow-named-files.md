@@ -227,7 +227,8 @@ sessions consume (the panel list the hook enforces).
 
 ## Outcome
 - Built phases 1–4 in `a72d4ab` and `da3b366`; the backtest above decided
-  the partial-phase rule; review fixes in `67081d1` and `4e7481c`. Phase 5's
+  the partial-phase rule; review fixes in `67081d1` and `4e7481c`; the Windows CI fixture fix in
+  `4fe7e55`. Phase 5's
   docs are in; its release and install of 3.22.0 follow the merge, with the
   post-install `plan-panel` check.
 - Where the build differs from the text above:
@@ -262,7 +263,7 @@ sessions consume (the panel list the hook enforces).
     `crates/amont-agent-process/src/review_outcomes.rs`.
 
 ## Implementation review
-- implementation-review (opus): awc → awc → approve. Fixed: bool flags, a swallowed discard, weak names, a test that could not fail. 55k+70k+29k, 31/79/14 s.
+- implementation-review (opus): awc → awc → approve, then approve on the Windows fixture fix (`d*.ts` → `d[a].ts`, `4fe7e55`). Fixed: bool flags, a swallowed discard, weak names, a test that could not fail. 55k+70k+29k+26k.
 - backend: awc → awc → approve. Fixed: typed `seat_source` and stderr, batch errors, delta no-patch line, byte test, YAML ceiling. Deliberate: git stderr (`bytes_in` drops it), no drop guard. 91k+41k+25k.
 - lang:rust: awc → awc → approve. Fixed: `Proposal`/`NoReviewReason`, `SeatSource::Areas { unnamed }`, `run_git`, checkbox trim. Deliberate: string classes, ceiling on `roles()`. 91k+41k+25k.
 - unix: awc → approve. Fixed: `--code-review` help, non-UTF-8 names listed, plans left out by prefix. Deliberate: git stderr. 85k+41k. tui: awc → approve. Fixed: help, 80 columns, `no reviewed file type`. Deliberate: advice wording is the plan's. 84k+40k.
