@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/plan-slices
 repos: [amont-agent, greenharness-skills]
 adrs: [ADR-0061, ADR-0063]
@@ -175,9 +175,9 @@ binding the whole body. This builds proportional-ship t06 and ADR-0061's
 - [x] Phase 1 — `crates/amont-agent-process/src/file_types.rs`: `phase_spans` returns each phase's line range (`phases` becomes a wrapper), and `🧑` items and the Phases preamble become shared spans; `crates/amont-agent-process/src/plan_text.rs`: `slice(text, keep)` and `slice_sha`; unit tests beside each.
 - [x] Phase 2 — `crates/amont-agent-process/src/plan_review.rs`: `Binding.slice`, `parse_blocks` reads `slice=` from the whole tail (today `find_map` consumes it), `block` takes the slice, `sliced_roles(body)`, `Baseline.slices` in `load`/`save`, one `delta_needs` shared by `judge` and `panel`, and the stale wording; `crates/amont-agent-process/src/plan_apply.rs` and `crates/amont-agent-process/src/review_outcomes.rs` adjusted for the new `Binding` field only; `tests/plan_review.rs`.
 - [x] Phase 3 — `src/main.rs`: `plan-sha --slice` (flags, conflicts, usage text) and `plan-panel`'s ` --slice` suffix; `tests/plan_review.rs` CLI cases.
-- [ ] Phase 4 — greenharness-skills `parts/workflow/skills/plan-review/SKILL.md` §3.2, §5; released through grh as its own PR in the same session, before 3.23.0 is installed (older amont-agent without `--slice`: the skill falls back to the plain block when `plan-panel` prints no `--slice`).
+- [x] Phase 4 — greenharness-skills `parts/workflow/skills/plan-review/SKILL.md` §3.2, §5; released through grh as its own PR in the same session, before 3.23.0 is installed (older amont-agent without `--slice`: the skill falls back to the plain block when `plan-panel` prints no `--slice`).
 - [x] Phase 5 — `docs/plan-review.md`, `CHANGELOG.md`; set `docs/plans/2026-11-07-review-seats-follow-named-files.md` status `done` (map.md: "rides the slice-binding branch").
-- [ ] Phase 6 — `Cargo.toml` version: release amont-agent 3.23.0 after the merge, once greenharness-skills ships Phase 4, and install it.
+- [x] Phase 6 — `Cargo.toml` version: release amont-agent 3.23.0 after the merge, once greenharness-skills ships Phase 4, and install it.
 
 ## Tests
 - Pure, `file_types`:
@@ -271,6 +271,6 @@ and `plan-panel` lines the skill pastes); the release path.
 - unix: approve-with-changes (`=` forms, help wins; fixed), delta approve-with-changes; deliberate: the same path quoting. tui: approve-with-changes (backticked re-run, wording, roles list, `no phases`; fixed), delta approve; deliberate: the `=` forms and help-wins go in the release's CHANGELOG and usage, not this tree. 56k+83k, 52k+78k.
 
 ## Outcome
-Phases 1–3 and Phase 5's docs on this branch; Phase 4 in greenharness-skills `feat/plan-review-slices`. Next: merge both, release the skills, then amont-agent 3.23.0, and install it. 14-day measure DUE 2026-11-21.
+Shipped 2026-11-07: amont-agent #216 and release 3.23.0 (#217, tag `v3.23.0`, brew-installed, doctor green); greenharness/skills #16 released as v0.3.11, pinned by grh #22 and released as grh 0.1.16, installed with `grh install workflow`. After install, `plan-sha --block --slice lang:rust` on this plan prints the slice block and `Your slice: Phase 1, Phase 2, Phase 3, Phase 6 …`. Still open: the downstream-readers check on the first real panel with a sliced seat, and the 14-day measure DUE 2026-11-21.
 
 <!-- panel: repos=amont-agent,greenharness-skills adds=contract reviewers=backend,architect,po,lang:rust,tui,unix,codex body-sha=60b87cfbf4b7 -->
