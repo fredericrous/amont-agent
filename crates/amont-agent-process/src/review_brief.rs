@@ -1242,7 +1242,10 @@ mod tests {
             out.stdout
         };
         git(&["init", "-q", "-b", "main"]);
-        let names = ["a.ts", "b c.ts", "d*.ts", "z.ts"];
+        // `d[a].ts` is a glob that also matches `da.ts`: read as a pattern,
+        // its batch would carry `da.ts` a second time. Legal on Windows,
+        // unlike `*`. In git's byte order, as the whole diff lists them.
+        let names = ["a.ts", "b c.ts", "d[a].ts", "da.ts", "z.ts"];
         for (round, text) in [(0, "one"), (1, "two")] {
             for name in names {
                 std::fs::write(repo.join(name), format!("{text} {name}\n")).unwrap();
@@ -1272,7 +1275,7 @@ mod tests {
             String::from_utf8_lossy(&joined),
             String::from_utf8_lossy(&git(&whole))
         );
-        assert_eq!(joined.windows(10).filter(|w| w == b"diff --git").count(), 4);
+        assert_eq!(joined.windows(10).filter(|w| w == b"diff --git").count(), 5);
         let empty = super::filtered_patch(&repo, &["diff"], &["HEAD~1", "HEAD"], &[], 1).unwrap();
         assert!(
             empty.is_empty(),
