@@ -138,7 +138,7 @@ pub fn shas(text: &str) -> Result<Shas, ShaError> {
     })
 }
 
-pub(crate) fn guarded(f: impl FnOnce() -> String) -> Result<String, ShaError> {
+pub(crate) fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, ShaError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| ShaError::ParserPanicked)
 }
 
@@ -157,8 +157,6 @@ impl std::fmt::Display for ShaError {
         }
     }
 }
-
-// ---------------------------------------------------------------- slices
 
 /// The sections every slice shares (ADR-0061 `work.review-slices`). Every
 /// other section is outside every slice, and backend, which binds the whole
@@ -193,7 +191,17 @@ fn definition_label(prose: &str) -> Option<String> {
     if label.trim().is_empty() || label.contains('[') || label.contains(']') {
         return None;
     }
-    Some(label.trim().to_lowercase())
+    Some(normalised(label))
+}
+
+/// A reference label as CommonMark matches it: case folded, whitespace runs
+/// collapsed to one space, trimmed.
+fn normalised(label: &str) -> String {
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// The slice of a plan's canonical body that `keep` selects: the lines
@@ -202,12 +210,11 @@ fn definition_label(prose: &str) -> Option<String> {
 /// `keep` accepts. A reference definition that kept text uses, and that
 /// sits outside the slice, is carried with it (the first one of its label,
 /// as CommonMark resolves it), so a link keeps its destination.
-pub fn slice(text: &str, keep: &dyn Fn(&[String]) -> bool) -> Result<Slice, ShaError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| slice_of(text, keep)))
-        .map_err(|_| ShaError::ParserPanicked)
+pub fn slice(text: &str, keep: impl Fn(&[String]) -> bool) -> Result<Slice, ShaError> {
+    guarded(|| slice_of(text, &keep))
 }
 
-fn slice_of(text: &str, keep: &dyn Fn(&[String]) -> bool) -> Slice {
+fn slice_of(text: &str, keep: &impl Fn(&[String]) -> bool) -> Slice {
     let body = canonical(text);
     let lines: Vec<&str> = body.lines().collect();
     let phase_spans = crate::file_types::phase_spans(&body);
@@ -294,11 +301,14 @@ fn slice_of(text: &str, keep: &dyn Fn(&[String]) -> bool) -> Slice {
                 all.push(l);
             }
         }
-        all.join("\n").to_lowercase()
+        normalised(&all.join("\n"))
     };
     // Definitions used by the slice but outside it go first: the first
     // definition of a label wins, and a definition makes no text.
     let mut carried: Vec<&str> = Vec::new();
+    // holds-until: a `[label]` inside a code span counts as a use, which can
+    // only carry one definition too many (a slice that moves on an edit it
+    // did not need to), never one too few.
     for (label, def, inside) in &definitions {
         if !*inside && kept_text.contains(&format!("[{label}]")) {
             carried.extend(def.iter().copied());
@@ -323,8 +333,13 @@ fn slice_of(text: &str, keep: &dyn Fn(&[String]) -> bool) -> Slice {
     let mut kept = Vec::new();
     for (k, s) in phase_spans.iter().enumerate() {
         if !s.label.is_empty() && kept_phase(k) {
-            kept.push(s.label.clone());
-            spans.insert(s.label.clone(), versioned_sha(&by_phase[k].join("\n")));
+            // Two items with one label (`Phase 2` twice) stay two spans.
+            let mut label = s.label.clone();
+            if spans.contains_key(&label) {
+                label = format!("{label} (item {})", k + 1);
+            }
+            kept.push(label.clone());
+            spans.insert(label, versioned_sha(&by_phase[k].join("\n")));
         }
     }
     Slice {
@@ -455,12 +470,12 @@ mod slice_tests {
     }
 
     fn sha(text: &str) -> String {
-        slice(text, &rust).unwrap().sha
+        slice(text, rust).unwrap().sha
     }
 
     #[test]
     fn a_slice_keeps_shared_sections_its_phases_and_decisions() {
-        let s = slice(PLAN, &rust).unwrap();
+        let s = slice(PLAN, rust).unwrap();
         assert_eq!(s.kept, vec!["Phase 1".to_string()]);
         assert!(s.text.contains("rust work") && s.text.contains("more rust"));
         assert!(s.text.contains("🧑 decide") && s.text.contains("Preamble."));
@@ -488,13 +503,13 @@ mod slice_tests {
 
     #[test]
     fn an_edit_inside_the_slice_moves_its_sha_and_names_the_span() {
-        let s = slice(PLAN, &rust).unwrap();
+        let s = slice(PLAN, rust).unwrap();
         for (a, b, span) in [
             ("more rust", "more rust, changed", "Phase 1"),
             ("G.", "G, changed.", SHARED),
             ("B.", "B, changed.", SHARED),
         ] {
-            let t = slice(&PLAN.replace(a, b), &rust).unwrap();
+            let t = slice(&PLAN.replace(a, b), rust).unwrap();
             assert_ne!(t.sha, s.sha, "{a}");
             assert_ne!(t.spans[span], s.spans[span], "{a}");
         }
@@ -515,15 +530,29 @@ mod slice_tests {
         let base = sha(PLAN);
         assert_ne!(sha(&PLAN.replace("a.example/one", "a.example/two")), base);
         assert_eq!(sha(&PLAN.replace("a.example/unused", "a.example/x")), base);
+        let spaced = PLAN
+            .replace("rust work [spec].", "rust work [Spec  Thing].")
+            .replace(
+                "[spec]: https://a.example/one",
+                "[spec   thing]: https://a.example/one",
+            );
+        assert_ne!(
+            sha(&spaced.replace("a.example/one", "a.example/two")),
+            sha(&spaced)
+        );
         let foot = "# T\n\n## Context\n[^n]: the note\n\n## Phases\n- Phase 1 — `a.rs` [^n].\n";
-        let s = slice(foot, &rust).unwrap();
+        let s = slice(foot, rust).unwrap();
         assert!(s.text.contains("[^n]: the note"));
         assert_ne!(sha(&foot.replace("the note", "a note")), s.sha);
     }
 
     #[test]
     fn the_rule_version_keeps_a_whole_slice_apart_from_the_body() {
-        let all = slice(PLAN, &|_: &[String]| true).unwrap();
-        assert_ne!(all.sha, body_sha(PLAN));
+        // Only shared sections and Phases: the slice holding every phase is
+        // the whole body, so only the rule's version tells the shas apart.
+        let whole = "# T\n\n## Goal\nG.\n\n## Phases\n- Phase 1 — `a.rs`\n";
+        let all = slice(whole, |_: &[String]| true).unwrap();
+        assert_eq!(all.text, canonical(whole));
+        assert_ne!(all.sha, body_sha(whole));
     }
 }

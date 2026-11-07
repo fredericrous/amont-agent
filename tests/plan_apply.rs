@@ -828,3 +828,23 @@ fn record_fallback_verifies_an_overlapped_patch() {
     assert_eq!(rows[1]["mode"], "subagent");
     assert_eq!(rows[1]["verified"], true, "{:?}", rows[1]);
 }
+
+#[test]
+fn a_sliced_reviewers_patches_are_found_by_its_body_sha() {
+    let mut world = World::new("sliced");
+    // A language reviewer bound to its slice: the block carries `lang=` and
+    // `slice=` beside the body's `sha=`, as `plan-sha --block --slice` prints.
+    let block = world
+        .block()
+        .replace(">>>", &format!(" lang=rust slice={}>>>", "a".repeat(64)));
+    let prompt = format!("Review.\n{block}\nYour slice: Phase 1 and the shared sections.\n");
+    let id = world.launch("plan-review-language", &prompt);
+    let tur = serde_json::json!({"status": "completed", "agentType": "plan-review-language",
+        "agentId": "a1", "resolvedModel": "claude-opus-4-7",
+        "totalTokens": 5000, "totalDurationMs": 12500});
+    world.result(&id, tur, &patches(&[(1, "alpha beta", "ALPHA BETA")]));
+    let o = world.run(&[], r#"[{"role":"lang:rust","finding":1}]"#);
+    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    assert!(out(&o).contains("applied lang:rust#1"), "{}", out(&o));
+    assert!(world.text().contains("ALPHA BETA"));
+}

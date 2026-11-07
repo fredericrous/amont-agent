@@ -167,19 +167,25 @@ Your slice: Phase 1, Phase 3 and the shared sections. The other phases belong to
 Paste both, stdout only. `sha=` stays the body sha, so `plan-apply` and the
 outcome ledger keep working; `slice=` is what a later delta compares. For a
 seat with no slice the command prints the plain block and says why on
-stderr (`binds the whole body (seats=areas)`), exit 0. `plan-panel` prints
+stderr (`binds the whole body (<why>)`: `seats=areas`, `no phases`, `no
+phase of its own`), exit 0. `--slice=<role>` and `--lang=<l>` work too. `plan-panel` prints
 ` --slice <role>` on each sliced seat's line.
 
 A sliced review counts when it reviewed this body, or when its `slice=` is
 the role's slice as it stands. In a delta the hook also requires every
 sliced seat whose slice moved since the last pass, and names the moved span
 with the command to re-run:
-`stale (its slice changed: Phase 2) for repos=…: lang:typescript; re-run: amont-agent plan-sha --block --lang typescript --slice lang:typescript <plan.md>`.
-A seat that was whole-body at the last pass and is sliced now (`a new
-slice`), or the reverse (`now the whole body`), is required too. The
+``stale (its slice changed: Phase 2) for repos=…: lang:typescript; re-run: `amont-agent plan-sha --block --lang typescript --slice lang:typescript <plan.md>` ``
+(the command is in backticks, so it copies alone; a path with a space is
+quoted).
+A seat that was whole-body at the last pass and is sliced now (`it has a
+new slice`), or the reverse (`it now binds the whole body`), is required
+too; a slice whose spans only changed order says `the order of its
+phases`. The
 baseline keeps each sliced seat's slice sha and one sha per span. A baseline
 written before 3.23.0 has none, and its delta keeps the old rule
-(`slices=unknown` in the journal). The journal line carries `sliced=` and,
+(`slices=unknown` in the journal); a pass on it records none either, so the
+old rule holds until a fresh panel. The journal line carries `sliced=` and,
 on a refusal, `slice-stale=`.
 
 This tightens the hook: it saves no seat, since a delta already asked only

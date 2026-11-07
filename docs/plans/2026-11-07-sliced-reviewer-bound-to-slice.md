@@ -176,7 +176,8 @@ binding the whole body. This builds proportional-ship t06 and ADR-0061's
 - [x] Phase 2 — `crates/amont-agent-process/src/plan_review.rs`: `Binding.slice`, `parse_blocks` reads `slice=` from the whole tail (today `find_map` consumes it), `block` takes the slice, `sliced_roles(body)`, `Baseline.slices` in `load`/`save`, one `delta_needs` shared by `judge` and `panel`, and the stale wording; `crates/amont-agent-process/src/plan_apply.rs` and `crates/amont-agent-process/src/review_outcomes.rs` adjusted for the new `Binding` field only; `tests/plan_review.rs`.
 - [x] Phase 3 — `src/main.rs`: `plan-sha --slice` (flags, conflicts, usage text) and `plan-panel`'s ` --slice` suffix; `tests/plan_review.rs` CLI cases.
 - [ ] Phase 4 — greenharness-skills `parts/workflow/skills/plan-review/SKILL.md` §3.2, §5; released through grh as its own PR in the same session, before 3.23.0 is installed (older amont-agent without `--slice`: the skill falls back to the plain block when `plan-panel` prints no `--slice`).
-- [ ] Phase 5 — `docs/plan-review.md`, `CHANGELOG.md`, `Cargo.toml` version; set `docs/plans/2026-11-07-review-seats-follow-named-files.md` status `done` (map.md: "rides the slice-binding branch"); release amont-agent 3.23.0 and install it.
+- [x] Phase 5 — `docs/plan-review.md`, `CHANGELOG.md`; set `docs/plans/2026-11-07-review-seats-follow-named-files.md` status `done` (map.md: "rides the slice-binding branch").
+- [ ] Phase 6 — `Cargo.toml` version: release amont-agent 3.23.0 after the merge, once greenharness-skills ships Phase 4, and install it.
 
 ## Tests
 - Pure, `file_types`:
@@ -212,6 +213,10 @@ binding the whole body. This builds proportional-ship t06 and ADR-0061's
 - `plan-apply` still finds a sliced reviewer's patches, by `sha=` body.
 
 ## Decision log
+- 2026-11-07 — the person approved the plan with the four 👉 decisions as recommended: (1) ADR-0061's shared sections; (2) slices checked in deltas only; (3) a baseline without slices keeps the old rule; (4) unix and tui bind the whole body. Decision 4 departs from ADR-0063's file-type seating of unix and tui only in what they bind, not in where they sit.
+- 2026-11-07 — Codex's carried medium (a slice-rule version bump bypassed by the `current` fast path and the `sha=` fallback): deliberate. A review of the same body read the same text whatever the slice rule says, so the body sha stays current; the rule version only keeps an old slice sha from matching a different body.
+- 2026-11-07 — the fleet pack refresh (`.adr/packs/decisions.pack`) is its own commit at the branch's start (worktree-task Start), named by no phase.
+- 2026-11-07 (code review) — a pass on a baseline from before slices records `slices` absent, not the current slices: its delta asked backend alone, so no sliced seat reviewed them (backend). Refusals name each case in words (`Moved`), and `slice_for` says why a role binds the whole body (`WholeBody`), so `plan-sha` prints the reason the hook used (rust).
 - 2026-11-07 (draft) — `sha=` stays the body sha and `slice=` is added,
   instead of a slice sha replacing it, because `plan_apply.rs:388` and
   `review_outcomes.rs:264` match reviews by body sha.
@@ -253,10 +258,11 @@ and `plan-panel` lines the skill pastes); the release path.
 - **Backtest** (`/tmp/claude-501/slice-backtest.WPWN/backtest.py`, 3.22.0 vs branch): 46 saved round-1 panels compared (41 bodies not saved, 15 with no round-1 rows, 2 unresolvable repos). `plan-panel` identical on all 46 apart from the ` --slice` suffix. One body has a sliced seat: this plan's round 1 (`lang:rust`), whose round-1 → final pair moves the slice (review edits touched Behaviour, a shared section). The second backtest has no other input yet: no other saved plan names a file in every phase.
 - **Real delta** (this plan, this session's transcript, scratch store): the original body passes and saves `slices` for `lang:rust` with spans Phase 1, 2, 3, 5 and `shared`; Phase 3's text edited → refused: `stale (reviewed an older body) … backend; stale (its slice changed: Phase 3) … lang:rust; re-run: amont-agent plan-sha --block --lang rust --slice lang:rust …`. Expected and observed. Journal: `sliced=lang:rust slice-stale=lang:rust`.
 - **Old baseline** (a copy of the real 3.22.0 store): the same edit → `stale … backend` only, journal `slices=unknown`. No load error.
-- **Two sliced seats** (`tests/plan_review.rs` `a_delta_to_one_language_phase_re_requires_that_seat_alone`, Rust + TypeScript fixture repository): a TypeScript-phase edit refuses `lang:typescript` alone with its re-run line; a Context edit then asks backend alone.
+- **Two sliced seats**, run as an integration test, not on scratch repositories by hand (`tests/plan_review.rs` `a_delta_to_one_language_phase_re_requires_that_seat_alone`, a Rust + TypeScript fixture repository): a TypeScript-phase edit refuses `lang:typescript` alone with its re-run line; a Context edit then asks backend alone.
 - **CLI** (`plan_sha_slice_prints_the_block_and_the_slice_line`, and by hand on this plan): `--slice lang:rust` prints 2 stdout lines, empty stderr; every conflict exits 2 with its message; an areas plan prints the plain block and `binds the whole body (seats=areas)`.
 - **Downstream readers:** `parse_blocks` keeps `sha=` as the body sha with `slice=` beside it (unit test), which is what `plan-apply` and the outcome ledger match on; not yet run on a real session with a sliced reviewer, which the next plan naming files in every phase will be.
-- Suites: `cargo test --workspace --locked` and clippy `-D warnings` green at the commit gate; greenharness-skills `./scripts/check.sh` and `python3 -m unittest` OK.
+- Old baseline, then two deltas (`a_pass_on_a_baseline_from_before_slices_keeps_the_old_rule`, after code review): the pass on a 3.22.0 baseline records no slices, so a second Rust delta is still judged by the old rule.
+- `plan-apply` finds a sliced language reviewer's patches by the body `sha=` (`tests/plan_apply.rs` `a_sliced_reviewers_patches_are_found_by_its_body_sha`).
 
 ## Outcome
 Phases 1–3 and Phase 5's docs on this branch; Phase 4 in greenharness-skills `feat/plan-review-slices`. Next: merge both, release the skills, then amont-agent 3.23.0, and install it. 14-day measure DUE 2026-11-21.
