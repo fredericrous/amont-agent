@@ -193,7 +193,7 @@ pub fn meta(text: &str) -> Result<Meta, String> {
             "`adds=` names `{bad}`; it takes cli, ui, screen, ops, contract or lang:<language>"
         ));
     }
-    m.adds = m.adds.iter().map(|a| seat_class(a)).collect();
+    m.adds = m.adds.iter().map(|added| seat_class(added)).collect();
     Ok(m)
 }
 
@@ -218,11 +218,11 @@ pub(crate) fn valid_class(c: &str) -> bool {
 }
 
 /// A class as the panel seats it: `large` is the old name of `contract`.
-pub fn seat_class(c: &str) -> String {
-    if c == "large" {
+pub fn seat_class(class: &str) -> String {
+    if class == "large" {
         "contract".into()
     } else {
-        c.to_string()
+        class.to_string()
     }
 }
 
@@ -230,7 +230,10 @@ pub fn seat_class(c: &str) -> String {
 /// areas, a baseline stored before 3.22.0): `large` reads as `contract`, and
 /// `ui`, which seated the screen reviewers too, brings `screen` with it.
 fn in_todays_names(classes: impl IntoIterator<Item = String>) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = classes.into_iter().map(|c| seat_class(&c)).collect();
+    let mut out: BTreeSet<String> = classes
+        .into_iter()
+        .map(|class| seat_class(&class))
+        .collect();
     if out.contains("ui") {
         out.insert("screen".into());
     }
@@ -1698,19 +1701,22 @@ fn classes_of(m: &Meta, body: &str) -> Result<Seating, Said> {
 }
 
 /// Where a panel's seats came from (ADR-0061, `work.review-seats`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatSource {
-    /// The file types of the paths the plan's Phases name.
+    /// The file types of the paths the plan's Phases name, every phase
+    /// naming one.
     Paths,
-    /// Every area of the plan's repositories: its Phases name no path.
-    Areas,
+    /// Every area of the plan's repositories: the Phases name no path, or
+    /// the `unnamed` phases name none while others do.
+    Areas { unnamed: Vec<String> },
 }
 
 impl SeatSource {
-    pub fn as_str(self) -> &'static str {
+    /// The name `plan-panel`'s `seats=` and the outcome ledger print.
+    pub fn as_str(&self) -> &'static str {
         match self {
             SeatSource::Paths => "paths",
-            SeatSource::Areas => "areas",
+            SeatSource::Areas { .. } => "areas",
         }
     }
 }
@@ -1734,9 +1740,6 @@ pub struct Seating {
     /// the source: [`areas_of`], for the outcome ledger.
     pub areas: BTreeSet<String>,
     pub repos: Vec<RepoSeat>,
-    /// The phases that name no file while others do: the seats then come
-    /// from areas.
-    pub unnamed: Vec<String>,
 }
 
 /// What `plan-names-no-paths` says, and its journal excerpt.
@@ -1752,11 +1755,11 @@ impl Seating {
     /// The advice whenever the seats came from areas: naming each phase
     /// that names no file, when others do.
     pub fn advice(&self) -> Option<Advice> {
-        if self.source == SeatSource::Paths {
+        let SeatSource::Areas { unnamed } = &self.source else {
             return None;
-        }
+        };
         let tail = format!("{NAME_THE_FILES}; this panel was seated from the repositories' areas");
-        Some(match self.unnamed.as_slice() {
+        Some(match unnamed.as_slice() {
             [] => Advice {
                 text: tail,
                 excerpt: "seats=areas".into(),
@@ -1810,7 +1813,7 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
     if named.is_empty() || !unnamed.is_empty() {
         return Seating {
             classes: in_todays_names(areas.iter().cloned()),
-            source: SeatSource::Areas,
+            source: SeatSource::Areas { unnamed },
             areas,
             repos: trees
                 .into_iter()
@@ -1820,7 +1823,6 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
                     paths: Vec::new(),
                 })
                 .collect(),
-            unnamed,
         };
     }
     let listing: Vec<(&str, &[String])> = trees
@@ -1831,7 +1833,7 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
     let mut classes: BTreeSet<String> = m.adds.iter().cloned().collect();
     let mut repos = Vec::new();
     for ((name, t), paths) in trees.into_iter().zip(attributed) {
-        classes.extend(file_types::classes(&paths, t.areas.contains("cli")));
+        classes.extend(file_types::classes(&paths, &t.areas));
         repos.push(RepoSeat {
             name,
             areas: t.areas,
@@ -1843,7 +1845,6 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
         source: SeatSource::Paths,
         areas,
         repos,
-        unnamed: Vec::new(),
     }
 }
 

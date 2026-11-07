@@ -59,34 +59,36 @@ fn extension(path: &str) -> Option<&str> {
 /// flag, a URL or an assignment, and either a directory path or a file this
 /// table knows. A `:<line>` or `:<line>-<line>` suffix is dropped.
 pub fn path_in_span(span: &str) -> Option<String> {
-    let s = span.trim();
-    if s.is_empty()
-        || s.contains(char::is_whitespace)
-        || s.starts_with('-')
-        || s.contains("://")
-        || s.contains(['=', '<', '>', '(', ')', '{', '}', '*', '$', '|', '\''])
+    let text = span.trim();
+    if text.is_empty()
+        || text.contains(char::is_whitespace)
+        || text.starts_with('-')
+        || text.contains("://")
+        || text.contains(['=', '<', '>', '(', ')', '{', '}', '*', '$', '|', '\''])
     {
         return None;
     }
-    let s = match s.split_once(':') {
-        Some((p, rest))
-            if rest
+    let without_line = match text.split_once(':') {
+        Some((path, line))
+            if line
                 .chars()
-                .all(|c| c.is_ascii_digit() || c == '-' || c == ',') =>
+                .all(|ch| ch.is_ascii_digit() || ch == '-' || ch == ',') =>
         {
-            p
+            path
         }
         Some(_) => return None,
-        None => s,
+        None => text,
     };
-    let s = s.trim_end_matches(['.', ',', ';']).trim_start_matches("./");
-    if s.is_empty() || s.starts_with('/') || s.starts_with('~') || s.contains("..") {
+    let path = without_line
+        .trim_end_matches(['.', ',', ';'])
+        .trim_start_matches("./");
+    if path.is_empty() || path.starts_with('/') || path.starts_with('~') || path.contains("..") {
         return None;
     }
-    let known_file = KNOWN_FILES.contains(&basename(s));
-    let known_ext = extension(s).is_some_and(|e| KNOWN_EXTENSIONS.contains(&e));
-    let looks_like_dir = s.ends_with('/') && s.len() > 1;
-    (known_file || known_ext || (looks_like_dir && s.contains('/'))).then(|| s.to_string())
+    let known_file = KNOWN_FILES.contains(&basename(path));
+    let known_ext = extension(path).is_some_and(|e| KNOWN_EXTENSIONS.contains(&e));
+    let looks_like_dir = path.ends_with('/') && path.len() > 1;
+    (known_file || known_ext || (looks_like_dir && path.contains('/'))).then(|| path.to_string())
 }
 
 /// The spans between backticks on one line, single backticks only.
@@ -128,23 +130,24 @@ pub fn phases(body: &str) -> Vec<Phase> {
         }
         let top = line.starts_with("- ") || line.starts_with("* ");
         if top {
-            let item = line[2..]
-                .trim_start()
-                .trim_start_matches(['[', ' ', 'x', 'X'])
-                .trim_start_matches(']')
+            let after_marker = line[2..].trim_start();
+            let item_text = ["[ ] ", "[x] ", "[X] "]
+                .iter()
+                .find_map(|checkbox| after_marker.strip_prefix(checkbox))
+                .unwrap_or(after_marker)
                 .trim_start();
-            let label = if item.starts_with('🧑') {
+            let label = if item_text.starts_with('🧑') {
                 // A decision for the person ends the phase before it.
                 String::new()
-            } else if let Some(after) = item.strip_prefix("Phase ") {
+            } else if let Some(after) = item_text.strip_prefix("Phase ") {
                 let number: String = after
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric())
                     .collect();
                 format!("Phase {number}")
             } else {
-                let n = out.iter().filter(|p| !p.label.is_empty()).count() + 1;
-                format!("phase {n}")
+                let place = out.iter().filter(|p| !p.label.is_empty()).count() + 1;
+                format!("phase {place}")
             };
             out.push(Phase {
                 label,
@@ -213,6 +216,9 @@ pub fn is_ui(path: &str) -> bool {
 /// container build, a CI workflow. Unresolved YAML counts, on purpose: a
 /// `deployment.yaml` or `values.yaml` names nothing, and missing a platform
 /// seat costs more than an extra one.
+// holds-until: a manifest is recognised from its content (`kind:`) at the
+// tree read the areas already make, or the ledger shows non-deploy YAML
+// seating `platform` with no platform finding on 5 plans.
 pub fn is_ops(path: &str) -> bool {
     let base = basename(path);
     if matches!(
@@ -253,13 +259,13 @@ pub fn path_classes(path: &str) -> BTreeSet<String> {
 pub fn attribute(paths: &[String], trees: &[(&str, &[String])]) -> Vec<Vec<String>> {
     let mut out = vec![Vec::new(); trees.len()];
     for path in paths {
-        let p = path.trim_end_matches('/');
-        let dir = format!("{p}/");
-        let parent = parent_of(p);
-        let tail = (!p.contains('/')).then(|| format!("/{p}"));
+        let named = path.trim_end_matches('/');
+        let dir = format!("{named}/");
+        let parent = parent_of(named);
+        let tail = (!named.contains('/')).then(|| format!("/{named}"));
         let holds = |files: &[String]| {
             files.iter().any(|f| {
-                f == p
+                f == named
                     || f.starts_with(&dir)
                     || parent.as_deref().is_some_and(|d| f.starts_with(d))
                     || tail.as_deref().is_some_and(|t| f.ends_with(t))
@@ -287,24 +293,24 @@ fn parent_of(path: &str) -> Option<String> {
 
 /// The classes a set of paths earns in one repository: each path's own
 /// classes, plus `cli` when any of them is code and the repository has a
-/// command line (its areas include `cli`).
-pub fn classes(paths: &[String], repo_has_cli: bool) -> BTreeSet<String> {
+/// command line (`repo_areas` holds `cli`).
+pub fn classes(paths: &[String], repo_areas: &BTreeSet<String>) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for p in paths {
         out.extend(path_classes(p));
     }
-    if repo_has_cli && paths.iter().any(|p| language(p).is_some()) {
+    if repo_areas.contains("cli") && paths.iter().any(|p| language(p).is_some()) {
         out.insert("cli".to_string());
     }
     out
 }
 
-/// What a code-review profile reads of a diff: `Some(test)` for a profile
-/// whose files the table knows, `None` for one that reads the whole diff
-/// (backend, architect, unix, tui).
 /// Whether a profile reads a path.
 pub type Reads = Box<dyn Fn(&str) -> bool>;
 
+/// What a code-review profile reads of a diff: `Some(test)` for a profile
+/// whose files the table knows, `None` for one that reads the whole diff
+/// (backend, architect, unix, tui).
 pub fn profile_reads(profile: &str) -> Option<Reads> {
     if let Some(lang) = profile.strip_prefix("lang:") {
         let lang = lang.to_string();
@@ -366,8 +372,13 @@ mod tests {
 
     #[test]
     fn a_phase_without_its_number_is_labelled_by_its_place() {
-        let body = "## Phases\n- [ ] build `src/a.rs`\n- [ ] release\n";
+        let body = "## Phases\n- [ ] build `src/a.rs`\n- [ ] release\n- xtask `x/y.rs`\n";
         assert_eq!(phases_without_paths(body), vec!["phase 2"]);
+        assert_eq!(
+            phases(body).len(),
+            3,
+            "an item starting with x keeps its text"
+        );
     }
 
     #[test]
@@ -396,11 +407,12 @@ mod tests {
 
     #[test]
     fn cli_comes_from_code_in_a_repository_with_a_command_line() {
+        let cli = BTreeSet::from(["cli".to_string()]);
         let paths = vec!["src/dispatch.rs".to_string()];
-        assert!(classes(&paths, true).contains("cli"));
-        assert!(!classes(&paths, false).contains("cli"));
+        assert!(classes(&paths, &cli).contains("cli"));
+        assert!(!classes(&paths, &BTreeSet::new()).contains("cli"));
         let docs = vec!["docs/x.md".to_string()];
-        assert!(!classes(&docs, true).contains("cli"));
+        assert!(!classes(&docs, &cli).contains("cli"));
     }
 
     #[test]

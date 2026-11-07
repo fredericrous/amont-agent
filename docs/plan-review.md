@@ -362,8 +362,8 @@ the list: one line `<repo>\t<profiles comma-separated>`, or
 files the Phases name in it (`backend` always, each `lang:<x>`; `ops` adds
 `platform`, `cli` adds `unix` and `tui`, `ui` adds `react` and `ui-design`,
 `contract` adds `architect`). A repository whose files are not code is
-proposed `none`, with the reason `markdown only`, `no code file` or `no file
-named`; `cut -f2` reads `none`, and the line pastes as `- <repo>: none —
+proposed `none`, with the reason `markdown only`, `no reviewed file type` or `no
+file named`; `cut -f2` reads `none`, and the line pastes as `- <repo>: none —
 <reason>`. When the Phases name no file, the proposal comes from the areas as
 before (`none` — `no language area`). Plain `plan-panel` prints what it always did; if the plan
 has no `## Code review` section it says so on stderr and still exits 0. A

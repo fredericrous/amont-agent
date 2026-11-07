@@ -1502,17 +1502,22 @@ no path, from every area of those repositories (seats=areas), with advice
 on stderr to name the files. adds= declares what no path shows: cli, ui,
 screen, ops, contract, lang:<language>.
 
-First line: repos=<names> areas=<classes> body=<12 hex> panel=full|delta|current seats=paths|areas
+First line: repos=<names> areas=<classes> body=<12 hex>
+            panel=full|delta|current seats=paths|areas
+(areas= lists the classes the seats came from, one line in the output).
 Then one line per agent to launch: `plan-review-<role>`, and `--lang <l>`
 for a language review (the flag its `plan-sha --block` call takes).
 
 --code-review prints, instead, the code-review profiles proposed for each
-repository of the machine comment, from its areas: one line
-`<repo>\t<profiles comma-separated|none>` (none: no language, nothing to
-read). A plan's `## Code review` section (`- <repo>: <profiles>` or
-`- <repo>: none — <reason>`, after Non-goals) declares them; without the
-flag a plan with no such section is warned about on stderr and the
-output above is unchanged.
+repository of the machine comment, from the file types of the paths the
+Phases name in it (from its areas when the seats come from areas): one
+line `<repo>\t<profiles comma-separated>`, or `<repo>\tnone\t<reason>`
+with the reason `markdown only`, `no reviewed file type`, `no file named`
+or `no language area`; `cut -f2` reads `none`, and the line pastes as
+`- <repo>: none — <reason>`. A plan's `## Code review` section
+(`- <repo>: <profiles>` or `- <repo>: none — <reason>`, after Non-goals)
+declares them; without the flag a plan with no such section is warned
+about on stderr and the output above is unchanged.
 
 Exit 0, 1 when the plan cannot be read, its comment is wrong or its Code
 review section does not parse (the reason on stderr), 2 on a usage error.

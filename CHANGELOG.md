@@ -18,7 +18,7 @@
   `plan-panel`'s first line ends in `seats=paths|areas`.
 - `plan-panel --code-review` proposes each repository's profiles from the
   files attributed to it, and a `none` line gains a third tab-separated
-  field, the reason (`markdown only`, `no code file`, `no file named`,
+  field, the reason (`markdown only`, `no reviewed file type`, `no file named`,
   `no language area`).
 - `review-brief --profile` gives `lang:<x>`, `react`, `ui-design` and
   `platform` only their file types' part of the diff, renames read as a

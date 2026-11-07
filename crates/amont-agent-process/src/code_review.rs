@@ -176,32 +176,65 @@ fn opens_body(line: &str) -> bool {
         || line.starts_with("@@")
 }
 
-/// What the files attributed to one repository propose: its profiles, or
-/// `Err` with the reason it needs no code review. A repository is reviewed
-/// when its files earn a code class (a language, `ui`, `ops`); the plan's
-/// declared classes then add theirs (`contract` → architect).
+/// What `plan-panel --code-review` proposes for one repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Proposal {
+    /// The profiles to declare, in [`in_order`]'s order.
+    Profiles(Vec<String>),
+    /// No code review, and why: the third field of a `none` line.
+    NoReview(NoReviewReason),
+}
+
+/// Why a repository is proposed `none`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoReviewReason {
+    /// Every file named in it is markdown (or a directory).
+    MarkdownOnly,
+    /// Files are named in it, none of a type a profile reviews (a shell
+    /// script, a config file).
+    NoReviewedFileType,
+    /// No named path is attributed to it.
+    NoFileNamed,
+    /// Seated from areas, and its areas carry no language.
+    NoLanguageArea,
+}
+
+impl std::fmt::Display for NoReviewReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            NoReviewReason::MarkdownOnly => "markdown only",
+            NoReviewReason::NoReviewedFileType => "no reviewed file type",
+            NoReviewReason::NoFileNamed => "no file named",
+            NoReviewReason::NoLanguageArea => "no language area",
+        })
+    }
+}
+
+/// What the files attributed to one repository propose. A repository is
+/// reviewed when its files earn a code class (a language, `ui`, `ops`); the
+/// plan's declared classes then add theirs (`contract` → architect).
 pub fn proposed_for_paths(
     paths: &[String],
-    has_cli: bool,
+    repo_areas: &BTreeSet<String>,
     adds: &[String],
-) -> Result<Vec<String>, &'static str> {
+) -> Proposal {
     if paths.is_empty() {
-        return Err("no file named");
+        return Proposal::NoReview(NoReviewReason::NoFileNamed);
     }
-    let mut classes = file_types::classes(paths, has_cli);
-    let code = |c: &String| c.starts_with("lang:") || c == "ui" || c == "ops";
+    let mut classes = file_types::classes(paths, repo_areas);
+    let code = |class: &String| class.starts_with("lang:") || class == "ui" || class == "ops";
     if !classes.iter().any(code) {
         let markdown = paths
             .iter()
             .all(|p| p.ends_with(".md") || p.ends_with(".mdx") || p.ends_with('/'));
-        return Err(if markdown {
-            "markdown only"
+        return Proposal::NoReview(if markdown {
+            NoReviewReason::MarkdownOnly
         } else {
-            "no code file"
+            NoReviewReason::NoReviewedFileType
         });
     }
     classes.extend(adds.iter().cloned());
-    Ok(in_order(code_roles(&classes)))
+    Proposal::Profiles(in_order(code_roles(&classes)))
 }
 
 /// The proposal for every repository of the plan's machine comment, one
@@ -212,17 +245,20 @@ pub fn proposal(plan_text: &str) -> Result<String, String> {
     let seated = seating(&machine, plan_text)?;
     let mut out = String::new();
     for repo in &seated.repos {
-        let profiles = match seated.source {
-            SeatSource::Paths => {
-                proposed_for_paths(&repo.paths, repo.areas.contains("cli"), &machine.adds)
-            }
-            SeatSource::Areas => Some(proposed(&repo.areas))
-                .filter(|p| !p.is_empty())
-                .ok_or("no language area"),
+        let proposed = match seated.source {
+            SeatSource::Paths => proposed_for_paths(&repo.paths, &repo.areas, &machine.adds),
+            SeatSource::Areas { .. } => match proposed(&repo.areas) {
+                profiles if profiles.is_empty() => {
+                    Proposal::NoReview(NoReviewReason::NoLanguageArea)
+                }
+                profiles => Proposal::Profiles(profiles),
+            },
         };
-        match profiles {
-            Ok(p) => out.push_str(&format!("{}\t{}\n", repo.name, p.join(","))),
-            Err(reason) => out.push_str(&format!("{}\tnone\t{reason}\n", repo.name)),
+        match proposed {
+            Proposal::Profiles(profiles) => {
+                out.push_str(&format!("{}\t{}\n", repo.name, profiles.join(",")))
+            }
+            Proposal::NoReview(reason) => out.push_str(&format!("{}\tnone\t{reason}\n", repo.name)),
         }
     }
     Ok(out)
@@ -554,38 +590,37 @@ mod tests {
     #[test]
     fn named_files_propose_the_profiles_of_their_types() {
         let paths = |ps: &[&str]| ps.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let none = BTreeSet::new();
+        let cli = set(&["cli"]);
+        let profiles = |ps: &[&str]| Proposal::Profiles(ps.iter().map(|p| p.to_string()).collect());
         assert_eq!(
-            proposed_for_paths(&paths(&["web/Settings.tsx"]), false, &[]),
-            Ok(vec![
-                "backend".to_string(),
-                "lang:typescript".into(),
-                "react".into(),
-                "ui-design".into()
-            ])
+            proposed_for_paths(&paths(&["web/Settings.tsx"]), &none, &[]),
+            profiles(&["backend", "lang:typescript", "react", "ui-design"])
         );
         assert_eq!(
-            proposed_for_paths(&paths(&["src/dispatch.rs"]), true, &["contract".into()]),
-            Ok(vec![
-                "backend".to_string(),
-                "lang:rust".into(),
-                "unix".into(),
-                "tui".into(),
-                "architect".into()
-            ])
+            proposed_for_paths(&paths(&["src/dispatch.rs"]), &cli, &["contract".into()]),
+            profiles(&["backend", "lang:rust", "unix", "tui", "architect"])
         );
         assert_eq!(
-            proposed_for_paths(&paths(&["apps/web/deployment.yaml"]), false, &[]),
-            Ok(vec!["backend".to_string(), "platform".into()])
+            proposed_for_paths(&paths(&["apps/web/deployment.yaml"]), &none, &[]),
+            profiles(&["backend", "platform"])
         );
         assert_eq!(
-            proposed_for_paths(&paths(&["docs/plan-review.md", "CHANGELOG.md"]), true, &[]),
-            Err("markdown only")
+            proposed_for_paths(&paths(&["docs/plan-review.md", "CHANGELOG.md"]), &cli, &[]),
+            Proposal::NoReview(NoReviewReason::MarkdownOnly)
         );
         assert_eq!(
-            proposed_for_paths(&paths(&[".adr.yaml"]), true, &[]),
-            Err("no code file")
+            proposed_for_paths(&paths(&["scripts/check.sh"]), &cli, &[]),
+            Proposal::NoReview(NoReviewReason::NoReviewedFileType)
         );
-        assert_eq!(proposed_for_paths(&[], true, &[]), Err("no file named"));
+        assert_eq!(
+            proposed_for_paths(&[], &cli, &[]),
+            Proposal::NoReview(NoReviewReason::NoFileNamed)
+        );
+        assert_eq!(
+            NoReviewReason::NoReviewedFileType.to_string(),
+            "no reviewed file type"
+        );
     }
 
     #[test]

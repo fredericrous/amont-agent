@@ -1408,7 +1408,7 @@ fn a_plan_is_seated_from_the_files_its_phases_name_not_every_area() {
         let plan = w.plan("p.md", body, "repos=app");
         let out = w.bin().arg("plan-panel").arg(&plan).output().unwrap();
         assert!(out.status.success(), "{out:?}");
-        let _ = std::fs::remove_dir_all(w.store());
+        let _ = std::fs::remove_dir_all(w.store()); // no store yet on the first call: nothing to remove
         (
             String::from_utf8(out.stdout).unwrap(),
             String::from_utf8(out.stderr).unwrap(),
