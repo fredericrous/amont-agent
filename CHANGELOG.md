@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Changed
+
+- The review panel is seated from the file types of the paths a plan's
+  `## Phases` name (ADR-0061, `work.review-seats`), not from every area of
+  its repositories: a Rust repository with a web front end no longer seats
+  the four interface reviewers on a plan that touches only Rust. Each path is
+  attributed to the repository whose default tree holds it, from the listing
+  the areas were already read from. `ui` (`.tsx`, `.css`, stories, …) seats
+  `react` and `ui-design`; the new `adds=screen` seats `ux-research` and
+  `game-ux`; `adds=contract` (the new name of `large`) seats `po` and
+  `architect`; any `.yaml` outside tool configuration seats `platform`.
+  Paths seat the panel only when every phase names one; a plan with a phase
+  that names no file keeps the area seats of before.
+  `plan-panel`'s first line ends in `seats=paths|areas`.
+- `plan-panel --code-review` proposes each repository's profiles from the
+  files attributed to it, and a `none` line gains a third tab-separated
+  field, the reason (`markdown only`, `no reviewed file type`, `no file named`,
+  `no language area`).
+- `review-brief --profile` gives `lang:<x>`, `react`, `ui-design` and
+  `platform` only their file types' part of the diff, renames read as a
+  deletion and an addition, in batches that fit one git call each; the stat
+  stays whole, the rest is listed under `## Not in this brief`, and every
+  profile brief carries the plan's Goal and Behaviour. The delta brief
+  filters each patch it compares the same way.
+- Outcome rows carry `plan.seat_source` and `plan.seat_classes`; a row
+  without them reads as `areas`.
+
+### Added
+
+- `plan-names-no-paths` (`advise`, at most): at `ExitPlanMode`, a plan
+  seated from areas because a phase names no file is told to name the files
+  each phase touches, and which phases name none. It never refuses.
+
 ## v3.21.0
 
 ### Added

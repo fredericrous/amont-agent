@@ -192,9 +192,16 @@ fn two_commit_repo_with(name: &str, extra: &[&str]) -> PathBuf {
         std::fs::write(repo.join(file), "x: 1\n").unwrap();
     }
     std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    // Two languages, so a language profile's brief has something to leave out.
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("web")).unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "pub fn one() {}\n").unwrap();
+    std::fs::write(repo.join("web/app.ts"), "export const one = 1;\n").unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "base"]);
     std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "pub fn two() {}\n").unwrap();
+    std::fs::write(repo.join("web/app.ts"), "export const two = 2;\n").unwrap();
     git(&repo, &["commit", "-qam", "change"]);
     repo
 }
@@ -1054,4 +1061,296 @@ fn an_interdiff_after_a_rebase_shows_what_the_rebase_changed_in_the_patch() {
         !text.contains("main moved"),
         "main's own change is not the branch's: {text}"
     );
+}
+
+/// `review-brief --profile <p>` on `repo` against `base`, with `more` args.
+#[cfg(unix)]
+fn brief_for(
+    bin: &std::path::Path,
+    repo: &std::path::Path,
+    base: &str,
+    profile: &str,
+    more: &[&str],
+) -> (Output, String, String) {
+    let mut args = vec![
+        "review-brief",
+        "-C",
+        repo.to_str().unwrap(),
+        "--base",
+        base,
+        "--profile",
+        profile,
+    ];
+    args.extend(more);
+    let out = run(&args, bin);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    (out, text, err)
+}
+
+/// The patch part of a brief: from `## Diff\n` to the next heading.
+#[cfg(unix)]
+fn patch_of(brief: &str) -> &str {
+    let start = brief.find("## Diff\n").expect("a ## Diff section");
+    let rest = &brief[start + 8..];
+    &rest[..rest
+        .find("\n## ")
+        .or_else(|| rest.find("\n# "))
+        .unwrap_or(rest.len())]
+}
+
+#[cfg(unix)]
+#[test]
+fn a_language_profile_reads_its_own_files_with_the_whole_stat() {
+    let bin = scratch("slice-lang-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo("slice-lang");
+    let plan = repo.join("plan.md");
+    std::fs::write(
+        &plan,
+        "# P\n\n## Goal\n\nPURPOSE-TEXT\n\n## Behaviour\n\nBEHAVIOUR-TEXT\n\n## Non-goals\n\nNONGOAL-TEXT\n",
+    )
+    .unwrap();
+    let plan_arg = ["--plan", plan.to_str().unwrap()];
+    let (out, brief, err) = brief_for(&bin, &repo, "HEAD~1", "lang:typescript", &plan_arg);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let patch = patch_of(&brief);
+    assert!(patch.contains("+export const two = 2;"), "{patch}");
+    assert!(
+        !patch.contains("pub fn two") && !patch.contains("+two"),
+        "{patch}"
+    );
+    let stat = &brief[brief.find("## Diff stat").unwrap()..brief.find("## Diff\n").unwrap()];
+    for path in ["a.txt", "src/lib.rs", "web/app.ts"] {
+        assert!(stat.contains(path), "the stat stays whole: {stat}");
+    }
+    assert!(
+        brief.contains("## Not in this brief\n\nChanged, and not of lang:typescript's types, so their patch is not here (the stat lists them):\n\n- `a.txt`\n- `src/lib.rs`\n"),
+        "{brief}"
+    );
+    for text in ["PURPOSE-TEXT", "BEHAVIOUR-TEXT", "NONGOAL-TEXT"] {
+        assert!(brief.contains(text), "{text}: {brief}");
+    }
+    assert!(
+        err.contains("lang:typescript: 1 of 3 changed files in this brief ("),
+        "{err}"
+    );
+
+    // A profile that reads the whole diff: every file, nothing listed out.
+    let (out, brief, _) = brief_for(&bin, &repo, "HEAD~1", "backend", &plan_arg);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let patch = patch_of(&brief);
+    assert!(
+        patch.contains("pub fn two") && patch.contains("export const two"),
+        "{patch}"
+    );
+    assert!(!brief.contains("## Not in this brief"), "{brief}");
+    assert!(
+        brief.contains("PURPOSE-TEXT"),
+        "every profile brief has the Goal"
+    );
+
+    // Implementation review's brief is unchanged: no Goal, the whole diff.
+    let out = run(
+        &[
+            "review-brief",
+            "-C",
+            repo.to_str().unwrap(),
+            "--base",
+            "HEAD~1",
+            "--plan",
+            plan.to_str().unwrap(),
+        ],
+        &bin,
+    );
+    let brief = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !brief.contains("PURPOSE-TEXT") && brief.contains("NONGOAL-TEXT"),
+        "{brief}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_profile_with_no_file_of_its_types_gets_no_patch_never_the_whole_diff() {
+    let bin = scratch("slice-empty-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = two_commit_repo("slice-empty");
+    let (out, brief, err) = brief_for(&bin, &repo, "HEAD~1", "platform", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        brief.contains(
+            "## Diff\n\nNo changed file is of platform's types: this brief carries no patch.\n"
+        ),
+        "{brief}"
+    );
+    assert!(!brief.contains("```diff"), "{brief}");
+    assert!(brief.contains("- `web/app.ts`"), "{brief}");
+    assert!(
+        err.contains("platform: 0 of 3 changed files in this brief (0 bytes of patch)"),
+        "{err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn more_paths_than_one_git_call_takes_are_filtered_in_batches() {
+    let bin = scratch("slice-argv-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let repo = scratch("slice-argv");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "base"]);
+    // 1500 paths of about 100 bytes: past the 128 KiB a call may spend.
+    let dir = repo.join("web").join("a".repeat(60));
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..1500 {
+        std::fs::write(
+            dir.join(format!("component_{i:04}_with_a_long_name.ts")),
+            format!("export const n = {i};\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "many"]);
+    let (out, _, err) = brief_for(&bin, &repo, "HEAD~1", "lang:typescript", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    // The batches, joined, are byte for byte the one diff git would print.
+    let whole = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["diff", "--no-renames", "HEAD~1...HEAD", "--", "web/"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        err.contains(&format!(
+            "lang:typescript: 1500 of 1501 changed files in this brief ({} bytes of patch)",
+            whole.stdout.len()
+        )),
+        "{err}"
+    );
+}
+
+/// The patch inside a delta brief's ```` ```diff ```` fence.
+#[cfg(unix)]
+fn fenced(brief: &str) -> &str {
+    let start = brief.find("```diff\n").expect("a diff fence") + 8;
+    let rest = &brief[start..];
+    &rest[..rest.find("\n```").unwrap_or(rest.len())]
+}
+
+/// A repository whose branch moves `src/old.rs` to `web/new.ts`, the same
+/// text, on top of a reviewed commit. Returns it and the reviewed head.
+#[cfg(unix)]
+fn rename_repo(name: &str) -> (PathBuf, String) {
+    let repo = scratch(name);
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "t"]);
+    std::fs::write(repo.join(".adr.yaml"), "x: 1\n").unwrap();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("web")).unwrap();
+    let text = "// MOVED-TEXT one\n// two\n// three\n// four\n";
+    std::fs::write(repo.join("src/old.rs"), text).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "base"]);
+    git(&repo, &["checkout", "-qb", "feat"]);
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    git(&repo, &["commit", "-qam", "reviewed"]);
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let reviewed = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    git(&repo, &["mv", "src/old.rs", "web/new.ts"]);
+    git(&repo, &["commit", "-qm", "move"]);
+    (repo, reviewed)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_move_across_languages_shows_each_language_its_side() {
+    let bin = scratch("slice-rename-bin");
+    fake_aval(&bin, BRIEF_AVAL);
+    let sides = |brief: &str| (brief.contains("src/old.rs"), brief.contains("web/new.ts"));
+
+    // The full brief.
+    let (repo, _) = rename_repo("slice-rename-full");
+    let (out, rust, _) = brief_for(&bin, &repo, "main", "lang:rust", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let patch = patch_of(&rust);
+    assert!(
+        patch.contains("deleted file") && patch.contains("-// MOVED-TEXT one"),
+        "{patch}"
+    );
+    assert_eq!(sides(patch), (true, false), "{patch}");
+    let (_, ts, _) = brief_for(&bin, &repo, "main", "lang:typescript", &[]);
+    let patch = patch_of(&ts);
+    assert!(
+        patch.contains("new file") && patch.contains("+// MOVED-TEXT one"),
+        "{patch}"
+    );
+    assert_eq!(sides(patch), (false, true), "{patch}");
+
+    // The delta, the move on top of the reviewed head.
+    let (repo, reviewed) = rename_repo("slice-rename-on-top");
+    let delta = |profile: &str| {
+        let out = interdiff_with(&bin, &repo, &reviewed, &["--profile", profile]);
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let rust = delta("lang:rust");
+    let rust_patch = fenced(&rust);
+    assert!(rust_patch.contains("-// MOVED-TEXT one"), "{rust}");
+    assert_eq!(sides(rust_patch), (true, false), "{rust}");
+    assert!(
+        rust.contains("files outside lang:rust's types left out"),
+        "{rust}"
+    );
+    let ts = delta("lang:typescript");
+    let ts_patch = fenced(&ts);
+    assert!(ts_patch.contains("+// MOVED-TEXT one"), "{ts}");
+    assert!(
+        ts_patch.contains("web/new.ts") && !ts_patch.contains("diff --git a/src/old.rs"),
+        "{ts}"
+    );
+
+    // The delta after a rebase: each branch patch is filtered on its own.
+    let (repo, reviewed) = rename_repo("slice-rename-rebased");
+    git(&repo, &["checkout", "-q", "main"]);
+    std::fs::write(repo.join("b.txt"), "main moved\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "main"]);
+    git(&repo, &["checkout", "-q", "feat"]);
+    git(&repo, &["rebase", "-q", "main"]);
+    let delta = |profile: &str| {
+        let out = interdiff_with(&bin, &repo, &reviewed, &["--profile", profile]);
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let rust = delta("lang:rust");
+    assert!(
+        rust.contains("between its branch patch and HEAD's"),
+        "{rust}"
+    );
+    let rust_patch = fenced(&rust);
+    assert!(
+        rust_patch.contains("+-// MOVED-TEXT one"),
+        "the deletion, now in the patch: {rust}"
+    );
+    assert!(!rust_patch.contains("+// MOVED-TEXT one"), "{rust}");
+    let ts = delta("lang:typescript");
+    let ts_patch = fenced(&ts);
+    assert!(
+        ts_patch.contains("++// MOVED-TEXT one"),
+        "the addition, now in the patch: {ts}"
+    );
+    assert!(!ts_patch.contains("main moved") && !rust_patch.contains("main moved"));
 }

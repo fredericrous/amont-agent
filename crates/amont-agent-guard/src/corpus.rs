@@ -225,6 +225,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/plan-review-panel.cases"),
     ),
     (
+        "plan-names-no-paths",
+        include_str!("../tests/corpus/plan-names-no-paths.cases"),
+    ),
+    (
         "implementation-review",
         include_str!("../tests/corpus/implementation-review.cases"),
     ),

@@ -14,6 +14,7 @@
 | `push-preflight` | `advise` | a `git push` whose slow pre-push test gate has not been rehearsed with `amont rehearse --wait` |
 | `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers, unless the plan the person approved declares the evidence is enough ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
+| `plan-names-no-paths` | `advise` (max advise) | a plan presented at `ExitPlanMode` whose `## Phases` name no file in backticks, so its panel was seated from every area of its repositories instead of the file types it touches; the advice names each phase that names no file ([the review panel](plan-review.md)) |
 | `plan-phases-open` | `deny` | a turn ending while the plan this branch carries still has an open phase that is not a `🧑 decision:` — the agent is sent on to it |
 | `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |
 | `ask-unopened-page` | `deny` | an `AskUserQuestion` naming a local page (localhost URL, `file://` URL, `.html` path) that no `amont-agent open` showed the person since the last answered question about it; without a readable transcript it advises |

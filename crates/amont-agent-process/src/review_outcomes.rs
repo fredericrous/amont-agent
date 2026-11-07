@@ -663,8 +663,22 @@ fn record_locked(
             None => return serde_json::Value::Null,
         };
         let meta = plan_review::meta(body);
+        // One read of the trees for both: `areas` stays the repositories'
+        // areas, `seat_source` and `seat_classes` say what seated the panel.
+        // A body whose machine comment does not parse records `repos: []`
+        // and null seats, as before: the hook refused that plan at
+        // ExitPlanMode, so there is no panel to describe.
+        let seated = meta.as_ref().ok().and_then(|m| {
+            plan_review::seating(m, body)
+                .map_err(|why| {
+                    eprintln!("amont-agent: the panel's seats cannot be recorded: {why}")
+                })
+                .ok()
+        });
         serde_json::json!({
-            "areas": meta.as_ref().ok().and_then(plan_review::areas_of).map(|a| json_list(&a)).unwrap_or_else(|| serde_json::json!([])),
+            "areas": seated.as_ref().map(|s| json_list(&s.areas)).unwrap_or_else(|| serde_json::json!([])),
+            "seat_source": seated.as_ref().map(|s| s.source.as_str()),
+            "seat_classes": seated.as_ref().map(|s| json_list(&s.classes)),
             "repos": meta.as_ref().map(|m| json_list(&m.repos)).unwrap_or_else(|_| serde_json::json!([])),
             "body_lines": crate::plan_text::canonical(body).lines().count(),
         })
@@ -1308,8 +1322,49 @@ fn run_stats(args: &[String]) -> (String, ExitCode) {
     )
 }
 
+/// What a ledger row says seated its panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordedSeats {
+    Paths,
+    Areas,
+}
+
+/// What seated the panel a row's reviewer sat on. A row written before
+/// 3.22.0 has no `seat_source` key, and its panel was seated from areas.
+/// `None` when the row recorded no plan, or a `seat_source` that is null
+/// (the repositories could not be read) or not one of the two names: never
+/// counted on either side of the budget measure.
+pub fn seat_source(row: &serde_json::Value) -> Option<RecordedSeats> {
+    let plan = row.get("plan").filter(|p| p.is_object())?;
+    match plan.get("seat_source") {
+        None => Some(RecordedSeats::Areas),
+        Some(value) => match value.as_str()? {
+            "paths" => Some(RecordedSeats::Paths),
+            "areas" => Some(RecordedSeats::Areas),
+            _ => None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_row_before_seat_sources_reads_as_areas() {
+        use super::{seat_source, RecordedSeats};
+        let old = serde_json::json!({"plan": {"areas": ["cli"], "repos": ["a"], "body_lines": 3}});
+        assert_eq!(seat_source(&old), Some(RecordedSeats::Areas));
+        let new = serde_json::json!({"plan": {"seat_source": "paths"}});
+        assert_eq!(seat_source(&new), Some(RecordedSeats::Paths));
+        for unknown in [
+            serde_json::json!({"plan": null}),
+            serde_json::json!({"plan": {"seat_source": null}}),
+            serde_json::json!({"plan": {"seat_source": "pathz"}}),
+            serde_json::json!({"plan": {"seat_source": 1}}),
+        ] {
+            assert_eq!(seat_source(&unknown), None, "{unknown}");
+        }
+    }
+
     use super::*;
 
     fn plan_row(

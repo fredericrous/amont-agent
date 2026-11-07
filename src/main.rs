@@ -1290,8 +1290,13 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
                   a code-review profile (backend, platform, unix, tui,
                   react, ui-design, architect or lang:<x>): adds a `Profile:
                   <role>` line and, after the code rules, the judge rules
-                  whose `Reviewed by:` names that role. Without it the plan
-                  section carries the plan's declared code review.
+                  whose `Reviewed by:` names that role, and the plan's Goal
+                  and Behaviour. lang:<x>, react, ui-design and platform get
+                  only their file types' part of the diff (renames as a
+                  deletion and an addition), the stat whole and the other
+                  files under `## Not in this brief`; the count is on
+                  stderr. Without it the plan section carries the plan's
+                  declared code review.
   --interdiff <head>
                   a delta brief: the same headers, then only what changed
                   since <head> (7-64 hex digits: the head an earlier review
@@ -1488,21 +1493,31 @@ const PLAN_PANEL_USAGE: &str = "\
 usage: amont-agent plan-panel [--code-review] <plan.md>
 
 The review agents a plan still needs, computed as the plan-review-panel
-hook will judge it at ExitPlanMode: the areas of every repository in the
-plan's machine comment (`<!-- panel: repos=... adds=... -->`), and whether
-this is the whole panel or a delta since the plan's last accepted body.
+hook will judge it at ExitPlanMode, and whether this is the whole panel or
+a delta since the plan's last accepted body. The seats come from the file
+types of the paths in backticks under the plan's `## Phases` (seats=paths),
+each attributed to the repository of the machine comment
+(`<!-- panel: repos=... adds=... -->`) that holds it; when the Phases name
+no path, from every area of those repositories (seats=areas), with advice
+on stderr to name the files. adds= declares what no path shows: cli, ui,
+screen, ops, contract, lang:<language>.
 
-First line: repos=<names> areas=<areas> body=<12 hex> panel=full|delta|current
+First line: repos=<names> areas=<classes> body=<12 hex>
+            panel=full|delta|current seats=paths|areas
+(areas= lists the classes the seats came from, one line in the output).
 Then one line per agent to launch: `plan-review-<role>`, and `--lang <l>`
 for a language review (the flag its `plan-sha --block` call takes).
 
 --code-review prints, instead, the code-review profiles proposed for each
-repository of the machine comment, from its areas: one line
-`<repo>\t<profiles comma-separated|none>` (none: no language, nothing to
-read). A plan's `## Code review` section (`- <repo>: <profiles>` or
-`- <repo>: none — <reason>`, after Non-goals) declares them; without the
-flag a plan with no such section is warned about on stderr and the
-output above is unchanged.
+repository of the machine comment, from the file types of the paths the
+Phases name in it (from its areas when the seats come from areas): one
+line `<repo>\t<profiles comma-separated>`, or `<repo>\tnone\t<reason>`
+with the reason `markdown only`, `no reviewed file type`, `no file named`
+or `no language area`; `cut -f2` reads `none`, and the line pastes as
+`- <repo>: none — <reason>`. A plan's `## Code review` section
+(`- <repo>: <profiles>` or `- <repo>: none — <reason>`, after Non-goals)
+declares them; without the flag a plan with no such section is warned
+about on stderr and the output above is unchanged.
 
 Exit 0, 1 when the plan cannot be read, its comment is wrong or its Code
 review section does not parse (the reason on stderr), 2 on a usage error.
@@ -1556,12 +1571,16 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
         Ok(p) => {
             let areas = p.classes.iter().cloned().collect::<Vec<_>>().join(",");
             println!(
-                "repos={} areas={} body={} panel={}",
+                "repos={} areas={} body={} panel={} seats={}",
                 p.repos,
                 if areas.is_empty() { "-" } else { &areas },
                 &p.sha[..12],
-                p.mode
+                p.mode,
+                p.source.as_str()
             );
+            if let Some(advice) = &p.advice {
+                eprintln!("amont-agent: plan-panel: {advice}");
+            }
             for role in &p.needed {
                 match plan_review::agent_for(role) {
                     (agent, Some(lang)) => println!("{agent} --lang {lang}"),

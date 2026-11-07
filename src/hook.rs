@@ -142,7 +142,8 @@ fn decide(raw: &str) -> Decision {
         }
         Event::PrePlanExit(plan) => {
             let stance = crate::stance::resolve(&rules::plan_review_panel::RULE);
-            crate::plan_review::on_plan_exit(&plan, stance)
+            let paths = crate::stance::resolve(&rules::plan_names_no_paths::RULE);
+            crate::plan_review::on_plan_exit(&plan, stance, paths)
         }
         Event::PostPlanExit(plan) => {
             crate::preview::on_plan_answered(&plan);

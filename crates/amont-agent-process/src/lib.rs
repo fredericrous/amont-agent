@@ -10,6 +10,7 @@ pub mod board;
 pub mod candidates_block;
 pub mod code_review;
 pub mod content_id;
+pub mod file_types;
 pub mod guide;
 pub mod impl_review_outcomes;
 pub mod implementation_review;

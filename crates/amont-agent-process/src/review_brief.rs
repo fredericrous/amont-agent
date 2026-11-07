@@ -2,8 +2,11 @@
 //! (decisions ADR-0043, ADR-0044). One function hashes the `aval` output
 //! ([`rules_sha`]); the brief, the CLI and the push check all call it.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use crate::file_types;
 
 use amont_agent_guard::git;
 use amont_agent_guard::sha256::{hex, sha256};
@@ -547,17 +550,43 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         .unwrap_or_else(|| missing_section(plan_text.as_deref(), "Verification"));
     brief.push_str(&format!("{verification}\n\n"));
 
-    let stat = git::stdout_in(
-        &repo,
-        &["diff", &range, "--stat", "--", ".", &exclude_plans],
-    )
-    .ok_or_else(|| BriefError::Repository(format!("`git diff {range} --stat` failed")))?;
+    // A profile whose file types filter the diff reads its own part of it
+    // (ADR-0061, `work.review-slices`); the stat stays whole, so what it did
+    // not read is in sight. Renames read as a deletion and an addition, so
+    // each language sees its own side of a move.
+    let selection = select(&repo, &[&range], request.profile.as_deref())?;
+    let mut stat_args = vec!["diff"];
+    if selection.is_some() {
+        stat_args.push("--no-renames");
+    }
+    stat_args.extend([range.as_str(), "--stat", "--", ".", &exclude_plans]);
+    let stat = git::stdout_in(&repo, &stat_args)
+        .ok_or_else(|| BriefError::Repository(format!("`git diff {range} --stat` failed")))?;
     brief.push_str(&format!("## Diff stat\n\n```\n{stat}\n```\n\n"));
-    let diff = git::bytes_in(&repo, &["diff", &range, "--", ".", &exclude_plans], None)
-        .ok()
-        .flatten()
-        .ok_or_else(|| BriefError::Repository(format!("`git diff {range}` failed")))?;
-    if diff.len() < FULL_DIFF_LIMIT_BYTES {
+    let mut notices = Vec::new();
+    let diff = match &selection {
+        None => git::bytes_in(&repo, &["diff", &range, "--", ".", &exclude_plans], None)
+            .ok()
+            .flatten()
+            .ok_or_else(|| BriefError::Repository(format!("`git diff {range}` failed")))?,
+        Some(chosen) => {
+            let patch = filtered_patch(
+                &repo,
+                &["diff", "--no-renames"],
+                &[&range],
+                &chosen.kept,
+                argv_budget(),
+            )?;
+            notices.push(chosen.notice(patch.len()));
+            patch
+        }
+    };
+    if selection.as_ref().is_some_and(|c| c.kept.is_empty()) {
+        brief.push_str(&format!(
+            "## Diff\n\nNo changed file is of {}'s types: this brief carries no patch.\n\n",
+            request.profile.as_deref().unwrap_or_default()
+        ));
+    } else if diff.len() < FULL_DIFF_LIMIT_BYTES {
         brief.push_str(&format!(
             "## Diff\n\n```diff\n{}\n```\n\n",
             String::from_utf8_lossy(&diff)
@@ -566,6 +595,9 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         brief.push_str(
             "## Diff\n\nThe diff is 60 KB or more: read the changed files in the worktree.\n\n",
         );
+    }
+    if let Some(chosen) = &selection {
+        brief.push_str(&chosen.not_in_brief());
     }
 
     let section_text = match &found {
@@ -579,7 +611,6 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         brief.push_str(&format!("{section_text}\n"));
     }
 
-    let mut notices = Vec::new();
     if let Some(Candidates::Unavailable(cause)) = &found {
         notices.push(format!("adr-lint's candidates are unavailable: {cause}"));
     }
@@ -629,11 +660,20 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         }
     }
 
-    let non_goals = plan_text
-        .as_deref()
-        .and_then(|t| section(t, "Non-goals"))
-        .unwrap_or_else(|| missing_section(plan_text.as_deref(), "Non-goals"));
-    brief.push_str(&format!("\n{non_goals}\n"));
+    // A profile reads a slice of the work: what the plan is for and how it
+    // behaves is what that slice is judged against.
+    let mut closing = Vec::new();
+    if request.profile.is_some() {
+        closing.extend(["Goal", "Behaviour"]);
+    }
+    closing.push("Non-goals");
+    for heading in closing {
+        let text = plan_text
+            .as_deref()
+            .and_then(|t| section(t, heading))
+            .unwrap_or_else(|| missing_section(plan_text.as_deref(), heading));
+        brief.push_str(&format!("\n{text}\n"));
+    }
     Ok(Brief {
         text: brief,
         notices,
@@ -837,14 +877,29 @@ fn interdiff_brief(delta: &Delta) -> Result<Brief, BriefError> {
         )),
     }
     let exclude_plans = format!(":!{PLANS_DIR}");
-    let patch = |from: &str, to: &str| {
+    // Each patch is filtered on its own range's paths, so a rebased delta
+    // compares the profile's part of each branch patch.
+    let mut omitted: BTreeSet<String> = BTreeSet::new();
+    let mut kept: BTreeSet<String> = BTreeSet::new();
+    let filtered = profile.is_some_and(|p| file_types::profile_reads(p).is_some());
+    let mut patch = |from: &str, to: &str| -> Result<Vec<u8>, BriefError> {
         let mut args = vec!["diff"];
         args.extend(DIFF_PINNED);
-        args.extend([from, to, "--", ".", &exclude_plans]);
-        git::bytes_in(repo, &args, None)
-            .ok()
-            .flatten()
-            .ok_or_else(|| BriefError::Repository(format!("`git diff {from} {to}` failed")))
+        match select(repo, &[from, to], profile)? {
+            None => {
+                args.extend([from, to, "--", ".", &exclude_plans]);
+                git::bytes_in(repo, &args, None)
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| BriefError::Repository(format!("`git diff {from} {to}` failed")))
+            }
+            Some(chosen) => {
+                args.push("--no-renames");
+                kept.extend(chosen.kept.iter().cloned());
+                omitted.extend(chosen.omitted.iter().cloned());
+                filtered_patch(repo, &args, &[from, to], &chosen.kept, argv_budget())
+            }
+        }
     };
     let on_top =
         git::stdout_in(repo, &["merge-base", "--is-ancestor", &old_head, "HEAD"]).is_some();
@@ -884,30 +939,232 @@ fn interdiff_brief(delta: &Delta) -> Result<Brief, BriefError> {
         },
         Some(role) => brief.push_str(&format!("\nProfile: {role}\n\n")),
     }
+    let left_out = match profile {
+        Some(role) if filtered => {
+            format!("docs/plans and the files outside {role}'s types left out")
+        }
+        _ => "docs/plans left out".to_string(),
+    };
     brief.push_str(&format!(
         "## Interdiff since {old}\n\n\
          The earlier review read `{old_head}` on base `{old_base}`. This is \
-         {shape} (base `{merge_base}`), docs/plans left out. Your prompt \
+         {shape} (base `{merge_base}`), {left_out}. Your prompt \
          carries `Delta.` and your round-1 findings: judge what changed \
-         against them. Everything else is what the earlier review read.\n\n\
-         ```diff\n{}\n```\n",
-        String::from_utf8_lossy(&interdiff)
+         against them. Everything else is what the earlier review read.\n\n",
     ));
+    if filtered && kept.is_empty() {
+        brief.push_str(&format!(
+            "No changed file is of {}'s types: this delta carries no patch.\n",
+            profile.unwrap_or_default()
+        ));
+    } else {
+        brief.push_str(&format!(
+            "```diff\n{}\n```\n",
+            String::from_utf8_lossy(&interdiff)
+        ));
+    }
+    if filtered {
+        notices.push(format!(
+            "{}: {} of {} changed files in this delta ({} bytes of patch)",
+            profile.unwrap_or_default(),
+            kept.len(),
+            kept.len() + omitted.len(),
+            interdiff.len()
+        ));
+    }
+    if filtered && !omitted.is_empty() {
+        brief.push_str(&format!(
+            "\n{}",
+            not_in_brief(profile.unwrap_or_default(), omitted.iter())
+        ));
+    }
     crate::implementation_review::note(
         "interdiff-brief",
         "-",
         name,
         &format!(
-            "head={} bytes={} shape={}",
+            "head={} bytes={} shape={}{}",
             old_head.get(..12).unwrap_or(&old_head),
             interdiff.len(),
-            if on_top { "on-top" } else { "rebased" }
+            if on_top { "on-top" } else { "rebased" },
+            if filtered {
+                format!(" kept={} omitted={}", kept.len(), omitted.len())
+            } else {
+                String::new()
+            }
         ),
     );
     Ok(Brief {
         text: brief,
         notices,
     })
+}
+
+/// What a profile reads of a range when its file types filter the diff:
+/// the changed paths it keeps and the ones it leaves out.
+struct Selection {
+    profile: String,
+    kept: Vec<String>,
+    omitted: Vec<String>,
+}
+
+impl Selection {
+    fn notice(&self, bytes: usize) -> String {
+        format!(
+            "{}: {} of {} changed files in this brief ({bytes} bytes of patch)",
+            self.profile,
+            self.kept.len(),
+            self.kept.len() + self.omitted.len()
+        )
+    }
+
+    fn not_in_brief(&self) -> String {
+        if self.omitted.is_empty() {
+            return String::new();
+        }
+        not_in_brief(&self.profile, self.omitted.iter())
+    }
+}
+
+/// `## Not in this brief`: the changed files outside a profile's types.
+fn not_in_brief<'a>(profile: &str, paths: impl Iterator<Item = &'a String>) -> String {
+    let mut out = format!(
+        "## Not in this brief\n\nChanged, and not of {profile}'s types, so their patch is not here (the stat lists them):\n\n"
+    );
+    for p in paths {
+        out.push_str(&format!("- `{p}`\n"));
+    }
+    out.push('\n');
+    out
+}
+
+/// The paths `revs` changes (one `a...b` argument or two revisions), a
+/// rename read as a deletion and an addition, docs/plans left out by prefix
+/// rather than by pathspec magic, so `GIT_LITERAL_PATHSPECS` cannot bring
+/// the plans back. Second: the names that are not UTF-8, which a literal
+/// pathspec could not give back to git; they are listed, never in a patch.
+fn changed_paths(repo: &Path, revs: &[&str]) -> Result<(Vec<String>, Vec<String>), BriefError> {
+    let mut args = vec!["diff", "--no-renames", "--name-only", "-z"];
+    args.extend(revs);
+    let out = run_git(
+        repo,
+        &args,
+        &format!("`git diff --name-only {}`", revs.join(" ")),
+    )?;
+    let plans = format!("{PLANS_DIR}/");
+    let (mut readable, mut unreadable) = (Vec::new(), Vec::new());
+    for name in out.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        match std::str::from_utf8(name) {
+            Ok(path) if path.starts_with(&plans) => {}
+            Ok(path) => readable.push(path.to_string()),
+            Err(_) => unreadable.push(format!(
+                "{} (not UTF-8: not in this patch)",
+                String::from_utf8_lossy(name)
+            )),
+        }
+    }
+    Ok((readable, unreadable))
+}
+
+/// One git call's stdout, or an error that says which call failed and
+/// whether git could not start or exited non-zero.
+fn run_git(repo: &Path, args: &[&str], what: &str) -> Result<Vec<u8>, BriefError> {
+    match git::bytes_in(repo, args, None) {
+        Ok(Some(out)) => Ok(out),
+        Ok(None) => Err(BriefError::Repository(format!("{what} failed"))),
+        Err(e) => Err(BriefError::Repository(format!(
+            "{what} could not be run: {e}"
+        ))),
+    }
+}
+
+/// `None`: no profile, or one that reads the whole diff (backend, architect,
+/// unix, tui). Else the paths [`file_types::profile_reads`] keeps.
+fn select(
+    repo: &Path,
+    revs: &[&str],
+    profile: Option<&str>,
+) -> Result<Option<Selection>, BriefError> {
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    let Some(reads) = file_types::profile_reads(profile) else {
+        return Ok(None);
+    };
+    let (readable, unreadable) = changed_paths(repo, revs)?;
+    let (kept, mut omitted): (Vec<String>, Vec<String>) =
+        readable.into_iter().partition(|p| reads(p));
+    omitted.extend(unreadable);
+    Ok(Some(Selection {
+        profile: profile.to_string(),
+        kept,
+        omitted,
+    }))
+}
+
+/// The bytes one git call may spend on pathspecs, the environment taken
+/// off: far under any system's `ARG_MAX` (1 MiB on macOS, 2 MiB on Linux),
+/// which counts the environment too. `git diff` has no
+/// `--pathspec-from-file`, so a long list is split into batches.
+const ARGV_BUDGET: usize = 128 * 1024;
+const ARGV_FLOOR: usize = 16 * 1024;
+
+fn argv_budget() -> usize {
+    let env: usize = std::env::vars_os()
+        .map(|(k, v)| k.len() + v.len() + 2)
+        .sum();
+    ARGV_BUDGET.saturating_sub(env).max(ARGV_FLOOR)
+}
+
+/// `paths` in order, split so each batch's arguments fit `budget` bytes
+/// (each costs its bytes, a NUL and a pointer); every path in exactly one
+/// batch, and a path longer than the budget alone in its own.
+fn batches(paths: &[String], budget: usize) -> Vec<&[String]> {
+    let mut out = Vec::new();
+    let (mut start, mut used) = (0, 0);
+    for (i, p) in paths.iter().enumerate() {
+        let cost = p.len() + 1 + std::mem::size_of::<usize>();
+        if i > start && used + cost > budget {
+            out.push(&paths[start..i]);
+            (start, used) = (i, 0);
+        }
+        used += cost;
+    }
+    if start < paths.len() {
+        out.push(&paths[start..]);
+    }
+    out
+}
+
+/// The patch of `revs` restricted to `kept`, batch after batch in git's
+/// path order, so no file appears twice. Pathspecs are literal
+/// (`--literal-pathspecs`): a name is never read as a glob or as magic.
+/// Nothing kept is an empty patch, never the unrestricted diff.
+fn filtered_patch(
+    repo: &Path,
+    command: &[&str],
+    revs: &[&str],
+    kept: &[String],
+    budget: usize,
+) -> Result<Vec<u8>, BriefError> {
+    let mut out = Vec::new();
+    let all = batches(kept, budget);
+    for (i, batch) in all.iter().enumerate() {
+        let mut args = vec!["--literal-pathspecs"];
+        args.extend(command);
+        args.extend(revs);
+        args.push("--");
+        args.extend(batch.iter().map(String::as_str));
+        let what = format!(
+            "`git diff {}` (batch {} of {}, {} paths)",
+            revs.join(" "),
+            i + 1,
+            all.len(),
+            batch.len()
+        );
+        out.extend(run_git(repo, &args, &what)?);
+    }
+    Ok(out)
 }
 
 /// The unified diff from one branch patch to another: what a rebase changed
@@ -952,6 +1209,97 @@ fn diff_of(before: &[u8], after: &[u8]) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    /// Forced into one batch per path, the joined patch is byte for byte
+    /// the one diff of the same paths: same order, no file twice.
+    #[test]
+    fn a_patch_in_batches_is_the_one_diff() {
+        use std::process::Command;
+        let repo = std::env::temp_dir().join(format!(
+            "amont-agent-batches-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&repo); // a leftover of an earlier run, or none
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+            out.stdout
+        };
+        git(&["init", "-q", "-b", "main"]);
+        // `d[a].ts` is a glob that also matches `da.ts`: read as a pattern,
+        // its batch would carry `da.ts` a second time. Legal on Windows,
+        // unlike `*`. In git's byte order, as the whole diff lists them.
+        let names = ["a.ts", "b c.ts", "d[a].ts", "da.ts", "z.ts"];
+        for (round, text) in [(0, "one"), (1, "two")] {
+            for name in names {
+                std::fs::write(repo.join(name), format!("{text} {name}\n")).unwrap();
+            }
+            git(&["add", "-A"]);
+            git(&["commit", "-qm", &round.to_string()]);
+        }
+        let kept: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        let joined = super::filtered_patch(
+            &repo,
+            &["diff", "--no-renames"],
+            &["HEAD~1", "HEAD"],
+            &kept,
+            1,
+        )
+        .unwrap();
+        let mut whole = vec![
+            "--literal-pathspecs",
+            "diff",
+            "--no-renames",
+            "HEAD~1",
+            "HEAD",
+            "--",
+        ];
+        whole.extend(names);
+        assert_eq!(
+            String::from_utf8_lossy(&joined),
+            String::from_utf8_lossy(&git(&whole))
+        );
+        assert_eq!(joined.windows(10).filter(|w| w == b"diff --git").count(), 5);
+        let empty = super::filtered_patch(&repo, &["diff"], &["HEAD~1", "HEAD"], &[], 1).unwrap();
+        assert!(
+            empty.is_empty(),
+            "nothing kept is no patch, never the whole diff"
+        );
+        let _ = std::fs::remove_dir_all(&repo); // scratch under the temp dir: the OS reclaims it
+    }
+
+    #[test]
+    fn batches_keep_order_put_each_path_once_and_fit_the_budget() {
+        let paths: Vec<String> = (0..50).map(|i| format!("src/file_{i:03}.ts")).collect();
+        let cost = |p: &String| p.len() + 1 + std::mem::size_of::<usize>();
+        let budget = 10 * cost(&paths[0]) + 3;
+        let got = super::batches(&paths, budget);
+        assert_eq!(got.len(), 5, "{got:?}");
+        assert!(got
+            .iter()
+            .all(|b| b.iter().map(cost).sum::<usize>() <= budget));
+        assert_eq!(got.concat(), paths);
+        let long = vec!["x".repeat(500), "y.ts".to_string()];
+        assert_eq!(super::batches(&long, 100).len(), 2);
+        assert!(super::batches(&[], 100).is_empty());
+    }
+
     use super::*;
 
     const SHA: &str = "6066ad987edfbbb3a514b6d9247b126a77a316db2e1350c226ffd14593a0ba35";

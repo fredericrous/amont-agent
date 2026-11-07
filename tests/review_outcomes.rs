@@ -229,8 +229,49 @@ fn foreground_and_background_launches_both_yield_rows() {
     assert_eq!(bg["tokens"], 36170);
     assert_eq!(bg["seconds"].as_f64(), Some(211.987));
     assert_eq!(bg["verdict"], "rework");
-    assert_eq!(bg["remit"], serde_json::json!(["large"]));
+    assert_eq!(bg["remit"], serde_json::json!(["contract", "large"]));
     assert_eq!(fg["remit"], serde_json::json!(["*"]));
+}
+
+#[test]
+fn a_row_says_what_seated_its_panel() {
+    let mut w = World::new("seat-source");
+    let docs = w.root.join("repos").join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::write(docs.join("README.md"), "x\n").unwrap();
+    for args in [
+        &["init", "-q", "-b", "main", "--template=", "."][..],
+        &["add", "README.md"],
+        &["commit", "-qm", "c"],
+    ] {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&docs)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    }
+    w.set_body(&format!(
+        "{BODY}\n## Phases\n\n- [ ] Phase 1 — `README.md`\n"
+    ));
+    w.foreground("backend", Some("a1"));
+    let output = w.record("");
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let plan = &w.rows()[0]["plan"];
+    assert_eq!(plan["seat_source"], "paths", "{plan}");
+    assert_eq!(plan["seat_classes"], serde_json::json!([]), "{plan}");
+    assert_eq!(plan["areas"], serde_json::json!([]), "{plan}");
 }
 
 #[test]
@@ -267,10 +308,18 @@ fn a_row_has_every_field_and_the_files_are_private() {
     assert_eq!(r["round"], 1);
     assert_eq!(r["body_sha"], r["first_round_sha"]);
     assert_eq!(r["plan_path"], w.plan.to_string_lossy().as_ref());
-    for k in ["areas", "repos", "body_lines"] {
+    for k in [
+        "areas",
+        "repos",
+        "body_lines",
+        "seat_source",
+        "seat_classes",
+    ] {
         assert!(r["plan"].get(k).is_some(), "plan.{k}");
     }
     assert_eq!(r["plan"]["repos"], serde_json::json!(["docs"]));
+    // `repos=docs` is not a repository here: nothing seated, nothing guessed.
+    assert_eq!(r["plan"]["seat_source"], serde_json::Value::Null);
     assert_eq!(r["findings"][0]["section"], "Context");
     #[cfg(unix)]
     {
