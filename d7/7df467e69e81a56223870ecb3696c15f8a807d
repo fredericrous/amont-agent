@@ -1,0 +1,15 @@
+amont-provenance-v1
+commit d77df467e69e81a56223870ecb3696c15f8a807d
+tree d3264d9b942a2de492d24a53b7d491785010f012
+canon 8927b7116908f89afdb1a797bb56a892204cb1fd
+plan docs/plans/2026-11-07-sliced-reviewer-bound-to-slice.md fa8d36c90d56be0f48bf19e812e0a801714335ff308a0267f77d0c61f904e7c7
+review reviewed cad28e09a54e0fea69b34d6e06710c92fa45229c7318e333cd6aa2f0c6aee2a4
+preview not-required
+producer amont-agent 3.23.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEAGWTr7WwdJfo4+4KYfvA3efq1qXnAJ4Fa9k6oPuKb+gVWkIw
+FQX4rt3bgxKcCswA39IDvFHuQeRoXBQe5Vs+gA
+-----END SSH SIGNATURE-----
