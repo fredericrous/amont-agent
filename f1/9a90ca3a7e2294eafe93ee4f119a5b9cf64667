@@ -1,0 +1,20 @@
+amont-provenance-v1
+commit f19a90ca3a7e2294eafe93ee4f119a5b9cf64667
+tree eacdfa34212145fd017425b072ce32c49c27b17b
+canon 8571ae5e372d38502ac76e73d8ca542411bf017e
+patch 2985c679aab130a5971401ca49b4376eb238736f
+plan docs/plans/2026-11-07-review-seats-follow-named-files.md 1281b9b343db1b4f1583c20391d5a4e4576d7020025f33a5cbda3142ef4fef29
+review reviewed 66b48aeb02e83e4ed2fddcba2453214d2f5c9a5e969a4eaea8705b4abc3e0e1f
+code-review backend carried fbe31e4aeb69868fc2b85b190fe1984820ebe030e446e476cf40b5a1a5c58226
+code-review lang:rust carried fbe31e4aeb69868fc2b85b190fe1984820ebe030e446e476cf40b5a1a5c58226
+code-review unix carried bff6c05158d9dec1231634e3b43a5e7e424f75bbb4d9e232b0286caac31f6a2b
+code-review tui carried bff6c05158d9dec1231634e3b43a5e7e424f75bbb4d9e232b0286caac31f6a2b
+preview not-required
+producer amont-agent 3.20.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAECneTeQswRBfgKYkhgh6OyxhLUKUFyv4B7/ls48wxpAhehbwg
+pkXCw9d8a7eMgIT46X3ERLaToJ9ffKCTebR6UM
+-----END SSH SIGNATURE-----
