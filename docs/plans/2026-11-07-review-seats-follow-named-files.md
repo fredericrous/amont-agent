@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/seats-from-file-types
 repos: [amont-agent]
 adrs: [ADR-0061, ADR-0060]
