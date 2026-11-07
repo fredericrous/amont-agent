@@ -264,6 +264,12 @@ and `plan-panel` lines the skill pastes); the release path.
 - Old baseline, then two deltas (`a_pass_on_a_baseline_from_before_slices_keeps_the_old_rule`, after code review): the pass on a 3.22.0 baseline records no slices, so a second Rust delta is still judged by the old rule.
 - `plan-apply` finds a sliced language reviewer's patches by the body `sha=` (`tests/plan_apply.rs` `a_sliced_reviewers_patches_are_found_by_its_body_sha`).
 
+## Implementation review
+- implementation-review: round 1 approve-with-changes (3 blocking code-rule findings: out-parameter and flag in `slice_flag`, a banner, long-lived short names; all fixed), delta approve. 105k+114k, 238 s+37 s.
+- backend: approve-with-changes (an old-baseline pass recorded unreviewed slices; empty span list; whitespace in labels; all fixed), delta approve; deliberate: the `holds-until` end condition. 85k+111k.
+- lang:rust: approve-with-changes (sentinel strings → `Moved`, recomputed reason → `WholeBody`, out-parameter, generic `guarded`, labels; all fixed), delta approve-with-changes; deliberate: `NAMED_ROLES` stays beside `roles`, `describe` over `Display`, shell-quoting beyond whitespace (harness plan paths hold no `'` or `$`). 79k+106k.
+- unix: approve-with-changes (`=` forms, help wins; fixed), delta approve-with-changes; deliberate: the same path quoting. tui: approve-with-changes (backticked re-run, wording, roles list, `no phases`; fixed), delta approve; deliberate: the `=` forms and help-wins go in the release's CHANGELOG and usage, not this tree. 56k+83k, 52k+78k.
+
 ## Outcome
 Phases 1–3 and Phase 5's docs on this branch; Phase 4 in greenharness-skills `feat/plan-review-slices`. Next: merge both, release the skills, then amont-agent 3.23.0, and install it. 14-day measure DUE 2026-11-21.
 
