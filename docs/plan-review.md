@@ -7,18 +7,54 @@ approve it (ADR-0022, fleet rule `work.plan-review-panel`). The skill
 
 ## Who reviews
 
-The panel follows the areas of every repository the plan names:
+The panel follows the files the plan's `## Phases` name (ADR-0061,
+`work.review-seats`): each backticked span with no space that has a `/`, a
+known extension or a known file name (`Cargo.toml`, `Dockerfile`, …), a
+`:<line>` suffix dropped. Context and evidence do not count: they cite files
+the plan does not change. Each path is attributed to the repository of the
+machine comment whose default tree holds it, a file under it, or a file in
+its parent directory (a new file in an existing directory); a path no
+repository holds counts for every one.
 
-| area | reviewers (`plan-review-<role>` agents) |
+| the named files | class | reviewers (`plan-review-<role>` agents) |
+|---|---|---|
+| always | | `backend` |
+| `.rs`, `Cargo.toml`, `Cargo.lock`; `.go`, `go.mod`; `.py`, `pyproject.toml`; `.ts`, `.js` and their variants, `package.json`, `tsconfig.json` | `lang:<x>` | `language`, with `lang=<l>` in its review block |
+| `.tsx`, `.jsx`, `.css`, `.html`, `.vue`, `.svelte`, `*.stories.*` | `ui` | `react` and `ui-design` |
+| Kubernetes, Helm, Flux and Terraform files (`kustomization.yaml`, `Chart.yaml`, `*.tf`, `*.tf.json`), `Dockerfile`, CI workflows, and any other `.yaml` or `.yml` | `ops` | `platform` |
+| any code file in a repository with a command line | `cli` | `unix` and `tui` |
+| markdown and anything else | | none beyond `backend` |
+
+YAML that names no manifest still counts as `ops`, on purpose: a missed
+platform seat costs more than an extra one. Only tool configuration
+(`.adr.yaml`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`,
+`.pre-commit-config.yaml`) is left out.
+
+What no path shows, the plan declares with `adds=`: `screen` seats
+`ux-research` and `game-ux` (the Behaviour adds a screen or a flow), and
+`contract` seats `po` and `architect` (the plan adds a module, crate or
+repository, or changes a contract another repository consumes). `large` is
+the old name of `contract` and reads as it.
+
+A plan whose Phases name no file is seated as before 3.22.0, from every area
+of its repositories, with `ui` seating all four interface reviewers; the
+`plan-names-no-paths` rule (`advise`, at most) says so at `ExitPlanMode` and
+`plan-panel` says it on stderr: name the files each phase touches in
+backticks under `## Phases`. When some phases name files and others none,
+the seats come from the named files and the advice names each phase without
+one (`Phase 5 names no file`).
+
+| area (when no file is named) | reviewers |
 |---|---|
-| always | `language` for each language, with `lang=<l>` in its review block, and `backend` |
+| always | `language` for each language, and `backend` |
 | ops | `platform` |
 | a command line | `unix` and `tui` |
 | large (500 or more files or own commits) | `po` and `architect` |
 | an interface | `react`, `ui-design`, `ux-research` and `game-ux` |
 
 Areas are read from each repository's default tree, never from keywords in
-the plan. The tree is the first of `origin/HEAD`, `origin/main`,
+the plan; the same read lists the files paths are attributed to, so naming
+paths costs no extra git call. The tree is the first of `origin/HEAD`, `origin/main`,
 `origin/master` and `HEAD` that exists, with no fetch. Each signal:
 
 - **Languages:** `Cargo.toml`, `go.mod`, `package.json` or `tsconfig.json`,
@@ -51,24 +87,29 @@ repository kept elsewhere; otherwise to `<plan root>/<name>`. The plan root is
 (`git config --global amont.agent.plan-review.root ~/Developer/Perso` keeps the
 old default); with neither, the session's directory when it is not in a git
 repository, else the parent of the repository's main worktree. The attestations
-sweep uses only the explicit setting. `adds=` declares areas the plan
-creates: `cli`, `ui`, `ops`, `large`, or `lang:<language>`. A repository
-that does not exist yet needs a `lang:` entry.
+sweep uses only the explicit setting. `adds=` declares classes no named
+file shows: `cli`, `ui`, `screen`, `ops`, `contract` (or its old name
+`large`), or `lang:<language>`. A repository that does not exist yet needs a
+`lang:` entry.
 
 ## Which agents to launch
 
 `amont-agent plan-panel <plan.md>` answers with the hook's own code:
 
 ```
-repos=amont-agent areas=cli,lang:rust body=cf3f43c938c4 panel=full
+repos=amont-agent areas=cli,lang:rust body=cf3f43c938c4 panel=full seats=paths
 plan-review-backend
 plan-review-language --lang rust
 plan-review-tui
 plan-review-unix
 ```
 
-`panel=delta` lists only the reviews needed since the plan's last accepted
-body. `panel=current` lists none.
+`areas=` lists the classes the panel is seated from, `seats=` where they came
+from: `paths` (the named files) or `areas` (the repositories, when no file is
+named; the advice is then on stderr). `panel=delta` lists only the reviews
+needed since the plan's last accepted body. `panel=current` lists none. A
+baseline stored before 3.22.0 reads in today's class names (`large` as
+`contract`, `ui` with `screen`), so a plan it covered stays current.
 
 ## Binding a review to the plan
 
@@ -158,8 +199,12 @@ rows this call writes for the highest round it writes, matched by role.
 A row has: `schema` (`amont-agent-review-outcome-v1`), `recorded_at` (unix
 seconds), `role`, `agent_id`, `model`, `tokens`, `seconds`, `round` (1-based,
 in the order distinct bodies first appear), `body_sha`, `first_round_sha`,
-`plan_path`, `plan` (`areas`, `repos`, `body_lines` of the body that round
-reviewed; null when that body was never saved), with `first_round_sha` the
+`plan_path`, `plan` (`areas`, the repositories' areas whatever seated the
+panel; `seat_source`, `paths` or `areas`, null when the repositories could
+not be read, and read as `areas` on a row written before 3.22.0;
+`seat_classes`, the classes the panel was seated from; `repos`; `body_lines`
+of the body that round reviewed; null when that body was never saved), with
+`first_round_sha` the
 first body any call recorded for this plan path, across sessions, `verdict` (`rework`,
 `approve-with-changes`, `approve` or null), `remit` (the areas the role is
 asked for; `*` for backend) and `findings`.
@@ -310,11 +355,31 @@ A plan declares who reviews its code in a `## Code review` section (after
 A profile is `backend`, `platform`, `unix`, `tui`, `react`, `ui-design`,
 `architect` or `lang:<x>`; a parenthesised reason for the profiles left out
 is kept as text. `amont-agent plan-panel --code-review <plan.md>` proposes
-the list: one line `<repo>\t<profiles comma-separated|none>` per repository
-of the machine comment, from its areas (`backend` and each `lang:<x>`; `ops`
-adds `platform`, `cli` adds `unix` and `tui`, `ui` adds `react` and
-`ui-design`, `large` adds `architect`; a repository with no language is
-proposed `none`). Plain `plan-panel` prints what it always did; if the plan
+the list: one line `<repo>\t<profiles comma-separated>`, or
+`<repo>\tnone\t<reason>`, per repository of the machine comment, from the
+files the Phases name in it (`backend` always, each `lang:<x>`; `ops` adds
+`platform`, `cli` adds `unix` and `tui`, `ui` adds `react` and `ui-design`,
+`contract` adds `architect`). A repository whose files are not code is
+proposed `none`, with the reason `markdown only`, `no code file` or `no file
+named`; `cut -f2` reads `none`, and the line pastes as `- <repo>: none —
+<reason>`. When the Phases name no file, the proposal comes from the areas as
+before (`none` — `no language area`). Plain `plan-panel` prints what it always did; if the plan
 has no `## Code review` section it says so on stderr and still exits 0. A
 section that does not parse (unknown profile, no colon, empty list, `none`
 without a reason, a repository twice) exits 1 with or without the flag.
+
+## What a code-review profile reads
+
+`review-brief --profile <p>` gives `lang:<x>`, `react`, `ui-design` and
+`platform` only their file types' part of the diff (ADR-0061,
+`work.review-slices`), with the table above: the changed paths are listed
+with `git diff --no-renames --name-only -z`, so a move across languages is a
+deletion one language reads and an addition the other reads, and the patch
+is taken for the kept paths alone, as literal pathspecs in batches that fit
+one git call each (`git diff` has no `--pathspec-from-file`). No kept path
+is an empty patch, never the whole diff. The brief keeps the whole
+`--stat`, lists the rest under `## Not in this brief`, and says on stderr how
+many of the changed files it carries and the patch's bytes. `backend`,
+`architect`, `unix` and `tui` read the whole diff. Every profile brief
+carries the plan's Goal and Behaviour beside its Non-goals. A delta brief
+(`--interdiff`) filters each patch it compares on that patch's own paths.

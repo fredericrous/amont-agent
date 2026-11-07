@@ -47,7 +47,7 @@ use crate::plan_text::{canonical, shas, Fence, Shas, REVIEW_SECTION};
 use amont_agent_guard::decision::{self, Decision};
 use amont_agent_guard::journal;
 use amont_agent_guard::payload::PlanExit;
-use amont_agent_guard::rules::{plan_review_panel::RULE, Stance};
+use amont_agent_guard::rules::{plan_names_no_paths, plan_review_panel::RULE, Stance};
 use amont_agent_guard::sha256::{hex, sha256};
 
 /// Opens a review block in a reviewer's prompt.
@@ -190,9 +190,10 @@ pub fn meta(text: &str) -> Result<Meta, String> {
     }
     if let Some(bad) = m.adds.iter().find(|a| !valid_class(a)) {
         return Err(format!(
-            "`adds=` names `{bad}`; it takes cli, ui, ops, large or lang:<language>"
+            "`adds=` names `{bad}`; it takes cli, ui, screen, ops, contract or lang:<language>"
         ));
     }
+    m.adds = m.adds.iter().map(|a| seat_class(a)).collect();
     Ok(m)
 }
 
@@ -212,8 +213,28 @@ pub(crate) fn valid_class(c: &str) -> bool {
                 && l.chars()
                     .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || "+#-".contains(ch))
         }
-        None => matches!(c, "cli" | "ui" | "ops" | "large"),
+        None => matches!(c, "cli" | "ui" | "screen" | "ops" | "contract" | "large"),
     }
+}
+
+/// A class as the panel seats it: `large` is the old name of `contract`.
+pub fn seat_class(c: &str) -> String {
+    if c == "large" {
+        "contract".into()
+    } else {
+        c.to_string()
+    }
+}
+
+/// Classes in today's names, from a reader of the old ones (a repository's
+/// areas, a baseline stored before 3.22.0): `large` reads as `contract`, and
+/// `ui`, which seated the screen reviewers too, brings `screen` with it.
+fn in_todays_names(classes: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = classes.into_iter().map(|c| seat_class(&c)).collect();
+    if out.contains("ui") {
+        out.insert("screen".into());
+    }
+    out
 }
 
 /// The review section: is it there, and does it carry a skip the person
@@ -256,8 +277,9 @@ pub fn roles(classes: &BTreeSet<String>) -> BTreeSet<String> {
         let add: &[&str] = match c.as_str() {
             "ops" => &["platform"],
             "cli" => &["unix", "tui"],
-            "large" => &["po", "architect"],
-            "ui" => &["react", "ui-design", "ux-research", "game-ux"],
+            "contract" | "large" => &["po", "architect"],
+            "ui" => &["react", "ui-design"],
+            "screen" => &["ux-research", "game-ux"],
             _ => &[],
         };
         r.extend(add.iter().map(|s| s.to_string()));
@@ -276,8 +298,9 @@ pub fn remit(role: &str) -> BTreeSet<String> {
     let area: &[&str] = match role {
         "unix" | "tui" => &["cli"],
         "platform" => &["ops"],
-        "po" | "architect" => &["large"],
-        "react" | "ui-design" | "ux-research" | "game-ux" => &["ui"],
+        "po" | "architect" => &["contract", "large"],
+        "react" | "ui-design" => &["ui"],
+        "ux-research" | "game-ux" => &["screen"],
         "backend" => &["*"],
         r if r.starts_with("lang:") => &[r],
         _ => &[],
@@ -353,6 +376,19 @@ pub fn root() -> Option<PathBuf> {
 /// One repository's areas. `Ok(None)`: no repository there yet — a plan
 /// that creates one says what it adds. `Err`: git could not be asked.
 pub fn repo_areas(dir: &Path) -> Result<Option<BTreeSet<String>>, String> {
+    Ok(repo_tree(dir)?.map(|t| t.areas))
+}
+
+/// One repository as the panel reads it, from one read of its default
+/// branch's tree: its areas, and the files a named path is attributed by.
+#[derive(Debug, Default, Clone)]
+pub struct RepoTree {
+    pub areas: BTreeSet<String>,
+    pub paths: Vec<String>,
+}
+
+/// [`repo_areas`] with the file listing kept: no second git call.
+pub fn repo_tree(dir: &Path) -> Result<Option<RepoTree>, String> {
     use amont_agent_guard::git;
     let io = |e: std::io::Error| format!("git could not be run in {}: {e}", dir.display());
     if !dir.is_dir() {
@@ -395,7 +431,7 @@ pub fn repo_areas(dir: &Path) -> Result<Option<BTreeSet<String>>, String> {
     }
     let Some((commit, tree)) = rev else {
         // Unborn: an empty tree, whose only area is what the plan adds.
-        return Ok(Some(BTreeSet::new()));
+        return Ok(Some(RepoTree::default()));
     };
     let paths: Vec<String> = git::ls_tree_z(dir, &tree)
         .map_err(io)?
@@ -421,7 +457,8 @@ pub fn repo_areas(dir: &Path) -> Result<Option<BTreeSet<String>>, String> {
     } else {
         own_commits(dir, commit)
     };
-    Ok(Some(classify(&paths, &blobs, commits)))
+    let areas = classify(&paths, &blobs, commits);
+    Ok(Some(RepoTree { areas, paths }))
 }
 
 /// Commits of this repository's own (a shallow clone's are not counted at
@@ -1154,6 +1191,10 @@ fn store() -> Option<PathBuf> {
     Some(journal::dir()?.join("plan-review"))
 }
 
+/// The class names a baseline is written in: 2 since `ui` split into `ui`
+/// and `screen` and `large` became `contract` (3.22.0).
+const NAMES: u64 = 2;
+
 fn key(text: &str) -> String {
     hex(&sha256(text.as_bytes()))
 }
@@ -1170,10 +1211,16 @@ fn load(file: &Path) -> Option<Baseline> {
             })
             .unwrap_or_default()
     };
+    // A baseline saved before 3.22.0 names its classes the old way.
+    let classes = if v.get("names").and_then(|n| n.as_u64()) == Some(NAMES) {
+        set("classes")
+    } else {
+        in_todays_names(set("classes"))
+    };
     Some(Baseline {
         sha: v.get("sha")?.as_str()?.to_string(),
         roles: set("roles"),
-        classes: set("classes"),
+        classes,
     })
 }
 
@@ -1219,6 +1266,7 @@ fn save(path: &str, title: Option<&str>, b: &Baseline) -> Option<()> {
         "sha": b.sha,
         "roles": b.roles,
         "classes": b.classes,
+        "names": NAMES,
         "path": path,
     })
     .to_string();
@@ -1278,9 +1326,11 @@ enum Said {
 
 const REMEDY: &str = "run /plan-review then ExitPlanMode again";
 
-pub fn on_plan_exit(ev: &PlanExit, stance: Stance) -> Decision {
+/// `stance` is `plan-review-panel`'s; `paths_stance` is
+/// `plan-names-no-paths`'s, whose advice rides on the panel's decision.
+pub fn on_plan_exit(ev: &PlanExit, stance: Stance, paths_stance: Stance) -> Decision {
     let project = std::env::current_dir().unwrap_or_default();
-    let (said, repos, excerpt) = examine(ev);
+    let (said, repos, excerpt, advice) = examine(ev);
     // The working directory and every repository the plan names: an agent
     // installed in any of them could still run the panel.
     let carried_anywhere = crate::agents::carried(crate::agents::Need::PlanPanel, &project)
@@ -1343,11 +1393,51 @@ pub fn on_plan_exit(ev: &PlanExit, stance: Stance) -> Decision {
         excerpt: &excerpt,
     });
     let phrase = |why: &str, remedy: &str| decision::phrase(RULE.id, why, remedy);
-    match (said, stance) {
+    let decided = match (said, stance) {
         (_, Stance::Observe) | (Said::Pass, _) => Decision::Silent,
         (Said::Refuse(why), Stance::Deny) => Decision::Deny(phrase(&why, REMEDY)),
         (Said::Ask(why), Stance::Deny) => Decision::Ask(phrase(&why, "")),
         (Said::Refuse(why) | Said::Ask(why), Stance::Advise) => Decision::Advise(phrase(&why, "")),
+    };
+    match advice {
+        Some(a) => with_paths_advice(decided, &a, paths_stance, ev, &repos),
+        None => decided,
+    }
+}
+
+/// `plan-names-no-paths` on top of the panel's decision: journalled, then
+/// added to what the model reads. Never a refusal of its own, and never
+/// added to an `ask`, which is the person's prompt about the panel.
+fn with_paths_advice(
+    decided: Decision,
+    advice: &Advice,
+    stance: Stance,
+    ev: &PlanExit,
+    repos: &str,
+) -> Decision {
+    let id = plan_names_no_paths::RULE.id;
+    journal::record(&journal::Entry {
+        rule: id,
+        stance: stance.as_str(),
+        outcome: if stance == Stance::Observe {
+            "watched"
+        } else {
+            "advised"
+        },
+        session: &ev.session,
+        repo: repos,
+        mode: &ev.permission_mode,
+        excerpt: &advice.excerpt,
+    });
+    if stance == Stance::Observe {
+        return decided;
+    }
+    let said = decision::phrase(id, &advice.text, "");
+    match decided {
+        Decision::Silent => Decision::Advise(said),
+        Decision::Advise(t) => Decision::Advise(format!("{t}\n\n{said}")),
+        Decision::Deny(t) => Decision::Deny(format!("{t}\n\n{said}")),
+        other => other,
     }
 }
 
@@ -1373,42 +1463,56 @@ fn plan_gap(ev: &PlanExit, stance: Stance, gap: &str) -> Decision {
     }
 }
 
-/// The verdict, the repository names for the journal, and an excerpt.
-fn examine(ev: &PlanExit) -> (Said, String, String) {
+/// The verdict, the repository names for the journal, an excerpt, and the
+/// `plan-names-no-paths` advice, once the seats are known.
+fn examine(ev: &PlanExit) -> (Said, String, String, Option<Advice>) {
+    match judged(ev) {
+        Ok(((said, advice), repos, excerpt)) => (said, repos, excerpt, advice),
+        Err((said, repos, excerpt)) => (said, repos, excerpt, None),
+    }
+}
+
+/// A verdict, the repositories for the journal, and an excerpt.
+type Early = (Said, String, String);
+/// [`Early`] with the advice, once the seats are known.
+type Judged = ((Said, Option<Advice>), String, String);
+
+/// [`examine`]'s judgement. `Err`: decided before the seats were known.
+fn judged(ev: &PlanExit) -> Result<Judged, Early> {
     let Some(plan_file) = ev.plan_file.as_deref() else {
-        return (
+        return Err((
             Said::Ask(
                 "ExitPlanMode carried no planFilePath, so the plan's review cannot be checked."
                     .into(),
             ),
             "-".into(),
             "no planFilePath".into(),
-        );
+        ));
     };
     let text = match std::fs::read_to_string(plan_file) {
         Ok(t) => t,
         Err(e) => {
-            return (
+            return Err((
                 Said::Ask(format!(
                     "the plan file {} cannot be read ({e}), so its review cannot be checked.",
                     plan_file.display()
                 )),
                 "-".into(),
                 "plan unreadable".into(),
-            )
+            ))
         }
     };
     let path = real(plan_file).display().to_string();
     let Shas { sha, legacy } = match shas(&text) {
         Ok(s) => s,
         Err(why) => {
-            return (
+            return Err((
                 Said::Ask(format!(
                     "{why}; approve only to accept the plan unreviewed."
                 )),
                 "-".into(),
                 "sha unavailable".into(),
-            )
+            ))
         }
     };
     let short = &sha[..12];
@@ -1416,58 +1520,60 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
     let m = match meta(&text) {
         Ok(m) => m,
         Err(why) => {
-            return (
+            return Err((
                 Said::Refuse(format!("{why};")),
                 "-".into(),
                 format!("{short} no meta"),
-            )
+            ))
         }
     };
     let repos = m.repos.join(",");
     let sec = section(&text);
     if !sec.present {
-        return (
+        return Err((
             Said::Refuse(format!(
                 "the plan has no `## Review panel` section for repos={repos};"
             )),
             repos,
             format!("{short} no section"),
-        );
+        ));
     }
 
     let Some(transcript) = ev.transcript.as_deref() else {
-        return (
+        return Err((
             Said::Ask(
                 "the hook payload carried no transcript_path, so the reviews cannot be checked."
                     .into(),
             ),
             repos,
             format!("{short} no transcript"),
-        );
+        ));
     };
     let found = match std::fs::File::open(transcript) {
         Ok(f) => bindings(std::io::BufReader::new(f)),
         Err(e) => {
-            return (
+            return Err((
                 Said::Ask(format!(
                 "the session transcript cannot be read ({e}), so the reviews cannot be checked."
             )),
                 repos,
                 format!("{short} transcript unreadable"),
-            )
+            ))
         }
     };
 
-    let classes = match classes_of(&m) {
+    let seating = match classes_of(&m, &text) {
         Ok(c) => c,
         Err(said) => {
             let what = match &said {
                 Said::Ask(_) => "cannot resolve",
                 _ => "unknown repo",
             };
-            return (said, repos, format!("{short} {what}"));
+            return Err((said, repos, format!("{short} {what}")));
         }
     };
+    let advice = seating.advice();
+    let classes = seating.classes;
 
     let title = title_key(&text, &m.repos);
     let base = baseline(&path, &sha, &legacy, title.as_deref());
@@ -1482,13 +1588,16 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
     match judge(&facts) {
         Outcome::Pass(bound) => {
             if sec.unreviewed {
-                return (
-                    Said::Ask(format!(
-                        "the plan for repos={repos} is marked unreviewed at the person's request (body {short}); approve only if you asked to skip the review."
-                    )),
+                return Ok((
+                    (
+                        Said::Ask(format!(
+                            "the plan for repos={repos} is marked unreviewed at the person's request (body {short}); approve only if you asked to skip the review."
+                        )),
+                        advice,
+                    ),
                     repos,
                     format!("{short} unreviewed"),
-                );
+                ));
             }
             // LEGACY: whether the pass needed the byte sha — the same facts
             // without it fall short. Leads the excerpt, which is cut at
@@ -1514,22 +1623,25 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
                 },
             );
             let listed = bound.into_iter().collect::<Vec<_>>().join(",");
-            (
-                Said::Pass,
+            Ok((
+                (Said::Pass, advice),
                 repos,
                 format!("match={matched} {short} {listed}"),
-            )
+            ))
         }
         Outcome::Short { missing, stale } => {
             if sec.unreviewed {
-                return (
-                    Said::Ask(format!(
-                        "the plan for repos={repos} is marked unreviewed at the person's request; missing {} for body {short}. Approve only if you asked to skip the review.",
-                        list(&missing.union(&stale).cloned().collect())
-                    )),
+                return Ok((
+                    (
+                        Said::Ask(format!(
+                            "the plan for repos={repos} is marked unreviewed at the person's request; missing {} for body {short}. Approve only if you asked to skip the review.",
+                            list(&missing.union(&stale).cloned().collect())
+                        )),
+                        advice,
+                    ),
                     repos,
                     format!("{short} unreviewed"),
-                );
+                ));
             }
             let mut parts = Vec::new();
             if !missing.is_empty() {
@@ -1545,38 +1657,203 @@ fn examine(ev: &PlanExit) -> (Said, String, String) {
                 "{short} short {}",
                 list(&missing.union(&stale).cloned().collect())
             );
-            (
-                Said::Refuse(format!("{} (body {short});", parts.join("; "))),
+            Ok((
+                (
+                    Said::Refuse(format!("{} (body {short});", parts.join("; "))),
+                    advice,
+                ),
                 repos,
                 excerpt,
-            )
+            ))
         }
     }
 }
 
-/// [`classes_of`] for a reader that has no answer to give: `None` when the
-/// areas cannot be resolved (the outcome ledger records none, not a guess).
+/// The areas of every repository the plan names, plus what it declares, for
+/// a reader that has no answer to give and no body (the outcome ledger's
+/// `areas`): `None` when they cannot be resolved, never a guess.
 pub fn areas_of(m: &Meta) -> Option<BTreeSet<String>> {
-    classes_of(m).ok()
+    let trees = trees_of(m).ok()?;
+    Some(area_union(m, &trees))
+}
+
+/// [`classes_of`] for a reader outside the hook (`plan-panel --code-review`,
+/// the outcome ledger): the reason in words when it cannot be computed.
+pub fn seating(m: &Meta, body: &str) -> Result<Seating, String> {
+    classes_of(m, body).map_err(|said| match said {
+        Said::Refuse(w) | Said::Ask(w) => w.trim_end_matches(';').to_string(),
+        Said::Pass => String::new(),
+    })
 }
 
 fn list(s: &BTreeSet<String>) -> String {
     s.iter().cloned().collect::<Vec<_>>().join(", ")
 }
 
-/// The areas of every repository the plan names, plus what it declares.
-/// `Err` carries the answer the hook gives instead.
-fn classes_of(m: &Meta) -> Result<BTreeSet<String>, Said> {
+/// How the plan's panel is seated: from the paths its Phases name, or from
+/// the areas of every repository it names when they name none. `Err`
+/// carries the answer the hook gives instead.
+fn classes_of(m: &Meta, body: &str) -> Result<Seating, Said> {
+    Ok(seat(m, body, trees_of(m)?))
+}
+
+/// Where a panel's seats came from (ADR-0061, `work.review-seats`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatSource {
+    /// The file types of the paths the plan's Phases name.
+    Paths,
+    /// Every area of the plan's repositories: its Phases name no path.
+    Areas,
+}
+
+impl SeatSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SeatSource::Paths => "paths",
+            SeatSource::Areas => "areas",
+        }
+    }
+}
+
+/// One repository of the machine comment: its areas, and the named paths
+/// attributed to it (none when the seats come from areas).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoSeat {
+    pub name: String,
+    pub areas: BTreeSet<String>,
+    pub paths: Vec<String>,
+}
+
+/// How a plan's panel is seated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Seating {
+    /// The classes [`roles`] seats the panel from.
+    pub classes: BTreeSet<String>,
+    pub source: SeatSource,
+    /// The repositories' areas and the plan's declared classes, whatever
+    /// the source: [`areas_of`], for the outcome ledger.
+    pub areas: BTreeSet<String>,
+    pub repos: Vec<RepoSeat>,
+    /// The phases that name no file while others do.
+    pub unnamed: Vec<String>,
+}
+
+/// What `plan-names-no-paths` says, and its journal excerpt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Advice {
+    pub text: String,
+    pub excerpt: String,
+}
+
+pub const NAME_THE_FILES: &str = "name the files each phase touches in backticks under ## Phases";
+
+impl Seating {
+    /// The advice, when the seats came from areas or a phase names no file.
+    pub fn advice(&self) -> Option<Advice> {
+        match self.source {
+            SeatSource::Areas => Some(Advice {
+                text: format!(
+                    "{NAME_THE_FILES}; this panel was seated from the repositories' areas"
+                ),
+                excerpt: "seats=areas".into(),
+            }),
+            SeatSource::Paths if self.unnamed.is_empty() => None,
+            SeatSource::Paths => {
+                let verb = if self.unnamed.len() == 1 {
+                    "names"
+                } else {
+                    "name"
+                };
+                let who = self.unnamed.join(", ");
+                Some(Advice {
+                    text: format!("{who} {verb} no file; {NAME_THE_FILES}"),
+                    excerpt: format!("seats=paths unnamed={}", self.unnamed.len()),
+                })
+            }
+        }
+    }
+}
+
+/// The repositories' areas and the plan's declared classes, as named today.
+fn area_union(m: &Meta, trees: &[(String, RepoTree)]) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = m.adds.iter().cloned().collect();
+    for (_, t) in trees {
+        out.extend(t.areas.iter().cloned());
+    }
+    out
+}
+
+/// The seats of a plan body over its repositories' trees. Pure: every rule
+/// of ADR-0061's seat half is tested here without a repository.
+pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
+    use crate::file_types;
+    let phases = file_types::phases(body);
+    let mut named: Vec<String> = Vec::new();
+    for p in phases.iter().flat_map(|p| p.paths.iter()) {
+        if !named.contains(p) {
+            named.push(p.clone());
+        }
+    }
+    let areas = area_union(m, &trees);
+    if named.is_empty() {
+        return Seating {
+            classes: in_todays_names(areas.iter().cloned()),
+            source: SeatSource::Areas,
+            areas,
+            repos: trees
+                .into_iter()
+                .map(|(name, t)| RepoSeat {
+                    name,
+                    areas: t.areas,
+                    paths: Vec::new(),
+                })
+                .collect(),
+            unnamed: Vec::new(),
+        };
+    }
+    let listing: Vec<(&str, &[String])> = trees
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.paths.as_slice()))
+        .collect();
+    let attributed = file_types::attribute(&named, &listing);
+    let mut classes: BTreeSet<String> = m.adds.iter().cloned().collect();
+    let mut repos = Vec::new();
+    for ((name, t), paths) in trees.into_iter().zip(attributed) {
+        classes.extend(file_types::classes(&paths, t.areas.contains("cli")));
+        repos.push(RepoSeat {
+            name,
+            areas: t.areas,
+            paths,
+        });
+    }
+    Seating {
+        classes,
+        source: SeatSource::Paths,
+        areas,
+        repos,
+        unnamed: phases
+            .into_iter()
+            .filter(|p| p.paths.is_empty())
+            .map(|p| p.label)
+            .collect(),
+    }
+}
+
+/// Each repository of the machine comment, read once. A repository not
+/// created yet holds nothing, when the plan declares its language.
+fn trees_of(m: &Meta) -> Result<Vec<(String, RepoTree)>, Said> {
     let Some(root) = root() else {
         return Err(Said::Ask(format!(
             "no plan root could be determined, so repos= cannot be resolved; {ROOT_REMEDY}."
         )));
     };
-    let mut classes: BTreeSet<String> = m.adds.iter().cloned().collect();
+    let mut trees = Vec::new();
     for name in &m.repos {
-        match repo_areas(&locate(&root, name)) {
-            Ok(Some(a)) => classes.extend(a),
-            Ok(None) if m.adds.iter().any(|a| a.starts_with("lang:")) => {}
+        match repo_tree(&locate(&root, name)) {
+            Ok(Some(t)) => trees.push((name.clone(), t)),
+            Ok(None) if m.adds.iter().any(|a| a.starts_with("lang:")) => {
+                trees.push((name.clone(), RepoTree::default()))
+            }
             Ok(None) => {
                 return Err(Said::Refuse(format!(
                     "repos= names `{name}`, which is not a repository at {} (set `git config --global amont.agent.plan-review.{name}.path <dir>` for one kept elsewhere); a plan that creates one declares its language in adds=lang:<language>;",
@@ -1590,7 +1867,7 @@ fn classes_of(m: &Meta) -> Result<BTreeSet<String>, Said> {
             }
         }
     }
-    Ok(classes)
+    Ok(trees)
 }
 
 /// What `amont-agent plan-panel` reports: the reviews this plan still
@@ -1603,16 +1880,18 @@ pub struct Panel {
     /// the last pass) or `current` (nothing to review).
     pub mode: &'static str,
     pub needed: BTreeSet<String>,
+    pub source: SeatSource,
+    /// `plan-names-no-paths`'s advice, for stderr.
+    pub advice: Option<String>,
 }
 
 pub fn panel(plan_file: &Path) -> Result<Panel, String> {
     let text = std::fs::read_to_string(plan_file)
         .map_err(|e| format!("cannot read {}: {e}", plan_file.display()))?;
     let m = meta(&text)?;
-    let classes = classes_of(&m).map_err(|said| match said {
-        Said::Refuse(w) | Said::Ask(w) => w.trim_end_matches(';').to_string(),
-        Said::Pass => String::new(),
-    })?;
+    let seated = seating(&m, &text)?;
+    let advice = seated.advice().map(|a| a.text);
+    let (classes, source) = (seated.classes, seated.source);
     let path = real(plan_file).display().to_string();
     let Shas { sha, legacy } = shas(&text).map_err(|e| e.to_string())?;
     let title = title_key(&text, &m.repos);
@@ -1632,6 +1911,8 @@ pub fn panel(plan_file: &Path) -> Result<Panel, String> {
         sha,
         mode,
         needed,
+        source,
+        advice,
     })
 }
 
@@ -1716,10 +1997,35 @@ mod tests {
     use super::*;
     use crate::plan_text::{body_sha, guarded, legacy_sha, ShaError};
 
+    /// `large` is read as `contract` wherever it comes from, and an old `ui`
+    /// keeps the screen seats it had.
+    #[test]
+    fn old_class_names_read_as_todays() {
+        let m = meta("x\n<!-- panel: repos=a adds=large,ui -->\n").unwrap();
+        assert_eq!(m.adds, ["contract", "ui"]);
+        let old = in_todays_names(["large".to_string(), "ui".to_string()]);
+        assert_eq!(
+            old.into_iter().collect::<Vec<_>>(),
+            ["contract", "screen", "ui"]
+        );
+        let seated = |c: &str| roles(&BTreeSet::from([c.to_string()]));
+        assert_eq!(seated("large"), seated("contract"));
+        assert!(!seated("ui").contains("ux-research"));
+    }
+
     /// `remit` reads `roles` backwards, for every class the panel knows.
     #[test]
     fn remit_is_the_inverse_of_roles() {
-        for c in ["cli", "ops", "large", "ui", "lang:rust", "lang:go"] {
+        for c in [
+            "cli",
+            "ops",
+            "large",
+            "contract",
+            "ui",
+            "screen",
+            "lang:rust",
+            "lang:go",
+        ] {
             let class = BTreeSet::from([c.to_string()]);
             for r in roles(&class).into_iter().filter(|r| r != "backend") {
                 assert!(remit(&r).contains(c), "{c} not in remit({r})");
@@ -1828,7 +2134,7 @@ mod tests {
             plan_file: Some(plan),
         };
         crate::plan_text::PARSER_PANICS.with(|p| p.set(true));
-        let (said, _, excerpt) = examine(&ev);
+        let (said, _, excerpt, _) = examine(&ev);
         crate::plan_text::PARSER_PANICS.with(|p| p.set(false));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
@@ -1920,7 +2226,14 @@ mod tests {
             roles(&set(&["lang:rust", "cli"])),
             set(&["backend", "lang:rust", "unix", "tui"])
         );
-        assert_eq!(roles(&set(&["ui"])).len(), 5);
+        assert_eq!(
+            roles(&set(&["ui"])),
+            set(&["backend", "react", "ui-design"])
+        );
+        assert_eq!(
+            roles(&set(&["screen"])),
+            set(&["backend", "ux-research", "game-ux"])
+        );
     }
 
     fn b(role: &str, sha: &str) -> Binding {
@@ -1998,7 +2311,7 @@ mod tests {
             classes: set(&["lang:rust"]),
         };
         let new = "2".repeat(64);
-        let classes = set(&["lang:rust", "ui"]);
+        let classes = set(&["lang:rust", "ui", "screen"]);
         let bs = vec![b("backend", &new)];
         let f = Facts {
             sha: &new,

@@ -1290,8 +1290,13 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
                   a code-review profile (backend, platform, unix, tui,
                   react, ui-design, architect or lang:<x>): adds a `Profile:
                   <role>` line and, after the code rules, the judge rules
-                  whose `Reviewed by:` names that role. Without it the plan
-                  section carries the plan's declared code review.
+                  whose `Reviewed by:` names that role, and the plan's Goal
+                  and Behaviour. lang:<x>, react, ui-design and platform get
+                  only their file types' part of the diff (renames as a
+                  deletion and an addition), the stat whole and the other
+                  files under `## Not in this brief`; the count is on
+                  stderr. Without it the plan section carries the plan's
+                  declared code review.
   --interdiff <head>
                   a delta brief: the same headers, then only what changed
                   since <head> (7-64 hex digits: the head an earlier review
@@ -1488,11 +1493,16 @@ const PLAN_PANEL_USAGE: &str = "\
 usage: amont-agent plan-panel [--code-review] <plan.md>
 
 The review agents a plan still needs, computed as the plan-review-panel
-hook will judge it at ExitPlanMode: the areas of every repository in the
-plan's machine comment (`<!-- panel: repos=... adds=... -->`), and whether
-this is the whole panel or a delta since the plan's last accepted body.
+hook will judge it at ExitPlanMode, and whether this is the whole panel or
+a delta since the plan's last accepted body. The seats come from the file
+types of the paths in backticks under the plan's `## Phases` (seats=paths),
+each attributed to the repository of the machine comment
+(`<!-- panel: repos=... adds=... -->`) that holds it; when the Phases name
+no path, from every area of those repositories (seats=areas), with advice
+on stderr to name the files. adds= declares what no path shows: cli, ui,
+screen, ops, contract, lang:<language>.
 
-First line: repos=<names> areas=<areas> body=<12 hex> panel=full|delta|current
+First line: repos=<names> areas=<classes> body=<12 hex> panel=full|delta|current seats=paths|areas
 Then one line per agent to launch: `plan-review-<role>`, and `--lang <l>`
 for a language review (the flag its `plan-sha --block` call takes).
 
@@ -1556,12 +1566,16 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
         Ok(p) => {
             let areas = p.classes.iter().cloned().collect::<Vec<_>>().join(",");
             println!(
-                "repos={} areas={} body={} panel={}",
+                "repos={} areas={} body={} panel={} seats={}",
                 p.repos,
                 if areas.is_empty() { "-" } else { &areas },
                 &p.sha[..12],
-                p.mode
+                p.mode,
+                p.source.as_str()
             );
+            if let Some(advice) = &p.advice {
+                eprintln!("amont-agent: plan-panel: {advice}");
+            }
             for role in &p.needed {
                 match plan_review::agent_for(role) {
                     (agent, Some(lang)) => println!("{agent} --lang {lang}"),

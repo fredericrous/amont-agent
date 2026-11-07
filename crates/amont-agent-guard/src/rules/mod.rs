@@ -53,6 +53,7 @@ pub mod no_verify;
 pub mod path_operand_missing;
 pub mod persisted_output_dump;
 pub mod pipe_to_tail;
+pub mod plan_names_no_paths;
 pub mod plan_phases_open;
 pub mod plan_review_panel;
 pub mod publish_without_skill;

@@ -1,11 +1,14 @@
-//! The code-review profiles a plan declares (decisions ADR-0052): the
-//! `## Code review` section, the proposal `plan-panel --code-review` prints
-//! from a repository's areas, and the judge rules each profile reviews.
+//! The code-review profiles a plan declares (decisions ADR-0052, ADR-0061):
+//! the `## Code review` section, the proposal `plan-panel --code-review`
+//! prints from the files the plan's Phases name in each repository (from the
+//! repository's areas when they name none), and the judge rules each profile
+//! reviews.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::plan_review::{locate, meta, repo_areas, root};
+use crate::file_types;
+use crate::plan_review::{locate, meta, root, seating, SeatSource};
 use crate::plan_text::Fence;
 
 const SECTION: &str = "Code review";
@@ -71,7 +74,7 @@ pub fn code_roles(areas: &BTreeSet<String>) -> BTreeSet<String> {
             "ops" => &["platform"],
             "cli" => &["unix", "tui"],
             "ui" => &["react", "ui-design"],
-            "large" => &["architect"],
+            "contract" | "large" => &["architect"],
             _ => &[],
         };
         roles.extend(add.iter().map(|s| s.to_string()));
@@ -88,7 +91,12 @@ pub fn proposed(areas: &BTreeSet<String>) -> Vec<String> {
     if !areas.iter().any(|a| a.starts_with("lang:")) {
         return Vec::new();
     }
-    let roles = code_roles(areas);
+    in_order(code_roles(areas))
+}
+
+/// Profiles in the order a proposal lists them: backend, the languages,
+/// then [`FIXED_PROFILES`].
+fn in_order(roles: BTreeSet<String>) -> Vec<String> {
     let mut out = Vec::new();
     out.extend(roles.iter().filter(|r| *r == "backend").cloned());
     out.extend(roles.iter().filter(|r| r.starts_with("lang:")).cloned());
@@ -168,28 +176,54 @@ fn opens_body(line: &str) -> bool {
         || line.starts_with("@@")
 }
 
+/// What the files attributed to one repository propose: its profiles, or
+/// `Err` with the reason it needs no code review. A repository is reviewed
+/// when its files earn a code class (a language, `ui`, `ops`); the plan's
+/// declared classes then add theirs (`contract` → architect).
+pub fn proposed_for_paths(
+    paths: &[String],
+    has_cli: bool,
+    adds: &[String],
+) -> Result<Vec<String>, &'static str> {
+    if paths.is_empty() {
+        return Err("no file named");
+    }
+    let mut classes = file_types::classes(paths, has_cli);
+    let code = |c: &String| c.starts_with("lang:") || c == "ui" || c == "ops";
+    if !classes.iter().any(code) {
+        let markdown = paths
+            .iter()
+            .all(|p| p.ends_with(".md") || p.ends_with(".mdx") || p.ends_with('/'));
+        return Err(if markdown {
+            "markdown only"
+        } else {
+            "no code file"
+        });
+    }
+    classes.extend(adds.iter().cloned());
+    Ok(in_order(code_roles(&classes)))
+}
+
 /// The proposal for every repository of the plan's machine comment, one
-/// `<repo>\t<profiles|none>` line each.
+/// `<repo>\t<profiles>` line each, or `<repo>\tnone\t<reason>` (so `cut -f2`
+/// reads `none`, and the line pastes as `- <repo>: none — <reason>`).
 pub fn proposal(plan_text: &str) -> Result<String, String> {
     let machine = meta(plan_text)?;
-    let plan_root =
-        root().ok_or("no plan root could be determined, so repos= cannot be resolved")?;
+    let seated = seating(&machine, plan_text)?;
     let mut out = String::new();
-    for name in &machine.repos {
-        let dir = locate(&plan_root, name);
-        let areas = repo_areas(&dir)?.ok_or_else(|| {
-            format!(
-                "repos= names `{name}`, which is not a repository at {}",
-                dir.display()
-            )
-        })?;
-        let profiles = proposed(&areas);
-        let shown = if profiles.is_empty() {
-            "none".to_string()
-        } else {
-            profiles.join(",")
+    for repo in &seated.repos {
+        let profiles = match seated.source {
+            SeatSource::Paths => {
+                proposed_for_paths(&repo.paths, repo.areas.contains("cli"), &machine.adds)
+            }
+            SeatSource::Areas => Some(proposed(&repo.areas))
+                .filter(|p| !p.is_empty())
+                .ok_or("no language area"),
         };
-        out.push_str(&format!("{name}\t{shown}\n"));
+        match profiles {
+            Ok(p) => out.push_str(&format!("{}\t{}\n", repo.name, p.join(","))),
+            Err(reason) => out.push_str(&format!("{}\tnone\t{reason}\n", repo.name)),
+        }
     }
     Ok(out)
 }
@@ -515,6 +549,43 @@ mod tests {
             proposed(&set(&["ui", "lang:ts"])),
             ["backend", "lang:ts", "react", "ui-design"]
         );
+    }
+
+    #[test]
+    fn named_files_propose_the_profiles_of_their_types() {
+        let paths = |ps: &[&str]| ps.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            proposed_for_paths(&paths(&["web/Settings.tsx"]), false, &[]),
+            Ok(vec![
+                "backend".to_string(),
+                "lang:typescript".into(),
+                "react".into(),
+                "ui-design".into()
+            ])
+        );
+        assert_eq!(
+            proposed_for_paths(&paths(&["src/dispatch.rs"]), true, &["contract".into()]),
+            Ok(vec![
+                "backend".to_string(),
+                "lang:rust".into(),
+                "unix".into(),
+                "tui".into(),
+                "architect".into()
+            ])
+        );
+        assert_eq!(
+            proposed_for_paths(&paths(&["apps/web/deployment.yaml"]), false, &[]),
+            Ok(vec!["backend".to_string(), "platform".into()])
+        );
+        assert_eq!(
+            proposed_for_paths(&paths(&["docs/plan-review.md", "CHANGELOG.md"]), true, &[]),
+            Err("markdown only")
+        );
+        assert_eq!(
+            proposed_for_paths(&paths(&[".adr.yaml"]), true, &[]),
+            Err("no code file")
+        );
+        assert_eq!(proposed_for_paths(&[], true, &[]), Err("no file named"));
     }
 
     #[test]

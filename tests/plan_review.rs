@@ -42,7 +42,14 @@ enum Said {
     Ask(String),
 }
 
-const BODY: &str = "# Plan\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nThe work.\n\n## Phases\n\n- [ ] one\n";
+/// A plan whose one phase names a Rust file: seated from it (ADR-0061).
+const BODY: &str = "# Plan\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nThe work.\n\n## Phases\n\n- [ ] Phase 1 — `src/main.rs`\n";
+
+/// The same plan, its phase naming a markdown file: backend alone.
+const DOCS_BODY: &str = "# Plan\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nThe work.\n\n## Phases\n\n- [ ] Phase 1 — `README.md`\n";
+
+/// A plan whose Phases name no file: seated from its repositories' areas.
+const NO_PATHS: &str = "# Plan\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nThe work.\n\n## Phases\n\n- [ ] Phase 1 — the work\n";
 
 /// The reviewer agents the guards need, as a Claude config dir carries them.
 fn install_agents(config: &Path) {
@@ -495,8 +502,11 @@ fn a_full_review_then_five_successive_deltas() {
     );
 
     // Delta 3: the change declares a new area. Its reviewers plus backend.
-    let body3 = body1.replace("- [ ] one", "- [ ] one\n- [ ] a settings screen");
-    let plan = w.plan("p.md", &body3, "repos=tool adds=ui");
+    let body3 = body1.replace(
+        "- [ ] Phase 1 — `src/main.rs`",
+        "- [ ] Phase 1 — `src/main.rs`\n- [ ] Phase 2 — a settings screen in `src/settings.rs`",
+    );
+    let plan = w.plan("p.md", &body3, "repos=tool adds=ui,screen");
     let said = w.present(&plan, &t);
     let Said::Deny(why) = &said else {
         panic!("{said:?}")
@@ -525,29 +535,18 @@ fn a_full_review_then_five_successive_deltas() {
     assert_eq!(w.present(&plan, &t), Said::Silent);
 
     // Delta 4: an area appeared on origin since the baseline (someone added
-    // manifests). Same body — its reviewers are still required.
+    // manifests). Same body, and it names no manifest: nothing new to review.
     let repo = w.root.join("repos").join("tool");
     w.commit(
         &repo,
         &[("deploy/kustomization.yaml", "resources: []\n")],
         true,
     );
-    let said = w.present(&plan, &t);
-    let Said::Deny(why) = &said else {
-        panic!("{said:?}")
-    };
-    assert!(why.contains("missing for repos=tool: platform"), "{why}");
-    t.review(
-        &w,
-        "plan-review-platform",
-        &w.block(&plan, None),
-        Done::Foreground,
-    );
     assert_eq!(w.present(&plan, &t), Said::Silent);
 
     // Delta 5: another requested change; backend again, nothing else.
     let body5 = body3.replace("The work, changed as asked.", "The work, changed twice.");
-    let plan = w.plan("p.md", &body5, "repos=tool adds=ui");
+    let plan = w.plan("p.md", &body5, "repos=tool adds=ui,screen");
     assert!(
         matches!(w.present(&plan, &t), Said::Deny(ref why) if why.contains("backend") && !why.contains("platform") && !why.contains("react"))
     );
@@ -648,7 +647,7 @@ fn a_review_of_another_plan_does_not_bind() {
 fn only_a_completion_claude_code_recorded_counts() {
     let w = World::new("completion");
     w.repo("docs", &[("README.md", "x\n")]);
-    let plan = w.plan("p.md", BODY, "repos=docs");
+    let plan = w.plan("p.md", DOCS_BODY, "repos=docs");
     for (done, passes) in [
         (Done::Running, false),
         (Done::ForegroundFailed, false),
@@ -678,7 +677,7 @@ fn only_a_completion_claude_code_recorded_counts() {
 fn a_failed_background_review_does_not_count() {
     let w = World::new("failed");
     w.repo("docs", &[("README.md", "x\n")]);
-    let plan = w.plan("p.md", BODY, "repos=docs");
+    let plan = w.plan("p.md", DOCS_BODY, "repos=docs");
     let mut t = Transcript::default();
     t.review(
         &w,
@@ -702,7 +701,7 @@ fn a_missing_machine_comment_is_refused_counted_then_asked() {
     let w = World::new("antitrap");
     w.repo("docs", &[("README.md", "x\n")]);
     let bare = w.root.join("plans").join("p.md");
-    std::fs::write(&bare, BODY).unwrap();
+    std::fs::write(&bare, DOCS_BODY).unwrap();
     let t = Transcript::default();
     for _ in 0..2 {
         assert!(
@@ -715,7 +714,7 @@ fn a_missing_machine_comment_is_refused_counted_then_asked() {
         "{said:?}"
     );
     // Also once the plan is fixed but still unreviewed: it stays with the person.
-    let plan = w.plan("p.md", BODY, "repos=docs");
+    let plan = w.plan("p.md", DOCS_BODY, "repos=docs");
     assert!(
         matches!(w.present(&plan, &t), Said::Ask(ref why) if why.contains("missing for repos=docs: backend"))
     );
@@ -728,7 +727,11 @@ fn a_missing_machine_comment_is_refused_counted_then_asked() {
         Done::Foreground,
     );
     assert_eq!(w.present(&plan, &t), Said::Silent);
-    let changed = w.plan("p.md", &BODY.replace("The work.", "Changed."), "repos=docs");
+    let changed = w.plan(
+        "p.md",
+        &DOCS_BODY.replace("The work.", "Changed."),
+        "repos=docs",
+    );
     assert!(
         matches!(w.present(&changed, &t), Said::Deny(_)),
         "the count was reset by the pass"
@@ -748,7 +751,7 @@ fn invalid_repos_and_a_missing_section_are_the_models_to_fix() {
     w.repo("docs", &[("README.md", "x\n")]);
     let plan = w.plan(
         "nosection.md",
-        &BODY.replace("## Review panel", "## Panel"),
+        &DOCS_BODY.replace("## Review panel", "## Panel"),
         "repos=docs",
     );
     assert!(
@@ -783,7 +786,11 @@ fn the_default_tree_falls_back_to_head_and_an_unborn_repository_is_empty() {
         &[("go.mod", "module x\n"), ("main.go", "package main\n")],
         false,
     );
-    let plan = w.plan("p.md", BODY, "repos=local");
+    let plan = w.plan(
+        "p.md",
+        &BODY.replace("src/main.rs", "main.go"),
+        "repos=local",
+    );
     assert!(
         matches!(w.present(&plan, &Transcript::default()), Said::Deny(ref why) if why.contains("missing for repos=local: backend, lang:go, tui, unix"))
     );
@@ -791,7 +798,7 @@ fn the_default_tree_falls_back_to_head_and_an_unborn_repository_is_empty() {
     let unborn = w.root.join("repos").join("unborn");
     std::fs::create_dir_all(&unborn).unwrap();
     git(&unborn, &["init", "-q", "--template=", "."]);
-    let plan = w.plan("q.md", BODY, "repos=unborn");
+    let plan = w.plan("q.md", DOCS_BODY, "repos=unborn");
     assert!(
         matches!(w.present(&plan, &Transcript::default()), Said::Deny(ref why) if why.contains("missing for repos=unborn: backend ("))
     );
@@ -801,7 +808,7 @@ fn the_default_tree_falls_back_to_head_and_an_unborn_repository_is_empty() {
 fn what_the_hook_cannot_check_goes_to_the_person() {
     let w = World::new("external");
     w.repo("docs", &[("README.md", "x\n")]);
-    let plan = w.plan("p.md", BODY, "repos=docs");
+    let plan = w.plan("p.md", DOCS_BODY, "repos=docs");
     let asked = |s: Said, what: &str| {
         assert!(
             matches!(s, Said::Ask(ref why) if why.contains(what)),
@@ -840,7 +847,7 @@ fn what_the_hook_cannot_check_goes_to_the_person() {
 fn a_skip_the_person_asked_for_is_theirs_to_confirm() {
     let w = World::new("skip");
     w.repo("docs", &[("README.md", "x\n")]);
-    let body = BODY.replace(
+    let body = DOCS_BODY.replace(
         "👉 Decide: none",
         "⚠ unreviewed: the person asked to skip the panel\n👉 Decide: none",
     );
@@ -869,7 +876,7 @@ fn a_skip_the_person_asked_for_is_theirs_to_confirm() {
 fn the_baseline_is_private() {
     let w = World::new("private");
     w.repo("docs", &[("README.md", "x\n")]);
-    let plan = w.plan("p.md", BODY, "repos=docs");
+    let plan = w.plan("p.md", DOCS_BODY, "repos=docs");
     let mut t = Transcript::default();
     t.review(
         &w,
@@ -896,7 +903,7 @@ fn the_baseline_is_private() {
 #[test]
 fn plan_sha_reads_stdin_and_ignores_line_endings() {
     let w = World::new("sha");
-    let plan = w.plan("p.md", BODY, "repos=docs");
+    let plan = w.plan("p.md", DOCS_BODY, "repos=docs");
     let crlf = w.root.join("plans").join("crlf.md");
     std::fs::write(
         &crlf,
@@ -918,7 +925,7 @@ fn plan_sha_reads_stdin_and_ignores_line_endings() {
         .stdin
         .take()
         .unwrap()
-        .write_all(BODY.as_bytes())
+        .write_all(DOCS_BODY.as_bytes())
         .unwrap();
     let out = child.wait_with_output().unwrap();
     let full = String::from_utf8(out.stdout).unwrap();
@@ -949,7 +956,7 @@ fn plan_sha_reads_stdin_and_ignores_line_endings() {
 fn a_large_transcript_is_read_quickly() {
     let w = World::new("large");
     w.repo("docs", &[("README.md", "x\n")]);
-    let plan = w.plan("p.md", BODY, "repos=docs");
+    let plan = w.plan("p.md", DOCS_BODY, "repos=docs");
     let line = serde_json::json!({
         "type": "assistant",
         "message": {"content": [{"type": "tool_use", "id": "x", "name": "Bash", "input": {"command": "ls ".repeat(200)}}]}
@@ -989,7 +996,7 @@ fn plan_panel_lists_what_the_hook_will_require() {
     let full = panel(&plan);
     assert!(
         full.starts_with(&format!(
-            "repos=tool areas=cli,lang:rust body={} panel=full\n",
+            "repos=tool areas=cli,lang:rust body={} panel=full seats=paths\n",
             w.short(&plan)
         )),
         "{full}"
@@ -1005,17 +1012,21 @@ fn plan_panel_lists_what_the_hook_will_require() {
         t.review(&w, agent, &w.block(&plan, lang), Done::Foreground);
     }
     assert_eq!(w.present(&plan, &t), Said::Silent);
-    assert!(panel(&plan).trim_end().ends_with("panel=current"));
+    assert!(panel(&plan).contains(" panel=current seats=paths\n"));
 
-    // A change the person asks for, adding an interface: the delta.
+    // A change the person asks for, adding an interface: the delta, `ui`
+    // seating react and ui-design only (`screen` seats the other two).
     let plan = w.plan(
         "p.md",
         &BODY.replace("The work.", "Changed."),
         "repos=tool adds=ui",
     );
     let delta = panel(&plan);
-    assert!(delta.contains("panel=delta\n"), "{delta}");
-    assert!(delta.ends_with("plan-review-backend\nplan-review-game-ux\nplan-review-react\nplan-review-ui-design\nplan-review-ux-research\n"), "{delta}");
+    assert!(delta.contains("panel=delta seats=paths\n"), "{delta}");
+    assert!(
+        delta.ends_with("plan-review-backend\nplan-review-react\nplan-review-ui-design\n"),
+        "{delta}"
+    );
     for line in delta.lines().skip(1) {
         t.review(&w, line, &w.block(&plan, None), Done::Foreground);
     }
@@ -1046,7 +1057,7 @@ fn a_formatted_copy_keeps_its_review() {
     // What a formatter does: blank lines, another list marker, emphasis.
     let formatted = BODY
         .replace("The work.", "The\n_work_.\n\n")
-        .replace("- [ ] one", "* [ ] one");
+        .replace("- [ ] Phase 1", "* [ ] Phase 1");
     let plan = w.plan("p.md", &formatted, "repos=tool");
     assert_eq!(
         w.present(&plan, &t),
@@ -1095,9 +1106,9 @@ fn an_edited_plan_in_a_new_session_is_a_delta_not_a_full_panel() {
         "repos=tool",
     );
     let delta = panel(&moved);
-    assert!(delta.contains("panel=delta\n"), "{delta}");
+    assert!(delta.contains("panel=delta seats=paths\n"), "{delta}");
     assert!(
-        delta.ends_with("panel=delta\nplan-review-backend\n"),
+        delta.ends_with("panel=delta seats=paths\nplan-review-backend\n"),
         "{delta}"
     );
     let mut fresh = Transcript::default();
@@ -1115,7 +1126,7 @@ fn an_edited_plan_in_a_new_session_is_a_delta_not_a_full_panel() {
         &BODY.replace("# Plan", "# Another plan"),
         "repos=tool",
     );
-    assert!(panel(&other).contains("panel=full\n"));
+    assert!(panel(&other).contains("panel=full seats=paths\n"));
 }
 
 #[test]
@@ -1214,7 +1225,7 @@ fn a_review_bound_before_2_25_still_passes_and_is_journalled() {
     .unwrap();
     let out = w2.bin().arg("plan-panel").arg(&again).output().unwrap();
     let panel = String::from_utf8(out.stdout).unwrap();
-    assert!(panel.trim_end().ends_with("panel=current"), "{panel}");
+    assert!(panel.contains(" panel=current seats=paths\n"), "{panel}");
     assert_eq!(w2.present(&again, &Transcript::default()), Said::Silent);
 
     let both = w
@@ -1292,7 +1303,35 @@ fn plan_panel_code_review_proposes_each_repositorys_profiles() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "tool\tbackend,lang:rust,unix,tui\nnotes\tnone\n"
+        "tool\tbackend,lang:rust,unix,tui\nnotes\tnone\tno file named\n"
+    );
+
+    // Each repository is proposed from its own files; a markdown-only one
+    // says so in the third field, and `cut -f2` still reads `none`.
+    let both = BODY.replace("`src/main.rs`", "`src/main.rs` and `README.md`");
+    let plan = w.plan("q.md", &both, "repos=tool,notes");
+    let out = w
+        .bin()
+        .args(["plan-panel", "--code-review"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "tool\tbackend,lang:rust,unix,tui\nnotes\tnone\tmarkdown only\n"
+    );
+
+    // Named no file: from the areas, as before 3.22.0.
+    let plan = w.plan("r.md", NO_PATHS, "repos=tool,notes");
+    let out = w
+        .bin()
+        .args(["plan-panel", "--code-review"])
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "tool\tbackend,lang:rust,unix,tui\nnotes\tnone\tno language area\n"
     );
 }
 
@@ -1306,7 +1345,7 @@ fn a_plan_without_a_code_review_section_warns_and_keeps_its_stdout() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.starts_with(&format!(
-            "repos=tool areas=cli,lang:rust body={} panel=full\n",
+            "repos=tool areas=cli,lang:rust body={} panel=full seats=paths\n",
             w.short(&plan)
         )),
         "{stdout}"
@@ -1342,4 +1381,212 @@ fn a_code_review_section_that_does_not_parse_exits_1_with_or_without_the_flag() 
             "{flag:?}: {out:?}"
         );
     }
+}
+
+/// A Rust command line with a React front end: every area a panel can have
+/// from a repository, so a plan's seats show what its files chose.
+fn rust_cli_with_web(w: &World) {
+    w.repo(
+        "app",
+        &[
+            ("Cargo.toml", "[package]\nname = \"app\"\n"),
+            ("src/main.rs", "fn main() {}\n"),
+            (
+                "web/package.json",
+                "{\"dependencies\": {\"react\": \"18.3.1\"}}\n",
+            ),
+            ("web/App.tsx", "export {}\n"),
+        ],
+    );
+}
+
+#[test]
+fn a_plan_is_seated_from_the_files_its_phases_name_not_every_area() {
+    let w = World::new("seats");
+    rust_cli_with_web(&w);
+    let panel = |body: &str| {
+        let plan = w.plan("p.md", body, "repos=app");
+        let out = w.bin().arg("plan-panel").arg(&plan).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let _ = std::fs::remove_dir_all(w.store());
+        (
+            String::from_utf8(out.stdout).unwrap(),
+            String::from_utf8(out.stderr).unwrap(),
+        )
+    };
+
+    // A Rust file: the Rust and command-line seats, no interface seat.
+    let (out, err) = panel(BODY);
+    let first = out.lines().next().unwrap();
+    assert!(
+        first.starts_with("repos=app areas=cli,lang:rust body=")
+            && first.ends_with(" panel=full seats=paths"),
+        "{out}"
+    );
+    assert_eq!(
+        out.lines().skip(1).collect::<Vec<_>>(),
+        [
+            "plan-review-backend",
+            "plan-review-language --lang rust",
+            "plan-review-tui",
+            "plan-review-unix"
+        ]
+    );
+    assert!(!err.contains("name the files"), "{err}");
+
+    // A component: react and ui-design with the TypeScript seat.
+    let (out, _) = panel(&BODY.replace("src/main.rs", "web/App.tsx"));
+    assert!(
+        out.lines()
+            .next()
+            .unwrap()
+            .contains(" areas=cli,lang:typescript,ui "),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "plan-review-react\nplan-review-tui\nplan-review-ui-design\nplan-review-unix\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        !out.contains("ux-research") && !out.contains("lang rust"),
+        "{out}"
+    );
+
+    // Markdown only: backend alone, whatever the repository has.
+    let (out, _) = panel(DOCS_BODY);
+    assert!(out.lines().next().unwrap().contains(" areas=- "), "{out}");
+    assert_eq!(
+        out.lines().skip(1).collect::<Vec<_>>(),
+        ["plan-review-backend"]
+    );
+
+    // No file named: today's area seats, and the advice on stderr only.
+    let (out, err) = panel(NO_PATHS);
+    assert!(
+        out.lines().next().unwrap().ends_with(" seats=areas"),
+        "{out}"
+    );
+    for agent in [
+        "plan-review-game-ux",
+        "plan-review-react",
+        "plan-review-ui-design",
+        "plan-review-ux-research",
+        "plan-review-language --lang rust",
+        "plan-review-language --lang typescript",
+        "plan-review-unix",
+    ] {
+        assert!(out.lines().any(|l| l == agent), "{agent}: {out}");
+    }
+    assert!(!out.contains("name the files"), "{out}");
+    assert!(
+        err.lines().any(|l| l == "amont-agent: plan-panel: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_plan_naming_no_file_is_advised_and_still_allowed() {
+    let w = World::new("no-paths");
+    rust_cli(&w);
+    let journal = || {
+        std::fs::read_to_string(
+            w.root
+                .join("claude")
+                .join("amont-agent")
+                .join("journal.log"),
+        )
+        .unwrap()
+    };
+
+    // Unreviewed: the panel's refusal, with the advice after it.
+    let plan = w.plan("p.md", NO_PATHS, "repos=tool");
+    let said = w.present(&plan, &Transcript::default());
+    let Said::Deny(why) = &said else {
+        panic!("{said:?}")
+    };
+    assert!(
+        why.starts_with(
+            "amont-agent/plan-review-panel: missing for repos=tool: backend, lang:rust, tui, unix"
+        ),
+        "{why}"
+    );
+    assert!(why.ends_with("amont-agent/plan-names-no-paths: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"), "{why}");
+
+    // Reviewed: ExitPlanMode goes through, with the advice as context.
+    let mut t = Transcript::default();
+    full_panel(&w, &mut t, &plan);
+    let said = w.present(&plan, &t);
+    assert_eq!(
+        said,
+        Said::Advise("amont-agent/plan-names-no-paths: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas".into())
+    );
+    let line = journal()
+        .lines()
+        .rfind(|l| l.contains("plan-names-no-paths"))
+        .unwrap()
+        .to_string();
+    assert!(
+        line.contains("advised") && line.contains("seats=areas"),
+        "{line}"
+    );
+
+    // Some phases name files, one does not: seated from the files, and the
+    // advice names the phase.
+    let partial = BODY.replace(
+        "- [ ] Phase 1 — `src/main.rs`",
+        "- [ ] Phase 1 — `src/main.rs`\n- [ ] Phase 2 — release and install",
+    );
+    let plan = w.plan("q.md", &partial, "repos=tool");
+    let mut t = Transcript::default();
+    full_panel(&w, &mut t, &plan);
+    assert_eq!(
+        w.present(&plan, &t),
+        Said::Advise("amont-agent/plan-names-no-paths: Phase 2 names no file; name the files each phase touches in backticks under ## Phases".into())
+    );
+
+    // Its stance is the person's: observed, it is journalled and silent.
+    std::fs::write(
+        w.root.join("global"),
+        "[amont \"agent.plan-names-no-paths\"]\n\tstance = observe\n",
+    )
+    .unwrap();
+    assert_eq!(w.present(&plan, &t), Said::Silent);
+    assert!(journal()
+        .lines()
+        .rfind(|l| l.contains("plan-names-no-paths"))
+        .is_some_and(|l| l.contains("watched")));
+}
+
+#[test]
+fn a_baseline_stored_before_the_split_stays_current() {
+    // Saved by 3.21: `ui` meant all four interface seats, `large` the two
+    // contract seats. The same body passes, and a delta asks for nothing old.
+    let w = World::new("old-names");
+    rust_cli_with_web(&w);
+    let plan = w.plan("p.md", NO_PATHS, "repos=app adds=large");
+    let sha = w
+        .block(&plan, None)
+        .split("sha=")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(">>>")
+        .to_string();
+    let by_body = w.store().join("by-body");
+    std::fs::create_dir_all(&by_body).unwrap();
+    std::fs::write(
+        by_body.join(format!("{sha}.json")),
+        serde_json::json!({
+            "sha": sha,
+            "roles": ["architect", "backend", "game-ux", "lang:rust", "lang:typescript", "po", "react", "tui", "ui-design", "unix", "ux-research"],
+            "classes": ["cli", "lang:rust", "lang:typescript", "large", "ui"],
+            "path": "/elsewhere/p.md",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = w.bin().arg("plan-panel").arg(&plan).output().unwrap();
+    let panel = String::from_utf8(out.stdout).unwrap();
+    assert!(panel.contains(" panel=current seats=areas\n"), "{panel}");
 }
