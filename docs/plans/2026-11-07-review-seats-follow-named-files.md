@@ -110,8 +110,9 @@ brief halves of ADR-0061; slice binding is a later plan.
   `name the files each phase touches in backticks under ## Phases; this
   panel was seated from the repositories' areas`. `plan-panel` prints the same
   text on stderr, stdout unchanged. When some phases name paths and others
-  name none, seats come from the named paths, and the advice names each phase
-  that has none (`Phase 5 names no file`). `plan-panel`'s first line
+  name none, seats come from the areas, as when none is named, and the advice
+  names each phase that has none (`Phase 5 names no file; …`); see the
+  Decision log entry of the backtest. `plan-panel`'s first line
   gains `seats=paths|areas` as its last field, and `PLAN_PANEL_USAGE`
   (`src/main.rs:1490-1495`) states the new line and the path seat source.
 - **Code-review proposal.** `plan-panel --code-review` proposes, per
@@ -142,21 +143,21 @@ brief halves of ADR-0061; slice binding is a later plan.
 - `docs/plan-review.md` and `CHANGELOG.md` say all of this.
 
 ## Phases
-- [ ] Phase 1 — `crates/amont-agent-process/src/file_types.rs`: path
+- [x] Phase 1 — `crates/amont-agent-process/src/file_types.rs`: path
   extraction from Phases, attribution through `ls_tree_z`, the type table;
   unit tests beside it.
-- [ ] Phase 2 — `crates/amont-agent-process/src/plan_review.rs`:
+- [x] Phase 2 — `crates/amont-agent-process/src/plan_review.rs`:
   `classes_of` takes the body, `roles()`, `remit()` (and the class list in
   `remit_is_the_inverse_of_roles`) and `valid_class` for `screen`,
   `contract` and the narrowed `ui`; `src/main.rs` prints `seats=`;
   `crates/amont-agent-guard/src/rules/plan_names_no_paths.rs` beside
   `plan_review_panel.rs`, registered in `crates/amont-agent-guard/src/corpus.rs`;
   `tests/plan_review.rs` (the `BODY` fixture names no paths and is updated; new cases: a body with paths prints `seats=paths`, and one with no paths gets the `plan-names-no-paths` advice with ExitPlanMode allowed).
-- [ ] Phase 3 — `crates/amont-agent-process/src/code_review.rs`:
+- [x] Phase 3 — `crates/amont-agent-process/src/code_review.rs`:
   `proposal` and `code_roles` from attributed paths;
   `crates/amont-agent-process/src/review_outcomes.rs`: `seat_source`;
   tests: a proposal for markdown-only paths gives `none — markdown only`, a `.tsx` path gives react and ui-design, and an outcomes row carries `seat_source`.
-- [ ] Phase 4 — `crates/amont-agent-process/src/review_brief.rs`: the profile
+- [x] Phase 4 — `crates/amont-agent-process/src/review_brief.rs`: the profile
   pathspecs in `build` and `interdiff_brief`, `## Not in this brief`, Goal and
   Behaviour. Supersede the panel's carried `--pathspec-from-file` requirement:
   `git diff` does not support it. Pass `:(literal)` pathspecs through bounded
@@ -179,6 +180,19 @@ brief halves of ADR-0061; slice binding is a later plan.
   area union then). Release and docs phases routinely name no file, so the
   union would give nearly every plan today's panel back. The advice names each
   such phase, and the backtest's zero-loss bar would show under-seating.
+- 2026-11-07 (backtest, the person's decision) — the entry above is
+  reversed: paths seat the panel only when every phase names one; otherwise
+  the areas do. The backtest over 45 saved round-1 bodies found 13 seated
+  from paths, all partial, and they dropped seats that had made 95 accepted
+  high or blocking findings (13 po, 15 lang:rust, 10 unix, 10 tui, 8
+  architect, 8 game-ux, 7 ux-research, 7 lang:typescript, …). Old plans name
+  components, not files, so one incidental path (`release.yml`,
+  `check-namespace-owners.sh`) flipped a plan to path seats. Under the
+  reversed rule: 0 seats dropped, 0 findings lost, all 45 seated from areas.
+  That shows no regression and saves no seat on history: savings arrive when
+  plans name files in every phase (the skills build), and 36 of the 95 came
+  from po, architect, ux-research and game-ux, which a full-path plan still
+  drops unless it writes `adds=contract` or `adds=screen`.
 - 2026-11-07 — no paths means advice and area seats, not a refusal, because
   the plan template does not ask for files per phase yet and other sessions
   are in plan mode now.
@@ -212,5 +226,36 @@ sessions consume (the panel list the hook enforces).
   `seats=paths` and the hook accepts that panel.
 
 ## Outcome
+- Built phases 1–4 in `a72d4ab` and the follow-up commit; the backtest above
+  decided the partial-phase rule.
+- Where the build differs from the text above:
+  - Literal paths go through `git --literal-pathspecs` with bare paths, not
+    `:(literal)` prefixes: the same literal matching, and it holds whether
+    or not `GIT_LITERAL_PATHSPECS` is set in the environment.
+  - A repository tree that cannot be read still asks the person, as before:
+    attribution reads the same `ls_tree_z` listing as the areas, so a failed
+    read leaves no areas to seat from either.
+  - `none` lines also give `no code file` (named files, none of them code)
+    and `no file named` (no named path is attributed to that repository).
+  - A list item under Phases without a `Phase <n>` label counts as a phase
+    and is named by its place (`phase 3`); a `🧑` item is not a phase.
+  - Baselines carry `"names": 2`; one without it is read in the old names
+    (`large` as `contract`, `ui` with `screen`).
+  - `.sh` earns no class, so a shell script alone seats no `unix`/`tui`.
+- Verification:
+  - Backtest: as in the Decision log (45 plans; 2 more skipped because their
+    `## Code review` lines do not parse, before and after this change).
+  - This plan: `seats=paths`, backend, `lang:rust`, unix, tui. The decisions
+    plan `2026-11-07-review-follows-what-it-touches`: backend alone (its
+    Phase 4 names no file, and `decisions` has no area).
+  - relais #385, `--profile lang:typescript`: 5 of 31 files, 15,682 patch
+    bytes against 223,976 unfiltered (93% fewer, not the 96% expected), the
+    stat whole, 26 paths under `## Not in this brief`.
+  - homelab's last 10 manifest commits: each seats and proposes `platform`;
+    the 10-manifest range's platform brief carries 10 of 10 files.
+  - No-paths, partial, delta (on-top and rebased), cross-language rename,
+    empty selection, a 1500-path batch and a pre-3.22.0 ledger row: tests in
+    `tests/plan_review.rs`, `tests/review_brief.rs` and
+    `crates/amont-agent-process/src/review_outcomes.rs`.
 
 <!-- panel: repos=amont-agent adds= reviewers=backend,language,tui,unix,codex body-sha=4b4cc92612da -->

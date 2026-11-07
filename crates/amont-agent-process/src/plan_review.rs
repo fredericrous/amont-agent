@@ -1734,7 +1734,8 @@ pub struct Seating {
     /// the source: [`areas_of`], for the outcome ledger.
     pub areas: BTreeSet<String>,
     pub repos: Vec<RepoSeat>,
-    /// The phases that name no file while others do.
+    /// The phases that name no file while others do: the seats then come
+    /// from areas.
     pub unnamed: Vec<String>,
 }
 
@@ -1748,29 +1749,27 @@ pub struct Advice {
 pub const NAME_THE_FILES: &str = "name the files each phase touches in backticks under ## Phases";
 
 impl Seating {
-    /// The advice, when the seats came from areas or a phase names no file.
+    /// The advice whenever the seats came from areas: naming each phase
+    /// that names no file, when others do.
     pub fn advice(&self) -> Option<Advice> {
-        match self.source {
-            SeatSource::Areas => Some(Advice {
-                text: format!(
-                    "{NAME_THE_FILES}; this panel was seated from the repositories' areas"
-                ),
-                excerpt: "seats=areas".into(),
-            }),
-            SeatSource::Paths if self.unnamed.is_empty() => None,
-            SeatSource::Paths => {
-                let verb = if self.unnamed.len() == 1 {
-                    "names"
-                } else {
-                    "name"
-                };
-                let who = self.unnamed.join(", ");
-                Some(Advice {
-                    text: format!("{who} {verb} no file; {NAME_THE_FILES}"),
-                    excerpt: format!("seats=paths unnamed={}", self.unnamed.len()),
-                })
-            }
+        if self.source == SeatSource::Paths {
+            return None;
         }
+        let tail = format!("{NAME_THE_FILES}; this panel was seated from the repositories' areas");
+        Some(match self.unnamed.as_slice() {
+            [] => Advice {
+                text: tail,
+                excerpt: "seats=areas".into(),
+            },
+            unnamed => Advice {
+                text: format!(
+                    "{} {} no file; {tail}",
+                    unnamed.join(", "),
+                    if unnamed.len() == 1 { "names" } else { "name" }
+                ),
+                excerpt: format!("seats=areas unnamed={}", unnamed.len()),
+            },
+        })
     }
 }
 
@@ -1795,7 +1794,20 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
         }
     }
     let areas = area_union(m, &trees);
-    if named.is_empty() {
+    // Paths seat the panel only when every phase names one: a plan whose
+    // release or docs phase names no file is seated from areas, because on
+    // the 45 panels of the ledger a partial plan's paths dropped seats that
+    // made 95 accepted serious findings (decided 2026-11-07).
+    let unnamed: Vec<String> = if named.is_empty() {
+        Vec::new()
+    } else {
+        phases
+            .iter()
+            .filter(|p| p.paths.is_empty())
+            .map(|p| p.label.clone())
+            .collect()
+    };
+    if named.is_empty() || !unnamed.is_empty() {
         return Seating {
             classes: in_todays_names(areas.iter().cloned()),
             source: SeatSource::Areas,
@@ -1808,7 +1820,7 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
                     paths: Vec::new(),
                 })
                 .collect(),
-            unnamed: Vec::new(),
+            unnamed,
         };
     }
     let listing: Vec<(&str, &[String])> = trees
@@ -1831,11 +1843,7 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
         source: SeatSource::Paths,
         areas,
         repos,
-        unnamed: phases
-            .into_iter()
-            .filter(|p| p.paths.is_empty())
-            .map(|p| p.label)
-            .collect(),
+        unnamed: Vec::new(),
     }
 }
 

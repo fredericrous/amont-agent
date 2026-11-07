@@ -1484,6 +1484,22 @@ fn a_plan_is_seated_from_the_files_its_phases_name_not_every_area() {
         err.lines().any(|l| l == "amont-agent: plan-panel: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"),
         "{err}"
     );
+
+    // One phase names a file, another none: the areas still seat the panel,
+    // and the advice names the phase.
+    let (out, err) = panel(&BODY.replace(
+        "- [ ] Phase 1 — `src/main.rs`",
+        "- [ ] Phase 1 — `src/main.rs`\n- [ ] Phase 2 — release and install",
+    ));
+    assert!(
+        out.lines().next().unwrap().ends_with(" seats=areas"),
+        "{out}"
+    );
+    assert!(out.lines().any(|l| l == "plan-review-ux-research"), "{out}");
+    assert!(
+        err.lines().any(|l| l == "amont-agent: plan-panel: Phase 2 names no file; name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1532,7 +1548,7 @@ fn a_plan_naming_no_file_is_advised_and_still_allowed() {
         "{line}"
     );
 
-    // Some phases name files, one does not: seated from the files, and the
+    // Some phases name files, one does not: seated from the areas, and the
     // advice names the phase.
     let partial = BODY.replace(
         "- [ ] Phase 1 — `src/main.rs`",
@@ -1543,7 +1559,7 @@ fn a_plan_naming_no_file_is_advised_and_still_allowed() {
     full_panel(&w, &mut t, &plan);
     assert_eq!(
         w.present(&plan, &t),
-        Said::Advise("amont-agent/plan-names-no-paths: Phase 2 names no file; name the files each phase touches in backticks under ## Phases".into())
+        Said::Advise("amont-agent/plan-names-no-paths: Phase 2 names no file; name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas".into())
     );
 
     // Its stance is the person's: observed, it is journalled and silent.

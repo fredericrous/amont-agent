@@ -40,9 +40,11 @@ A plan whose Phases name no file is seated as before 3.22.0, from every area
 of its repositories, with `ui` seating all four interface reviewers; the
 `plan-names-no-paths` rule (`advise`, at most) says so at `ExitPlanMode` and
 `plan-panel` says it on stderr: name the files each phase touches in
-backticks under `## Phases`. When some phases name files and others none,
-the seats come from the named files and the advice names each phase without
-one (`Phase 5 names no file`).
+backticks under `## Phases`. Paths seat the panel only when every phase
+names one: when some phases name files and others none, the areas seat it
+too, and the advice names each phase without one (`Phase 5 names no file`).
+On the review ledger, plans seated from the files of only some phases had
+dropped seats that made 95 accepted serious findings.
 
 | area (when no file is named) | reviewers |
 |---|---|

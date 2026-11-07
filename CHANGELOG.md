@@ -13,7 +13,8 @@
   `react` and `ui-design`; the new `adds=screen` seats `ux-research` and
   `game-ux`; `adds=contract` (the new name of `large`) seats `po` and
   `architect`; any `.yaml` outside tool configuration seats `platform`.
-  A plan that names no file keeps the area seats of before.
+  Paths seat the panel only when every phase names one; a plan with a phase
+  that names no file keeps the area seats of before.
   `plan-panel`'s first line ends in `seats=paths|areas`.
 - `plan-panel --code-review` proposes each repository's profiles from the
   files attributed to it, and a `none` line gains a third tab-separated
@@ -30,9 +31,9 @@
 
 ### Added
 
-- `plan-names-no-paths` (`advise`, at most): at `ExitPlanMode`, a plan whose
-  Phases name no file, or a phase that names none, is told to name the
-  files each phase touches. It never refuses.
+- `plan-names-no-paths` (`advise`, at most): at `ExitPlanMode`, a plan
+  seated from areas because a phase names no file is told to name the files
+  each phase touches, and which phases name none. It never refuses.
 
 ## v3.21.0
 
