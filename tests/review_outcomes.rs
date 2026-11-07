@@ -244,7 +244,7 @@ fn a_row_says_what_seated_its_panel() {
         &["add", "README.md"],
         &["commit", "-qm", "c"],
     ] {
-        let o = Command::new("git")
+        let output = Command::new("git")
             .arg("-C")
             .arg(&docs)
             .args([
@@ -260,14 +260,14 @@ fn a_row_says_what_seated_its_panel() {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
-        assert!(o.status.success(), "{args:?}: {o:?}");
+        assert!(output.status.success(), "{args:?}: {output:?}");
     }
     w.set_body(&format!(
         "{BODY}\n## Phases\n\n- [ ] Phase 1 — `README.md`\n"
     ));
     w.foreground("backend", Some("a1"));
-    let o = w.record("");
-    assert_eq!(o.status.code(), Some(0), "{}", err(&o));
+    let output = w.record("");
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
     let plan = &w.rows()[0]["plan"];
     assert_eq!(plan["seat_source"], "paths", "{plan}");
     assert_eq!(plan["seat_classes"], serde_json::json!([]), "{plan}");

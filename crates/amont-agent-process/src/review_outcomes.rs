@@ -665,6 +665,9 @@ fn record_locked(
         let meta = plan_review::meta(body);
         // One read of the trees for both: `areas` stays the repositories'
         // areas, `seat_source` and `seat_classes` say what seated the panel.
+        // A body whose machine comment does not parse records `repos: []`
+        // and null seats, as before: the hook refused that plan at
+        // ExitPlanMode, so there is no panel to describe.
         let seated = meta.as_ref().ok().and_then(|m| {
             plan_review::seating(m, body)
                 .map_err(|why| {

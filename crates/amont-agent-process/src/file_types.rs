@@ -372,13 +372,11 @@ mod tests {
 
     #[test]
     fn a_phase_without_its_number_is_labelled_by_its_place() {
-        let body = "## Phases\n- [ ] build `src/a.rs`\n- [ ] release\n- xtask `x/y.rs`\n";
+        let body = "## Phases\n- [ ] build `src/a.rs`\n- [ ] release\n- x Phase 7 `x/y.rs`\n";
         assert_eq!(phases_without_paths(body), vec!["phase 2"]);
-        assert_eq!(
-            phases(body).len(),
-            3,
-            "an item starting with x keeps its text"
-        );
+        // Only a checkbox is stripped: an item's own leading `x ` stays, so
+        // `x Phase 7` is not read as Phase 7.
+        assert_eq!(phases(body)[2].label, "phase 3");
     }
 
     #[test]

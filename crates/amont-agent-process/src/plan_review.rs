@@ -274,6 +274,11 @@ pub fn section(text: &str) -> Section {
 // ---------------------------------------------------------------- areas and roles
 
 /// The reviewers an area set requires. Always the staff backend engineer.
+// holds-until: a class is added after 3.22.0 (`screen` and `contract` were
+// the last): classes are strings in the stored baselines, the outcome ledger
+// and `adds=`, gated by `valid_class` and checked by
+// `remit_is_the_inverse_of_roles`; the next class becomes a typed `Class`
+// parsed in `meta` and `load` instead of another string arm.
 pub fn roles(classes: &BTreeSet<String>) -> BTreeSet<String> {
     let mut r = BTreeSet::from(["backend".to_string()]);
     for c in classes {
@@ -1787,7 +1792,7 @@ fn area_union(m: &Meta, trees: &[(String, RepoTree)]) -> BTreeSet<String> {
 
 /// The seats of a plan body over its repositories' trees. Pure: every rule
 /// of ADR-0061's seat half is tested here without a repository.
-pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
+pub fn seat(machine: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
     use crate::file_types;
     let phases = file_types::phases(body);
     let mut named: Vec<String> = Vec::new();
@@ -1796,7 +1801,7 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
             named.push(p.clone());
         }
     }
-    let areas = area_union(m, &trees);
+    let areas = area_union(machine, &trees);
     // Paths seat the panel only when every phase names one: a plan whose
     // release or docs phase names no file is seated from areas, because on
     // the 45 panels of the ledger a partial plan's paths dropped seats that
@@ -1830,7 +1835,7 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
         .map(|(n, t)| (n.as_str(), t.paths.as_slice()))
         .collect();
     let attributed = file_types::attribute(&named, &listing);
-    let mut classes: BTreeSet<String> = m.adds.iter().cloned().collect();
+    let mut classes: BTreeSet<String> = machine.adds.iter().cloned().collect();
     let mut repos = Vec::new();
     for ((name, t), paths) in trees.into_iter().zip(attributed) {
         classes.extend(file_types::classes(&paths, &t.areas));
@@ -1850,17 +1855,17 @@ pub fn seat(m: &Meta, body: &str, trees: Vec<(String, RepoTree)>) -> Seating {
 
 /// Each repository of the machine comment, read once. A repository not
 /// created yet holds nothing, when the plan declares its language.
-fn trees_of(m: &Meta) -> Result<Vec<(String, RepoTree)>, Said> {
+fn trees_of(machine: &Meta) -> Result<Vec<(String, RepoTree)>, Said> {
     let Some(root) = root() else {
         return Err(Said::Ask(format!(
             "no plan root could be determined, so repos= cannot be resolved; {ROOT_REMEDY}."
         )));
     };
     let mut trees = Vec::new();
-    for name in &m.repos {
+    for name in &machine.repos {
         match repo_tree(&locate(&root, name)) {
             Ok(Some(t)) => trees.push((name.clone(), t)),
-            Ok(None) if m.adds.iter().any(|a| a.starts_with("lang:")) => {
+            Ok(None) if machine.adds.iter().any(|a| a.starts_with("lang:")) => {
                 trees.push((name.clone(), RepoTree::default()))
             }
             Ok(None) => {

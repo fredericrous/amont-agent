@@ -1042,7 +1042,7 @@ fn not_in_brief<'a>(profile: &str, paths: impl Iterator<Item = &'a String>) -> S
 /// rename read as a deletion and an addition, docs/plans left out by prefix
 /// rather than by pathspec magic, so `GIT_LITERAL_PATHSPECS` cannot bring
 /// the plans back. Second: the names that are not UTF-8, which a literal
-/// pathspec could not give back to git; they are listed, never filtered.
+/// pathspec could not give back to git; they are listed, never in a patch.
 fn changed_paths(repo: &Path, revs: &[&str]) -> Result<(Vec<String>, Vec<String>), BriefError> {
     let mut args = vec!["diff", "--no-renames", "--name-only", "-z"];
     args.extend(revs);
@@ -1058,7 +1058,7 @@ fn changed_paths(repo: &Path, revs: &[&str]) -> Result<(Vec<String>, Vec<String>
             Ok(path) if path.starts_with(&plans) => {}
             Ok(path) => readable.push(path.to_string()),
             Err(_) => unreadable.push(format!(
-                "{} (not UTF-8: not filtered)",
+                "{} (not UTF-8: not in this patch)",
                 String::from_utf8_lossy(name)
             )),
         }
