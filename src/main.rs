@@ -1018,10 +1018,10 @@ fn run_output_audit(args: &[OsString]) -> ExitCode {
 /// A count a person reads at a glance: 812, 4.5K, 27.4M, 12.3G.
 fn scaled(count: u64) -> String {
     let units = [(1e9, "G"), (1e6, "M"), (1e3, "K")];
-    let value = count as f64;
-    units.iter().find(|(size, _)| value >= *size).map_or_else(
+    let amount = count as f64;
+    units.iter().find(|(size, _)| amount >= *size).map_or_else(
         || count.to_string(),
-        |(size, unit)| format!("{:.1}{unit}", value / size),
+        |(size, unit)| format!("{:.1}{unit}", amount / size),
     )
 }
 
