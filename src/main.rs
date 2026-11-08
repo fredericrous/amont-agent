@@ -200,6 +200,7 @@ enum Sub {
     HarnessReview,
     Explain,
     Mine,
+    OutputAudit,
     Check,
     Analyze,
     Rules,
@@ -220,7 +221,7 @@ enum Sub {
     Suppressions,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 30] = [
+const SUBCOMMANDS: [(&str, Sub); 31] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -233,6 +234,7 @@ const SUBCOMMANDS: [(&str, Sub); 30] = [
     ("harness-review", Sub::HarnessReview),
     ("explain", Sub::Explain),
     ("mine", Sub::Mine),
+    ("output-audit", Sub::OutputAudit),
     ("check", Sub::Check),
     ("analyze", Sub::Analyze),
     ("rules", Sub::Rules),
@@ -455,6 +457,7 @@ fn main() -> ExitCode {
             Sub::HarnessReview => run_harness_review(&args),
             Sub::Explain => run_backtest(&args, true),
             Sub::Mine => run_mine(&args),
+            Sub::OutputAudit => run_output_audit(&args),
             Sub::Check => run_check(&args),
             Sub::Analyze => run_analyze(&args),
             Sub::Rules => run_rules(&args),
@@ -902,6 +905,149 @@ fn run_compliance(
             ExitCode::from(2)
         }
     }
+}
+
+const OUTPUT_AUDIT_USAGE: &str = "\
+usage: amont-agent output-audit --since <UTC> --until <UTC> [--transcripts <dir>]... [--json]
+
+Where tool output went: the bytes tool results put into session context in
+the window [since, until), by kind of call (ci-log, ci-status, check,
+check-quiet, check-git-hook, git, shell, read, search, edit, agent, lsp,
+web, mcp, other-tool), apart for the main conversation and for subagents,
+beside the token usage the assistant messages report, by model.
+
+A result counts once per tool_use_id and a message's usage once per
+message id (resumed sessions copy history; streamed messages repeat).
+`over 200 B` is the share of passing results beyond 200 bytes each: what
+a one-line quiet summary would not carry, a proxy, not a measure. Usage
+is what the transcripts report: not billing and not quota. The output
+carries counts only, no command or result text.
+
+  --since, --until  UTC instants, YYYY-MM-DDTHH:MM:SS[.fff]Z
+  --transcripts     a transcript root (repeatable; default: the Claude
+                    config directory's projects/)
+  --json            the aggregate as JSON
+
+Exit 0; 1 when the transcripts cannot be found; 2 on a usage error.
+";
+
+fn run_output_audit(args: &[OsString]) -> ExitCode {
+    use amont_agent_guard::output_audit::{self, Instant, Window};
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{OUTPUT_AUDIT_USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let usage = |why: &str| {
+        eprintln!("amont-agent: output-audit: {why}; try `amont-agent output-audit --help`");
+        ExitCode::from(2)
+    };
+    let (mut since, mut until, mut roots, mut as_json) = (None, None, Vec::new(), false);
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        let (flag, attached) = match word.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (word.as_str(), None),
+        };
+        if flag == "--json" && attached.is_none() {
+            as_json = true;
+            continue;
+        }
+        if !matches!(flag, "--since" | "--until" | "--transcripts") {
+            return usage(&format!("unknown argument `{word}`"));
+        }
+        let Some(value) = attached.or_else(|| words.next().cloned()) else {
+            return usage(&format!("{flag} needs a value"));
+        };
+        match flag {
+            "--transcripts" => roots.push(std::path::PathBuf::from(value)),
+            _ => {
+                let Some(at) = Instant::parse(&value) else {
+                    return usage(&format!(
+                        "{flag} takes a UTC instant like 2026-11-06T10:03:38Z, not `{value}`"
+                    ));
+                };
+                if flag == "--since" {
+                    since = Some(at)
+                } else {
+                    until = Some(at)
+                }
+            }
+        }
+    }
+    let (Some(since), Some(until)) = (since, until) else {
+        return usage("--since and --until are both required");
+    };
+    if since >= until {
+        return usage("--since must be before --until");
+    }
+    let roots = match transcript::roots(&roots) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("amont-agent: {}", e.explain());
+            return ExitCode::from(1);
+        }
+    };
+    let window = Window { since, until };
+    let audit = output_audit::audit(&roots, &window);
+    if as_json {
+        println!("{}", audit.to_json(&window));
+        return ExitCode::SUCCESS;
+    }
+    print!("{}", output_audit_text(&audit, &window));
+    ExitCode::SUCCESS
+}
+
+/// The aggregate as a table, largest result bytes first.
+fn output_audit_text(
+    audit: &amont_agent_guard::output_audit::Audit,
+    window: &amont_agent_guard::output_audit::Window,
+) -> String {
+    let mut out = format!(
+        "window {} .. {} (until excluded)\n{} sessions, {} agent launches; {} files scanned, {} skipped as older; {} bad, {} oversized, {} untimed lines; {} duplicate, {} unmatched results\n",
+        window.since.as_str(), window.until.as_str(), audit.sessions.len(), audit.agent_launches,
+        audit.files_scanned, audit.files_skipped, audit.bad_lines, audit.oversized_lines,
+        audit.untimed_lines, audit.duplicate_results, audit.unmatched_results
+    );
+    for (title, map) in [
+        ("main conversation", &audit.main),
+        ("subagents", &audit.sidechain),
+    ] {
+        let total: u64 = map.values().map(|b| b.result_bytes).sum();
+        out.push_str(&format!("\n{title}: {} result bytes\n", total));
+        out.push_str(&format!(
+            "  {:<15} {:>7} {:>6} {:>7} {:>13} {:>6} {:>13}\n",
+            "kind", "calls", "ok", "failed", "bytes", "share", "over 200 B"
+        ));
+        let mut rows: Vec<_> = map.iter().collect();
+        rows.sort_by(|a, b| b.1.result_bytes.cmp(&a.1.result_bytes));
+        for (kind, b) in rows {
+            let share = if total == 0 {
+                0.0
+            } else {
+                100.0 * b.result_bytes as f64 / total as f64
+            };
+            out.push_str(&format!(
+                "  {:<15} {:>7} {:>6} {:>7} {:>13} {:>5.1}% {:>13}\n",
+                kind, b.calls, b.ok, b.failed, b.result_bytes, share, b.over_summary
+            ));
+        }
+    }
+    out.push_str("\nreported usage by model (tokens; not billing, not quota)\n");
+    out.push_str(&format!(
+        "  {:<28} {:>8} {:>12} {:>14} {:>14} {:>11}\n",
+        "model", "messages", "input", "cache write", "cache read", "output"
+    ));
+    for (model, u) in &audit.usage {
+        out.push_str(&format!(
+            "  {:<28} {:>8} {:>12} {:>14} {:>14} {:>11}\n",
+            model, u.messages, u.input, u.cache_creation, u.cache_read, u.output
+        ));
+    }
+    out
 }
 
 fn run_mine(args: &[OsString]) -> ExitCode {
