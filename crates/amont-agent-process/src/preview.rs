@@ -2211,21 +2211,26 @@ index 15750da..2770014 100644
 
     #[test]
     fn a_package_json_looks_like_an_interface_by_dev_script_or_ui_dependency() {
-        // duro-design-system/packages/cli: `@duro-app/ui` only as a dev and
-        // an optional peer dependency. A CLI; renders nothing.
-        let cli = r#"{"name":"@duro-app/cli","bin":{"duro":"./dist/bin.js"},
+        // A component library's CLI: the renderer only as a dev and an
+        // optional peer dependency. A CLI; renders nothing.
+        let cli = r#"{"name":"ds-cli","bin":{"ds":"./dist/bin.js"},
             "scripts":{"build":"tsc -p tsconfig.build.json"},
-            "peerDependencies":{"@duro-app/ui":"workspace:^"},
-            "peerDependenciesMeta":{"@duro-app/ui":{"optional":true}},
-            "devDependencies":{"@duro-app/ui":"workspace:^","typescript":"^5.7.0"}}"#;
+            "peerDependencies":{"react":"^19"},
+            "peerDependenciesMeta":{"react":{"optional":true}},
+            "devDependencies":{"react":"^19","typescript":"^5.7.0"}}"#;
         assert!(!package_is_ui(cli));
-        // duro-design-system/packages/ui: a required react peer.
+        // A component library: a required react peer.
         assert!(package_is_ui(
             r#"{"peerDependencies":{"react":"^19","react-strict-dom":"*"}}"#
         ));
         // An app: react in dependencies.
         assert!(package_is_ui(r#"{"dependencies":{"react-dom":"^19"}}"#));
-        assert!(package_is_ui(r#"{"dependencies":{"@duro-app/ui":"^3"}}"#));
+        // A design-system consumer is an interface through its renderer;
+        // the design system's own package is not a marker.
+        assert!(package_is_ui(
+            r#"{"dependencies":{"@duro-app/ui":"^6","react":"^19"}}"#
+        ));
+        assert!(!package_is_ui(r#"{"dependencies":{"@duro-app/ui":"^6"}}"#));
         assert!(package_is_ui(r#"{"scripts":{"dev":"vite"}}"#));
         assert!(!package_is_ui(r#"{"scripts":{"dev":"  "}}"#));
         assert!(!package_is_ui(r#"{"name":"eslint-plugin"}"#));
