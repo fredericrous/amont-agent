@@ -302,6 +302,14 @@ pub struct Audit {
     pub usage: BTreeMap<String, Usage>,
 }
 
+/// Whose context a line belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Context {
+    Main,
+    /// A subagent's (`isSidechain`).
+    Subagent,
+}
+
 /// One walk over the transcripts: what it has counted so far.
 struct Scan<'a> {
     window: &'a Window,
@@ -454,10 +462,15 @@ impl Scan<'_> {
         if let Some(session) = entry.get("sessionId").and_then(serde_json::Value::as_str) {
             self.sessions.insert(session.to_string());
         }
-        let sidechain = entry
+        let context = if entry
             .get("isSidechain")
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+            .unwrap_or(false)
+        {
+            Context::Subagent
+        } else {
+            Context::Main
+        };
         let message = entry.get("message");
         if let Some(message) = message
             .filter(|m| m.get("role").and_then(serde_json::Value::as_str) == Some("assistant"))
@@ -466,17 +479,17 @@ impl Scan<'_> {
         }
         for block in content(entry) {
             match block.get("type").and_then(serde_json::Value::as_str) {
-                Some("tool_use") => self.launch(block, sidechain),
-                Some("tool_result") => self.result(block, sidechain, calls),
+                Some("tool_use") => self.launch(block, context),
+                Some("tool_result") => self.result(block, context, calls),
                 Some(_) | None => {}
             }
         }
     }
 
-    fn launch(&mut self, block: &serde_json::Value, sidechain: bool) {
+    fn launch(&mut self, block: &serde_json::Value, context: Context) {
         let name = block.get("name").and_then(serde_json::Value::as_str);
         let id = block.get("id").and_then(serde_json::Value::as_str);
-        if let (Some("Agent" | "Task"), Some(id), false) = (name, id, sidechain) {
+        if let (Some("Agent" | "Task"), Some(id), Context::Main) = (name, id, context) {
             if self.launches.insert(id.to_string()) {
                 self.audit.agent_launches += 1;
             }
@@ -486,7 +499,7 @@ impl Scan<'_> {
     fn result(
         &mut self,
         block: &serde_json::Value,
-        sidechain: bool,
+        context: Context,
         calls: &HashMap<String, Kind>,
     ) {
         let Some(id) = block.get("tool_use_id").and_then(serde_json::Value::as_str) else {
@@ -503,10 +516,9 @@ impl Scan<'_> {
             .get("is_error")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let buckets = if sidechain {
-            &mut self.audit.sidechain
-        } else {
-            &mut self.audit.main
+        let buckets = match context {
+            Context::Subagent => &mut self.audit.sidechain,
+            Context::Main => &mut self.audit.main,
         };
         let bucket = buckets.entry(kind).or_default();
         bucket.calls += 1;
