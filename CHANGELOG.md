@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Changed
+
+- The repository moved to [greenharness/greenpiste](https://github.com/greenharness/greenpiste),
+  the first step of its rename to greenpiste (Green Harness ADR-0064). Old
+  `fredericrous/amont-agent` URLs redirect: git remotes, the web pages, the
+  API, release downloads and the raw `install.sh`. The book moved to
+  <https://greenharness.github.io/greenpiste/>; its old address does not
+  redirect. The installers, the crate `repository` field, the README and the
+  docs name the new home; the binary and crates keep the name `amont-agent`
+  for now.
+- The tap rewrite (`scripts/bump-tap.py`) writes the new owner into the
+  formula's four `url` lines and its `homepage`, and accepts a formula still
+  on the old owner; `scripts/test_bump_tap.py` covers both.
+
 ## v3.23.0
 
 ### Changed

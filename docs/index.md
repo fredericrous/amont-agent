@@ -44,7 +44,7 @@ amont-agent status           # every rule, its stance, and what it has seen
 
 ## Relationship to amont
 
-[amont](https://github.com/fredericrous/amont) is a git-hook manager by the
+[amont](https://github.com/greenharness/greengate) is a git-hook manager by the
 same author. The two are independent: neither needs the other, they share no
 code, and `cargo tree` here shows `serde` and `serde_json` and nothing else.
 
