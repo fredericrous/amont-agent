@@ -10,9 +10,11 @@
 //!   `cache_creation_input_tokens`, `cache_read_input_tokens`,
 //!   `output_tokens`). It is not billing, and neither it nor the bytes is a
 //!   quota figure.
-//! - A result is counted once per `tool_use_id` and a message's usage once
-//!   per `message.id`: a resumed session copies its history into a new file,
-//!   and a streamed message repeats its usage on every snapshot.
+//! - A result counts once per `tool_use_id`, an agent launch once per its
+//!   `tool_use` id, and a message's usage once per `message.id`: a resumed
+//!   session copies its history into a new file, and a streamed message
+//!   repeats its usage on every snapshot (the last snapshot in the window
+//!   wins).
 //! - A line is in the window when its `timestamp` (UTC, `Z`) is in
 //!   `[since, until)`. A line with no readable timestamp is counted and left
 //!   out.
@@ -24,13 +26,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 
 use crate::transcript::{files, Roots};
 
-/// A line longer than this is counted, not parsed.
-const MAX_LINE: usize = 16 * 1024 * 1024;
+/// A line longer than this is not parsed; it is counted as oversized and
+/// skipped to its end without being held in memory whole.
+const MAX_LINE: u64 = 16 * 1024 * 1024;
 
 /// What a one-line quiet summary is allowed to carry.
 pub const SUMMARY_BYTES: u64 = 200;
@@ -41,39 +44,46 @@ pub const SUMMARY_BYTES: u64 = 200;
 pub struct Instant(String);
 
 impl Instant {
-    /// `YYYY-MM-DDTHH:MM:SS[.f…]Z`; any other shape (an offset, a missing
-    /// `Z`) is `None`.
+    /// `YYYY-MM-DDTHH:MM:SS[.f…]Z` with each field in range; any other shape
+    /// (an offset, a missing `Z`, month 13) is `None`.
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.trim();
         let bytes = text.as_bytes();
-        let digits = |range: std::ops::Range<usize>| {
-            bytes
-                .get(range.clone())
-                .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+        let number = |range: std::ops::Range<usize>| -> Option<u32> {
+            let part = bytes.get(range)?;
+            if !part.iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            std::str::from_utf8(part).ok()?.parse().ok()
         };
-        let shaped = text.len() >= 20
-            && digits(0..4)
+        let separators = text.len() >= 20
             && bytes[4] == b'-'
-            && digits(5..7)
             && bytes[7] == b'-'
-            && digits(8..10)
             && bytes[10] == b'T'
-            && digits(11..13)
             && bytes[13] == b':'
-            && digits(14..16)
             && bytes[16] == b':'
-            && digits(17..19)
             && text.ends_with('Z');
-        if !shaped {
+        if !separators {
+            return None;
+        }
+        number(0..4)?;
+        let in_range = (1..=12).contains(&number(5..7)?)
+            && (1..=31).contains(&number(8..10)?)
+            && number(11..13)? < 24
+            && number(14..16)? < 60
+            && number(17..19)? < 61;
+        if !in_range {
             return None;
         }
         let fraction = &text[19..text.len() - 1];
-        let millis = match fraction.strip_prefix('.') {
-            None if fraction.is_empty() => "000".to_string(),
-            Some(f) if !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()) => {
-                format!("{:0<3}", &f[..f.len().min(3)])
+        let millis = if fraction.is_empty() {
+            "000".to_string()
+        } else {
+            let digits = fraction.strip_prefix('.')?;
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
             }
-            _ => return None,
+            format!("{:0<3}", &digits[..digits.len().min(3)])
         };
         Some(Self(format!("{}.{millis}Z", &text[..19])))
     }
@@ -96,6 +106,140 @@ impl Instant {
 pub struct Window {
     pub since: Instant,
     pub until: Instant,
+}
+
+/// The kind of call a tool use is, for the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Kind {
+    /// The log of a failed CI job (`--log-failed`): diagnostics.
+    CiLogFailed,
+    /// Any other CI log or artifact download.
+    CiLog,
+    CiStatus,
+    Check,
+    CheckQuiet,
+    CheckGitHook,
+    Git,
+    Shell,
+    Read,
+    Search,
+    Edit,
+    Agent,
+    Lsp,
+    Web,
+    Mcp,
+    OtherTool,
+    /// A result whose call is not in its file.
+    Unmatched,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 17] = [
+        Kind::CiLogFailed,
+        Kind::CiLog,
+        Kind::CiStatus,
+        Kind::Check,
+        Kind::CheckQuiet,
+        Kind::CheckGitHook,
+        Kind::Git,
+        Kind::Shell,
+        Kind::Read,
+        Kind::Search,
+        Kind::Edit,
+        Kind::Agent,
+        Kind::Lsp,
+        Kind::Web,
+        Kind::Mcp,
+        Kind::OtherTool,
+        Kind::Unmatched,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::CiLogFailed => "ci-log-failed",
+            Kind::CiLog => "ci-log",
+            Kind::CiStatus => "ci-status",
+            Kind::Check => "check",
+            Kind::CheckQuiet => "check-quiet",
+            Kind::CheckGitHook => "check-git-hook",
+            Kind::Git => "git",
+            Kind::Shell => "shell",
+            Kind::Read => "read",
+            Kind::Search => "search",
+            Kind::Edit => "edit",
+            Kind::Agent => "agent",
+            Kind::Lsp => "lsp",
+            Kind::Web => "web",
+            Kind::Mcp => "mcp",
+            Kind::OtherTool => "other-tool",
+            Kind::Unmatched => "unmatched",
+        }
+    }
+
+    /// Ordered rules over the tool name and, for Bash, the command text.
+    pub fn of(tool: &str, command: &str) -> Kind {
+        match tool {
+            "Bash" => Kind::of_command(command),
+            "Read" => Kind::Read,
+            "Grep" | "Glob" => Kind::Search,
+            "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => Kind::Edit,
+            "Agent" | "Task" => Kind::Agent,
+            "LSP" => Kind::Lsp,
+            "WebFetch" | "WebSearch" => Kind::Web,
+            name if name.starts_with("mcp__") => Kind::Mcp,
+            _ => Kind::OtherTool,
+        }
+    }
+
+    fn of_command(command: &str) -> Kind {
+        let has = |needle: &str| command.contains(needle);
+        let gh_run = has("gh run view") || has("gh run download");
+        if gh_run && has("--log-failed") {
+            return Kind::CiLogFailed;
+        }
+        if (gh_run && (has("--log") || has("download")))
+            || (has("gh api") && has("/logs"))
+            || (has("actions/runs") && has("/logs"))
+        {
+            return Kind::CiLog;
+        }
+        if gh_run || has("gh run list") || has("gh run watch") || has("gh pr checks") {
+            return Kind::CiStatus;
+        }
+        if has("amont-agent quiet") {
+            return Kind::CheckQuiet;
+        }
+        const CHECKS: [&str; 18] = [
+            "cargo test",
+            "cargo build",
+            "cargo clippy",
+            "cargo check",
+            "make check",
+            "make test",
+            "make lint",
+            "npm test",
+            "npm run test",
+            "pnpm test",
+            "pnpm run test",
+            "pnpm exec vitest",
+            "vitest",
+            "pytest",
+            "go test",
+            "amont run",
+            "amont land",
+            "amont rehearse",
+        ];
+        if CHECKS.iter().any(|check| has(check)) {
+            return Kind::Check;
+        }
+        if has("git commit") || has("git push") {
+            return Kind::CheckGitHook;
+        }
+        if command.trim_start().starts_with("git ") || has("git -C") {
+            return Kind::Git;
+        }
+        Kind::Shell
+    }
 }
 
 /// One kind of call's totals.
@@ -121,142 +265,73 @@ pub struct Usage {
     pub output: u64,
 }
 
-/// The aggregate over a window.
-#[derive(Debug, Default)]
-pub struct Audit {
+/// What the walk could and could not read: a partial walk says so.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Coverage {
     pub files_scanned: u64,
-    /// Files whose last write is before the window: they cannot hold a line
-    /// in it.
+    /// Last written before the window: they cannot hold a line in it.
     pub files_skipped: u64,
+    pub files_unreadable: u64,
+    /// A read failed partway: the rest of the file is not counted.
+    pub files_truncated: u64,
     pub lines: u64,
     pub bad_lines: u64,
     pub oversized_lines: u64,
     pub untimed_lines: u64,
-    pub sessions: HashSet<String>,
-    /// Results whose `tool_use_id` was already counted.
     pub duplicate_results: u64,
-    /// Results with no matching call in their file.
-    pub unmatched_results: u64,
+}
+
+impl Coverage {
+    /// Whether every file under the roots was read to its end.
+    pub fn complete(&self) -> bool {
+        self.files_unreadable == 0 && self.files_truncated == 0
+    }
+}
+
+/// The aggregate over a window.
+#[derive(Debug, Default)]
+pub struct Audit {
+    pub coverage: Coverage,
+    pub sessions: u64,
     pub agent_launches: u64,
-    /// By category, for the main conversation.
-    pub main: BTreeMap<&'static str, Bucket>,
-    /// By category, inside subagents (`isSidechain`): their context, not the
+    /// The main conversation's results, by kind.
+    pub main: BTreeMap<Kind, Bucket>,
+    /// Results inside subagents (`isSidechain`): their context, not the
     /// parent's.
-    pub sidechain: BTreeMap<&'static str, Bucket>,
+    pub sidechain: BTreeMap<Kind, Bucket>,
     pub usage: BTreeMap<String, Usage>,
 }
 
-/// The kind of call a tool use is, for the report. Ordered rules over the
-/// tool name and, for Bash, the command text.
-pub fn category(tool: &str, command: &str) -> &'static str {
-    match tool {
-        "Bash" => bash_category(command),
-        "Read" => "read",
-        "Grep" | "Glob" => "search",
-        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => "edit",
-        "Agent" | "Task" => "agent",
-        "LSP" => "lsp",
-        "WebFetch" | "WebSearch" => "web",
-        name if name.starts_with("mcp__") => "mcp",
-        _ => "other-tool",
-    }
-}
-
-fn bash_category(command: &str) -> &'static str {
-    let has = |needle: &str| command.contains(needle);
-    let gh_run = has("gh run view") || has("gh run download");
-    if (gh_run && (has("--log") || has("download")))
-        || (has("gh api") && has("/logs"))
-        || (has("actions/runs") && has("/logs"))
-    {
-        return "ci-log";
-    }
-    if gh_run || has("gh run list") || has("gh run watch") || has("gh pr checks") {
-        return "ci-status";
-    }
-    if has("amont-agent quiet") {
-        return "check-quiet";
-    }
-    const CHECKS: [&str; 18] = [
-        "cargo test",
-        "cargo build",
-        "cargo clippy",
-        "cargo check",
-        "make check",
-        "make test",
-        "make lint",
-        "npm test",
-        "npm run test",
-        "pnpm test",
-        "pnpm run test",
-        "pnpm exec vitest",
-        "vitest",
-        "pytest",
-        "go test",
-        "amont run",
-        "amont land",
-        "amont rehearse",
-    ];
-    if CHECKS.iter().any(|check| has(check)) {
-        return "check";
-    }
-    if has("git commit") || has("git push") {
-        return "check-git-hook";
-    }
-    if command.trim_start().starts_with("git ") || has("git -C") {
-        return "git";
-    }
-    "shell"
-}
-
-/// The text bytes of a tool result's `content`, and whether it held a
-/// non-text block.
-fn result_size(content: &serde_json::Value) -> (u64, bool) {
-    match content {
-        serde_json::Value::String(text) => (text.len() as u64, false),
-        serde_json::Value::Array(blocks) => {
-            blocks.iter().fold((0, false), |(bytes, other), block| {
-                match block.get("type").and_then(serde_json::Value::as_str) {
-                    Some("text") => (
-                        bytes
-                            + block
-                                .get("text")
-                                .and_then(serde_json::Value::as_str)
-                                .map_or(0, |t| t.len() as u64),
-                        other,
-                    ),
-                    _ => (bytes, true),
-                }
-            })
-        }
-        _ => (0, false),
-    }
+/// One walk over the transcripts: what it has counted so far.
+struct Scan<'a> {
+    window: &'a Window,
+    audit: Audit,
+    sessions: HashSet<String>,
+    results: HashSet<String>,
+    launches: HashSet<String>,
+    messages: HashMap<String, (String, Usage)>,
 }
 
 /// Walks every transcript under `roots` once and aggregates the lines in
 /// `window`.
 pub fn audit(roots: &Roots, window: &Window) -> Audit {
-    let mut audit = Audit::default();
-    let mut counted: HashSet<String> = HashSet::new();
-    let mut messages: HashMap<String, (String, Usage)> = HashMap::new();
+    let mut scan = Scan {
+        window,
+        audit: Audit::default(),
+        sessions: HashSet::new(),
+        results: HashSet::new(),
+        launches: HashSet::new(),
+        messages: HashMap::new(),
+    };
     let since = window.since.unix_seconds();
     for path in files(roots) {
         if modified_before(&path, since) {
-            audit.files_skipped += 1;
+            scan.audit.coverage.files_skipped += 1;
             continue;
         }
-        audit.files_scanned += 1;
-        audit_file(&path, window, &mut audit, &mut counted, &mut messages);
+        scan.file(&path);
     }
-    for (model, usage) in messages.into_values() {
-        let total = audit.usage.entry(model).or_default();
-        total.messages += 1;
-        total.input += usage.input;
-        total.cache_creation += usage.cache_creation;
-        total.cache_read += usage.cache_read;
-        total.output += usage.output;
-    }
-    audit
+    scan.finish()
 }
 
 fn modified_before(path: &Path, since: i64) -> bool {
@@ -267,179 +342,274 @@ fn modified_before(path: &Path, since: i64) -> bool {
         .is_some_and(|age| (age.as_secs() as i64) < since)
 }
 
-fn audit_file(
-    path: &PathBuf,
-    window: &Window,
-    audit: &mut Audit,
-    counted: &mut HashSet<String>,
-    messages: &mut HashMap<String, (String, Usage)>,
-) {
-    let Ok(file) = fs::File::open(path) else {
-        return;
-    };
-    // The calls of this file: tool_use id → category.
-    let mut calls: HashMap<String, &'static str> = HashMap::new();
-    let mut reader = BufReader::new(file);
-    let mut raw = Vec::new();
-    loop {
-        raw.clear();
-        match reader.read_until(b'\n', &mut raw) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        audit.lines += 1;
-        if raw.len() > MAX_LINE {
-            audit.oversized_lines += 1;
-            continue;
-        }
-        let Ok(entry) = serde_json::from_slice::<serde_json::Value>(&raw) else {
-            audit.bad_lines += 1;
-            continue;
-        };
-        let message = entry.get("message");
-        let blocks = message
-            .and_then(|m| m.get("content"))
-            .and_then(serde_json::Value::as_array);
-        // Calls are recorded whatever their time: a result in the window may
-        // answer a call made just before it.
-        for block in blocks.into_iter().flatten() {
-            if block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use") {
-                if let Some(id) = block.get("id").and_then(serde_json::Value::as_str) {
-                    let tool = block
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    let command = block
-                        .get("input")
-                        .and_then(|input| input.get("command"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    calls.insert(id.to_string(), category(tool, command));
+/// The text bytes of a tool result's `content`, and whether it held a
+/// non-text block.
+fn result_size(content: &serde_json::Value) -> (u64, bool) {
+    match content {
+        serde_json::Value::String(text) => (text.len() as u64, false),
+        serde_json::Value::Array(blocks) => {
+            blocks.iter().fold((0, false), |(bytes, other), block| {
+                let text = (block.get("type").and_then(serde_json::Value::as_str) == Some("text"))
+                    .then(|| block.get("text").and_then(serde_json::Value::as_str))
+                    .flatten();
+                match text {
+                    Some(text) => (bytes + text.len() as u64, other),
+                    None => (bytes, true),
                 }
-            }
+            })
         }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Object(_) => (0, false),
+    }
+}
+
+/// One line read from a transcript.
+enum Line {
+    End,
+    Text(Vec<u8>),
+    Oversized,
+    Failed,
+}
+
+/// Reads one line, holding at most [`MAX_LINE`] bytes of it: a longer line
+/// is skipped to its end.
+fn next_line(reader: &mut BufReader<fs::File>) -> Line {
+    let mut raw = Vec::new();
+    match reader
+        .by_ref()
+        .take(MAX_LINE + 1)
+        .read_until(b'\n', &mut raw)
+    {
+        Err(_) => Line::Failed,
+        Ok(0) => Line::End,
+        Ok(_) if raw.len() as u64 <= MAX_LINE || raw.ends_with(b"\n") => Line::Text(raw),
+        Ok(_) => loop {
+            // Discard the rest of the oversized line, a buffer at a time.
+            let (done, used) = match reader.fill_buf() {
+                Err(_) => return Line::Failed,
+                Ok([]) => (true, 0),
+                Ok(buf) => match buf.iter().position(|b| *b == b'\n') {
+                    Some(at) => (true, at + 1),
+                    None => (false, buf.len()),
+                },
+            };
+            reader.consume(used);
+            if done {
+                return Line::Oversized;
+            }
+        },
+    }
+}
+
+impl Scan<'_> {
+    fn file(&mut self, path: &Path) {
+        let Ok(file) = fs::File::open(path) else {
+            self.audit.coverage.files_unreadable += 1;
+            return;
+        };
+        self.audit.coverage.files_scanned += 1;
+        // The calls of this file: tool_use id → kind.
+        let mut calls: HashMap<String, Kind> = HashMap::new();
+        let mut reader = BufReader::new(file);
+        loop {
+            let raw = match next_line(&mut reader) {
+                Line::End => break,
+                Line::Failed => {
+                    self.audit.coverage.files_truncated += 1;
+                    break;
+                }
+                Line::Oversized => {
+                    self.audit.coverage.lines += 1;
+                    self.audit.coverage.oversized_lines += 1;
+                    continue;
+                }
+                Line::Text(raw) => raw,
+            };
+            self.audit.coverage.lines += 1;
+            let Ok(entry) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+                self.audit.coverage.bad_lines += 1;
+                continue;
+            };
+            for (id, kind) in calls_in(&entry) {
+                calls.insert(id, kind);
+            }
+            self.entry(&entry, &calls);
+        }
+    }
+
+    fn entry(&mut self, entry: &serde_json::Value, calls: &HashMap<String, Kind>) {
         let Some(at) = entry
             .get("timestamp")
             .and_then(serde_json::Value::as_str)
             .and_then(Instant::parse)
         else {
-            audit.untimed_lines += 1;
-            continue;
+            self.audit.coverage.untimed_lines += 1;
+            return;
         };
-        if at < window.since || at >= window.until {
-            continue;
+        if at < self.window.since || at >= self.window.until {
+            return;
         }
         if let Some(session) = entry.get("sessionId").and_then(serde_json::Value::as_str) {
-            audit.sessions.insert(session.to_string());
+            self.sessions.insert(session.to_string());
         }
         let sidechain = entry
             .get("isSidechain")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        let role = message
-            .and_then(|m| m.get("role"))
-            .and_then(serde_json::Value::as_str);
-        if role == Some("assistant") {
-            record_usage(message, messages);
+        let message = entry.get("message");
+        if let Some(message) = message
+            .filter(|m| m.get("role").and_then(serde_json::Value::as_str) == Some("assistant"))
+        {
+            self.usage(message);
         }
-        for block in blocks.into_iter().flatten() {
+        for block in content(entry) {
             match block.get("type").and_then(serde_json::Value::as_str) {
-                Some("tool_use") => {
-                    let name = block.get("name").and_then(serde_json::Value::as_str);
-                    if matches!(name, Some("Agent" | "Task")) && !sidechain {
-                        audit.agent_launches += 1;
-                    }
-                }
-                Some("tool_result") => {
-                    let Some(id) = block.get("tool_use_id").and_then(serde_json::Value::as_str)
-                    else {
-                        continue;
-                    };
-                    if !counted.insert(id.to_string()) {
-                        audit.duplicate_results += 1;
-                        continue;
-                    }
-                    let kind = calls.get(id).copied().unwrap_or_else(|| {
-                        audit.unmatched_results += 1;
-                        "unmatched"
-                    });
-                    let (bytes, non_text) =
-                        result_size(block.get("content").unwrap_or(&serde_json::Value::Null));
-                    let failed = block
-                        .get("is_error")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                    let bucket = if sidechain {
-                        audit.sidechain.entry(kind).or_default()
-                    } else {
-                        audit.main.entry(kind).or_default()
-                    };
-                    bucket.calls += 1;
-                    bucket.result_bytes += bytes;
-                    bucket.non_text += u64::from(non_text);
-                    if failed {
-                        bucket.failed += 1;
-                    } else {
-                        bucket.ok += 1;
-                        bucket.over_summary += bytes.saturating_sub(SUMMARY_BYTES);
-                    }
-                }
-                _ => {}
+                Some("tool_use") => self.launch(block, sidechain),
+                Some("tool_result") => self.result(block, sidechain, calls),
+                Some(_) | None => {}
             }
         }
     }
+
+    fn launch(&mut self, block: &serde_json::Value, sidechain: bool) {
+        let name = block.get("name").and_then(serde_json::Value::as_str);
+        let id = block.get("id").and_then(serde_json::Value::as_str);
+        if let (Some("Agent" | "Task"), Some(id), false) = (name, id, sidechain) {
+            if self.launches.insert(id.to_string()) {
+                self.audit.agent_launches += 1;
+            }
+        }
+    }
+
+    fn result(
+        &mut self,
+        block: &serde_json::Value,
+        sidechain: bool,
+        calls: &HashMap<String, Kind>,
+    ) {
+        let Some(id) = block.get("tool_use_id").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        if !self.results.insert(id.to_string()) {
+            self.audit.coverage.duplicate_results += 1;
+            return;
+        }
+        let kind = calls.get(id).copied().unwrap_or(Kind::Unmatched);
+        let (bytes, non_text) =
+            result_size(block.get("content").unwrap_or(&serde_json::Value::Null));
+        let failed = block
+            .get("is_error")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let buckets = if sidechain {
+            &mut self.audit.sidechain
+        } else {
+            &mut self.audit.main
+        };
+        let bucket = buckets.entry(kind).or_default();
+        bucket.calls += 1;
+        bucket.result_bytes += bytes;
+        bucket.non_text += u64::from(non_text);
+        if failed {
+            bucket.failed += 1;
+        } else {
+            bucket.ok += 1;
+            bucket.over_summary += bytes.saturating_sub(SUMMARY_BYTES);
+        }
+    }
+
+    /// Keeps the last usage a message reported in the window: a streamed
+    /// message repeats it on every snapshot, and the last one is final.
+    fn usage(&mut self, message: &serde_json::Value) {
+        let (Some(id), Some(usage)) = (
+            message.get("id").and_then(serde_json::Value::as_str),
+            message.get("usage"),
+        ) else {
+            return;
+        };
+        let field = |name: &str| {
+            usage
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        let model = message
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        self.messages.insert(
+            id.to_string(),
+            (
+                model,
+                Usage {
+                    messages: 1,
+                    input: field("input_tokens"),
+                    cache_creation: field("cache_creation_input_tokens"),
+                    cache_read: field("cache_read_input_tokens"),
+                    output: field("output_tokens"),
+                },
+            ),
+        );
+    }
+
+    fn finish(self) -> Audit {
+        let mut audit = self.audit;
+        audit.sessions = self.sessions.len() as u64;
+        for (model, usage) in self.messages.into_values() {
+            let total = audit.usage.entry(model).or_default();
+            total.messages += 1;
+            total.input += usage.input;
+            total.cache_creation += usage.cache_creation;
+            total.cache_read += usage.cache_read;
+            total.output += usage.output;
+        }
+        audit
+    }
 }
 
-/// Keeps the last usage a message reported: a streamed message repeats it on
-/// every snapshot, and the last one is final.
-fn record_usage(
-    message: Option<&serde_json::Value>,
-    messages: &mut HashMap<String, (String, Usage)>,
-) {
-    let Some(message) = message else {
-        return;
-    };
-    let Some(id) = message.get("id").and_then(serde_json::Value::as_str) else {
-        return;
-    };
-    let Some(usage) = message.get("usage") else {
-        return;
-    };
-    let field = |name: &str| {
-        usage
-            .get(name)
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0)
-    };
-    let model = message
-        .get("model")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
-    messages.insert(
-        id.to_string(),
-        (
-            model,
-            Usage {
-                messages: 1,
-                input: field("input_tokens"),
-                cache_creation: field("cache_creation_input_tokens"),
-                cache_read: field("cache_read_input_tokens"),
-                output: field("output_tokens"),
-            },
-        ),
-    );
+/// The content blocks of a transcript line's message.
+fn content(entry: &serde_json::Value) -> &[serde_json::Value] {
+    entry
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(serde_json::Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// The calls a line makes, whatever its time: a result in the window may
+/// answer a call made just before it.
+fn calls_in(entry: &serde_json::Value) -> Vec<(String, Kind)> {
+    content(entry)
+        .iter()
+        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+        .filter_map(|block| {
+            let id = block.get("id").and_then(serde_json::Value::as_str)?;
+            let tool = block
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let command = block
+                .get("input")
+                .and_then(|input| input.get("command"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            Some((id.to_string(), Kind::of(tool, command)))
+        })
+        .collect()
 }
 
 impl Audit {
     /// The aggregate as JSON: counts only, no command or result text.
     pub fn to_json(&self, window: &Window) -> serde_json::Value {
-        let buckets = |map: &BTreeMap<&'static str, Bucket>| {
+        let buckets = |map: &BTreeMap<Kind, Bucket>| {
             serde_json::Value::Object(
                 map.iter()
                     .map(|(kind, b)| {
                         (
-                            (*kind).to_string(),
+                            kind.as_str().to_string(),
                             serde_json::json!({
                                 "calls": b.calls, "ok": b.ok, "failed": b.failed,
                                 "result_bytes": b.result_bytes,
@@ -467,21 +637,27 @@ impl Audit {
                 })
                 .collect(),
         );
+        let coverage = &self.coverage;
         serde_json::json!({
             "window": {"since": window.since.as_str(), "until": window.until.as_str()},
             "definitions": {
                 "result_bytes": "UTF-8 bytes of tool-result text, once per tool_use_id",
                 "over_summary_bytes": format!("bytes of passing results beyond {SUMMARY_BYTES} B each: a proxy for avoidable output"),
+                "agent_launches": "Agent/Task calls in the main conversation, once per tool_use id",
                 "usage": "assistant-reported tokens, once per message.id; not billing, not quota",
             },
             "coverage": {
-                "files_scanned": self.files_scanned, "files_skipped_before_window": self.files_skipped,
-                "lines": self.lines, "bad_lines": self.bad_lines,
-                "oversized_lines": self.oversized_lines, "untimed_lines": self.untimed_lines,
-                "duplicate_results": self.duplicate_results,
-                "unmatched_results": self.unmatched_results,
+                "complete": coverage.complete(),
+                "files_scanned": coverage.files_scanned,
+                "files_skipped_before_window": coverage.files_skipped,
+                "files_unreadable": coverage.files_unreadable,
+                "files_truncated": coverage.files_truncated,
+                "lines": coverage.lines, "bad_lines": coverage.bad_lines,
+                "oversized_lines": coverage.oversized_lines,
+                "untimed_lines": coverage.untimed_lines,
+                "duplicate_results": coverage.duplicate_results,
             },
-            "sessions": self.sessions.len(),
+            "sessions": self.sessions,
             "agent_launches": self.agent_launches,
             "main": buckets(&self.main),
             "sidechain": buckets(&self.sidechain),
@@ -501,14 +677,21 @@ mod tests {
         }
     }
 
-    fn roots_with(name: &str, lines: &[String]) -> (Roots, PathBuf) {
+    /// A transcript root holding one file per entry of `files`.
+    fn roots_with(name: &str, files: &[&[String]]) -> (Roots, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "amont-agent-output-audit-{name}-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir); // absent on a first run, which is fine
         fs::create_dir_all(dir.join("p")).unwrap();
-        fs::write(dir.join("p").join("s.jsonl"), lines.join("\n") + "\n").unwrap();
+        for (at, lines) in files.iter().enumerate() {
+            fs::write(
+                dir.join("p").join(format!("s{at}.jsonl")),
+                lines.join("\n") + "\n",
+            )
+            .unwrap();
+        }
         (
             Roots {
                 dirs: vec![dir.clone()],
@@ -538,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn instants_normalise_and_compare_half_open() {
+    fn instants_normalise_compare_half_open_and_check_ranges() {
         let window = window();
         let at = |t: &str| Instant::parse(t).unwrap();
         assert_eq!(at("2026-11-01T00:00:00Z"), at("2026-11-01T00:00:00.000Z"));
@@ -551,59 +734,97 @@ mod tests {
             at("2026-11-02T00:00:00Z") >= window.until,
             "until is excluded"
         );
-        assert!(Instant::parse("2026-11-01T00:00:00+01:00").is_none());
-        assert!(Instant::parse("yesterday").is_none());
+        for bad in [
+            "2026-11-01T00:00:00+01:00",
+            "yesterday",
+            "2026-13-01T00:00:00Z",
+            "2026-11-32T00:00:00Z",
+            "2026-11-01T24:00:00Z",
+            "2026-11-01T00:00:00.Z",
+        ] {
+            assert!(Instant::parse(bad).is_none(), "{bad}");
+        }
     }
 
     #[test]
-    fn bash_commands_fall_in_hand_checked_categories() {
-        assert_eq!(category("Bash", "gh run view 1 --log-failed"), "ci-log");
+    fn bash_commands_fall_in_hand_checked_kinds() {
+        let kind = |tool: &str, command: &str| Kind::of(tool, command).as_str();
+        assert_eq!(kind("Bash", "gh run view 1 --log-failed"), "ci-log-failed");
+        assert_eq!(kind("Bash", "gh run view 1 --log"), "ci-log");
         assert_eq!(
-            category("Bash", "gh api repos/o/r/actions/jobs/1/logs"),
+            kind("Bash", "gh api repos/o/r/actions/jobs/1/logs"),
             "ci-log"
         );
+        assert_eq!(kind("Bash", "gh run view 1 --json conclusion"), "ci-status");
+        assert_eq!(kind("Bash", "gh pr checks 3"), "ci-status");
         assert_eq!(
-            category("Bash", "gh run view 1 --json conclusion"),
-            "ci-status"
-        );
-        assert_eq!(category("Bash", "gh pr checks 3"), "ci-status");
-        assert_eq!(
-            category("Bash", "amont-agent quiet -- cargo test"),
+            kind("Bash", "amont-agent quiet -- cargo test"),
             "check-quiet"
         );
-        assert_eq!(category("Bash", "cargo test -p x"), "check");
-        assert_eq!(category("Bash", "git commit -m x"), "check-git-hook");
-        assert_eq!(category("Bash", "git status"), "git");
-        assert_eq!(category("Bash", "ls"), "shell");
-        assert_eq!(category("mcp__aval__aval_rule", ""), "mcp");
-        assert_eq!(category("Read", ""), "read");
+        assert_eq!(kind("Bash", "cargo test -p x"), "check");
+        assert_eq!(kind("Bash", "git commit -m x"), "check-git-hook");
+        assert_eq!(kind("Bash", "git status"), "git");
+        assert_eq!(kind("Bash", "ls"), "shell");
+        assert_eq!(kind("mcp__aval__aval_rule", ""), "mcp");
+        assert_eq!(kind("Read", ""), "read");
+        let names: HashSet<&str> = Kind::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(names.len(), Kind::ALL.len(), "every kind has its own name");
     }
 
     #[test]
-    fn results_are_sized_once_and_bucketed_by_their_call() {
+    fn results_and_launches_count_once_across_copies_and_inside_the_window() {
         let long = "x".repeat(1_000);
-        let lines = vec![
+        let session = vec![
             call("2026-11-01T01:00:00Z", "a", "Bash", "cargo test"),
-            result("2026-11-01T01:00:01Z", "a", &long, Ended::Passed),
-            // A resumed session repeats the same result: counted once.
             result("2026-11-01T01:00:01Z", "a", &long, Ended::Passed),
             call("2026-11-01T02:00:00Z", "b", "Bash", "cargo test"),
             result("2026-11-01T02:00:01Z", "b", "boom", Ended::Failed),
-            // Outside the window: not counted.
-            call("2026-11-02T01:00:00Z", "c", "Read", ""),
-            result("2026-11-02T01:00:01Z", "c", &long, Ended::Passed),
+            call("2026-11-01T02:30:00Z", "g", "Agent", ""),
+            // At `until`: excluded.
+            call("2026-11-02T00:00:00Z", "c", "Read", ""),
+            result("2026-11-02T00:00:00Z", "c", &long, Ended::Passed),
+            // A result whose call is in no file.
+            result("2026-11-01T03:00:00Z", "z", "abc", Ended::Passed),
+            r#"{"message":{"role":"user","content":[]}}"#.to_string(),
             "not json".to_string(),
         ];
-        let (roots, dir) = roots_with("bucket", &lines);
+        // A resumed session's copy repeats the whole history in another file.
+        let (roots, dir) = roots_with("copies", &[&session, &session]);
         let audit = audit(&roots, &window());
-        let check = audit.main.get("check").unwrap();
+        let check = audit.main.get(&Kind::Check).unwrap();
         assert_eq!((check.calls, check.ok, check.failed), (2, 1, 1));
-        assert_eq!(check.result_bytes, 1_004);
-        assert_eq!(check.over_summary, 800);
-        assert_eq!(audit.duplicate_results, 1);
-        assert_eq!(audit.bad_lines, 1);
-        assert!(!audit.main.contains_key("read"));
-        assert_eq!(audit.sessions.len(), 1);
+        assert_eq!((check.result_bytes, check.over_summary), (1_004, 800));
+        assert_eq!(audit.agent_launches, 1);
+        assert_eq!(audit.main.get(&Kind::Unmatched).map(|b| b.calls), Some(1));
+        assert!(!audit.main.contains_key(&Kind::Read), "until is excluded");
+        assert_eq!(audit.coverage.duplicate_results, 3);
+        assert_eq!(audit.coverage.untimed_lines, 2);
+        assert_eq!(audit.coverage.bad_lines, 2);
+        assert_eq!((audit.coverage.files_scanned, audit.sessions), (2, 1));
+        assert!(audit.coverage.complete());
+        let _ = fs::remove_dir_all(dir); // best effort: a temp dir
+    }
+
+    #[test]
+    fn a_file_last_written_before_the_window_is_skipped_unread() {
+        let lines = vec![
+            call("2026-11-01T01:00:00Z", "a", "Bash", "ls"),
+            result("2026-11-01T01:00:01Z", "a", "x", Ended::Passed),
+        ];
+        let (roots, dir) = roots_with("old", &[&lines]);
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+        fs::File::options()
+            .write(true)
+            .open(dir.join("p").join("s0.jsonl"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let audit = audit(&roots, &window());
+        assert_eq!(
+            (audit.coverage.files_skipped, audit.coverage.files_scanned),
+            (1, 0)
+        );
+        assert!(audit.main.is_empty());
         let _ = fs::remove_dir_all(dir); // best effort: a temp dir
     }
 
@@ -628,14 +849,14 @@ mod tests {
             call("2026-11-01T04:00:00Z", "z", "Grep", ""),
             side,
         ];
-        let (roots, dir) = roots_with("usage", &lines);
+        let (roots, dir) = roots_with("usage", &[&lines]);
         let audit = audit(&roots, &window());
         let opus = audit.usage.get("opus").unwrap();
         assert_eq!(
             (opus.messages, opus.input, opus.cache_read, opus.output),
             (1, 10, 100, 7)
         );
-        let search = audit.sidechain.get("search").unwrap();
+        let search = audit.sidechain.get(&Kind::Search).unwrap();
         assert_eq!((search.result_bytes, search.non_text), (3, 1));
         assert!(audit.main.is_empty());
         let _ = fs::remove_dir_all(dir); // best effort: a temp dir

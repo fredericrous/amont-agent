@@ -88,6 +88,8 @@ usage: amont-agent <command>
   graduate <rule> --to advise|deny
   demote <rule>         back to observing, no questions asked
   mine [flags]          shapes the model got wrong that no rule names yet
+  output-audit --since <UTC> --until <UTC> [--json]
+                        where tool output went in a window, by kind of call
   backtest [flags]      replay your transcripts through the rules
   harness-review [--json] [--check] [--model <id>] [--out <dir>]
                         one row per rule and assertion: firings, compliance
@@ -908,27 +910,30 @@ fn run_compliance(
 }
 
 const OUTPUT_AUDIT_USAGE: &str = "\
-usage: amont-agent output-audit --since <UTC> --until <UTC> [--transcripts <dir>]... [--json]
+usage: amont-agent output-audit --since <UTC> --until <UTC>
+                                [--transcripts <dir>]... [--json]
 
 Where tool output went: the bytes tool results put into session context in
-the window [since, until), by kind of call (ci-log, ci-status, check,
-check-quiet, check-git-hook, git, shell, read, search, edit, agent, lsp,
-web, mcp, other-tool), apart for the main conversation and for subagents,
-beside the token usage the assistant messages report, by model.
+the window [since, until), by kind of call (ci-log-failed, ci-log,
+ci-status, check, check-quiet, check-git-hook, git, shell, read, search,
+edit, agent, lsp, web, mcp, other-tool, unmatched), apart from subagents,
+beside the token usage the transcripts report, by model.
 
-A result counts once per tool_use_id and a message's usage once per
-message id (resumed sessions copy history; streamed messages repeat).
-`over 200 B` is the share of passing results beyond 200 bytes each: what
-a one-line quiet summary would not carry, a proxy, not a measure. Usage
-is what the transcripts report: not billing and not quota. The output
-carries counts only, no command or result text.
+Each result, each agent launch and each message counts once, however many
+times a resumed session copies it. `over 200 B` is the share of passing
+results beyond 200 bytes each: what a one-line quiet summary would not
+carry, a proxy, not a measure. Usage is what the transcripts report: not
+billing and not quota. The output carries counts only, no command or
+result text.
 
   --since, --until  UTC instants, YYYY-MM-DDTHH:MM:SS[.fff]Z
   --transcripts     a transcript root (repeatable; default: the Claude
                     config directory's projects/)
-  --json            the aggregate as JSON
+  --json            the aggregate as JSON, exact integers
 
-Exit 0; 1 when the transcripts cannot be found; 2 on a usage error.
+Exit 0, also when some files could not be read (the coverage line and the
+JSON `coverage.complete` say so); 1 when the transcripts cannot be found;
+2 on a usage error.
 ";
 
 fn run_output_audit(args: &[OsString]) -> ExitCode {
@@ -948,11 +953,21 @@ fn run_output_audit(args: &[OsString]) -> ExitCode {
     let (mut since, mut until, mut roots, mut as_json) = (None, None, Vec::new(), false);
     let mut words = args.iter();
     while let Some(word) = words.next() {
+        if word == "--" {
+            // No operands: anything after `--` is a usage error.
+            if let Some(operand) = words.next() {
+                return usage(&format!("unexpected operand `{operand}`"));
+            }
+            break;
+        }
         let (flag, attached) = match word.split_once('=') {
             Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
-            _ => (word.as_str(), None),
+            Some(_) | None => (word.as_str(), None),
         };
-        if flag == "--json" && attached.is_none() {
+        if flag == "--json" {
+            if attached.is_some() {
+                return usage("--json takes no value");
+            }
             as_json = true;
             continue;
         }
@@ -962,20 +977,19 @@ fn run_output_audit(args: &[OsString]) -> ExitCode {
         let Some(value) = attached.or_else(|| words.next().cloned()) else {
             return usage(&format!("{flag} needs a value"));
         };
-        match flag {
-            "--transcripts" => roots.push(std::path::PathBuf::from(value)),
-            _ => {
-                let Some(at) = Instant::parse(&value) else {
-                    return usage(&format!(
-                        "{flag} takes a UTC instant like 2026-11-06T10:03:38Z, not `{value}`"
-                    ));
-                };
-                if flag == "--since" {
-                    since = Some(at)
-                } else {
-                    until = Some(at)
-                }
-            }
+        if flag == "--transcripts" {
+            roots.push(std::path::PathBuf::from(value));
+            continue;
+        }
+        let Some(at) = Instant::parse(&value) else {
+            return usage(&format!(
+                "{flag} takes a UTC instant like 2026-11-06T10:03:38Z, not `{value}`"
+            ));
+        };
+        if flag == "--since" {
+            since = Some(at);
+        } else {
+            until = Some(at);
         }
     }
     let (Some(since), Some(until)) = (since, until) else {
@@ -995,32 +1009,48 @@ fn run_output_audit(args: &[OsString]) -> ExitCode {
     let audit = output_audit::audit(&roots, &window);
     if as_json {
         println!("{}", audit.to_json(&window));
-        return ExitCode::SUCCESS;
+    } else {
+        print!("{}", output_audit_text(&audit, &window));
     }
-    print!("{}", output_audit_text(&audit, &window));
     ExitCode::SUCCESS
 }
 
-/// The aggregate as a table, largest result bytes first.
+/// A count a person reads at a glance: 812, 4.5K, 27.4M, 12.3G.
+fn scaled(count: u64) -> String {
+    let units = [(1e9, "G"), (1e6, "M"), (1e3, "K")];
+    let value = count as f64;
+    units.iter().find(|(size, _)| value >= *size).map_or_else(
+        || count.to_string(),
+        |(size, unit)| format!("{:.1}{unit}", value / size),
+    )
+}
+
+/// The aggregate as tables under 80 columns, largest result bytes first;
+/// exact integers are in `--json`.
 fn output_audit_text(
     audit: &amont_agent_guard::output_audit::Audit,
     window: &amont_agent_guard::output_audit::Window,
 ) -> String {
     let mut out = format!(
-        "window {} .. {} (until excluded)\n{} sessions, {} agent launches; {} files scanned, {} skipped as older; {} bad, {} oversized, {} untimed lines; {} duplicate, {} unmatched results\n",
-        window.since.as_str(), window.until.as_str(), audit.sessions.len(), audit.agent_launches,
-        audit.files_scanned, audit.files_skipped, audit.bad_lines, audit.oversized_lines,
-        audit.untimed_lines, audit.duplicate_results, audit.unmatched_results
+        "window {} .. {} (until excluded)\n{} sessions, {} agent launches\n",
+        window.since.as_str(),
+        window.until.as_str(),
+        audit.sessions,
+        audit.agent_launches
     );
     for (title, map) in [
         ("main conversation", &audit.main),
         ("subagents", &audit.sidechain),
     ] {
         let total: u64 = map.values().map(|b| b.result_bytes).sum();
-        out.push_str(&format!("\n{title}: {} result bytes\n", total));
+        out.push_str(&format!("\n{title}: {}B of tool output\n", scaled(total)));
+        if map.is_empty() {
+            out.push_str("  none\n");
+            continue;
+        }
         out.push_str(&format!(
-            "  {:<15} {:>7} {:>6} {:>7} {:>13} {:>6} {:>13}\n",
-            "kind", "calls", "ok", "failed", "bytes", "share", "over 200 B"
+            "  {:<15} {:>7} {:>7} {:>8} {:>6} {:>10}\n",
+            "kind", "calls", "failed", "bytes", "share", "over 200 B"
         ));
         let mut rows: Vec<_> = map.iter().collect();
         rows.sort_by(|a, b| b.1.result_bytes.cmp(&a.1.result_bytes));
@@ -1031,22 +1061,58 @@ fn output_audit_text(
                 100.0 * b.result_bytes as f64 / total as f64
             };
             out.push_str(&format!(
-                "  {:<15} {:>7} {:>6} {:>7} {:>13} {:>5.1}% {:>13}\n",
-                kind, b.calls, b.ok, b.failed, b.result_bytes, share, b.over_summary
+                "  {:<15} {:>7} {:>7} {:>8} {:>5.1}% {:>10}\n",
+                kind.as_str(),
+                b.calls,
+                b.failed,
+                scaled(b.result_bytes),
+                share,
+                scaled(b.over_summary)
             ));
         }
     }
-    out.push_str("\nreported usage by model (tokens; not billing, not quota)\n");
-    out.push_str(&format!(
-        "  {:<28} {:>8} {:>12} {:>14} {:>14} {:>11}\n",
-        "model", "messages", "input", "cache write", "cache read", "output"
-    ));
-    for (model, u) in &audit.usage {
+    out.push_str("\nreported usage by model, tokens (not billing, not quota)\n");
+    if audit.usage.is_empty() {
+        out.push_str("  none\n");
+    } else {
         out.push_str(&format!(
-            "  {:<28} {:>8} {:>12} {:>14} {:>14} {:>11}\n",
-            model, u.messages, u.input, u.cache_creation, u.cache_read, u.output
+            "  {:<22} {:>8} {:>8} {:>9} {:>9} {:>8}\n",
+            "model", "messages", "input", "cache wr", "cache rd", "output"
         ));
+        for (model, u) in &audit.usage {
+            out.push_str(&format!(
+                "  {:<22} {:>8} {:>8} {:>9} {:>9} {:>8}\n",
+                model.chars().take(22).collect::<String>(),
+                u.messages,
+                scaled(u.input),
+                scaled(u.cache_creation),
+                scaled(u.cache_read),
+                scaled(u.output)
+            ));
+        }
     }
+    let coverage = &audit.coverage;
+    let mut lost = Vec::new();
+    for (count, what) in [
+        (coverage.files_unreadable, "unreadable files"),
+        (coverage.files_truncated, "files cut short by a read error"),
+        (coverage.bad_lines, "unparsable lines"),
+        (coverage.oversized_lines, "oversized lines"),
+    ] {
+        if count > 0 {
+            lost.push(format!("{count} {what}"));
+        }
+    }
+    out.push_str(&format!(
+        "\ncoverage: {} files read ({} older skipped), {}\n",
+        coverage.files_scanned,
+        coverage.files_skipped,
+        if lost.is_empty() {
+            "every line read".to_string()
+        } else {
+            lost.join(", ")
+        }
+    ));
     out
 }
 
