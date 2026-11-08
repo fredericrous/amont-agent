@@ -7,11 +7,11 @@ into your `settings.json` as a side effect of you fetching it.
 ## The binary
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fredericrous/amont-agent/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.sh | sh
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/fredericrous/amont-agent/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.ps1 | iex
 ```
 
 Either one downloads a release binary, verifies it against the published
@@ -19,7 +19,7 @@ Either one downloads a release binary, verifies it against the published
 
 Or: `brew install fredericrous/tap/amont-agent`, `cargo install amont-agent`,
 or a binary straight from
-[Releases](https://github.com/fredericrous/amont-agent/releases/latest) — Linux
+[Releases](https://github.com/greenharness/greenpiste/releases/latest) — Linux
 x86_64 (gnu and static musl) and aarch64 (gnu), macOS (Intel and Apple
 silicon), and Windows x86_64.
 

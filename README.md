@@ -15,8 +15,8 @@ it, or refuse it. The same guard holds the work-process verdicts a tool call
 waits on: a plan's review panel before `ExitPlanMode`, the implementation
 review and the preview approval before a push.
 
-[![CI](https://github.com/fredericrous/amont-agent/actions/workflows/ci.yaml/badge.svg)](https://github.com/fredericrous/amont-agent/actions/workflows/ci.yaml)
-[![License](https://img.shields.io/github/license/fredericrous/amont-agent)](LICENSE)
+[![CI](https://github.com/greenharness/greenpiste/actions/workflows/ci.yaml/badge.svg)](https://github.com/greenharness/greenpiste/actions/workflows/ci.yaml)
+[![License](https://img.shields.io/github/license/greenharness/greenpiste)](LICENSE)
 
 ```console
 $ amont-agent check 'git push origin main 2>&1 | tail -5'
@@ -29,12 +29,12 @@ pipe-to-tail [deny]
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fredericrous/amont-agent/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.sh | sh
 ```
 
 Or `brew install fredericrous/tap/amont-agent`, `cargo install amont-agent`,
 the PowerShell installer, or a
-[prebuilt binary](https://github.com/fredericrous/amont-agent/releases/latest).
+[prebuilt binary](https://github.com/greenharness/greenpiste/releases/latest).
 Then wire it in — a separate step, because a program that can refuse your
 agent's commands should not add itself to your settings as a side effect of
 you downloading it:
@@ -79,7 +79,7 @@ simply not in play.
 
 ## Documentation
 
-The [book](https://fredericrous.github.io/amont-agent/), versioned with the
+The [book](https://greenharness.github.io/greenpiste/), versioned with the
 code:
 
 - [Installing](docs/install.md) — channels, the wiring, `doctor`, turning it off
@@ -111,7 +111,7 @@ argued in its crate's manifest.
 
 ## Related
 
-[amont](https://github.com/fredericrous/amont) — git hooks that catch a bad
+[amont](https://github.com/greenharness/greengate) — git hooks that catch a bad
 commit before it exists, by the same author. Neither needs the other at run
 time; the one shared code is the quiet-run entry, linked from amont's
 published `amont-quiet` crate.

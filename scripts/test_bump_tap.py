@@ -31,15 +31,21 @@ TARGETS = [
     "x86_64-unknown-linux-gnu",
 ]
 
-FORMULA = (
-    'class AmontAgent < Formula\n  version "1.0.0"\n'
-    + "".join(
-        f'  url "https://github.com/fredericrous/amont-agent/releases/download/'
+def formula(owner_repo: str = "fredericrous/amont-agent") -> str:
+    pairs = "".join(
+        f'  url "https://github.com/{owner_repo}/releases/download/'
         f'v1.0.0/amont-agent-1.0.0-{t}.tar.gz"\n  sha256 "{"0" * 64}"\n'
         for t in TARGETS
     )
-    + "\n  def refusing_by_default\n    %w[pipe-to-tail]\n  end\nend\n"
-)
+    return (
+        "class AmontAgent < Formula\n"
+        f'  homepage "https://github.com/{owner_repo}"\n  version "1.0.0"\n'
+        + pairs
+        + "\n  def refusing_by_default\n    %w[pipe-to-tail]\n  end\nend\n"
+    )
+
+
+FORMULA = formula()
 
 
 def rule(id_: str, ships: str, kind: str = "rule") -> dict:
@@ -117,6 +123,30 @@ class BumpTap(unittest.TestCase):
         ]
         self.assertEqual(changed, [("    %w[pipe-to-tail]", "    %w[a b]")])
 
+
+    def assert_on_new_home(self, text: str) -> None:
+        self.assertEqual(text.count("greenharness/greenpiste"), 5, text)
+        self.assertNotIn("fredericrous/amont-agent", text)
+        self.assertIn('homepage "https://github.com/greenharness/greenpiste"', text)
+
+    def test_an_old_owner_formula_moves_to_the_new_home(self) -> None:
+        r = self.run_script([rule("pipe-to-tail", "deny")])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_on_new_home(self.formula.read_text())
+
+    def test_a_new_owner_formula_stays_on_the_new_home(self) -> None:
+        self.formula.write_text(formula("greenharness/greenpiste"))
+        r = self.run_script([rule("pipe-to-tail", "deny")])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_on_new_home(self.formula.read_text())
+
+    def test_a_formula_without_a_homepage_is_refused(self) -> None:
+        self.formula.write_text(
+            FORMULA.replace('  homepage "https://github.com/fredericrous/amont-agent"\n', "")
+        )
+        r = self.run_script([rule("pipe-to-tail", "deny")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no homepage line", r.stderr)
 
 if __name__ == "__main__":
     unittest.main()

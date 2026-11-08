@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the amont-agent binary. Nothing else.
 #
-#   curl -fsSL https://raw.githubusercontent.com/fredericrous/amont-agent/main/install/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.sh | sh
 #
 # This script deliberately does NOT wire the guard into Claude Code. It
 # downloads a verified binary, puts it on your PATH, and tells you what to run
@@ -13,7 +13,7 @@
 # POSIX sh, no bashisms: this has to run wherever curl does.
 set -eu
 
-REPO="fredericrous/amont-agent"
+REPO="greenharness/greenpiste"
 # `$HOME/.local/bin` by default. `amont-agent install` writes the ABSOLUTE
 # path of this binary into settings.json, so the directory matters only for
 # whether you can type the command yourself.

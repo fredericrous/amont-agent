@@ -55,7 +55,7 @@ it for the whole session. A block generated two releases ago can be wrong
 before any command runs.
 
 This one is **entirely optional and entirely about
-[amont](https://github.com/fredericrous/amont)**. If — and only if — this
+[amont](https://github.com/greenharness/greengate)**. If — and only if — this
 repository carries an `<!-- amont:start -->` block and `amont` is on your
 `PATH`, the guard asks amont the question amont already answers:
 
