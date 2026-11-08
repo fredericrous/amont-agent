@@ -359,11 +359,11 @@ all. Within a gated repository, one changed file counts only when all hold:
 2. **The package.** Its nearest `package.json` — walking up from the file
    to the repository root, read from the **pushed commit** (`git show
    <commit>:<path>`), not the working tree — has a `dev` script, or lists
-   `react`, `react-dom`, `react-native`, `react-strict-dom` or
-   `@duro-app/ui` in `dependencies` or as a **required** peer dependency.
+   `react`, `react-dom`, `react-native` or `react-strict-dom` in
+   `dependencies` or as a **required** peer dependency.
    `devDependencies` and optional peers (`peerDependenciesMeta.<name>.optional`)
-   do not count: duro-design-system's `packages/cli` carries `@duro-app/ui`
-   exactly there, and renders nothing. A monorepo whose root has a `dev`
+   do not count: a component library's CLI carries its renderer exactly
+   there, and renders nothing. A monorepo whose root has a `dev`
    script is therefore judged package by package. No `package.json` at all
    on the way up, or one that does not parse: the path decides.
 3. **Not comments only.** For a `.ts`, `.tsx`, `.js`, `.jsx` or `.css`

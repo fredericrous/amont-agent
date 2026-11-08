@@ -62,8 +62,7 @@ paths costs no extra git call. The tree is the first of `origin/HEAD`, `origin/m
 - **Languages:** `Cargo.toml`, `go.mod`, `package.json` or `tsconfig.json`,
   `pyproject.toml`.
 - **Interface:** the `ui` trait in `.adr.yaml` `areas:`, or a
-  `package.json` with a `dev` script or a runtime React or `@duro-app/ui`
-  dependency.
+  `package.json` with a `dev` script or a runtime React dependency.
 - **Ops:** a kustomization, `Chart.yaml`, a `HelmRelease` or Flux
   `Kustomization`, or `*.tf`.
 - **Command line:** the `cli` trait, `src/main.rs`, `[[bin]]`, a

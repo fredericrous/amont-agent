@@ -416,20 +416,16 @@ impl Fence {
 }
 
 /// Packages whose presence says "this renders something".
-const UI_PACKAGES: &[&str] = &[
-    "react",
-    "react-dom",
-    "react-native",
-    "react-strict-dom",
-    "@duro-app/ui",
-];
+const UI_PACKAGES: &[&str] = &["react", "react-dom", "react-native", "react-strict-dom"];
 
 /// A `package.json` that looks like an interface: a `dev` script, or a UI
 /// package among its `dependencies` or its non-optional `peerDependencies`.
 ///
-/// `devDependencies` and optional peers do not count: a CLI that reads the
-/// design system's metadata (duro-design-system's `packages/cli`) carries
-/// `@duro-app/ui` exactly there, and renders nothing. Unparseable counts.
+/// `devDependencies` and optional peers do not count: a CLI that reads a
+/// component library's metadata carries the library and its renderer
+/// exactly there, and renders nothing. A design system names no package of
+/// its own here: its consumers declare the renderer it runs on. Unparseable
+/// counts.
 pub fn package_is_ui(text: &str) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
         return true;
