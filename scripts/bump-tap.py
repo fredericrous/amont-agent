@@ -119,7 +119,7 @@ def main() -> None:
         text,
         count=1,
     )
-    assert n_home == 1, "the formula carries no homepage line"
+    assert n_home == 1, "the formula carries no homepage line naming fredericrous/amont-agent or greenharness/greenpiste"
 
     stale = set(re.findall(r"amont-agent-([0-9.]+)-", text)) - {version}
     assert not stale, f"stale release versions survived the rewrite: {stale}"

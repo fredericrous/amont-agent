@@ -31,7 +31,7 @@ default-theme = "rust"
 preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/greenharness/greenpiste"
 edit-url-template = "https://github.com/greenharness/greenpiste/edit/main/docs/{path}"
-site-url = "/amont-agent/"
+site-url = "/greenpiste/"
 
 [output.html.fold]
 enable = true
