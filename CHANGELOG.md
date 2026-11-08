@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.23.1
+
 ### Changed
 
 - The repository moved to [greenharness/greenpiste](https://github.com/greenharness/greenpiste),
