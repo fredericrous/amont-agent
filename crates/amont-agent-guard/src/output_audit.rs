@@ -84,10 +84,10 @@ impl Instant {
 
     /// Seconds since the Unix epoch, for comparing with a file's mtime.
     fn unix_seconds(&self) -> i64 {
-        let s = &self.0;
-        let n = |range: std::ops::Range<usize>| s[range].parse::<i64>().unwrap_or(0);
-        let days = crate::civil::days_from_civil(n(0..4), n(5..7), n(8..10));
-        days * 86_400 + n(11..13) * 3_600 + n(14..16) * 60 + n(17..19)
+        let text = &self.0;
+        let field = |range: std::ops::Range<usize>| text[range].parse::<i64>().unwrap_or(0);
+        let days = crate::civil::days_from_civil(field(0..4), field(5..7), field(8..10));
+        days * 86_400 + field(11..13) * 3_600 + field(14..16) * 60 + field(17..19)
     }
 }
 
@@ -524,7 +524,14 @@ mod tests {
         .to_string()
     }
 
-    fn result(at: &str, id: &str, text: &str, error: bool) -> String {
+    #[derive(Clone, Copy)]
+    enum Ended {
+        Passed,
+        Failed,
+    }
+
+    fn result(at: &str, id: &str, text: &str, ended: Ended) -> String {
+        let error = matches!(ended, Ended::Failed);
         serde_json::json!({"timestamp": at, "sessionId": "s1", "message": {"role": "user",
             "content": [{"type": "tool_result", "tool_use_id": id, "content": text, "is_error": error}]}})
         .to_string()
@@ -532,15 +539,18 @@ mod tests {
 
     #[test]
     fn instants_normalise_and_compare_half_open() {
-        let w = window();
+        let window = window();
         let at = |t: &str| Instant::parse(t).unwrap();
         assert_eq!(at("2026-11-01T00:00:00Z"), at("2026-11-01T00:00:00.000Z"));
         assert_eq!(
             at("2026-11-01T00:00:00.5Z").as_str(),
             "2026-11-01T00:00:00.500Z"
         );
-        assert!(at("2026-11-01T00:00:00Z") >= w.since);
-        assert!(at("2026-11-02T00:00:00Z") >= w.until, "until is excluded");
+        assert!(at("2026-11-01T00:00:00Z") >= window.since);
+        assert!(
+            at("2026-11-02T00:00:00Z") >= window.until,
+            "until is excluded"
+        );
         assert!(Instant::parse("2026-11-01T00:00:00+01:00").is_none());
         assert!(Instant::parse("yesterday").is_none());
     }
@@ -574,14 +584,14 @@ mod tests {
         let long = "x".repeat(1_000);
         let lines = vec![
             call("2026-11-01T01:00:00Z", "a", "Bash", "cargo test"),
-            result("2026-11-01T01:00:01Z", "a", &long, false),
+            result("2026-11-01T01:00:01Z", "a", &long, Ended::Passed),
             // A resumed session repeats the same result: counted once.
-            result("2026-11-01T01:00:01Z", "a", &long, false),
+            result("2026-11-01T01:00:01Z", "a", &long, Ended::Passed),
             call("2026-11-01T02:00:00Z", "b", "Bash", "cargo test"),
-            result("2026-11-01T02:00:01Z", "b", "boom", true),
+            result("2026-11-01T02:00:01Z", "b", "boom", Ended::Failed),
             // Outside the window: not counted.
             call("2026-11-02T01:00:00Z", "c", "Read", ""),
-            result("2026-11-02T01:00:01Z", "c", &long, false),
+            result("2026-11-02T01:00:01Z", "c", &long, Ended::Passed),
             "not json".to_string(),
         ];
         let (roots, dir) = roots_with("bucket", &lines);
