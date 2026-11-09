@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.25.0
+
 ### Added
 
 - A rule's corpus can hold Read calls (`Read <window> <bytes> <agent>
