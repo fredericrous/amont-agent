@@ -75,6 +75,24 @@ A and B are independent repos; each is one branch and one PR in its own worktree
 - amont-agent: `tests/hook.rs`: Grep payload, agent_type `relais:relais-worker-haiku-default` → deny; same payload with no agent_type or `relais:relais-worker-sonnet-default` → advise. Live: one haiku-worker relais run whose grep for a symbol → journal line with stance deny. (`backtest` uses `default_stance`, `backtest.rs:68-71`, and cannot see agent types.)
 - After release, remeasure with `/tmp/lsp-measure/count_post_events.py` over one week: haiku-worker grep-for-symbol falls under 25/1k (retried greps counted; also report the share of refusals followed by an identical retry; if the target is missed, the decision for the person is whether to skip `first_telling` for `denyAgents` matches, making it a real block) with an error share at or under 5% (n >= 100 calls: about 125 a week, so one error is about 0.8 points); fable-reviewer `no_document` errors 7 -> 1 or fewer. If the haiku error share is above 7% over at least 100 calls, roll back: `git config --global --fixed-value --unset-all amont.agent.symbol-grep-not-lsp.denyAgents 'relais:relais-worker-haiku-*'`, and remove the line from the dotfiles template.
 
+### Observed, Part B (amont-agent)
+- Real `amont-agent hook` binary, scoped global config with `denyAgents = relais:relais-worker-haiku-*`, a Grep payload for a symbol: main and `relais-worker-sonnet-medium` are advised (additionalContext); the haiku worker is denied with "Refused for this agent type. Ask LSP: workspaceSymbol…"; the identical haiku retry in the same session passes (empty output, exit 0).
+- `cargo test` guard unit tests: 761 passed. `tests/stance_scope.rs`: 17 passed, including a repository `.git/config` cannot set `denyAgents` and a global value does. `tests/hook.rs`: the four `a_denied_worker_*` tests pass (refused once and the retry runs; refused after its parent was advised; shell grep; unrecordable telling advised), and the symbol-grep family passes. Three `a_plan_lookup_*_is_cut_at_the_budget` tests failed once at load 30 and passed alone (3 passed, 6.8 s at load 16): the load flake their own comment describes.
+- The live haiku-worker check (the payload's exact `agent_type`, a journal line with stance deny) needs the released binary and moves to the post-release remeasure below.
+- Part A's observations are recorded in the fleet-lsp pointer plan.
+
+## Decision log
+- 2026-11-10 — the Deny remedy is a constant (`DENY_REMEDY`) chosen by the callers with `is_denial_by_agent(stance, source)`, not part of `phrase`, because the choice depends on where the stance came from, which `phrase` does not see.
+- 2026-11-10 — `GrepOp` carries `agent` and `agent_id`, as `Bash` does; folding the id into `Agent::Named` is follow-up debt (rust profile).
+- 2026-11-10 — deliberate: `grep_gate` returns an empty pattern for an observing stance, and no test yet shows that a plain configured `deny` speaks the ordinary remedy. The first is safe because `final_stance` never raises Observe, so `grep_telling` returns before keying on it; switch to an `Option` if that coupling changes. Both are follow-ups, to avoid a third review pass over latent-only risks.
+- 2026-11-10 — the Part B relais run was interrupted at its 1200 s wall time under load 93-130 after writing 551 lines; salvaged by hand (docs, verification, commit) and the decision recorded as `salvaged`. Part A was blocked twice by contention (baseline, then admission wait) and is done by hand.
+
+## Implementation review
+- implementation-review: round 1 approve-with-changes (two blocking: swallowed lock error, `pats` name); delta approve-with-changes, all resolved, plan record written here (91k, 64 s; 40k, 49 s).
+- backend: round 1 approve-with-changes (record the refusal after `final_stance`); delta all four resolved, two lows deliberate (28k, 29 s).
+- lang:rust: round 1 approve-with-changes (carry the raise as a type); delta all five resolved, one low deliberate (45k, 49 s).
+- unix: round 1 approve-with-changes; delta approve, empty-pattern low deliberate (58k, 45 s; 25k, 12 s).
+
 ## Non-goals
 Denying for other types (sonnet workers fail the error gate; fable reviewers fail it too; Explore/general-purpose/fork never call LSP, cause still unknown); the tsserver SIGABRT (one incident, 11-01).
 
