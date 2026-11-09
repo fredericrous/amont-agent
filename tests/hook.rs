@@ -930,6 +930,179 @@ fn a_large_whole_read_is_advised() {
     assert_eq!(first.decision(), None, "advise, not deny: {}", first.stdout);
 }
 
+/// The threshold is 8 KiB: a 10 KB whole Read is advised, a 6 KB one is not.
+#[test]
+fn a_whole_read_past_8_kib_is_advised_and_under_it_is_not() {
+    let mid = ReadFixture::with_size("unbounded-mid", 10_000);
+    assert!(mid.read("um-1").reason().contains("read-unbounded-large"));
+    let small = ReadFixture::with_size("unbounded-6k", 6_000);
+    assert!(!small.read("um-2").stdout.contains("read-unbounded-large"));
+}
+
+const LARGE_DENY: &str = "[amont \"agent.read-unbounded-large\"]\n\tstance = deny\n";
+
+/// A Read of the fixture's file as `agent` (none: the main conversation),
+/// with `read-unbounded-large` at `deny`.
+fn large_read_as(fixture: &ReadFixture, session: &str, agent: Option<&str>, input: &str) -> Reply {
+    let cwd = serde_json::Value::String(fixture.dir.display().to_string());
+    let path = serde_json::Value::String(fixture.file.display().to_string());
+    let agent = agent
+        .map(|a| format!(r#","agent_id":"{a}""#))
+        .unwrap_or_default();
+    send_with_global(
+        &format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default"{agent},
+                 "tool_input":{{"file_path":{path}{input}}}}}"#
+        ),
+        LARGE_DENY,
+    )
+}
+
+/// At `deny` the first whole Read is refused once with the way through; the
+/// same Read repeated is the agent's choice and passes, journalled.
+#[test]
+fn at_deny_a_large_whole_read_is_refused_once_then_allowed() {
+    let fixture = ReadFixture::with_size("unbounded-once", 20_000);
+    let session = "uonce-01";
+    let first = large_read_as(&fixture, session, None, "");
+    assert_eq!(
+        first.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        first.stdout
+    );
+    let said = first.reason();
+    assert!(said.contains("read-unbounded-large"), "{said}");
+    assert!(said.contains("repeat this same Read"), "{said}");
+    assert!(said.contains("not the person"), "{said}");
+    let again = large_read_as(&fixture, session, None, "");
+    assert_ne!(
+        again.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        again.stdout
+    );
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        journal
+            .lines()
+            .any(|l| l.contains(session) && l.contains("allowed-after-feedback")),
+        "{journal}"
+    );
+}
+
+/// A subagent is refused once on its own, even after the main conversation
+/// read the file; a windowed Read is never refused.
+#[test]
+fn at_deny_each_agent_is_refused_once_and_a_window_never() {
+    let fixture = ReadFixture::with_size("unbounded-agents", 20_000);
+    let session = "uagents-01";
+    assert_eq!(
+        large_read_as(&fixture, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    assert_ne!(
+        large_read_as(&fixture, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    let sub = large_read_as(&fixture, session, Some("a7"), "");
+    assert_eq!(sub.decision().as_deref(), Some("deny"), "{}", sub.stdout);
+    let window = large_read_as(&fixture, "uagents-02", Some("a8"), r#","limit":200"#);
+    assert_ne!(
+        window.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        window.stdout
+    );
+}
+
+/// Another file is refused once on its own; a session whose refusal cannot be
+/// remembered is advised, never refused into a loop.
+#[test]
+fn at_deny_another_file_is_its_own_and_an_unrecorded_session_is_advised() {
+    let fixture = ReadFixture::with_size("unbounded-two-files", 20_000);
+    let other = ReadFixture::with_size("unbounded-two-files-b", 20_000);
+    let session = "utwo-01";
+    assert_eq!(
+        large_read_as(&fixture, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    assert_eq!(
+        large_read_as(&other, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    assert_ne!(
+        large_read_as(&other, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        journal
+            .lines()
+            .any(|l| l.contains(session) && l.contains("allowed-after-feedback")),
+        "{journal}"
+    );
+    // A session id the store refuses: nothing can be remembered.
+    for _ in 0..2 {
+        let said = large_read_as(&fixture, "bad session/../id", None, "");
+        assert_ne!(said.decision().as_deref(), Some("deny"), "{}", said.stdout);
+        assert!(
+            said.stdout.contains("read-unbounded-large"),
+            "advised: {}",
+            said.stdout
+        );
+    }
+}
+
+/// A reviewer is handed its brief to read whole: never refused or advised.
+#[test]
+fn a_reviewer_reads_its_brief_whole_unchallenged() {
+    let fixture = ReadFixture::with_size("unbounded-reviewer", 20_000);
+    for (session, kind) in [
+        ("urev-01", "implementation-review"),
+        ("urev-02", "code-review-backend"),
+        ("urev-03", "plan-review-language"),
+        ("urev-04", "relais:relais-reviewer-opus-medium"),
+    ] {
+        let cwd = serde_json::Value::String(fixture.dir.display().to_string());
+        let path = serde_json::Value::String(fixture.file.display().to_string());
+        let said = send_with_global(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
+                     "session_id":"{session}","permission_mode":"default",
+                     "agent_id":"r1","agent_type":"{kind}",
+                     "tool_input":{{"file_path":{path}}}}}"#
+            ),
+            LARGE_DENY,
+        );
+        assert!(
+            !said.stdout.contains("read-unbounded-large"),
+            "{kind}: {}",
+            said.stdout
+        );
+    }
+    // A worker is still refused once.
+    assert_eq!(
+        large_read_as(&fixture, "urev-05", Some("w1"), "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+}
+
 /// A window, or a deliberate whole read spelled `offset: 1` plus a `limit`,
 /// is the way through.
 #[test]
@@ -1724,9 +1897,9 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
     let w = LspWorld::new("silent", true);
     let small = w.file("src/small.rs", 3_000);
     assert_eq!(w.read("ls-1", &small, "").stdout, "", "under 4 KB");
-    let md = w.file("notes.md", 9_000);
+    let md = w.file("notes.md", 7_000);
     assert!(!w.read("ls-1", &md, "").stdout.contains("code-read-not-lsp"));
-    let mid = w.file("src/mid.rs", 9_000);
+    let mid = w.file("src/mid.rs", 7_000);
     let windowed = w.send(
         &serde_json::json!({
             "hook_event_name": "PreToolUse",
@@ -1739,7 +1912,7 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
         "",
     );
     assert_eq!(windowed.stdout, "", "a window");
-    let persisted = w.file("tool-results/x.rs", 9_000);
+    let persisted = w.file("tool-results/x.rs", 7_000);
     assert!(!w
         .read("ls-1", &persisted, "")
         .stdout
@@ -1762,10 +1935,10 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
     );
 
     let off = LspWorld::new("silent-off", false);
-    let mid = off.file("src/mid.rs", 9_000);
+    let mid = off.file("src/mid.rs", 7_000);
     assert_eq!(off.read("ls-5", &mid, "").stdout, "", "plugin off");
     let nobin = LspWorld::new("silent-nobin", true);
-    let mid = nobin.file("src/mid.rs", 9_000);
+    let mid = nobin.file("src/mid.rs", 7_000);
     std::fs::remove_file(nobin.bin.join("fleet-lsp")).expect("rm stub");
     assert_eq!(
         nobin.read("ls-7", &mid, "").stdout,
@@ -1773,7 +1946,7 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
         "no fleet-lsp on PATH"
     );
     let outside = LspWorld::new("silent-nogit", true);
-    let mid = outside.file("src/mid.rs", 9_000);
+    let mid = outside.file("src/mid.rs", 7_000);
     std::fs::remove_dir_all(outside.repo.join(".git")).expect("rm .git");
     assert_eq!(
         outside.read("ls-6", &mid, "").stdout,
@@ -1856,7 +2029,7 @@ const DENY: &str = "[amont \"agent.code-read-not-lsp\"]\n\tstance = deny\n";
 #[test]
 fn a_read_after_a_document_symbol_call_is_silent_and_journalled_lsp_first() {
     let w = LspWorld::new("first", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     let call = w.lsp(
         "lf-1",
         None,
@@ -1906,11 +2079,11 @@ fn an_lsp_call_leaves_the_size_advice_speaking() {
 #[test]
 fn files_named_by_an_answer_and_failed_calls_count_as_asked() {
     let w = LspWorld::new("named", true);
-    let other = w.file("src/other.rs", 10_000);
-    let lib = w.file("src/lib.rs", 10_000);
+    let other = w.file("src/other.rs", 7_000);
+    let lib = w.file("src/lib.rs", 7_000);
     w.lsp("ln-1", None, "findReferences", "src/lib.rs", "Found 2 references across 2 files:\n\nsrc/other.rs:\n  Line 3:1\n\nsrc/lib.rs:\n  Line 9:2");
     assert_eq!(w.read("ln-1", &other, "").stdout, "");
-    let err = w.file("src/err.rs", 10_000);
+    let err = w.file("src/err.rs", 7_000);
     w.lsp(
         "ln-2",
         None,
@@ -1934,7 +2107,7 @@ fn files_named_by_an_answer_and_failed_calls_count_as_asked() {
 #[test]
 fn an_unparsed_answer_is_journalled_and_still_counts_the_file() {
     let w = LspWorld::new("unparsed", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     let payload = serde_json::json!({
         "hook_event_name": "PostToolUse", "tool_name": "LSP",
         "cwd": w.repo.display().to_string(), "session_id": "lu-1",
@@ -1954,7 +2127,7 @@ fn an_unparsed_answer_is_journalled_and_still_counts_the_file() {
 #[test]
 fn an_lsp_call_silences_only_its_own_session_and_agent() {
     let w = LspWorld::new("scope", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     w.lsp(
         "lc-1",
         Some("a1"),
@@ -2001,7 +2174,7 @@ fn an_lsp_call_silences_only_its_own_session_and_agent() {
 #[test]
 fn a_denied_code_read_passes_once_lsp_was_asked() {
     let w = LspWorld::new("deny", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     let refused = w.read_with("ld-1", &big, "", DENY);
     assert_eq!(
         refused.decision().as_deref(),

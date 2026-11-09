@@ -1230,7 +1230,11 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
     }
     // Last, and quiet on a file the session has seen whatever `file-reread`'s
     // stance: its remedy already says to use `offset`/`limit`.
-    if !persisted && !reread.seen && !code_spoken {
+    if !persisted
+        && !reread.seen
+        && !code_spoken
+        && !rules::read_unbounded_large::reviewer(&op.agent)
+    {
         if let Some(bytes) = rules::read_unbounded_large::applies(&op.path, &op.window) {
             let rule = &rules::read_unbounded_large::RULE;
             let stance = crate::stance::resolve(rule);
@@ -1240,13 +1244,35 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
             } else {
                 Finder::Grep
             };
-            let (reason, remedy) = rules::read_unbounded_large::phrase(&shown, bytes, finder);
-            let text = decision::phrase(rule.id, &reason, &remedy);
-            note_file(rule, stance, op, &shown);
             match stance {
-                Stance::Deny => deny.push(text),
-                Stance::Advise => advise.push(text),
-                Stance::Observe => {}
+                // Refuse once per agent and file; the same Read again is the
+                // agent's informed choice and passes (deliberate-output plan,
+                // Phase 3). No prompt: feedback to the agent only.
+                Stance::Deny => match refuse_once(rule, op) {
+                    Once::Refuse => {
+                        note_file(rule, stance, op, &shown);
+                        let (reason, remedy) =
+                            rules::read_unbounded_large::phrase_refusal(&shown, bytes, finder);
+                        deny.push(decision::phrase(rule.id, &reason, &remedy));
+                    }
+                    Once::Allowed => {}
+                    // A refusal that cannot be remembered would refuse the
+                    // promised retry forever: say it as advice instead.
+                    // `refuse_once` journalled it `unrecorded`; noting it as
+                    // `denied` too would count a refusal that never happened.
+                    Once::Unrecorded => {
+                        let (reason, remedy) =
+                            rules::read_unbounded_large::phrase(&shown, bytes, finder);
+                        advise.push(decision::phrase(rule.id, &reason, &remedy));
+                    }
+                },
+                Stance::Advise => {
+                    let (reason, remedy) =
+                        rules::read_unbounded_large::phrase(&shown, bytes, finder);
+                    note_file(rule, stance, op, &shown);
+                    advise.push(decision::phrase(rule.id, &reason, &remedy));
+                }
+                Stance::Observe => note_file(rule, stance, op, &shown),
             }
         }
     }
@@ -1804,6 +1830,58 @@ fn on_grep(op: &crate::payload::GrepOp) -> Decision {
         Stance::Advise => Decision::Advise(text),
         Stance::Deny => Decision::Deny(text),
     }
+}
+
+/// Where a refuse-once rule stands on this call.
+enum Once {
+    /// The first time this agent asks for this file: refuse, with feedback.
+    Refuse,
+    /// Asked again after the feedback: allowed, journalled.
+    Allowed,
+    /// The refusal could not be remembered: refusing would refuse the retry
+    /// it promises forever, so the call passes, journalled.
+    Unrecorded,
+}
+
+/// Refuse once per session, agent and file, then allow the same call
+/// (deliberate-output plan, Phase 3). The key is the rule id, the agent's
+/// checked key and the normalised path; the file's size is left out so a
+/// growing log keeps the promise the feedback makes.
+fn refuse_once(rule: &Rule, op: &crate::payload::FileOp) -> Once {
+    let repo = repo_name(&op.cwd);
+    let excerpt = |agent: &str| format!("{} @{agent}", op.path.display());
+    let Some(agent) = crate::lsp::agent_key(op.agent_id.as_deref()) else {
+        journal::record(&journal::Entry {
+            rule: rule.id,
+            stance: Stance::Deny.as_str(),
+            outcome: "unrecorded",
+            session: &op.session,
+            repo: &repo,
+            mode: &op.permission_mode,
+            excerpt: &excerpt("?"),
+        });
+        return Once::Unrecorded;
+    };
+    let key = format!(
+        "{} {} @{agent}",
+        rule.id,
+        crate::lsp::normal(&op.path).display()
+    );
+    let (once, outcome) = match crate::lsp::told(&op.session, &key) {
+        crate::lsp::Told::First => return Once::Refuse,
+        crate::lsp::Told::Before => (Once::Allowed, "allowed-after-feedback"),
+        crate::lsp::Told::Unrecorded(_) => (Once::Unrecorded, "unrecorded"),
+    };
+    journal::record(&journal::Entry {
+        rule: rule.id,
+        stance: Stance::Deny.as_str(),
+        outcome,
+        session: &op.session,
+        repo: &repo,
+        mode: &op.permission_mode,
+        excerpt: &excerpt(&agent),
+    });
+    once
 }
 
 /// Whether a rule about to speak has not yet told this session about `key`.

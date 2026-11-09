@@ -39,9 +39,11 @@ fn examine(_parsed: &Parsed) -> Option<Finding> {
     None
 }
 
-/// Below this the advice costs more than the read. The Read median is 3.4 KB
-/// and p90 is 14.5 KB; it is also tokenjuice's pass-through threshold.
-const LARGE: u64 = 16 * 1024;
+/// Below this the advice costs more than the read. Measured over
+/// [2026-10-23, 2026-11-06) (`amont-agent output-audit`): subagents' whole
+/// Reads over 8 KiB were 1,711 calls and 40.4 MB, about 27% of every byte
+/// the tools returned; over 16 KiB, half of that.
+const LARGE: u64 = 8 * 1024;
 
 /// `Some(bytes)` when this Read has no window, is not exempt, and names a
 /// regular file over [`LARGE`]. A failed stat is silence.
@@ -88,11 +90,43 @@ pub enum Finder {
     Grep,
 }
 
-/// What the hook says: the mechanism, then the way through.
-pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
-    let kb = bytes.div_ceil(1024);
+/// Whether `agent` is a reviewer: handed a brief, plan or diff to read whole,
+/// so a whole Read is the job, not a lapse. Measured 2026-11-09: without this,
+/// 332 of 775 would-refuse Reads (15.1 MB) were briefs reviewers are told to
+/// read in full.
+pub fn reviewer(agent: &crate::lsp::Agent) -> bool {
+    match agent {
+        crate::lsp::Agent::Named(kind) => {
+            let kind = kind.rsplit_once(':').map_or(kind.as_str(), |(_, k)| k);
+            kind == "implementation-review"
+                || kind == "interface-review"
+                || kind.starts_with("code-review-")
+                || kind.starts_with("plan-review-")
+                || kind.starts_with("relais-reviewer-")
+                || kind == "relais-review"
+        }
+        crate::lsp::Agent::Main | crate::lsp::Agent::Unnamed => false,
+    }
+}
+
+/// What the hook says when it refuses the first whole Read of this file by
+/// this agent: the advice, then that the same Read repeated will pass.
+pub fn phrase_refusal(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
+    let (reason, _) = phrase(shown, bytes, finder);
+    (
+        format!("{reason} Refused once, before it ran: an automatic check, not the person."),
+        format!(
+            "{}, then Read that window with `offset`/`limit`; or, if you need the whole \
+             file, repeat this same Read unchanged: it will be allowed.",
+            find_part(shown, finder)
+        ),
+    )
+}
+
+/// How the remedy says to find the part of the file that is needed.
+fn find_part(shown: &str, finder: Finder) -> String {
     let quoted = format!("'{}'", shown.replace('\'', "'\\''"));
-    let find = match finder {
+    match finder {
         Finder::Lsp => {
             "Find the part you need first with LSP (`documentSymbol`, `goToDefinition`)".to_string()
         }
@@ -100,13 +134,19 @@ pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
             "Find the part you need first with the Grep tool (or `grep -n '<anchor>' \
              {quoted} | head`)"
         ),
-    };
+    }
+}
+
+/// What the hook says: the mechanism, then the way through.
+pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
+    let kb = bytes.div_ceil(1024);
+    let find = find_part(shown, finder);
     (
         format!(
             "`{shown}` is {kb} KB on disk and is being Read with no window: up to 2,000 \
              lines of it land in the context, and every later turn of this session carries \
-             them again. Unbounded Reads over 16 KB were 37% of the Read tool's bytes \
-             measured."
+             them again. Subagents' whole Reads over 8 KB were 27% of every byte the \
+             tools returned, measured."
         ),
         format!(
             "{find}, then Read that window with `offset`/`limit`. To read more on purpose, \
@@ -120,6 +160,31 @@ pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn reviewer_kinds_are_named_and_near_misses_are_not() {
+        let named = |kind: &str| reviewer(&crate::lsp::Agent::Named(kind.to_string()));
+        for kind in [
+            "implementation-review",
+            "interface-review",
+            "code-review-backend",
+            "plan-review-language",
+            "relais:relais-reviewer-opus-medium",
+            "relais-review",
+        ] {
+            assert!(named(kind), "{kind}");
+        }
+        for kind in [
+            "code-reviewer",
+            "general-purpose",
+            "Explore",
+            "relais:relais-worker-sonnet-medium",
+        ] {
+            assert!(!named(kind), "{kind}");
+        }
+        assert!(!reviewer(&crate::lsp::Agent::Main));
+        assert!(!reviewer(&crate::lsp::Agent::Unnamed));
+    }
 
     /// A unique scratch directory per test, removed by the caller.
     fn scratch(name: &str) -> PathBuf {
@@ -158,12 +223,12 @@ mod tests {
     fn the_threshold_is_exclusive() {
         let dir = scratch("threshold");
         let f = dir.join("a.rs");
-        file(&f, 16_384);
+        file(&f, 8_192);
         assert_eq!(applies(&f, "full"), None);
-        file(&f, 16_385);
+        file(&f, 8_193);
         let bytes = applies(&f, "full").expect("one byte over");
-        assert_eq!(bytes, 16_385);
-        assert!(phrase("a.rs", bytes, Finder::Grep).0.contains("17 KB"));
+        assert_eq!(bytes, 8_193);
+        assert!(phrase("a.rs", bytes, Finder::Grep).0.contains("9 KB"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

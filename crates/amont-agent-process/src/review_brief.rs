@@ -1,5 +1,6 @@
 //! The implementation-review brief and the hash of the code rules it carries
-//! (decisions ADR-0043, ADR-0044). One function hashes the `aval` output
+//! (decisions ADR-0043, ADR-0044, ADR-0065: a profile's brief carries its own
+//! judge rules and an id-and-title index of the rest). One function hashes the `aval` output
 //! ([`rules_sha`]); the brief, the CLI and the push check all call it.
 
 use std::collections::BTreeSet;
@@ -616,16 +617,27 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
     }
     match &code_rules {
         Some((_, rules_text)) => {
-            brief.push_str(&format!("# Code rules (in full)\n\n{rules_text}\n"));
-            if let Some(section) = &judge_section {
-                brief.push_str(&format!("\n{section}\n"));
-            }
-
             let index = aval(&repo, &["rules", "--level", "constraint"])?;
-            brief.push_str(&format!(
-                "# Constraint rules\n\n{}\n\n",
-                String::from_utf8_lossy(&index).trim_end()
-            ));
+            let index = String::from_utf8_lossy(&index);
+            match &judge_section {
+                // A profile seat reads the rules it judges in full and an id
+                // index of the rest (ADR-0065): implementation-review reads
+                // every code rule, so none loses its reader.
+                Some(section) => {
+                    brief.push_str(&format!("{section}\n"));
+                    brief.push_str(&format!(
+                        "# Constraint rules (index)\n\n\
+                         The other constraints, by id and title. Implementation-review \
+                         reads every code rule in full. Fetch one with the `aval_rule` \
+                         tool or `aval rule <id>` only when your review needs it.\n\n{}\n\n",
+                        constraint_index(&index)
+                    ));
+                }
+                None => {
+                    brief.push_str(&format!("# Code rules (in full)\n\n{rules_text}\n"));
+                    brief.push_str(&format!("# Constraint rules\n\n{}\n\n", index.trim_end()));
+                }
+            }
 
             brief.push_str("# Decisions that apply to the changed paths\n\n");
             brief.push_str(&decisions(&repo, &range)?);
@@ -1207,8 +1219,52 @@ fn diff_of(before: &[u8], after: &[u8]) -> std::io::Result<Vec<u8>> {
     }
 }
 
+/// One line per rule of `aval rules --level constraint` (`constraint <id>
+/// <statement>`): the id and a title, the statement's first 72 characters
+/// cut at a word. Lines that are not a constraint row are left out.
+fn constraint_index(index: &str) -> String {
+    index
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            if words.next() != Some("constraint") {
+                return None;
+            }
+            let id = words.next()?;
+            let statement = words.collect::<Vec<_>>().join(" ");
+            let title = if statement.chars().count() <= 72 {
+                statement
+            } else {
+                let cut: String = statement.chars().take(72).collect();
+                format!(
+                    "{}…",
+                    cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head)
+                )
+            };
+            Some(format!("- {id}: {title}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_constraint_index_keeps_ids_and_short_titles_of_constraint_rows() {
+        let long = "word ".repeat(30);
+        let index = super::constraint_index(&format!(
+            "constraint errors.typed   A typed error.\nheader line\nconstraint names.x {long}\n"
+        ));
+        let lines: Vec<&str> = index.lines().collect();
+        assert_eq!(lines[0], "- errors.typed: A typed error.");
+        assert!(
+            lines[1].starts_with("- names.x: word") && lines[1].ends_with('…'),
+            "{index}"
+        );
+        assert!(lines[1].chars().count() < 90, "{index}");
+        assert_eq!(lines.len(), 2, "a non-constraint row is left out: {index}");
+    }
+
     /// Forced into one batch per path, the joined patch is byte for byte
     /// the one diff of the same paths: same order, no file twice.
     #[test]
