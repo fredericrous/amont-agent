@@ -943,9 +943,9 @@ const LARGE_DENY: &str = "[amont \"agent.read-unbounded-large\"]\n\tstance = den
 
 /// A Read of the fixture's file as `agent` (none: the main conversation),
 /// with `read-unbounded-large` at `deny`.
-fn large_read_as(f: &ReadFixture, session: &str, agent: Option<&str>, input: &str) -> Reply {
-    let cwd = serde_json::Value::String(f.dir.display().to_string());
-    let path = serde_json::Value::String(f.file.display().to_string());
+fn large_read_as(fixture: &ReadFixture, session: &str, agent: Option<&str>, input: &str) -> Reply {
+    let cwd = serde_json::Value::String(fixture.dir.display().to_string());
+    let path = serde_json::Value::String(fixture.file.display().to_string());
     let agent = agent
         .map(|a| format!(r#","agent_id":"{a}""#))
         .unwrap_or_default();
@@ -963,9 +963,9 @@ fn large_read_as(f: &ReadFixture, session: &str, agent: Option<&str>, input: &st
 /// same Read repeated is the agent's choice and passes, journalled.
 #[test]
 fn at_deny_a_large_whole_read_is_refused_once_then_allowed() {
-    let f = ReadFixture::with_size("unbounded-once", 20_000);
+    let fixture = ReadFixture::with_size("unbounded-once", 20_000);
     let session = "uonce-01";
-    let first = large_read_as(&f, session, None, "");
+    let first = large_read_as(&fixture, session, None, "");
     assert_eq!(
         first.decision().as_deref(),
         Some("deny"),
@@ -976,7 +976,7 @@ fn at_deny_a_large_whole_read_is_refused_once_then_allowed() {
     assert!(said.contains("read-unbounded-large"), "{said}");
     assert!(said.contains("repeat this same Read"), "{said}");
     assert!(said.contains("not the person"), "{said}");
-    let again = large_read_as(&f, session, None, "");
+    let again = large_read_as(&fixture, session, None, "");
     assert_ne!(
         again.decision().as_deref(),
         Some("deny"),
@@ -997,19 +997,23 @@ fn at_deny_a_large_whole_read_is_refused_once_then_allowed() {
 /// read the file; a windowed Read is never refused.
 #[test]
 fn at_deny_each_agent_is_refused_once_and_a_window_never() {
-    let f = ReadFixture::with_size("unbounded-agents", 20_000);
+    let fixture = ReadFixture::with_size("unbounded-agents", 20_000);
     let session = "uagents-01";
     assert_eq!(
-        large_read_as(&f, session, None, "").decision().as_deref(),
+        large_read_as(&fixture, session, None, "")
+            .decision()
+            .as_deref(),
         Some("deny")
     );
     assert_ne!(
-        large_read_as(&f, session, None, "").decision().as_deref(),
+        large_read_as(&fixture, session, None, "")
+            .decision()
+            .as_deref(),
         Some("deny")
     );
-    let sub = large_read_as(&f, session, Some("a7"), "");
+    let sub = large_read_as(&fixture, session, Some("a7"), "");
     assert_eq!(sub.decision().as_deref(), Some("deny"), "{}", sub.stdout);
-    let window = large_read_as(&f, "uagents-02", Some("a8"), r#","limit":200"#);
+    let window = large_read_as(&fixture, "uagents-02", Some("a8"), r#","limit":200"#);
     assert_ne!(
         window.decision().as_deref(),
         Some("deny"),
@@ -1021,15 +1025,15 @@ fn at_deny_each_agent_is_refused_once_and_a_window_never() {
 /// A reviewer is handed its brief to read whole: never refused or advised.
 #[test]
 fn a_reviewer_reads_its_brief_whole_unchallenged() {
-    let f = ReadFixture::with_size("unbounded-reviewer", 20_000);
+    let fixture = ReadFixture::with_size("unbounded-reviewer", 20_000);
     for (session, kind) in [
         ("urev-01", "implementation-review"),
         ("urev-02", "code-review-backend"),
         ("urev-03", "plan-review-language"),
         ("urev-04", "relais:relais-reviewer-opus-medium"),
     ] {
-        let cwd = serde_json::Value::String(f.dir.display().to_string());
-        let path = serde_json::Value::String(f.file.display().to_string());
+        let cwd = serde_json::Value::String(fixture.dir.display().to_string());
+        let path = serde_json::Value::String(fixture.file.display().to_string());
         let said = send_with_global(
             &format!(
                 r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
@@ -1047,7 +1051,7 @@ fn a_reviewer_reads_its_brief_whole_unchallenged() {
     }
     // A worker is still refused once.
     assert_eq!(
-        large_read_as(&f, "urev-05", Some("w1"), "")
+        large_read_as(&fixture, "urev-05", Some("w1"), "")
             .decision()
             .as_deref(),
         Some("deny")
