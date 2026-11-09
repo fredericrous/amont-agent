@@ -125,7 +125,7 @@ fn is_test_run(clause: &Simple) -> bool {
 fn is_consequential(clause: &Simple) -> bool {
     match (clause.program(), clause.subcommand()) {
         (Some("git"), Some("commit" | "tag" | "push")) => true,
-        (Some("amont"), Some("land")) => true,
+        (Some(program), Some("land")) if crate::gate::is_gate_program(program) => true,
         (Some("kubectl"), Some("apply" | "delete")) => !clause.is_dry_run(),
         (Some("gh"), _) => {
             first_operand(clause) == Some("pr") && second_operand(clause) == Some("merge")
@@ -183,7 +183,8 @@ fn step_name(clause: &Simple, fallback: &str) -> String {
         "gh" => first_operand(clause)
             .zip(second_operand(clause))
             .map(|(first, second)| format!("{first} {second}")),
-        "git" | "amont" | "kubectl" => clause.subcommand().map(str::to_string),
+        "git" | "kubectl" => clause.subcommand().map(str::to_string),
+        gate if crate::gate::is_gate_program(gate) => clause.subcommand().map(str::to_string),
         "cargo" | "go" | "npm" | "pnpm" | "yarn" | "make" => {
             first_operand(clause).map(str::to_string)
         }
@@ -346,5 +347,24 @@ mod tests {
         assert!(!fires("git status ; git commit -m y"));
         assert!(!fires("git add -A && git commit -m x"));
         assert!(!fires("git add -A || git commit -m x"));
+    }
+
+    #[test]
+    fn greengate_steps_are_named_as_amonts_are() {
+        let step = |command: &str| {
+            let parsed = lex(command);
+            step_name(&parsed.clauses()[0], "fallback")
+        };
+        assert_eq!(step("amont land"), "amont land");
+        assert_eq!(step("greengate land"), "greengate land");
+        assert_eq!(step("greengate"), "greengate");
+    }
+
+    #[test]
+    fn greengate_land_is_as_consequential_as_amont_land() {
+        assert!(fires("make ; amont land"));
+        assert!(fires("make ; greengate land"));
+        let finding = examine(&lex("make ; greengate land")).expect("fires");
+        assert!(finding.reason.contains("greengate land"));
     }
 }

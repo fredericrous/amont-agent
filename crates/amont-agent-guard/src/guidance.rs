@@ -141,7 +141,7 @@ fn drifted(root: &Path) -> Option<Vec<String>> {
 /// Killing the child closes its end of the pipe, so the reader always
 /// finishes and the join cannot hang either.
 fn ask(root: &Path) -> Option<String> {
-    let mut child = Command::new("amont")
+    let mut child = Command::new(crate::gate::gate_binary())
         .arg("agents-md")
         .arg("--check")
         .current_dir(root)

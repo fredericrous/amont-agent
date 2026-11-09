@@ -74,6 +74,8 @@ const MAX_TOKENS: usize = 48;
 const VERB_PROGRAMS: &[&str] = &[
     "amont",
     "amont-agent",
+    "greengate",
+    "greengate-fleet",
     "argocd",
     "aws",
     "az",
@@ -510,5 +512,15 @@ mod tests {
             .collect();
         let once = pick_novel(&candidates, &[], 3);
         assert_eq!(once, pick_novel(&candidates, &[], 3));
+    }
+    #[test]
+    fn greengate_programs_are_verb_programs() {
+        assert!(VERB_PROGRAMS.contains(&"greengate"));
+        assert!(VERB_PROGRAMS.contains(&"greengate-fleet"));
+        assert_ne!(shape("greengate land"), shape("greengate slots"));
+        assert_ne!(
+            shape("greengate-fleet fix"),
+            shape("greengate-fleet status")
+        );
     }
 }

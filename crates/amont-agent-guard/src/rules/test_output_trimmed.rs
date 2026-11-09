@@ -97,7 +97,7 @@ pub(crate) fn is_check_run(cmd: &Simple) -> bool {
     }
     let operands = || cmd.args().iter().filter(|w| !w.quoted);
     match cmd.program() {
-        Some("amont") => {
+        Some(program) if crate::gate::is_gate_program(program) => {
             let mut it = operands()
                 .map(|w| w.text.as_str())
                 .filter(|a| !a.starts_with('-'));
@@ -219,5 +219,11 @@ mod check_run_tests {
         assert!(!is_check("amont-agent -- cargo test"));
         assert!(!is_check("amont-agent quiet -- 'cargo test'"));
         assert!(!is_check("grep -n error src/main.rs"));
+    }
+
+    #[test]
+    fn greengate_run_is_a_check_run_like_amont_run() {
+        assert!(is_check("greengate run cargo-test"));
+        assert!(!is_check("greengate run"));
     }
 }

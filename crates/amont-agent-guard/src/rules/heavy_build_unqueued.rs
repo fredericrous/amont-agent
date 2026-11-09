@@ -91,7 +91,7 @@ fn is_heavy(program: &str, words: &[Word]) -> bool {
 /// The heavy command a clause starts unqueued, if any.
 fn unqueued(cmd: &Simple) -> Option<Heavy<'_>> {
     let program = cmd.program()?;
-    if program == "amont" {
+    if crate::gate::is_gate_program(program) {
         return slot_run_fallback(cmd);
     }
     is_heavy(program, cmd.args()).then(|| Heavy {
@@ -189,7 +189,7 @@ fn amont_has_slots(session: &str) -> bool {
 /// `amont --version`, killed at [`PROBE_DEADLINE`]; `None` when amont is
 /// missing, fails, hangs or prints no version.
 fn probe_version() -> Option<(u64, u64, u64)> {
-    let mut child = Command::new("amont")
+    let mut child = Command::new(crate::gate::gate_binary())
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -286,5 +286,24 @@ mod tests {
         assert_eq!(parse_version("amont v1.61.1-rc1"), Some((1, 61, 1)));
         assert!(parse_version("amont 2.0.0") >= Some(FIRST_VERSION_WITH_SLOTS));
         assert_eq!(parse_version("no version here"), None);
+    }
+
+    #[test]
+    fn greengate_gets_the_verdict_amont_gets() {
+        for c in [
+            "greengate slot run --on-timeout=run -- cargo test",
+            "greengate slot run --on-timeout run -- cargo test",
+        ] {
+            assert!(fires(c), "{c}");
+        }
+        for c in [
+            "greengate slot run -- cargo test",
+            "greengate slot run --weight 2 -- cargo test",
+            "greengate slot run --on-timeout=fail -- cargo test",
+            "greengate run cargo-test",
+            "greengate rehearse --wait",
+        ] {
+            assert!(!fires(c), "{c}");
+        }
     }
 }

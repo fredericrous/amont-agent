@@ -157,7 +157,7 @@ const TEST_GATES: &[&str] = &[
 ];
 
 fn list_json(cwd: &std::path::Path, pushed: bool) -> Option<String> {
-    let mut cmd = std::process::Command::new("amont");
+    let mut cmd = std::process::Command::new(crate::gate::gate_binary());
     cmd.args(["list", "--json", "--stage", "pre-push"]);
     if pushed {
         cmd.arg("--pushed");
@@ -214,7 +214,8 @@ fn confirm(context: &Context, _finding: &Finding) -> Confirmed {
     } else {
         cwd.join(&hook)
     };
-    let guarded = std::fs::read_to_string(&hook_path).is_ok_and(|s| s.contains("amont"));
+    let guarded =
+        std::fs::read_to_string(&hook_path).is_ok_and(|script| crate::gate::names_gate(&script));
     if !guarded {
         return Confirmed::No("amont does not guard this repository's pushes");
     }
@@ -332,6 +333,75 @@ mod tests {
                 panic!("expected a decline for {command}")
             }
         }
+    }
+
+    fn declined_in(repo: &std::path::Path, command: &str) -> &'static str {
+        let parsed = lex(command);
+        let finding = examine(&parsed).expect("fires");
+        let context = Context {
+            platform: None,
+            cwd: repo,
+            parsed: &parsed,
+            background: false,
+            timeout_ms: None,
+            tool_use_id: "",
+            transcript: None,
+            agent_transcript: None,
+            command,
+            output: None,
+            session: "",
+            failed: false,
+        };
+        match confirm(&context, &finding) {
+            Confirmed::No(why) => why,
+            Confirmed::Yes | Confirmed::YesAt(_) | Confirmed::YesSaying { .. } => "confirmed",
+        }
+    }
+
+    #[test]
+    fn a_hook_naming_only_greengate_reads_as_guarded() {
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0); // best effort: a leftover temp dir is harmless
+            }
+        }
+        let repo =
+            std::env::temp_dir().join(format!("amont-preflight-hook-{}", std::process::id()));
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        let _cleanup = Cleanup(repo.clone());
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .current_dir(&repo)
+            .status()
+            .expect("git init");
+        assert!(init.success());
+        let hooks = repo.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
+        // A local setting outranks the machine's global `core.hooksPath`,
+        // which the guard's own git calls read.
+        let pinned = std::process::Command::new("git")
+            .args(["config", "core.hooksPath"])
+            .arg(&hooks)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .current_dir(&repo)
+            .status()
+            .expect("git config");
+        assert!(pinned.success());
+        let hook = hooks.join("pre-push");
+        let unguarded = "does not guard this repository's pushes";
+
+        std::fs::write(&hook, "#!/bin/sh\nexec greengate hook pre-push \"$@\"\n").expect("hook");
+        assert_eq!(
+            declined_in(&repo, "git push origin feat/x"),
+            "no test gate runs at push time here"
+        );
+
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").expect("hook");
+        assert!(declined_in(&repo, "git push origin feat/x").contains(unguarded));
     }
 
     #[test]

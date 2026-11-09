@@ -40,7 +40,7 @@ pub const SHAPE: &str =
 
 /// Is this clause an `amont land`?
 pub fn is_land(cmd: &Simple) -> bool {
-    cmd.program() == Some("amont") && cmd.subcommand() == Some("land")
+    cmd.program().is_some_and(crate::gate::is_gate_program) && cmd.subcommand() == Some("land")
 }
 
 /// The tag an `amont land --tag <name>` (or `--tag=<name>`) pushes, if it
@@ -95,7 +95,7 @@ pub fn shape(parsed: &Parsed, cmd: &Simple, background: bool) -> Result<(), &'st
     // repository or identity than the land's.
     let words = &cmd.words;
     let head = words.len() >= 2
-        && words[0].text == "amont"
+        && crate::gate::is_gate_program(&words[0].text)
         && words[1].text == "land"
         && words.iter().all(|w| !w.quoted && !w.expanded);
     if !head || !cmd.redirects.is_empty() || cmd.heredoc {
@@ -189,7 +189,7 @@ fn ask(dir: &Path, tag: Option<&str>) -> Answer {
         args.push("--tag");
         args.push(name);
     }
-    let Ok(mut child) = Command::new("amont")
+    let Ok(mut child) = Command::new(crate::gate::gate_binary())
         .args(&args)
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -480,5 +480,13 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].pushed, "sha-300");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn greengate_is_read_as_amont() {
+        assert_eq!(read("greengate land", false), Ok(()));
+        assert_eq!(read("cd /x/wt && greengate land --json", false), Ok(()));
+        assert!(read("greengate land; true", false).is_err());
+        assert!(read("sudo greengate land", false).is_err());
     }
 }

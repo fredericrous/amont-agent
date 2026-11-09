@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- The guards treat `greengate` as `amont` (`amont land`, `amont run`,
+  `amont slot run`, the push-preflight hook check, the command shapes), and
+  spawn `greengate` when it is on PATH, else `amont`. The command shapes also
+  read `greengate-fleet`'s leading operands as verbs.
+
 ## v3.26.0
 
 ### Changed
