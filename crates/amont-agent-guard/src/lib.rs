@@ -27,6 +27,7 @@ pub mod json;
 pub mod land;
 pub mod lsp;
 pub mod mine;
+pub mod output_audit;
 pub mod page_open;
 pub mod payload;
 pub mod publish_cmd;

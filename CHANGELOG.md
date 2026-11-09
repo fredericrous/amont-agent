@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- `amont-agent output-audit --since <UTC> --until <UTC> [--json]`: where tool
+  output went over a window. Result bytes by kind of call (ci-log, check,
+  shell, read, mcp, agent, ...), the main conversation apart from subagents,
+  beside the token usage the transcripts report by model. Each result counts
+  once per tool_use_id and each message's usage once per message id; the
+  output carries counts only, no command or result text.
+
 ## v3.23.1
 
 ### Changed
