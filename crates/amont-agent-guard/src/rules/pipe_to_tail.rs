@@ -67,7 +67,7 @@ const MUTATING: &[(&str, &[&str])] = &[
     ("kubectl", &["apply", "delete", "replace"]),
     ("helm", &["install", "upgrade"]),
     ("npm", &["publish"]),
-    ("amont", &["land"]),
+    (crate::gate::TABLE_NAME, &["land"]),
 ];
 
 /// Sinks that TRIM. The defect is identical for `tee`, `less` and `jq`, and
@@ -106,9 +106,16 @@ fn is_mutating(cmd: &Simple) -> bool {
     let Some(sub) = cmd.subcommand() else {
         return false;
     };
+    // The gate's own name is read through `is_gate_program`, so the table
+    // holds its row once, under `gate::TABLE_NAME`.
+    let table_program = if crate::gate::is_gate_program(program) {
+        crate::gate::TABLE_NAME
+    } else {
+        program
+    };
     if !MUTATING
         .iter()
-        .any(|(p, subs)| *p == program && subs.contains(&sub))
+        .any(|(p, subs)| *p == table_program && subs.contains(&sub))
     {
         return false;
     }
@@ -229,5 +236,35 @@ fn describe(cmd: &Simple) -> String {
         (Some(p), Some(s)) => format!("{p} {s}"),
         (Some(p), None) => p.to_string(),
         _ => "the command".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::lex;
+
+    fn mutating(command: &str) -> bool {
+        lex(command).clauses().first().is_some_and(is_mutating)
+    }
+
+    #[test]
+    fn greengate_land_is_mutating_like_amont_land() {
+        assert!(mutating("amont land"));
+        assert!(mutating("greengate land"));
+        assert!(!mutating("greengate land --dry-run"));
+        assert!(!mutating("greengate status"));
+    }
+
+    #[test]
+    fn a_piped_greengate_land_has_the_verdict_of_a_piped_amont_land() {
+        let verdict = |command: &str| {
+            let parsed = lex(command);
+            let input = Input::new(command, crate::rules::Dialect::Bash, &parsed);
+            examine(&input).is_some()
+        };
+        assert!(verdict("amont land | tail -3"));
+        assert!(verdict("greengate land | tail -3"));
+        assert!(!verdict("greengate status | tail -3"));
     }
 }

@@ -17,6 +17,7 @@ pub mod decision;
 pub mod doctor;
 #[cfg(unix)]
 pub mod excerpt;
+pub mod gate;
 pub mod git;
 pub mod gitconfig;
 pub mod graduate;

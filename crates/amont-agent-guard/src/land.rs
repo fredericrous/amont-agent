@@ -40,7 +40,7 @@ pub const SHAPE: &str =
 
 /// Is this clause an `amont land`?
 pub fn is_land(cmd: &Simple) -> bool {
-    cmd.program() == Some("amont") && cmd.subcommand() == Some("land")
+    cmd.program().is_some_and(crate::gate::is_gate_program) && cmd.subcommand() == Some("land")
 }
 
 /// The tag an `amont land --tag <name>` (or `--tag=<name>`) pushes, if it
@@ -95,7 +95,7 @@ pub fn shape(parsed: &Parsed, cmd: &Simple, background: bool) -> Result<(), &'st
     // repository or identity than the land's.
     let words = &cmd.words;
     let head = words.len() >= 2
-        && words[0].text == "amont"
+        && crate::gate::is_gate_program(&words[0].text)
         && words[1].text == "land"
         && words.iter().all(|w| !w.quoted && !w.expanded);
     if !head || !cmd.redirects.is_empty() || cmd.heredoc {
@@ -165,22 +165,28 @@ pub struct Landing {
 /// The dry-run for a land that runs in `dir`, of `tag` when it names one.
 /// Asked once per directory and tag per hook process: the implementation
 /// review, the preview and the pre-push record all resolve the same land.
-pub fn dry_run(dir: &Path, tag: Option<&str>) -> Answer {
-    type Key = (PathBuf, Option<String>);
+/// `program` is the gate the clause names (`amont` or `greengate`): the
+/// dry-run asks that binary, the one that will push, never the other name.
+pub fn dry_run(program: &str, dir: &Path, tag: Option<&str>) -> Answer {
+    type Key = (String, PathBuf, Option<String>);
     static MEMO: OnceLock<Mutex<HashMap<Key, Answer>>> = OnceLock::new();
     let memo = MEMO.get_or_init(Default::default);
-    let key = (dir.to_path_buf(), tag.map(str::to_string));
+    let key = (
+        program.to_string(),
+        dir.to_path_buf(),
+        tag.map(str::to_string),
+    );
     if let Some(a) = memo.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return a.clone();
     }
-    let answer = ask(dir, tag);
+    let answer = ask(program, dir, tag);
     memo.lock()
         .unwrap_or_else(|p| p.into_inner())
         .insert(key, answer.clone());
     answer
 }
 
-fn ask(dir: &Path, tag: Option<&str>) -> Answer {
+fn ask(program: &str, dir: &Path, tag: Option<&str>) -> Answer {
     if !dir.is_dir() {
         return Answer::Unknown("the land's directory does not exist");
     }
@@ -189,7 +195,7 @@ fn ask(dir: &Path, tag: Option<&str>) -> Answer {
         args.push("--tag");
         args.push(name);
     }
-    let Ok(mut child) = Command::new("amont")
+    let Ok(mut child) = Command::new(program)
         .args(&args)
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -197,7 +203,9 @@ fn ask(dir: &Path, tag: Option<&str>) -> Answer {
         .stderr(Stdio::piped())
         .spawn()
     else {
-        return Answer::Unknown("amont is not installed, so what a land would push cannot be read");
+        return Answer::Unknown(
+            "the gate (amont or greengate) is not installed, so what a land would push cannot be read",
+        );
     };
     // Both pipes drained while the child runs, as `guidance::ask` does: a
     // child blocked on a full pipe would otherwise be killed at the budget.
@@ -232,9 +240,11 @@ fn ask(dir: &Path, tag: Option<&str>) -> Answer {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Answer::Unknown("`amont land --dry-run` did not answer within 3 s");
+                return Answer::Unknown("the gate's `land --dry-run` did not answer within 3 s");
             }
-            Err(_) => return Answer::Unknown("`amont land --dry-run` could not be waited for"),
+            Err(_) => {
+                return Answer::Unknown("the gate's `land --dry-run` could not be waited for")
+            }
         }
     };
     let stdout = out.join().unwrap_or_default();
@@ -341,6 +351,20 @@ mod tests {
             .find(|c| is_land(c))
             .expect("a land clause");
         shape(&parsed, land, background)
+    }
+
+    #[test]
+    fn the_dry_run_asks_the_binary_the_clause_names() {
+        // A program that exists nowhere: were the dry-run to spawn whichever
+        // gate is on PATH instead, this would answer from that binary.
+        let program = "amont-agent-test-no-such-gate";
+        let dir = std::env::temp_dir();
+        assert_eq!(
+            dry_run(program, &dir, None),
+            Answer::Unknown(
+                "the gate (amont or greengate) is not installed, so what a land would push cannot be read"
+            )
+        );
     }
 
     #[test]
@@ -480,5 +504,13 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].pushed, "sha-300");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn greengate_is_read_as_amont() {
+        assert_eq!(read("greengate land", false), Ok(()));
+        assert_eq!(read("cd /x/wt && greengate land --json", false), Ok(()));
+        assert!(read("greengate land; true", false).is_err());
+        assert!(read("sudo greengate land", false).is_err());
     }
 }

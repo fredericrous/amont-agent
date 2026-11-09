@@ -65,6 +65,15 @@ pub const NEAR: f64 = 0.34;
 /// scripts answers the question just as well as comparing all 300.
 const MAX_TOKENS: usize = 48;
 
+/// Is this a program whose leading operands are verbs? The table below, plus
+/// the gate and its fleet tool under either name, read through `crate::gate`
+/// so a later name is one change there.
+fn is_verb_program(name: &str) -> bool {
+    VERB_PROGRAMS.contains(&name)
+        || crate::gate::is_gate_program(name)
+        || crate::gate::is_gate_fleet_program(name)
+}
+
 /// Programs whose leading operands are VERBS rather than data.
 ///
 /// The test for membership is not "has subcommands" but "does the shape lose
@@ -72,7 +81,6 @@ const MAX_TOKENS: usize = 48;
 /// habits, `grep alpha` and `grep beta` are one. Every entry here was in the
 /// measured corpus; a program nobody runs does not need to be in a table.
 const VERB_PROGRAMS: &[&str] = &[
-    "amont",
     "amont-agent",
     "argocd",
     "aws",
@@ -182,7 +190,7 @@ fn stage(c: &Simple, out: &mut Vec<String>) {
 
     // Two bare words survive where they are verbs; elsewhere the leading
     // operand is data and is masked like the rest. See the module note.
-    let verbs = if VERB_PROGRAMS.contains(&name) { 2 } else { 0 };
+    let verbs = if is_verb_program(name) { 2 } else { 0 };
     let mut kept = 0usize;
     for w in c.operands() {
         if kept < verbs && is_bare_word(w) {
@@ -510,5 +518,17 @@ mod tests {
             .collect();
         let once = pick_novel(&candidates, &[], 3);
         assert_eq!(once, pick_novel(&candidates, &[], 3));
+    }
+    #[test]
+    fn greengate_programs_are_verb_programs() {
+        assert!(is_verb_program("greengate"));
+        assert!(is_verb_program("greengate-fleet"));
+        assert!(is_verb_program("amont-fleet"));
+        assert_ne!(shape("amont-fleet fix"), shape("amont-fleet status"));
+        assert_ne!(shape("greengate land"), shape("greengate slots"));
+        assert_ne!(
+            shape("greengate-fleet fix"),
+            shape("greengate-fleet status")
+        );
     }
 }
