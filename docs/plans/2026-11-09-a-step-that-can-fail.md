@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/chain-with-and
 repos: [amont-agent]
 adrs: []
@@ -85,5 +85,31 @@ Outcome: a new rule `chain-with-and` in amont-agent that flags the narrow shape,
 ## Code review
 
 - amont-agent: backend, lang:rust, unix (tui left out: the only output is one finding sentence)
+
+## Verification record
+
+| Check | Input | Expected | Actual |
+|---|---|---|---|
+| `make check` | the branch tree | fmt, clippy, tests green | pass (relais run, then re-run by hand after one clippy fix and the review fixes) |
+| `amont-agent corpus check` | `chain-with-and.cases` | 12+ reviewed, 4+ negatives, 0 disagreements | 29 reviewed (16 negative), precision 100% |
+| piloted hook at `advise` | `git add -A ; git commit -m x` | one finding | one finding, reason names `git add` / `git commit` |
+| piloted hook at `advise` | `git add -A && git commit -m x` | none | none |
+| piloted hook at `advise` | `python3 -c "assert 0" ; cargo test` | one finding | one finding (beside `heavy-build-unqueued`) |
+| `amont-agent backtest --rule chain-with-and --json` | 81,433 local calls | under 5 per 1000 | 261 firings, 3.2 per 1000; 244 of them multi-line commands (a heredoc edit then a test or build), 17 single-line; measured 2026-11-09 |
+| `amont-agent rules` | built binary | row at `observe`, `3.2/1000`, `(max advise)` | as expected |
+
+## Decision log
+
+- 2026-11-09: the plan went to implementation with `xargs` unmatched and the id `chain-with-and` (the 👉 defaults).
+- 2026-11-09: relais run 1 was refused (a check name the profile does not define), run 2 needed a trust grant (the remote moved to greenpiste), run 3 ended `budget_exhausted` with a candidate that failed one clippy lint. The candidate was applied by hand from the run's preserved patch and the lint fixed (`next_back`).
+- 2026-11-09: `setopt`/`unsetopt` errexit is read as well as `set -e`, which the plan's Behaviour does not name. It only narrows firings.
+- 2026-11-09: the `Evidence.trend` is `Rare`; the 3.2 per 1000 is the backtest above.
+
+## Implementation review
+
+- **implementation-review**: round 1 approve-with-changes (fixed: holds-until marker, opaque-A corpus case, comment wrap; per_1000 source recorded above); delta approve-with-changes, low only.
+- **backend**: round 1 approve-with-changes (fixed: holds-until, `set -o errexit` test, dry-run and `gh pr view` exclusions, step names); delta approve-with-changes, low only.
+- **lang:rust**: round 1 approve-with-changes (fixed: step names, comment); delta low only. `deliberate:` `Option<bool>` for errexit, duplicated operand filters, `gh` arm keyed apart from the other sets: refactors, carried.
+- **unix**: round 1 approve-with-changes (fixed: `setopt errexit`); delta low only. `deliberate:` `setopt no_err_exit` is not read as turning errexit off (after `set -e` the pair stays silent; the rarer reverse fires), and a python script run counts as an edit; both only change firings in the safe direction and the observe week will show how often.
 
 <!-- panel: repos=amont-agent adds= reviewers=backend,lang:rust,unix,tui body-sha=f4fa4379374a -->
