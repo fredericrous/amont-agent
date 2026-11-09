@@ -444,6 +444,62 @@ pub fn score(rule: &crate::rules::Rule) -> Score {
     score_cases(rule, &read(rule.id))
 }
 
+/// A Read tool call, for a rule answered from the Read payload and a stat
+/// rather than a command string. In a cases file its line is
+/// `<verdict>\tRead <window> <bytes> <agent> <path>`: `window` is `full` or
+/// `<offset>:<limit>` as the hook records it, `bytes` the file's size (a
+/// regular file), `agent` is `main`, `-` for a subagent of unknown type, or
+/// its `agent_type`, and the path runs to the end of the line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadCase {
+    pub window: String,
+    pub bytes: u64,
+    pub agent: crate::lsp::Agent,
+    pub path: String,
+}
+
+impl ReadCase {
+    /// `None` when the text is not a Read case; `Some(Err)` when it starts
+    /// like one and is malformed, so a typo is a disagreement, never a case
+    /// silently replayed as a shell command.
+    pub fn parse(text: &str) -> Option<Result<ReadCase, String>> {
+        let rest = text.strip_prefix("Read ")?;
+        let mut fields = rest.splitn(4, ' ');
+        let (Some(window), Some(bytes), Some(agent), Some(path)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Some(Err("expected `Read <window> <bytes> <agent> <path>`".into()));
+        };
+        let Ok(bytes) = bytes.parse::<u64>() else {
+            return Some(Err(format!("`{bytes}` is not a size in bytes")));
+        };
+        if path.is_empty() {
+            return Some(Err("no path".into()));
+        }
+        let agent = match agent {
+            "main" => crate::lsp::Agent::Main,
+            "-" => crate::lsp::Agent::Unnamed,
+            kind => crate::lsp::Agent::Named(kind.to_string()),
+        };
+        Some(Ok(ReadCase {
+            window: window.to_string(),
+            bytes,
+            agent,
+            path: path.to_string(),
+        }))
+    }
+}
+
+/// The rules answered from a Read payload, by id, with the judgement the
+/// hook itself makes. A rule absent here has no Read cases: one in its file
+/// is a disagreement.
+fn read_judge(rule: &str) -> Option<fn(&ReadCase) -> bool> {
+    match rule {
+        "read-unbounded-large" => Some(crate::rules::read_unbounded_large::judge_case),
+        _ => None,
+    }
+}
+
 pub fn score_cases(rule: &crate::rules::Rule, cases: &[Case]) -> Score {
     let mut score = Score {
         reviewed: 0,
@@ -460,14 +516,28 @@ pub fn score_cases(rule: &crate::rules::Rule, cases: &[Case]) -> Score {
         if case.verdict == Verdict::NoMatch {
             score.negatives += 1;
         }
-        let parsed = crate::shell::lex(&case.command);
-        // Replayed as the backtester replays: no shell is recorded for a
-        // case, so the dialect is unknown.
-        let input =
-            crate::rules::Input::new(&case.command, crate::rules::Dialect::Unknown, &parsed);
-        let fired = rule.judge(&input).is_some();
         let expected = case.verdict == Verdict::Match;
-        if fired != expected {
+        // `None` is a judgement that cannot be made: a malformed Read case,
+        // or one in the file of a rule with no Read judge. Either disagrees,
+        // whatever its label.
+        let fired = match ReadCase::parse(&case.command) {
+            Some(read) => match (read, read_judge(rule.id)) {
+                (Ok(read), Some(judge)) => Some(judge(&read)),
+                _ => None,
+            },
+            None => {
+                let parsed = crate::shell::lex(&case.command);
+                // Replayed as the backtester replays: no shell is recorded
+                // for a case, so the dialect is unknown.
+                let input = crate::rules::Input::new(
+                    &case.command,
+                    crate::rules::Dialect::Unknown,
+                    &parsed,
+                );
+                Some(rule.judge(&input).is_some())
+            }
+        };
+        if fired != Some(expected) {
             score.disagreements.push(Disagreement {
                 line: case.line,
                 expected: case.verdict,
@@ -522,6 +592,64 @@ mod tests {
         assert_eq!(s.unreviewed, 2);
         assert!(s.agrees(), "nothing was claimed, so nothing can disagree");
         assert_eq!(s.precision(), None, "unmeasured, not perfect");
+    }
+
+    #[test]
+    fn a_read_case_parses_its_fields_and_keeps_spaces_in_the_path() {
+        let read = ReadCase::parse("Read full 20480 code-review-backend a b/c.rs")
+            .expect("a read case")
+            .expect("well formed");
+        assert_eq!(read.window, "full");
+        assert_eq!(read.bytes, 20_480);
+        assert_eq!(
+            read.agent,
+            crate::lsp::Agent::Named("code-review-backend".into())
+        );
+        assert_eq!(read.path, "a b/c.rs");
+        let main = ReadCase::parse("Read 1:200 9000 main x.rs")
+            .unwrap()
+            .unwrap();
+        assert_eq!(main.agent, crate::lsp::Agent::Main);
+        let unnamed = ReadCase::parse("Read full 9000 - x.rs").unwrap().unwrap();
+        assert_eq!(unnamed.agent, crate::lsp::Agent::Unnamed);
+        assert!(ReadCase::parse("cat x.rs").is_none(), "a command");
+        assert!(ReadCase::parse("Read full big main x.rs").unwrap().is_err());
+        assert!(ReadCase::parse("Read full 9000 main").unwrap().is_err());
+    }
+
+    /// A Read case is judged by the rule's own decision, and fails loudly
+    /// wherever it cannot be: malformed, or in a rule with no Read judge.
+    #[test]
+    fn a_read_case_is_judged_by_its_rule_or_disagrees() {
+        let large = &crate::rules::read_unbounded_large::RULE;
+        let s = score_cases(
+            large,
+            &parse(
+                "match\tRead full 20480 general-purpose src/a.rs\n\
+                 nomatch\tRead full 20480 implementation-review src/a.rs\n\
+                 nomatch\tRead full 8192 general-purpose src/a.rs\n\
+                 nomatch\tcat src/a.rs\n",
+            ),
+        );
+        assert_eq!((s.reviewed, s.negatives), (4, 3));
+        assert!(
+            s.agrees(),
+            "{:?}",
+            s.disagreements.iter().map(|d| d.line).collect::<Vec<_>>()
+        );
+        let bad = score_cases(large, &parse("nomatch\tRead full lots main src/a.rs\n"));
+        assert_eq!(
+            bad.disagreements.len(),
+            1,
+            "malformed disagrees, whatever its label"
+        );
+        let tail = &crate::rules::pipe_to_tail::RULE;
+        let foreign = score_cases(tail, &parse("nomatch\tRead full 20480 main src/a.rs\n"));
+        assert_eq!(
+            foreign.disagreements.len(),
+            1,
+            "no Read judge for this rule"
+        );
     }
 
     #[test]

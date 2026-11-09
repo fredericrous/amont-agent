@@ -1230,12 +1230,8 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
     }
     // Last, and quiet on a file the session has seen whatever `file-reread`'s
     // stance: its remedy already says to use `offset`/`limit`.
-    if !persisted
-        && !reread.seen
-        && !code_spoken
-        && !rules::read_unbounded_large::reviewer(&op.agent)
-    {
-        if let Some(bytes) = rules::read_unbounded_large::applies(&op.path, &op.window) {
+    if !persisted && !reread.seen && !code_spoken {
+        if let Some(bytes) = rules::read_unbounded_large::applies(&op.path, &op.window, &op.agent) {
             let rule = &rules::read_unbounded_large::RULE;
             let stance = crate::stance::resolve(rule);
             use rules::read_unbounded_large::Finder;
