@@ -1897,9 +1897,9 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
     let w = LspWorld::new("silent", true);
     let small = w.file("src/small.rs", 3_000);
     assert_eq!(w.read("ls-1", &small, "").stdout, "", "under 4 KB");
-    let md = w.file("notes.md", 9_000);
+    let md = w.file("notes.md", 7_000);
     assert!(!w.read("ls-1", &md, "").stdout.contains("code-read-not-lsp"));
-    let mid = w.file("src/mid.rs", 9_000);
+    let mid = w.file("src/mid.rs", 7_000);
     let windowed = w.send(
         &serde_json::json!({
             "hook_event_name": "PreToolUse",
@@ -1912,7 +1912,7 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
         "",
     );
     assert_eq!(windowed.stdout, "", "a window");
-    let persisted = w.file("tool-results/x.rs", 9_000);
+    let persisted = w.file("tool-results/x.rs", 7_000);
     assert!(!w
         .read("ls-1", &persisted, "")
         .stdout
@@ -1935,10 +1935,10 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
     );
 
     let off = LspWorld::new("silent-off", false);
-    let mid = off.file("src/mid.rs", 9_000);
+    let mid = off.file("src/mid.rs", 7_000);
     assert_eq!(off.read("ls-5", &mid, "").stdout, "", "plugin off");
     let nobin = LspWorld::new("silent-nobin", true);
-    let mid = nobin.file("src/mid.rs", 9_000);
+    let mid = nobin.file("src/mid.rs", 7_000);
     std::fs::remove_file(nobin.bin.join("fleet-lsp")).expect("rm stub");
     assert_eq!(
         nobin.read("ls-7", &mid, "").stdout,
@@ -1946,7 +1946,7 @@ fn a_code_read_is_silent_where_lsp_cannot_help() {
         "no fleet-lsp on PATH"
     );
     let outside = LspWorld::new("silent-nogit", true);
-    let mid = outside.file("src/mid.rs", 9_000);
+    let mid = outside.file("src/mid.rs", 7_000);
     std::fs::remove_dir_all(outside.repo.join(".git")).expect("rm .git");
     assert_eq!(
         outside.read("ls-6", &mid, "").stdout,
@@ -2029,7 +2029,7 @@ const DENY: &str = "[amont \"agent.code-read-not-lsp\"]\n\tstance = deny\n";
 #[test]
 fn a_read_after_a_document_symbol_call_is_silent_and_journalled_lsp_first() {
     let w = LspWorld::new("first", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     let call = w.lsp(
         "lf-1",
         None,
@@ -2079,11 +2079,11 @@ fn an_lsp_call_leaves_the_size_advice_speaking() {
 #[test]
 fn files_named_by_an_answer_and_failed_calls_count_as_asked() {
     let w = LspWorld::new("named", true);
-    let other = w.file("src/other.rs", 10_000);
-    let lib = w.file("src/lib.rs", 10_000);
+    let other = w.file("src/other.rs", 7_000);
+    let lib = w.file("src/lib.rs", 7_000);
     w.lsp("ln-1", None, "findReferences", "src/lib.rs", "Found 2 references across 2 files:\n\nsrc/other.rs:\n  Line 3:1\n\nsrc/lib.rs:\n  Line 9:2");
     assert_eq!(w.read("ln-1", &other, "").stdout, "");
-    let err = w.file("src/err.rs", 10_000);
+    let err = w.file("src/err.rs", 7_000);
     w.lsp(
         "ln-2",
         None,
@@ -2107,7 +2107,7 @@ fn files_named_by_an_answer_and_failed_calls_count_as_asked() {
 #[test]
 fn an_unparsed_answer_is_journalled_and_still_counts_the_file() {
     let w = LspWorld::new("unparsed", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     let payload = serde_json::json!({
         "hook_event_name": "PostToolUse", "tool_name": "LSP",
         "cwd": w.repo.display().to_string(), "session_id": "lu-1",
@@ -2127,7 +2127,7 @@ fn an_unparsed_answer_is_journalled_and_still_counts_the_file() {
 #[test]
 fn an_lsp_call_silences_only_its_own_session_and_agent() {
     let w = LspWorld::new("scope", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     w.lsp(
         "lc-1",
         Some("a1"),
@@ -2174,7 +2174,7 @@ fn an_lsp_call_silences_only_its_own_session_and_agent() {
 #[test]
 fn a_denied_code_read_passes_once_lsp_was_asked() {
     let w = LspWorld::new("deny", true);
-    let big = w.file("src/lib.rs", 10_000);
+    let big = w.file("src/lib.rs", 7_000);
     let refused = w.read_with("ld-1", &big, "", DENY);
     assert_eq!(
         refused.decision().as_deref(),
