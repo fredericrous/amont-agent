@@ -1,0 +1,40 @@
+# amont-agent-cases-v1
+# Reviewed judgements for this rule; see tag-after-commit.cases for the format.
+#
+# match   the rule SHOULD fire here
+# nomatch the rule must stay silent here
+
+# --- the rule should fire ---
+match	python3 -c "assert open('f').read()" ; cargo test -p amont-agent-guard
+match	git add -A ; git commit -m "chore: bump"
+match	git add -A\ngit commit -m "chore: bump"
+match	python3 - <<'EOF'\nassert False\nEOF\ncargo test -p a
+match	sed -i s/a/b/ f.txt ; git commit -m x
+match	perl -pi -e 's/a/b/' f.txt ; git commit -am x
+match	cargo fmt ; git commit -am "style"
+match	make ; git push origin main
+match	cargo build --release ; gh pr merge 12 --squash
+match	then sed -i s/a/b/ f; make; git push; fi
+match	cargo fmt ; cargo test
+match	make ; kubectl apply -f deploy.yaml
+
+# --- the rule must stay silent ---
+# xargs pipelines are opaque to the lexer, so this incident stays unmatched
+nomatch	git ls-files --deleted -z | xargs -0 git add -A ; git commit -m x
+nomatch	echo x ; git commit -m y
+nomatch	cd d ; git push
+nomatch	git add -A && git commit -m x
+nomatch	git status ; git commit -m y
+nomatch	cargo test -p a ; cargo test -p b
+nomatch	python x.py | tail -3 ; git commit -m x
+nomatch	set -e; sed -i s/a/b/ f; git commit -m x
+nomatch	set -euo pipefail; sed -i s/a/b/ f; git commit -m x
+nomatch	echo $(git push); make;
+nomatch	if x; then make; git push; fi
+# reviewed 2026-11-09 after implementation review
+nomatch	set -o errexit; git add -A; git commit -m x
+nomatch	setopt err_exit; git add -A; git commit -m x
+nomatch	make ; kubectl apply --dry-run=client -f d.yaml
+nomatch	make ; gh pr view 12
+nomatch	eval "$x" ; git commit -m x
+match	make ; gh pr merge 12

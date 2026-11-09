@@ -265,6 +265,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/kubectl-gitops.cases"),
     ),
     (
+        "chain-with-and",
+        include_str!("../tests/corpus/chain-with-and.cases"),
+    ),
+    (
         "tag-after-commit",
         include_str!("../tests/corpus/tag-after-commit.cases"),
     ),
