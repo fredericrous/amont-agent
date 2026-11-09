@@ -67,36 +67,64 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     })
 }
 
-fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
+/// Past this a whole dump may be refused (once: the hook lets the same
+/// command through when it is repeated); a smaller one, or a bounded read,
+/// only ever advises. The same threshold as `read-unbounded-large`, measured
+/// for the Read tool's whole reads (deliberate-output plan, Phase 3).
+pub const REFUSABLE: u64 = 8 * 1024;
+
+/// The file a finding dumps, resolved against the directory its clause runs
+/// in, with how much of it is read.
+pub fn target(ctx: &Context, f: &Finding) -> Result<(std::path::PathBuf, Extent), &'static str> {
     let cwd = ctx.cwd_at(f.span.start);
     let all = dumps(ctx.parsed);
     let Some(d) = all.iter().find(|d| d.at == f.span.start) else {
-        return Confirmed::No("the command no longer matches");
+        return Err("the command no longer matches");
     };
     let path = if d.path.starts_with('/') {
         std::path::PathBuf::from(&d.path)
     } else if let Some(rest) = d.path.strip_prefix("~/") {
         match std::env::var_os("HOME") {
             Some(h) => std::path::PathBuf::from(h).join(rest),
-            None => return Confirmed::No("no home to expand `~` against"),
+            None => return Err("no home to expand `~` against"),
         }
     } else {
         cwd.join(&d.path)
     };
+    Ok((path, d.extent))
+}
+
+/// Whether this dump may be refused: a whole read of a regular file over
+/// [`REFUSABLE`]. Anything else is held at advise, whatever the stance.
+pub fn refusable(extent: Extent, meta: &std::fs::Metadata) -> bool {
+    matches!(extent, Extent::Whole) && meta.is_file() && meta.len() > REFUSABLE
+}
+
+fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
+    let (path, extent) = match target(ctx, f) {
+        Ok(t) => t,
+        Err(why) => return Confirmed::No(why),
+    };
     let Ok(meta) = std::fs::metadata(&path) else {
         return Confirmed::No("the file is not there to read");
     };
-    if matches!(d.extent, Extent::Whole) && meta.len() < SMALL {
+    if matches!(extent, Extent::Whole) && meta.len() < SMALL {
         return Confirmed::No("the file is small");
     }
+    let ceiling = (!refusable(extent, &meta)).then_some(Stance::Advise);
+    let shown = dumps(ctx.parsed)
+        .into_iter()
+        .find(|d| d.at == f.span.start)
+        .map(|d| d.path)
+        .unwrap_or_default();
     // Code LSP answers for is found with LSP, not with the grep this
     // rule's remedy names for any other file.
-    if crate::lsp::is_code(&d.path) && crate::lsp::serves(&path).is_ok() {
+    if crate::lsp::is_code(&shown) && crate::lsp::serves(&path).is_ok() {
         return Confirmed::YesSaying {
             floor: None,
-            ceiling: None,
+            ceiling,
             reason: f.reason.clone(),
-            excerpt: d.path.clone(),
+            excerpt: shown,
             remedy: Some(
                 "Ask LSP first (`documentSymbol`, `goToDefinition`), then open the file with \
                  the Read tool, with `offset`/`limit` around that line. `cat` is fine inside \
@@ -105,7 +133,16 @@ fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
             ),
         };
     }
-    Confirmed::Yes
+    match ceiling {
+        None => Confirmed::Yes,
+        Some(_) => Confirmed::YesSaying {
+            floor: None,
+            ceiling,
+            reason: f.reason.clone(),
+            excerpt: shown,
+            remedy: None,
+        },
+    }
 }
 
 #[cfg(test)]

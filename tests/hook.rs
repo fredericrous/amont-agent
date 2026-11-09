@@ -3865,3 +3865,94 @@ fn a_plan_lookup_whose_git_closes_stdout_and_keeps_running_is_cut_at_the_budget(
         "sleep 30.03",
     );
 }
+
+const DUMP_DENY: &str = "[amont \"agent.whole-file-dump\"]\n\tstance = deny\n";
+
+/// A Bash call in the fixture's directory as `agent` (none: the main
+/// conversation), with `whole-file-dump` at `deny`.
+fn dump_as(fixture: &ReadFixture, session: &str, agent: Option<&str>, command: &str) -> Reply {
+    let cwd = serde_json::Value::String(fixture.dir.display().to_string());
+    let command = serde_json::Value::String(command.to_string());
+    let agent = agent
+        .map(|a| format!(r#","agent_id":"{a}""#))
+        .unwrap_or_default();
+    send_with_global(
+        &format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default"{agent},
+                 "tool_input":{{"command":{command}}}}}"#
+        ),
+        DUMP_DENY,
+    )
+}
+
+/// At `deny` the first whole `cat` of a file over 8 KiB is refused once with
+/// the way through; the same command repeated passes, journalled; another
+/// agent is refused once on its own.
+#[test]
+fn at_deny_a_whole_dump_is_refused_once_then_allowed() {
+    let fixture = ReadFixture::with_size("dump-once", 20_000);
+    let session = "donce-01";
+    let first = dump_as(&fixture, session, None, "cat big.rs");
+    assert_eq!(
+        first.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        first.stdout
+    );
+    let said = first.reason();
+    assert!(said.contains("whole-file-dump"), "{said}");
+    assert!(said.contains("repeat this same command"), "{said}");
+    assert!(said.contains("not the person"), "{said}");
+    let again = dump_as(&fixture, session, None, "cat big.rs");
+    assert_ne!(
+        again.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        again.stdout
+    );
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        journal.lines().any(|l| l.contains(session)
+            && l.contains("whole-file-dump")
+            && l.contains("allowed-after-feedback")),
+        "{journal}"
+    );
+    let sub = dump_as(&fixture, session, Some("a1"), "cat big.rs");
+    assert_eq!(
+        sub.decision().as_deref(),
+        Some("deny"),
+        "a subagent: {}",
+        sub.stdout
+    );
+}
+
+/// Only a whole dump of a regular file over 8 KiB is refused: a smaller one,
+/// a bounded read and a pipe are at most advised, whatever the stance.
+#[test]
+fn at_deny_only_a_large_whole_dump_is_refused() {
+    let small = ReadFixture::with_size("dump-6k", 6_000);
+    let six = dump_as(&small, "dsmall-01", None, "cat big.rs");
+    assert_ne!(six.decision().as_deref(), Some("deny"), "{}", six.stdout);
+    assert!(
+        six.reason().contains("whole-file-dump"),
+        "still advised: {}",
+        six.stdout
+    );
+    let large = ReadFixture::with_size("dump-bounded", 20_000);
+    let bounded = dump_as(&large, "dbound-01", None, "sed -n '1,150p' big.rs");
+    assert_ne!(
+        bounded.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        bounded.stdout
+    );
+    assert!(
+        bounded.reason().contains("whole-file-dump"),
+        "{}",
+        bounded.stdout
+    );
+    let pipe = dump_as(&large, "dpipe-01", None, "cat big.rs | grep -n x");
+    assert_eq!(pipe.stdout, "", "a pipe is not a dump");
+}

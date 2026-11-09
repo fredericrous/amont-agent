@@ -540,10 +540,25 @@ fn on_bash(bash: &Bash) -> Decision {
                 note_with(rule, "advise", "advised", bash, finding, excerpt);
                 advise.push(text);
             }
-            Stance::Deny => {
-                note_with(rule, "deny", "denied", bash, finding, excerpt);
-                deny.push(text);
-            }
+            Stance::Deny => match bash_once(rule, finding, bash, &parsed) {
+                None | Some(Once::Refuse) => {
+                    note_with(rule, "deny", "denied", bash, finding, excerpt);
+                    deny.push(match bash_once_said(rule) {
+                        Some(once) => decision::phrase(
+                            rule.id,
+                            &format!("{reason} {once}"),
+                            &format!(
+                                "{remedy} If you need the whole file in the result, repeat \
+                                 this same command unchanged: it will be allowed."
+                            ),
+                        ),
+                        None => text,
+                    });
+                }
+                // Journalled by `refuse_once_at`.
+                Some(Once::Allowed) => {}
+                Some(Once::Unrecorded) => advise.push(text),
+            },
         }
     }
 
@@ -1844,16 +1859,36 @@ enum Once {
 /// checked key and the normalised path; the file's size is left out so a
 /// growing log keeps the promise the feedback makes.
 fn refuse_once(rule: &Rule, op: &crate::payload::FileOp) -> Once {
-    let repo = repo_name(&op.cwd);
-    let excerpt = |agent: &str| format!("{} @{agent}", op.path.display());
-    let Some(agent) = crate::lsp::agent_key(op.agent_id.as_deref()) else {
+    refuse_once_at(
+        rule,
+        &op.session,
+        op.agent_id.as_deref(),
+        &op.cwd,
+        &op.permission_mode,
+        &op.path,
+    )
+}
+
+/// [`refuse_once`] for any tool call that names one file: a Read's
+/// payload, or the file a `cat` dumps (`whole-file-dump`).
+fn refuse_once_at(
+    rule: &Rule,
+    session: &str,
+    agent_id: Option<&str>,
+    cwd: &std::path::Path,
+    mode: &str,
+    path: &std::path::Path,
+) -> Once {
+    let repo = repo_name(cwd);
+    let excerpt = |agent: &str| format!("{} @{agent}", path.display());
+    let Some(agent) = crate::lsp::agent_key(agent_id) else {
         journal::record(&journal::Entry {
             rule: rule.id,
             stance: Stance::Deny.as_str(),
             outcome: "unrecorded",
-            session: &op.session,
+            session,
             repo: &repo,
-            mode: &op.permission_mode,
+            mode,
             excerpt: &excerpt("?"),
         });
         return Once::Unrecorded;
@@ -1861,9 +1896,9 @@ fn refuse_once(rule: &Rule, op: &crate::payload::FileOp) -> Once {
     let key = format!(
         "{} {} @{agent}",
         rule.id,
-        crate::lsp::normal(&op.path).display()
+        crate::lsp::normal(path).display()
     );
-    let (once, outcome) = match crate::lsp::told(&op.session, &key) {
+    let (once, outcome) = match crate::lsp::told(session, &key) {
         crate::lsp::Told::First => return Once::Refuse,
         crate::lsp::Told::Before => (Once::Allowed, "allowed-after-feedback"),
         crate::lsp::Told::Unrecorded(_) => (Once::Unrecorded, "unrecorded"),
@@ -1872,9 +1907,9 @@ fn refuse_once(rule: &Rule, op: &crate::payload::FileOp) -> Once {
         rule: rule.id,
         stance: Stance::Deny.as_str(),
         outcome,
-        session: &op.session,
+        session,
         repo: &repo,
-        mode: &op.permission_mode,
+        mode,
         excerpt: &excerpt(&agent),
     });
     once
@@ -2231,6 +2266,54 @@ struct Confirmation {
 /// publication gates in [`unknown_directory`], which need one.
 const NEEDS_NO_DIRECTORY: [&str; 1] = [rules::publish_without_skill::RULE.id];
 
+/// What a rule's `confirm` sees of a Bash call that has not run yet.
+fn context<'a>(bash: &'a Bash, parsed: &'a Parsed) -> Context<'a> {
+    Context {
+        platform: Some(crate::rules::Platform::host()),
+        cwd: &bash.cwd,
+        parsed,
+        background: bash.background,
+        timeout_ms: bash.timeout_ms,
+        tool_use_id: &bash.tool_use_id,
+        transcript: bash.transcript.as_deref(),
+        agent_transcript: bash.agent_transcript.as_deref(),
+        command: &bash.command,
+        output: None,
+        session: &bash.session,
+        failed: false,
+    }
+}
+
+/// How a refuse-once rule acts on a Bash call it would refuse
+/// (`whole-file-dump`, deliberate-output plan Phase 3): the first whole dump
+/// of a file by this agent is refused, the same command repeated passes.
+/// `None` for every other rule, which refuses as it always has.
+fn bash_once(rule: &Rule, finding: &Finding, bash: &Bash, parsed: &Parsed) -> Option<Once> {
+    if rule.id != rules::whole_file_dump::RULE.id {
+        return None;
+    }
+    let path = match rules::whole_file_dump::target(&context(bash, parsed), finding) {
+        Ok((path, _)) => path,
+        // `confirm` already resolved it, so this is a race: never refuse
+        // what cannot be promised to pass again.
+        Err(_) => return Some(Once::Unrecorded),
+    };
+    Some(refuse_once_at(
+        rule,
+        &bash.session,
+        bash.agent_id.as_deref(),
+        &bash.cwd,
+        &bash.permission_mode,
+        &path,
+    ))
+}
+
+/// The sentence a refuse-once refusal adds to its reason.
+fn bash_once_said(rule: &Rule) -> Option<&'static str> {
+    (rule.id == rules::whole_file_dump::RULE.id)
+        .then_some("Refused once, before it ran: an automatic check, not the person.")
+}
+
 fn confirmed(
     rule: &Rule,
     stance: Stance,
@@ -2245,20 +2328,7 @@ fn confirmed(
             said: None,
         });
     };
-    let ctx = Context {
-        platform: Some(crate::rules::Platform::host()),
-        cwd: &bash.cwd,
-        parsed,
-        background: bash.background,
-        timeout_ms: bash.timeout_ms,
-        tool_use_id: &bash.tool_use_id,
-        transcript: bash.transcript.as_deref(),
-        agent_transcript: bash.agent_transcript.as_deref(),
-        command: &bash.command,
-        output: None,
-        session: &bash.session,
-        failed: false,
-    };
+    let ctx = context(bash, parsed);
     // The directory that matters is the one the matched clause runs in,
     // `cd`s followed — not the session's. A session left in a removed
     // worktree still runs `cd /abs/repo && git push …` in a real repository,
