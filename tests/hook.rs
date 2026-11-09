@@ -1022,6 +1022,43 @@ fn at_deny_each_agent_is_refused_once_and_a_window_never() {
     );
 }
 
+/// Another file is refused once on its own; a session whose refusal cannot be
+/// remembered is advised, never refused into a loop.
+#[test]
+fn at_deny_another_file_is_its_own_and_an_unrecorded_session_is_advised() {
+    let fixture = ReadFixture::with_size("unbounded-two-files", 20_000);
+    let other = ReadFixture::with_size("unbounded-two-files-b", 20_000);
+    let session = "utwo-01";
+    assert_eq!(
+        large_read_as(&fixture, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    assert_eq!(
+        large_read_as(&other, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    assert_ne!(
+        large_read_as(&other, session, None, "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+    // A session id the store refuses: nothing can be remembered.
+    for _ in 0..2 {
+        let said = large_read_as(&fixture, "bad session/../id", None, "");
+        assert_ne!(said.decision().as_deref(), Some("deny"), "{}", said.stdout);
+        assert!(
+            said.stdout.contains("read-unbounded-large"),
+            "advised: {}",
+            said.stdout
+        );
+    }
+}
+
 /// A reviewer is handed its brief to read whole: never refused or advised.
 #[test]
 fn a_reviewer_reads_its_brief_whole_unchallenged() {

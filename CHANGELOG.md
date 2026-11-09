@@ -11,10 +11,10 @@
   brief is unchanged and still carries every code rule in full.
 - `read-unbounded-large` speaks past 8 KB instead of 16 KB: over two weeks,
   subagents' whole Reads over 8 KB were about 27% of every byte the tools
-  returned. At `deny` it now refuses once per agent, file and size, saying
+  returned. At `deny` it now refuses once per agent and file, saying
   that the same Read repeated will pass, and lets that retry through,
   journalled `allowed-after-feedback`. No prompt reaches the person. Reviewer
-  agents, handed their brief to read whole, are exempt.
+  agents are exempt.
 
 ### Added
 

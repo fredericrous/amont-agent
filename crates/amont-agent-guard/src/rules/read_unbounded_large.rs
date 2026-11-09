@@ -43,7 +43,7 @@ fn examine(_parsed: &Parsed) -> Option<Finding> {
 /// [2026-10-23, 2026-11-06) (`amont-agent output-audit`): subagents' whole
 /// Reads over 8 KiB were 1,711 calls and 40.4 MB, about 27% of every byte
 /// the tools returned; over 16 KiB, half of that.
-pub const LARGE: u64 = 8 * 1024;
+const LARGE: u64 = 8 * 1024;
 
 /// `Some(bytes)` when this Read has no window, is not exempt, and names a
 /// regular file over [`LARGE`]. A failed stat is silence.
@@ -97,7 +97,7 @@ pub enum Finder {
 pub fn reviewer(agent: &crate::lsp::Agent) -> bool {
     match agent {
         crate::lsp::Agent::Named(kind) => {
-            let kind = kind.rsplit(':').next().unwrap_or(kind);
+            let kind = kind.rsplit_once(':').map_or(kind.as_str(), |(_, k)| k);
             kind == "implementation-review"
                 || kind == "interface-review"
                 || kind.starts_with("code-review-")
@@ -112,18 +112,21 @@ pub fn reviewer(agent: &crate::lsp::Agent) -> bool {
 /// What the hook says when it refuses the first whole Read of this file by
 /// this agent: the advice, then that the same Read repeated will pass.
 pub fn phrase_refusal(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
-    let (reason, remedy) = phrase(shown, bytes, finder);
+    let (reason, _) = phrase(shown, bytes, finder);
     (
         format!("{reason} Refused once, before it ran: an automatic check, not the person."),
-        format!("{remedy} If you need the whole file, repeat this same Read: it will be allowed."),
+        format!(
+            "{}, then Read that window with `offset`/`limit`; or, if you need the whole \
+             file, repeat this same Read unchanged: it will be allowed.",
+            find_part(shown, finder)
+        ),
     )
 }
 
-/// What the hook says: the mechanism, then the way through.
-pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
-    let kb = bytes.div_ceil(1024);
+/// How the remedy says to find the part of the file that is needed.
+fn find_part(shown: &str, finder: Finder) -> String {
     let quoted = format!("'{}'", shown.replace('\'', "'\\''"));
-    let find = match finder {
+    match finder {
         Finder::Lsp => {
             "Find the part you need first with LSP (`documentSymbol`, `goToDefinition`)".to_string()
         }
@@ -131,7 +134,13 @@ pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
             "Find the part you need first with the Grep tool (or `grep -n '<anchor>' \
              {quoted} | head`)"
         ),
-    };
+    }
+}
+
+/// What the hook says: the mechanism, then the way through.
+pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
+    let kb = bytes.div_ceil(1024);
+    let find = find_part(shown, finder);
     (
         format!(
             "`{shown}` is {kb} KB on disk and is being Read with no window: up to 2,000 \
@@ -150,6 +159,31 @@ pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reviewer_kinds_are_named_and_near_misses_are_not() {
+        let named = |kind: &str| reviewer(&crate::lsp::Agent::Named(kind.to_string()));
+        for kind in [
+            "implementation-review",
+            "interface-review",
+            "code-review-backend",
+            "plan-review-language",
+            "relais:relais-reviewer-opus-medium",
+            "relais-review",
+        ] {
+            assert!(named(kind), "{kind}");
+        }
+        for kind in [
+            "code-reviewer",
+            "general-purpose",
+            "Explore",
+            "relais:relais-worker-sonnet-medium",
+        ] {
+            assert!(!named(kind), "{kind}");
+        }
+        assert!(!reviewer(&crate::lsp::Agent::Main));
+        assert!(!reviewer(&crate::lsp::Agent::Unnamed));
+    }
     use std::path::PathBuf;
 
     /// A unique scratch directory per test, removed by the caller.

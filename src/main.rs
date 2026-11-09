@@ -1619,7 +1619,8 @@ The markdown brief an implementation reviewer is launched with: the
 <<<TREE ...>>> block, the <<<RULES sha=...>>> line and adr-lint's
 <<<CANDIDATES ...>>> block (paste them verbatim into the reviewer prompt),
 the plan's Verification section, the diff since the merge-base, the
-candidates, the code rules in full, the constraint rules, the decisions that
+candidates, the code rules in full (a --profile brief: its own judge rules
+and an index of the rest, ADR-0065), the constraint rules, the decisions that
 bear on the changed files, and the plan's Non-goals. A repository with no
 .adr.yaml gets no rules line and a note that no decided code rules apply.
 adr-lint is `adr-lint` from PATH, or $AMONT_AGENT_ADR_LINT; when it cannot
@@ -1633,7 +1634,7 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
   --profile <role>
                   a code-review profile (backend, platform, unix, tui,
                   react, ui-design, architect or lang:<x>): adds a `Profile:
-                  <role>` line and, after the code rules, the judge rules
+                  <role>` line, the judge rules
                   whose `Reviewed by:` names that role, and the plan's Goal
                   and Behaviour. lang:<x>, react, ui-design and platform get
                   only their file types' part of the diff (renames as a
