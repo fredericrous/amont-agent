@@ -2,13 +2,14 @@
 
 ## Unreleased
 
-### Added
+### Changed
 
-- `whole-file-dump` can refuse once, like `read-unbounded-large`: at `deny`
-  the first whole `cat` (or unbounded `sed -n`) of a regular file over 8 KB
-  by an agent is refused with the Read-window remedy, and the same command
-  repeated passes, journalled `allowed-after-feedback`. A bounded read or a
-  smaller file is held at advise whatever the stance.
+- `whole-file-dump` at `deny` refuses once, like `read-unbounded-large`: the
+  first whole `cat` (or unbounded `sed -n`) of a regular file over 8 KB by an
+  agent is refused with the file's size and the Read-window remedy, and the
+  same command repeated passes, journalled `allowed-after-feedback`. `deny`
+  no longer refuses a bounded read (`head -200`, `sed -n 1,400p`) or a whole
+  dump of 4–8 KB: those are held at advise whatever the stance.
 
 ## v3.25.0
 

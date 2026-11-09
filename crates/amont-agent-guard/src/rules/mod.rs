@@ -246,6 +246,11 @@ pub struct Rule {
     pub confirm: Option<fn(&crate::rules::Context, &Finding) -> Confirmed>,
 }
 
+/// What a refuse-once refusal adds to its reason (`read-unbounded-large`,
+/// `whole-file-dump`): the agent must be able to tell it from a person's no,
+/// which is never to be retried.
+pub const REFUSED_ONCE: &str = "Refused once, before it ran: an automatic check, not the person.";
+
 /// What a rule's `examine` reads, which is also what decides whether it may
 /// run on a command the legacy lexer could not read.
 ///

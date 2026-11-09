@@ -3904,13 +3904,10 @@ fn at_deny_a_whole_dump_is_refused_once_then_allowed() {
     assert!(said.contains("whole-file-dump"), "{said}");
     assert!(said.contains("repeat this same command"), "{said}");
     assert!(said.contains("not the person"), "{said}");
+    assert!(said.contains("Read tool"), "names the window: {said}");
+    assert!(said.contains("20 KB"), "names the size: {said}");
     let again = dump_as(&fixture, session, None, "cat big.rs");
-    assert_ne!(
-        again.decision().as_deref(),
-        Some("deny"),
-        "{}",
-        again.stdout
-    );
+    assert_eq!(again.stdout, "", "the repeat passes silently");
     let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
         .expect("the hook wrote a journal");
     assert!(
@@ -3925,6 +3922,92 @@ fn at_deny_a_whole_dump_is_refused_once_then_allowed() {
         Some("deny"),
         "a subagent: {}",
         sub.stdout
+    );
+}
+
+/// Each file is refused once on its own; a file dumped twice in one command
+/// is one decision; and when another rule refuses the same command, the
+/// repeat is not promised to run.
+#[test]
+fn at_deny_each_file_is_refused_once_and_a_shared_refusal_promises_less() {
+    let fixture = ReadFixture::with_size("dump-files", 20_000);
+    std::fs::copy(&fixture.file, fixture.dir.join("other.rs")).expect("a second file");
+    let session = "dfiles-01";
+    let first = dump_as(&fixture, session, None, "cat big.rs");
+    assert_eq!(
+        first.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        first.stdout
+    );
+    let other = dump_as(&fixture, session, None, "cat other.rs");
+    assert_eq!(
+        other.decision().as_deref(),
+        Some("deny"),
+        "another file: {}",
+        other.stdout
+    );
+
+    let twice = ReadFixture::with_size("dump-twice", 20_000);
+    let both = dump_as(&twice, "dtwice-01", None, "cat big.rs; cat ./big.rs");
+    assert_eq!(both.decision().as_deref(), Some("deny"), "{}", both.stdout);
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        !journal
+            .lines()
+            .any(|l| l.contains("dtwice-01") && l.contains("allowed-after-feedback")),
+        "the second dump in one command is not a retry: {journal}"
+    );
+    let retried = dump_as(&twice, "dtwice-01", None, "cat big.rs; cat ./big.rs");
+    assert_eq!(retried.stdout, "", "the whole command passes on its repeat");
+
+    let shared = ReadFixture::with_size("dump-shared", 20_000);
+    let pushed = dump_as(
+        &shared,
+        "dshared-01",
+        None,
+        "cat big.rs; git push | tail -1",
+    );
+    assert_eq!(
+        pushed.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        pushed.stdout
+    );
+    let said = pushed.reason();
+    assert!(
+        said.contains("pipe-to-tail") && said.contains("whole-file-dump"),
+        "{said}"
+    );
+    assert!(!said.contains("it will be allowed"), "{said}");
+    assert!(said.contains("other refusal here still stands"), "{said}");
+}
+
+/// A refusal that cannot be remembered would refuse the promised retry
+/// forever, so it advises instead, journalled `unrecorded`.
+#[test]
+fn at_deny_an_unrecordable_dump_refusal_advises() {
+    let fixture = ReadFixture::with_size("dump-unrecorded", 20_000);
+    let reply = dump_as(&fixture, "", None, "cat big.rs");
+    assert_ne!(
+        reply.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        reply.stdout
+    );
+    assert!(
+        reply.reason().contains("whole-file-dump"),
+        "{}",
+        reply.stdout
+    );
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        journal
+            .lines()
+            .any(|l| l.contains("whole-file-dump") && l.contains("unrecorded")),
+        "{journal}"
     );
 }
 

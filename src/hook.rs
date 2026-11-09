@@ -487,6 +487,11 @@ fn on_bash(bash: &Bash) -> Decision {
         }
     }
 
+    // Refuse-once refusals, phrased after the loop (see `alone` below), and
+    // the files this command already dumped, so `cat a; cat a` is one decision.
+    let mut refused_once: Vec<(&'static str, String, String)> = Vec::new();
+    let mut settled: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
     for (rule, finding) in &fired {
         let stance = crate::stance::resolve(rule);
         let Confirmation {
@@ -540,26 +545,41 @@ fn on_bash(bash: &Bash) -> Decision {
                 note_with(rule, "advise", "advised", bash, finding, excerpt);
                 advise.push(text);
             }
-            Stance::Deny => match bash_once(rule, finding, bash, &parsed) {
-                None | Some(Once::Refuse) => {
+            Stance::Deny => match bash_once(rule, finding, bash, &parsed, &mut settled) {
+                BashOnce::Always => {
                     note_with(rule, "deny", "denied", bash, finding, excerpt);
-                    deny.push(match bash_once_said(rule) {
-                        Some(once) => decision::phrase(
-                            rule.id,
-                            &format!("{reason} {once}"),
-                            &format!(
-                                "{remedy} If you need the whole file in the result, repeat \
-                                 this same command unchanged: it will be allowed."
-                            ),
-                        ),
-                        None => text,
-                    });
+                    deny.push(text);
                 }
-                // Journalled by `refuse_once_at`.
-                Some(Once::Allowed) => {}
-                Some(Once::Unrecorded) => advise.push(text),
+                BashOnce::Now(Once::Refuse) => {
+                    note_with(rule, "deny", "denied", bash, finding, excerpt);
+                    refused_once.push((rule.id, reason.to_string(), remedy.to_string()));
+                }
+                // Journalled by `refuse_once_at`; a file this command already
+                // dumped earlier was decided there.
+                BashOnce::Now(Once::Allowed) | BashOnce::Settled => {}
+                BashOnce::Now(Once::Unrecorded) => {
+                    note_with(rule, "advise", "advised", bash, finding, excerpt);
+                    advise.push(text);
+                }
             },
         }
+    }
+    // The way through a refuse-once refusal is the same command again; it
+    // is promised only when no other rule refuses that command too.
+    let alone = deny.is_empty();
+    for (id, reason, remedy) in refused_once {
+        let through = if alone {
+            "If you need the whole file in the result, repeat this same command unchanged: it \
+             will be allowed."
+        } else {
+            "Repeated unchanged, this rule lets the command through; the other refusal here \
+             still stands."
+        };
+        deny.push(decision::phrase(
+            id,
+            &format!("{reason} {}", rules::REFUSED_ONCE),
+            &format!("{remedy} {through}"),
+        ));
     }
 
     // Where each branch destination stands before the push, for
@@ -2284,34 +2304,50 @@ fn context<'a>(bash: &'a Bash, parsed: &'a Parsed) -> Context<'a> {
     }
 }
 
-/// How a refuse-once rule acts on a Bash call it would refuse
-/// (`whole-file-dump`, deliberate-output plan Phase 3): the first whole dump
-/// of a file by this agent is refused, the same command repeated passes.
-/// `None` for every other rule, which refuses as it always has.
-fn bash_once(rule: &Rule, finding: &Finding, bash: &Bash, parsed: &Parsed) -> Option<Once> {
+/// How a Bash call that a rule would refuse is acted on.
+enum BashOnce {
+    /// The rule refuses every time, as rules always have.
+    Always,
+    /// A refuse-once rule (`whole-file-dump`, deliberate-output plan
+    /// Phase 3): the first whole dump of a file by this agent is refused, the
+    /// same command repeated passes.
+    Now(Once),
+    /// The same file, dumped again later in this command: decided already.
+    Settled,
+}
+
+fn bash_once(
+    rule: &Rule,
+    finding: &Finding,
+    bash: &Bash,
+    parsed: &Parsed,
+    settled: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> BashOnce {
     if rule.id != rules::whole_file_dump::RULE.id {
-        return None;
+        return BashOnce::Always;
     }
-    let path = match rules::whole_file_dump::target(&context(bash, parsed), finding) {
-        Ok((path, _)) => path,
-        // `confirm` already resolved it, so this is a race: never refuse
-        // what cannot be promised to pass again.
-        Err(_) => return Some(Once::Unrecorded),
+    let context = context(bash, parsed);
+    let target = match rules::whole_file_dump::target(&context, finding) {
+        Ok(target) => target,
+        // `confirm` resolved this same dump a moment ago, so only `HOME`
+        // changing in between gets here: never refuse what cannot be
+        // promised to pass again.
+        Err(why) => {
+            note_with(rule, "deny", "unrecorded", bash, finding, Some(why));
+            return BashOnce::Now(Once::Unrecorded);
+        }
     };
-    Some(refuse_once_at(
+    if !settled.insert(crate::lsp::normal(&target.path)) {
+        return BashOnce::Settled;
+    }
+    BashOnce::Now(refuse_once_at(
         rule,
         &bash.session,
         bash.agent_id.as_deref(),
-        &bash.cwd,
+        &context.cwd_at(finding.span.start),
         &bash.permission_mode,
-        &path,
+        &target.path,
     ))
-}
-
-/// The sentence a refuse-once refusal adds to its reason.
-fn bash_once_said(rule: &Rule) -> Option<&'static str> {
-    (rule.id == rules::whole_file_dump::RULE.id)
-        .then_some("Refused once, before it ran: an automatic check, not the person.")
 }
 
 fn confirmed(
