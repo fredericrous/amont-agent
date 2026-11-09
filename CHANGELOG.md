@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.27.0
+
 ### Changed
 
 - The guards treat `greengate` as `amont` (`amont land`, `amont run`,
