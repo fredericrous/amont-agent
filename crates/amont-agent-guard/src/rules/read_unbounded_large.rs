@@ -223,12 +223,12 @@ mod tests {
     fn the_threshold_is_exclusive() {
         let dir = scratch("threshold");
         let f = dir.join("a.rs");
-        file(&f, 16_384);
+        file(&f, 8_192);
         assert_eq!(applies(&f, "full"), None);
-        file(&f, 16_385);
+        file(&f, 8_193);
         let bytes = applies(&f, "full").expect("one byte over");
-        assert_eq!(bytes, 16_385);
-        assert!(phrase("a.rs", bytes, Finder::Grep).0.contains("17 KB"));
+        assert_eq!(bytes, 8_193);
+        assert!(phrase("a.rs", bytes, Finder::Grep).0.contains("9 KB"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
