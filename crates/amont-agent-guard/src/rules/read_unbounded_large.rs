@@ -159,6 +159,7 @@ pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn reviewer_kinds_are_named_and_near_misses_are_not() {
@@ -184,7 +185,6 @@ mod tests {
         assert!(!reviewer(&crate::lsp::Agent::Main));
         assert!(!reviewer(&crate::lsp::Agent::Unnamed));
     }
-    use std::path::PathBuf;
 
     /// A unique scratch directory per test, removed by the caller.
     fn scratch(name: &str) -> PathBuf {

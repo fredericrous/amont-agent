@@ -1047,6 +1047,14 @@ fn at_deny_another_file_is_its_own_and_an_unrecorded_session_is_advised() {
             .as_deref(),
         Some("deny")
     );
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        journal
+            .lines()
+            .any(|l| l.contains(session) && l.contains("allowed-after-feedback")),
+        "{journal}"
+    );
     // A session id the store refuses: nothing can be remembered.
     for _ in 0..2 {
         let said = large_read_as(&fixture, "bad session/../id", None, "");

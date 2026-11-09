@@ -1258,10 +1258,11 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
                     Once::Allowed => {}
                     // A refusal that cannot be remembered would refuse the
                     // promised retry forever: say it as advice instead.
+                    // `refuse_once` journalled it `unrecorded`; noting it as
+                    // `denied` too would count a refusal that never happened.
                     Once::Unrecorded => {
                         let (reason, remedy) =
                             rules::read_unbounded_large::phrase(&shown, bytes, finder);
-                        note_file(rule, stance, op, &shown);
                         advise.push(decision::phrase(rule.id, &reason, &remedy));
                     }
                 },
@@ -1852,7 +1853,7 @@ fn refuse_once(rule: &Rule, op: &crate::payload::FileOp) -> Once {
     let Some(agent) = crate::lsp::agent_key(op.agent_id.as_deref()) else {
         journal::record(&journal::Entry {
             rule: rule.id,
-            stance: "-",
+            stance: Stance::Deny.as_str(),
             outcome: "unrecorded",
             session: &op.session,
             repo: &repo,
