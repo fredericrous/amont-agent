@@ -1814,6 +1814,11 @@ impl LspWorld {
     }
 
     fn grep_tool(&self, session: &str, input: &str) -> Reply {
+        self.grep_main(session, input, "")
+    }
+
+    /// A Grep tool payload from the main conversation, under `global`.
+    fn grep_main(&self, session: &str, input: &str, global: &str) -> Reply {
         let cwd = serde_json::Value::String(self.repo.display().to_string());
         self.send(
             &format!(
@@ -1821,7 +1826,7 @@ impl LspWorld {
                      "session_id":"{session}","permission_mode":"default",
                      "tool_input":{input}}}"#
             ),
-            "",
+            global,
         )
     }
 
@@ -2070,7 +2075,12 @@ const SYMBOL_GREP: &str = r#"{"pattern":"fn agent_type","path":"."}"#;
 fn a_denied_worker_is_refused_once_and_the_retry_runs() {
     let w = LspWorld::new("deny-agents", true);
     w.install_relais_workers();
-    let main = w.grep_tool("da-1", SYMBOL_GREP);
+    let main = w.grep_main("da-1", SYMBOL_GREP, DENY_HAIKU);
+    assert!(
+        !main.stdout.contains("\"deny\""),
+        "main stays advised under denyAgents: {}",
+        main.stdout
+    );
     assert!(
         main.reason().contains("symbol-grep-not-lsp"),
         "{}",
@@ -2083,8 +2093,8 @@ fn a_denied_worker_is_refused_once_and_the_retry_runs() {
         DENY_HAIKU,
     );
     assert!(
-        sonnet.stdout.contains("\"allow\"") || !sonnet.stdout.contains("deny"),
-        "{}",
+        !sonnet.stdout.contains("\"deny\""),
+        "another worker type stays advised: {}",
         sonnet.stdout
     );
     assert!(

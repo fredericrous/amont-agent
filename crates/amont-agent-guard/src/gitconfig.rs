@@ -288,6 +288,14 @@ pub fn values(key: &str) -> Vec<String> {
     for (index, scope) in [(0, "--global"), (1, "--system")] {
         let answer = {
             let Ok(mut all) = snapshots().lock() else {
+                // A scope silently read as empty would turn the key off with
+                // no word; say so, under a key of its own so no other
+                // warning for this key hides it.
+                complain(
+                    &format!("{key} (snapshot)"),
+                    "the config snapshot lock is poisoned",
+                    "no values from this scope",
+                );
                 continue;
             };
             fill(&mut all);
@@ -301,7 +309,9 @@ pub fn values(key: &str) -> Vec<String> {
     }
     let (kept, problem) = usable_patterns(raw);
     if let Some(why) = problem {
-        complain(key, &why, "the other values");
+        // Its own key: a refused scope above warns under `key` and `complain`
+        // speaks once per key, which would swallow this one.
+        complain(&format!("{key} (pattern)"), &why, "the other values");
     }
     kept
 }

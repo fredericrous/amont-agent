@@ -120,14 +120,29 @@ pub fn raise_for(
     }
 }
 
+/// Where a rule's stance for one agent came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The configured ladder: the default, the floor, the rule's own key.
+    Configured,
+    /// `Advise` raised to `Deny` because the agent's type is in the rule's
+    /// `denyAgents`.
+    DenyAgents,
+}
+
 /// [`resolve`], raised from `Advise` to `Deny` for the agent types the
 /// machine's `amont.agent.<id>.denyAgents` lists (global and system git
-/// config only, like the stance keys). The key is read only for a named
-/// agent whose stance is `Advise`.
-pub fn resolve_for(rule: &Rule, agent: &crate::lsp::Agent) -> Stance {
-    raise_for(rule, resolve(rule), agent, || {
-        config::values(&deny_agents_key(rule))
-    })
+/// config only, like the stance keys), with where the stance came from. The
+/// key is read only for a named agent whose stance is `Advise`.
+pub fn resolve_for(rule: &Rule, agent: &crate::lsp::Agent) -> (Stance, Source) {
+    let base = resolve(rule);
+    let stance = raise_for(rule, base, agent, || config::values(&deny_agents_key(rule)));
+    let source = if stance == base {
+        Source::Configured
+    } else {
+        Source::DenyAgents
+    };
+    (stance, source)
 }
 
 /// The configured stance, or the rule's default, then the rule's ceiling.
@@ -214,8 +229,8 @@ mod tests {
         crate::lsp::Agent::Named(t.to_string())
     }
 
-    fn pats(p: &[&str]) -> impl FnOnce() -> Vec<String> {
-        let owned: Vec<String> = p.iter().map(|s| s.to_string()).collect();
+    fn patterns_of(names: &[&str]) -> impl FnOnce() -> Vec<String> {
+        let owned: Vec<String> = names.iter().map(|name| name.to_string()).collect();
         move || owned
     }
 
@@ -228,7 +243,7 @@ mod tests {
                 &rule,
                 Stance::Advise,
                 &haiku,
-                pats(&["relais:relais-worker-haiku-default"])
+                patterns_of(&["relais:relais-worker-haiku-default"])
             ),
             Stance::Deny
         );
@@ -237,7 +252,7 @@ mod tests {
                 &rule,
                 Stance::Advise,
                 &haiku,
-                pats(&["relais:relais-worker-haiku-*"])
+                patterns_of(&["relais:relais-worker-haiku-*"])
             ),
             Stance::Deny
         );
@@ -246,7 +261,7 @@ mod tests {
                 &rule,
                 Stance::Advise,
                 &named("relais:relais-worker-sonnet-default"),
-                pats(&["relais:relais-worker-haiku-*"])
+                patterns_of(&["relais:relais-worker-haiku-*"])
             ),
             Stance::Advise
         );
@@ -257,7 +272,7 @@ mod tests {
         let rule = capped(Stance::Deny);
         for agent in [crate::lsp::Agent::Main, crate::lsp::Agent::Unnamed] {
             assert_eq!(
-                raise_for(&rule, Stance::Advise, &agent, pats(&["x*", "x"])),
+                raise_for(&rule, Stance::Advise, &agent, patterns_of(&["x*", "x"])),
                 Stance::Advise
             );
         }
@@ -267,7 +282,7 @@ mod tests {
     fn the_raise_is_clamped_by_the_ceiling() {
         let rule = capped(Stance::Advise);
         assert_eq!(
-            raise_for(&rule, Stance::Advise, &named("x"), pats(&["x"])),
+            raise_for(&rule, Stance::Advise, &named("x"), patterns_of(&["x"])),
             Stance::Advise
         );
     }
@@ -276,7 +291,7 @@ mod tests {
     fn observe_is_never_raised() {
         let rule = capped(Stance::Deny);
         assert_eq!(
-            raise_for(&rule, Stance::Observe, &named("x"), pats(&["x"])),
+            raise_for(&rule, Stance::Observe, &named("x"), patterns_of(&["x"])),
             Stance::Observe
         );
     }

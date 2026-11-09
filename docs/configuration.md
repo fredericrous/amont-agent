@@ -29,7 +29,9 @@ Most specific wins. See [stances](stances.md).
 
 `denyAgents` raises `advise` to `deny` for a subagent of a named type, and only
 for `symbol-grep-not-lsp`. It is read from `--global` and `--system` config only
-(a repository cannot set it), and the two lists are merged. An empty value, a
+(a repository cannot set it), and the two lists are merged: an entry in
+`--system` config cannot be removed from `--global` config, because an empty
+value clears nothing. An empty value, a
 bare `*`, or a `*` anywhere but the end is ignored with one warning; a scope git
 refuses adds no values and is reported once. The deny is refuse-once: the first
 search for a pattern by that agent is refused, and the identical retry runs. If
