@@ -39,9 +39,11 @@ fn examine(_parsed: &Parsed) -> Option<Finding> {
     None
 }
 
-/// Below this the advice costs more than the read. The Read median is 3.4 KB
-/// and p90 is 14.5 KB; it is also tokenjuice's pass-through threshold.
-const LARGE: u64 = 16 * 1024;
+/// Below this the advice costs more than the read. Measured over
+/// [2026-10-23, 2026-11-06) (`amont-agent output-audit`): subagents' whole
+/// Reads over 8 KiB were 1,711 calls and 40.4 MB, about 27% of every byte
+/// the tools returned; over 16 KiB, half of that.
+pub const LARGE: u64 = 8 * 1024;
 
 /// `Some(bytes)` when this Read has no window, is not exempt, and names a
 /// regular file over [`LARGE`]. A failed stat is silence.
@@ -88,6 +90,16 @@ pub enum Finder {
     Grep,
 }
 
+/// What the hook says when it refuses the first whole Read of this file by
+/// this agent: the advice, then that the same Read repeated will pass.
+pub fn phrase_refusal(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
+    let (reason, remedy) = phrase(shown, bytes, finder);
+    (
+        format!("{reason} Refused once, before it ran: an automatic check, not the person."),
+        format!("{remedy} If you need the whole file, repeat this same Read: it will be allowed."),
+    )
+}
+
 /// What the hook says: the mechanism, then the way through.
 pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
     let kb = bytes.div_ceil(1024);
@@ -105,8 +117,8 @@ pub fn phrase(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
         format!(
             "`{shown}` is {kb} KB on disk and is being Read with no window: up to 2,000 \
              lines of it land in the context, and every later turn of this session carries \
-             them again. Unbounded Reads over 16 KB were 37% of the Read tool's bytes \
-             measured."
+             them again. Subagents' whole Reads over 8 KB were 27% of every byte the \
+             tools returned, measured."
         ),
         format!(
             "{find}, then Read that window with `offset`/`limit`. To read more on purpose, \

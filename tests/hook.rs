@@ -930,6 +930,94 @@ fn a_large_whole_read_is_advised() {
     assert_eq!(first.decision(), None, "advise, not deny: {}", first.stdout);
 }
 
+/// The threshold is 8 KiB: a 10 KB whole Read is advised, a 6 KB one is not.
+#[test]
+fn a_whole_read_past_8_kib_is_advised_and_under_it_is_not() {
+    let mid = ReadFixture::with_size("unbounded-mid", 10_000);
+    assert!(mid.read("um-1").reason().contains("read-unbounded-large"));
+    let small = ReadFixture::with_size("unbounded-6k", 6_000);
+    assert!(!small.read("um-2").stdout.contains("read-unbounded-large"));
+}
+
+const LARGE_DENY: &str = "[amont \"agent.read-unbounded-large\"]\n\tstance = deny\n";
+
+/// A Read of the fixture's file as `agent` (none: the main conversation),
+/// with `read-unbounded-large` at `deny`.
+fn large_read_as(f: &ReadFixture, session: &str, agent: Option<&str>, input: &str) -> Reply {
+    let cwd = serde_json::Value::String(f.dir.display().to_string());
+    let path = serde_json::Value::String(f.file.display().to_string());
+    let agent = agent
+        .map(|a| format!(r#","agent_id":"{a}""#))
+        .unwrap_or_default();
+    send_with_global(
+        &format!(
+            r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
+                 "session_id":"{session}","permission_mode":"default"{agent},
+                 "tool_input":{{"file_path":{path}{input}}}}}"#
+        ),
+        LARGE_DENY,
+    )
+}
+
+/// At `deny` the first whole Read is refused once with the way through; the
+/// same Read repeated is the agent's choice and passes, journalled.
+#[test]
+fn at_deny_a_large_whole_read_is_refused_once_then_allowed() {
+    let f = ReadFixture::with_size("unbounded-once", 20_000);
+    let session = "uonce-01";
+    let first = large_read_as(&f, session, None, "");
+    assert_eq!(
+        first.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        first.stdout
+    );
+    let said = first.reason();
+    assert!(said.contains("read-unbounded-large"), "{said}");
+    assert!(said.contains("repeat this same Read"), "{said}");
+    assert!(said.contains("not the person"), "{said}");
+    let again = large_read_as(&f, session, None, "");
+    assert_ne!(
+        again.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        again.stdout
+    );
+    let journal = std::fs::read_to_string(home().join("amont-agent").join("journal.log"))
+        .expect("the hook wrote a journal");
+    assert!(
+        journal
+            .lines()
+            .any(|l| l.contains(session) && l.contains("allowed-after-feedback")),
+        "{journal}"
+    );
+}
+
+/// A subagent is refused once on its own, even after the main conversation
+/// read the file; a windowed Read is never refused.
+#[test]
+fn at_deny_each_agent_is_refused_once_and_a_window_never() {
+    let f = ReadFixture::with_size("unbounded-agents", 20_000);
+    let session = "uagents-01";
+    assert_eq!(
+        large_read_as(&f, session, None, "").decision().as_deref(),
+        Some("deny")
+    );
+    assert_ne!(
+        large_read_as(&f, session, None, "").decision().as_deref(),
+        Some("deny")
+    );
+    let sub = large_read_as(&f, session, Some("a7"), "");
+    assert_eq!(sub.decision().as_deref(), Some("deny"), "{}", sub.stdout);
+    let window = large_read_as(&f, "uagents-02", Some("a8"), r#","limit":200"#);
+    assert_ne!(
+        window.decision().as_deref(),
+        Some("deny"),
+        "{}",
+        window.stdout
+    );
+}
+
 /// A window, or a deliberate whole read spelled `offset: 1` plus a `limit`,
 /// is the way through.
 #[test]

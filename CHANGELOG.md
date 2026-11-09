@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- `read-unbounded-large` speaks past 8 KB instead of 16 KB: over two weeks,
+  subagents' whole Reads over 8 KB were about 27% of every byte the tools
+  returned. At `deny` it now refuses once per agent, file and size, saying
+  that the same Read repeated will pass, and lets that retry through,
+  journalled `allowed-after-feedback`. No prompt reaches the person.
+
 ### Added
 
 - `amont-agent output-audit --since <UTC> --until <UTC> [--json]`: where tool

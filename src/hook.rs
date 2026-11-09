@@ -1240,13 +1240,37 @@ fn on_file(op: &crate::payload::FileOp) -> Decision {
             } else {
                 Finder::Grep
             };
-            let (reason, remedy) = rules::read_unbounded_large::phrase(&shown, bytes, finder);
-            let text = decision::phrase(rule.id, &reason, &remedy);
-            note_file(rule, stance, op, &shown);
             match stance {
-                Stance::Deny => deny.push(text),
-                Stance::Advise => advise.push(text),
-                Stance::Observe => {}
+                // Refuse once per agent, file and size; the same Read again
+                // is the agent's informed choice and passes (deliberate-output
+                // plan, Phase 3). No prompt: feedback to the agent only.
+                Stance::Deny => {
+                    let agent = op.agent_id.as_deref().unwrap_or("main");
+                    let key = format!("{} {} {bytes} @{agent}", rule.id, op.path.display());
+                    if first_telling(rule, &op.session, &key, &op.cwd, &op.permission_mode) {
+                        note_file(rule, stance, op, &shown);
+                        let (reason, remedy) =
+                            rules::read_unbounded_large::phrase_refusal(&shown, bytes, finder);
+                        deny.push(decision::phrase(rule.id, &reason, &remedy));
+                    } else {
+                        journal::record(&journal::Entry {
+                            rule: rule.id,
+                            stance: stance.as_str(),
+                            outcome: "allowed-after-feedback",
+                            session: &op.session,
+                            repo: &repo_name(&op.cwd),
+                            mode: &op.permission_mode,
+                            excerpt: &format!("{shown} {bytes} B @{agent}"),
+                        });
+                    }
+                }
+                Stance::Advise => {
+                    let (reason, remedy) =
+                        rules::read_unbounded_large::phrase(&shown, bytes, finder);
+                    note_file(rule, stance, op, &shown);
+                    advise.push(decision::phrase(rule.id, &reason, &remedy));
+                }
+                Stance::Observe => note_file(rule, stance, op, &shown),
             }
         }
     }
