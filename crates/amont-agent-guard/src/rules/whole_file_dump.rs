@@ -67,45 +67,94 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     })
 }
 
-fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
-    let cwd = ctx.cwd_at(f.span.start);
-    let all = dumps(ctx.parsed);
-    let Some(d) = all.iter().find(|d| d.at == f.span.start) else {
-        return Confirmed::No("the command no longer matches");
+/// Past this a whole dump may be refused (once: the hook lets the same
+/// command through when it is repeated); a smaller one, or a bounded read,
+/// only ever advises. The same threshold as `read-unbounded-large`, measured
+/// for the Read tool's whole reads (deliberate-output plan, Phase 3).
+const REFUSABLE: u64 = 8 * 1024;
+
+/// The file a finding dumps: where it is, resolved against the directory its
+/// clause runs in, the path as the command wrote it, and how much is read.
+pub struct Target {
+    pub path: std::path::PathBuf,
+    pub shown: String,
+    pub extent: Extent,
+}
+
+/// The [`Target`] of `finding`. Fails when the command no longer holds that
+/// dump, or a `~/` path has no `HOME` to expand against.
+pub fn target(context: &Context, finding: &Finding) -> Result<Target, &'static str> {
+    let cwd = context.cwd_at(finding.span.start);
+    let all = dumps(context.parsed);
+    let Some(dump) = all.into_iter().find(|d| d.at == finding.span.start) else {
+        return Err("the command no longer matches");
     };
-    let path = if d.path.starts_with('/') {
-        std::path::PathBuf::from(&d.path)
-    } else if let Some(rest) = d.path.strip_prefix("~/") {
+    let path = if dump.path.starts_with('/') {
+        std::path::PathBuf::from(&dump.path)
+    } else if let Some(rest) = dump.path.strip_prefix("~/") {
         match std::env::var_os("HOME") {
-            Some(h) => std::path::PathBuf::from(h).join(rest),
-            None => return Confirmed::No("no home to expand `~` against"),
+            Some(home) => std::path::PathBuf::from(home).join(rest),
+            None => return Err("no home to expand `~` against"),
         }
     } else {
-        cwd.join(&d.path)
+        cwd.join(&dump.path)
+    };
+    Ok(Target {
+        path,
+        shown: dump.path,
+        extent: dump.extent,
+    })
+}
+
+/// Whether a dump may be refused: a whole read of a regular file over
+/// [`REFUSABLE`]: `regular_len` is its size when it is a regular file,
+/// `None` for a FIFO, a device or a directory. Anything else is held at
+/// advise, whatever the stance.
+fn refusable(extent: Extent, regular_len: Option<u64>) -> bool {
+    matches!(extent, Extent::Whole) && regular_len.is_some_and(|len| len > REFUSABLE)
+}
+
+fn confirm(ctx: &Context, f: &Finding) -> Confirmed {
+    let Target {
+        path,
+        shown,
+        extent,
+    } = match target(ctx, f) {
+        Ok(found) => found,
+        Err(why) => return Confirmed::No(why),
     };
     let Ok(meta) = std::fs::metadata(&path) else {
         return Confirmed::No("the file is not there to read");
     };
-    if matches!(d.extent, Extent::Whole) && meta.len() < SMALL {
+    if matches!(extent, Extent::Whole) && meta.len() < SMALL {
         return Confirmed::No("the file is small");
     }
+    let may_refuse = refusable(extent, meta.is_file().then_some(meta.len()));
+    // A dump that may be refused says why this one and not a smaller one.
+    let reason = if may_refuse {
+        format!(
+            "{} It is {} KB, over the 8 KB past which a whole dump is refused.",
+            f.reason,
+            meta.len().div_ceil(1024)
+        )
+    } else {
+        f.reason.clone()
+    };
     // Code LSP answers for is found with LSP, not with the grep this
     // rule's remedy names for any other file.
-    if crate::lsp::is_code(&d.path) && crate::lsp::serves(&path).is_ok() {
-        return Confirmed::YesSaying {
-            floor: None,
-            ceiling: None,
-            reason: f.reason.clone(),
-            excerpt: d.path.clone(),
-            remedy: Some(
-                "Ask LSP first (`documentSymbol`, `goToDefinition`), then open the file with \
-                 the Read tool, with `offset`/`limit` around that line. `cat` is fine inside \
-                 a pipe or a heredoc."
-                    .to_string(),
-            ),
-        };
+    let remedy = (crate::lsp::is_code(&shown) && crate::lsp::serves(&path).is_ok()).then(|| {
+        "Ask LSP first (`documentSymbol`, `goToDefinition`), then open the file with \
+         the Read tool, with `offset`/`limit` around that line. `cat` is fine inside \
+         a pipe or a heredoc."
+            .to_string()
+    });
+    Confirmed::YesSaying {
+        floor: None,
+        ceiling: (!may_refuse).then_some(Stance::Advise),
+        reason,
+        excerpt: shown,
+        remedy,
     }
-    Confirmed::Yes
 }
 
 #[cfg(test)]
@@ -125,6 +174,17 @@ mod tests {
         assert!(fires("sed -n '1,400p' crates/x/src/lib.rs"));
         assert!(fires("head -200 build.log"));
         assert!(fires("tail -n 300 build.log"));
+    }
+
+    /// Only a whole read of a regular file past 8 KiB may be refused; the
+    /// threshold itself, a bounded read and a directory never.
+    #[test]
+    fn only_a_whole_read_of_a_large_regular_file_is_refusable() {
+        assert!(!refusable(Extent::Whole, Some(8_192)));
+        assert!(refusable(Extent::Whole, Some(8_193)));
+        assert!(!refusable(Extent::Whole, None), "not a regular file");
+        assert!(!refusable(Extent::Lines(400), Some(20_480)));
+        assert!(!refusable(Extent::Bytes(20_000), Some(20_480)));
     }
 
     #[test]

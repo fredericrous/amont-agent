@@ -147,7 +147,7 @@ pub fn reviewer(agent: &crate::lsp::Agent) -> bool {
 pub fn phrase_refusal(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
     let (reason, _) = phrase(shown, bytes, finder);
     (
-        format!("{reason} Refused once, before it ran: an automatic check, not the person."),
+        format!("{reason} {}", crate::rules::REFUSED_ONCE),
         format!(
             "{}, then Read that window with `offset`/`limit`; or, if you need the whole \
              file, repeat this same Read unchanged: it will be allowed.",

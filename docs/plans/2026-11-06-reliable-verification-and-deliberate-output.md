@@ -45,3 +45,19 @@ Items 1, 2 and 6 (item 3, `whole-file-dump`, follows in its own PR: it runs thro
 | Gate | green | 27/27 |
 
 Activation follows the release: `amont-agent graduate read-unbounded-large --to deny`, then the seven-day observation.
+
+Activated 2026-11-09 with amont-agent 3.25.0, after the corpus gained Read-payload cases (34 reviewed, 18 negatives; the person chose fixing the gate over `--force`). Observation runs to 2026-11-16.
+
+## Phase 3 item 3 implementation review
+
+`whole-file-dump` refuse-once, through the generalised `refuse_once_at`. Round 1 on tree af82d640, deltas via `review-brief --interdiff`, all Opus.
+- implementation-review: approve-with-changes → approve-with-changes → approve. Fixed: `target` params named (blocking), `Target` struct, unjournalled resolve error, missing tests, the `&mut` set made the caller's (blocking, `once_target`).
+- lang:rust: approve-with-changes → approve-with-changes → approve-with-changes. Fixed: one decision point, boundary unit test, `Option<u64>` not a bool flag, one journal line per decision. Deliberate: the `refused_once` tuple and the inserting match guard (tested by `cat a; cat ./a`).
+- backend / unix / tui: approve-with-changes → approve. Fixed: unrecorded path tested, same-file-twice settled, promise only when no other rule refuses, CHANGELOG under Changed, size and shared `REFUSED_ONCE` sentence in the refusal.
+
+| Input | Expected | Actual |
+|---|---|---|
+| Hook tests at deny | first large whole `cat` refused (size, Read window); repeat passes silently; per agent and file; bounded/small/pipe never refused; unrecordable advises; `cat a; cat ./a` one decision; shared refusal promises less | 8 hook tests + `refusable` boundary unit test pass |
+| Full workspace suite | green | `cargo test --workspace --locked` rc 0 |
+
+Activation follows the release: `amont-agent graduate whole-file-dump --to deny`.
