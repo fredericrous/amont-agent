@@ -33,6 +33,8 @@ pub const RULE: Rule = Rule {
     confirm: None,
 };
 
+// holds-until: the lexer reads compound bodies and `xargs` operands. Until
+// then the first command of a body and `xargs` pipelines go unseen.
 /// Words that open or continue a compound command, or run code this rule
 /// does not read. A clause starting with one is neither side of a pair.
 const COMPOUND_OPENERS: &[&str] = &[
@@ -137,6 +139,14 @@ fn is_consequential(clause: &Simple) -> bool {
 /// `;` is as safe as `&&`), `set +e` and `set +o errexit` turn it off, and
 /// anything else leaves it alone.
 fn errexit_after(clause: &Simple) -> Option<bool> {
+    // zsh spells the option `setopt errexit` or `setopt ERR_EXIT`.
+    if matches!(clause.program(), Some("setopt" | "unsetopt")) {
+        let names_errexit = clause
+            .args()
+            .iter()
+            .any(|word| word.text.to_lowercase().replace('_', "") == "errexit");
+        return names_errexit.then(|| clause.program() == Some("setopt"));
+    }
     if clause.program() != Some("set") {
         return None;
     }
@@ -164,10 +174,24 @@ fn readable(clause: &Simple) -> bool {
 
 /// `git commit` rather than `git`, so the message names the step.
 fn step_name(clause: &Simple, fallback: &str) -> String {
-    match (clause.program(), clause.subcommand()) {
-        (Some(program), Some(sub)) => format!("{program} {sub}"),
-        (Some(program), None) => program.to_string(),
-        _ => fallback.to_string(),
+    let Some(program) = clause.program() else {
+        return fallback.to_string();
+    };
+    // The same reading the sets use, so `gh pr merge` and `cargo +nightly
+    // test` are named as the sets matched them.
+    let step = match program {
+        "gh" => first_operand(clause)
+            .zip(second_operand(clause))
+            .map(|(first, second)| format!("{first} {second}")),
+        "git" | "amont" | "kubectl" => clause.subcommand().map(str::to_string),
+        "cargo" | "go" | "npm" | "pnpm" | "yarn" | "make" => {
+            first_operand(clause).map(str::to_string)
+        }
+        _ => None,
+    };
+    match step {
+        Some(step) => format!("{program} {step}"),
+        None => program.to_string(),
     }
 }
 
@@ -259,6 +283,35 @@ mod tests {
         assert!(fires("set +o errexit; sed -i s/a/b/ f; git commit -m x"));
         assert!(fires("set -e; set +e; git add -A; git commit -m x"));
         assert!(!fires("set +e; set -e; git add -A; git commit -m x"));
+    }
+
+    #[test]
+    fn zsh_and_long_form_errexit_skip_the_pair() {
+        assert!(!fires("set -o errexit; git add -A; git commit -m x"));
+        assert!(!fires("setopt err_exit; git add -A; git commit -m x"));
+        assert!(!fires("setopt ERR_EXIT; git add -A; git commit -m x"));
+        assert!(fires(
+            "setopt err_exit; unsetopt errexit; git add -A; git commit -m x"
+        ));
+    }
+
+    #[test]
+    fn dry_runs_and_reads_are_not_consequential() {
+        assert!(!fires("make ; kubectl apply --dry-run=client -f d.yaml"));
+        assert!(!fires("make ; gh pr view 12"));
+        assert!(fires("make ; gh pr merge 12"));
+    }
+
+    #[test]
+    fn the_reason_names_the_steps_as_the_sets_read_them() {
+        let merge = examine(&lex("make ; gh pr merge 12")).expect("fires");
+        assert!(merge.reason.contains("`gh pr merge`"), "{}", merge.reason);
+        let nightly = examine(&lex("sed -i s/a/b/ f ; cargo +nightly test")).expect("fires");
+        assert!(
+            nightly.reason.contains("`cargo test`"),
+            "{}",
+            nightly.reason
+        );
     }
 
     #[test]

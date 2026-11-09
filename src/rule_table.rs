@@ -161,9 +161,9 @@ mod tests {
 
     /// The table holds every rule, in its place: 50 rules, which are the 45
     /// left after the workspace split and the observe-rule retirements, plus
-    /// `work-overlap`, `ask-unopened-page`, `suppressions-override` and
-    /// `plan-names-no-paths` and `chain-with-and`, with `push-preview` between `push-preflight` and
-    /// `plan-review-panel`, and `implementation-review` after
+    /// `work-overlap`, `ask-unopened-page`, `suppressions-override`,
+    /// `plan-names-no-paths` and `chain-with-and`, with `push-preview` between
+    /// `push-preflight` and `plan-review-panel`, and `implementation-review` after
     /// `plan-phases-open`. A rule a crate stopped listing would vanish here.
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
