@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.24.0
+
 ### Changed
 
 - `review-brief --profile` carries the judge rules that profile owns in full,
