@@ -1,0 +1,22 @@
+# Full reviews: amont-agent recognises a copy of a reviewed block
+
+Carried into implementation (medium or low after round 2, not edited into the body):
+- One `base_of` function and one canonical-tree function shared by the hook, `block sha`, `plan-panel` and `review-brief`, so a missing `origin/HEAD` is `Err` with the cause `no base` and the pin tree cannot differ (rust).
+- `git --version` below 2.32 returns `Err`, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_DIFF_OPTS` and `GIT_EXTERNAL_DIFF` are removed from git's environment; `run_bounded` gains a deadline parameter (its 30 s is fixed today); `bytes_in_env` has a 20 s deadline and a size cap (unix, rust).
+- Wording and output from tui: the binary-diff notice carries no path; `block revoke` errors for a missing `--because` (exit 2) and an ambiguous prefix; a stderr line before the `gh` call; the miss cause holds the real repository path; `block list` gets a generation column (`current` or `stale`); the plan-panel notice only when a registered block matched.
+- The `block-reinstate` guard rule (deny) is `crates/amont-agent-guard/src/rules/block_reinstate.rs`, registered in `rules/mod.rs`, `src/rule_table.rs`, `corpus.rs` and `docs/rules.md`, covered by `tests/rules_json.rs` and `tests/precision.rs` like `gh-pr-merge-auto`, and tested beside the guard rules, not in `tests/implementation_review.rs`; a text-matching rule does not see the command run through a variable or script, which joins the known limits (backend).
+- The picture gains the pin record and the revoke flows (backend).
+- Final bound body, from architect, rust, unix, tui and po: the body and this list agree on three points, and this list wins: `run_bounded` gains the deadline parameter, the binary-diff notice carries no path, and the `block-reinstate` guard rule is tested beside the guard rules (`tests/rules_json.rs`, `tests/precision.rs`), not in `tests/implementation_review.rs`.
+- A `revoked` file revokes by its presence, even when unparseable (never read as absent), and the lookup compares the full rules sha and agent digest stored in `entry.json`, not the directory prefixes; fingerprint directories are 64 hex, generation directories `<12 hex>-<12 hex>` (rust).
+- Readers skip every name starting with `.` (this covers `write_atomic`'s `.amont-agent-tmp-<pid>-<name>`), and a pin record carries the time its check started, the writer re-reading the current record before it renames and not replacing one whose check started later; a narrowed race, not closed (unix).
+- If `block reinstate` stays: `--because`, exit codes (2 missing flag; 0 and a stderr line when not revoked; 1 unknown or ambiguous), a success line, a refusal that names the command for the person, and `block revoke` listing the copies of every generation (tui). Whether a copy that missed and then got every profile's approve registers is settled in a test (architect).
+- Naming: one name for the pin key, the content id (tui).
+
+Reviews, each with tokens and wall time:
+- **architect**: round 1 approve-with-changes, 4 findings (3 high: registration in `standing`, verification in the parser, a hand-written line skipping the pin check), 36k, 39 s; round 2 resolved all four, 2 mediums (the pin key, the override), 49k, 18 s.
+- **backend**: round 1 approve-with-changes, 5 findings (2 high), 35k, 52 s; round 2 resolved all, 3 new (tui seat, picture, estimate), 43k, 25 s; delta resolved, ordinal finding, 50k, 24 s; final body after Codex, 1 high (who may reinstate), 54k, 13 s; last body, approve-with-changes, a medium on rule registration, 65k, 59 s.
+- **rust**: round 1 approve-with-changes, 8 findings (1 blocking: `bytes_in` has no environment), 32k, 50 s; round 2 resolved all, 4 new (1 high: a stale entry never replaced), 46k, 28 s; delta, 1 medium, 50k, 17 s.
+- **po**: round 1 approve-with-changes, 4 findings (2 high), 32k, 44 s; round 2 resolved all, 1 medium (the override), 46k, 28 s.
+- **tui**: round 1 approve-with-changes, 7 findings (2 high), 35k, 43 s; round 2 two not resolved, 4 new (1 high), 49k, 38 s; delta, 4 findings (medium and low), 52k, 17 s.
+- **unix**: round 1 approve-with-changes, 5 findings (2 high), 37k, 54 s; round 2 resolved all, 4 new (1 high: not atomic), 49k, 35 s; delta, 2 mediums, 55k, 20 s.
+- **codex**: approve-with-changes, 4 highs (empty lines dropped, registration predicate, revocation race, stale pin success), all applied, three with a simpler design.
