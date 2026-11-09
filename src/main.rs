@@ -1019,10 +1019,15 @@ fn run_output_audit(args: &[OsString]) -> ExitCode {
 fn scaled(count: u64) -> String {
     let units = [(1e9, "G"), (1e6, "M"), (1e3, "K")];
     let amount = count as f64;
-    units.iter().find(|(size, _)| amount >= *size).map_or_else(
-        || count.to_string(),
-        |(size, unit)| format!("{:.1}{unit}", amount / size),
-    )
+    // The largest unit whose value rounds to 1.0 or more: 999,950 is 1.0M,
+    // never 1000.0K.
+    units
+        .iter()
+        .find(|(size, _)| (amount / size * 10.0).round() >= 10.0)
+        .map_or_else(
+            || count.to_string(),
+            |(size, unit)| format!("{:.1}{unit}", amount / size),
+        )
 }
 
 /// The aggregate as tables under 80 columns, largest result bytes first;
@@ -1093,26 +1098,46 @@ fn output_audit_text(
     }
     let coverage = &audit.coverage;
     let mut lost = Vec::new();
-    for (count, what) in [
-        (coverage.files_unreadable, "unreadable files"),
-        (coverage.files_truncated, "files cut short by a read error"),
-        (coverage.bad_lines, "unparsable lines"),
-        (coverage.oversized_lines, "oversized lines"),
+    for (count, one, many) in [
+        (
+            coverage.files_unreadable,
+            "unreadable file",
+            "unreadable files",
+        ),
+        (
+            coverage.files_truncated,
+            "file cut short by a read error",
+            "files cut short by a read error",
+        ),
+        (coverage.bad_lines, "unparsable line", "unparsable lines"),
+        (
+            coverage.oversized_lines,
+            "oversized line",
+            "oversized lines",
+        ),
     ] {
         if count > 0 {
-            lost.push(format!("{count} {what}"));
+            lost.push(format!("{count} {}", if count == 1 { one } else { many }));
         }
     }
     out.push_str(&format!(
-        "\ncoverage: {} files read ({} older skipped), {}\n",
+        "\ncoverage: {} {} read ({} older skipped)",
         coverage.files_scanned,
-        coverage.files_skipped,
-        if lost.is_empty() {
-            "every line read".to_string()
+        if coverage.files_scanned == 1 {
+            "file"
         } else {
-            lost.join(", ")
-        }
+            "files"
+        },
+        coverage.files_skipped
     ));
+    if lost.is_empty() {
+        out.push_str(", every line read\n");
+    } else {
+        out.push_str("; not counted:\n");
+        for problem in lost {
+            out.push_str(&format!("  {problem}\n"));
+        }
+    }
     out
 }
 
