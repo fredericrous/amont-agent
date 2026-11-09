@@ -16,7 +16,12 @@ effort = "medium"
 [execution]
 max_attempts = 3
 max_repairs_before_escalation = 1
-max_wall_seconds = 1200
+# 40 minutes, from the relais ledger (2026-10-10 to 11-09): 14 of 179 runs
+# ended "did not stop within the attempt's wall time", 9 of them first
+# attempts that used the whole 1200 s; 11 had a candidate accepted by hand.
+# The budget covers every attempt, verification and review of a run (slot
+# waits excluded), and successful runs reached p90 1186 s.
+max_wall_seconds = 2400
 allow_nested_agents = true
 max_agent_depth = 3
 max_agents_total = 24
