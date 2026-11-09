@@ -545,22 +545,31 @@ fn on_bash(bash: &Bash) -> Decision {
                 note_with(rule, "advise", "advised", bash, finding, excerpt);
                 advise.push(text);
             }
-            Stance::Deny => match bash_once(rule, finding, bash, &parsed, &mut settled) {
-                BashOnce::Always => {
+            Stance::Deny => match once_target(rule, finding, bash, &parsed) {
+                OnceTarget::Always => {
                     note_with(rule, "deny", "denied", bash, finding, excerpt);
                     deny.push(text);
                 }
-                BashOnce::Now(Once::Refuse) => {
-                    note_with(rule, "deny", "denied", bash, finding, excerpt);
-                    refused_once.push((rule.id, reason.to_string(), remedy.to_string()));
-                }
-                // Journalled by `refuse_once_at`; a file this command already
-                // dumped earlier was decided there.
-                BashOnce::Now(Once::Allowed) | BashOnce::Settled => {}
-                BashOnce::Now(Once::Unrecorded) => {
-                    note_with(rule, "advise", "advised", bash, finding, excerpt);
-                    advise.push(text);
-                }
+                // Journalled `unrecorded` where it was found, once.
+                OnceTarget::Unresolved => advise.push(text),
+                // A file this command already dumped earlier was decided there.
+                OnceTarget::File { path, .. } if !settled.insert(crate::lsp::normal(&path)) => {}
+                OnceTarget::File { path, cwd } => match refuse_once_at(
+                    rule,
+                    &bash.session,
+                    bash.agent_id.as_deref(),
+                    &cwd,
+                    &bash.permission_mode,
+                    &path,
+                ) {
+                    Once::Refuse => {
+                        note_with(rule, "deny", "denied", bash, finding, excerpt);
+                        refused_once.push((rule.id, reason.to_string(), remedy.to_string()));
+                    }
+                    // Journalled by `refuse_once_at`.
+                    Once::Allowed => {}
+                    Once::Unrecorded => advise.push(text),
+                },
             },
         }
     }
@@ -2304,50 +2313,40 @@ fn context<'a>(bash: &'a Bash, parsed: &'a Parsed) -> Context<'a> {
     }
 }
 
-/// How a Bash call that a rule would refuse is acted on.
-enum BashOnce {
-    /// The rule refuses every time, as rules always have.
+/// What a refusal of a Bash call is bound to.
+enum OnceTarget {
+    /// Nothing: the rule refuses every time, as rules always have.
     Always,
-    /// A refuse-once rule (`whole-file-dump`, deliberate-output plan
-    /// Phase 3): the first whole dump of a file by this agent is refused, the
-    /// same command repeated passes.
-    Now(Once),
-    /// The same file, dumped again later in this command: decided already.
-    Settled,
+    /// The file a refuse-once rule's dump names (`whole-file-dump`,
+    /// deliberate-output plan Phase 3), with the directory its clause runs
+    /// in: the first whole dump of it by this agent is refused, the same
+    /// command repeated passes.
+    File {
+        path: std::path::PathBuf,
+        cwd: std::path::PathBuf,
+    },
+    /// A refuse-once dump whose file could not be resolved again, journalled
+    /// `unrecorded`: never refuse what cannot be promised to pass again.
+    Unresolved,
 }
 
-fn bash_once(
-    rule: &Rule,
-    finding: &Finding,
-    bash: &Bash,
-    parsed: &Parsed,
-    settled: &mut std::collections::HashSet<std::path::PathBuf>,
-) -> BashOnce {
+fn once_target(rule: &Rule, finding: &Finding, bash: &Bash, parsed: &Parsed) -> OnceTarget {
     if rule.id != rules::whole_file_dump::RULE.id {
-        return BashOnce::Always;
+        return OnceTarget::Always;
     }
     let context = context(bash, parsed);
-    let target = match rules::whole_file_dump::target(&context, finding) {
-        Ok(target) => target,
+    match rules::whole_file_dump::target(&context, finding) {
+        Ok(target) => OnceTarget::File {
+            path: target.path,
+            cwd: context.cwd_at(finding.span.start),
+        },
         // `confirm` resolved this same dump a moment ago, so only `HOME`
-        // changing in between gets here: never refuse what cannot be
-        // promised to pass again.
+        // changing in between gets here.
         Err(why) => {
             note_with(rule, "deny", "unrecorded", bash, finding, Some(why));
-            return BashOnce::Now(Once::Unrecorded);
+            OnceTarget::Unresolved
         }
-    };
-    if !settled.insert(crate::lsp::normal(&target.path)) {
-        return BashOnce::Settled;
     }
-    BashOnce::Now(refuse_once_at(
-        rule,
-        &bash.session,
-        bash.agent_id.as_deref(),
-        &context.cwd_at(finding.span.start),
-        &bash.permission_mode,
-        &target.path,
-    ))
 }
 
 fn confirmed(
