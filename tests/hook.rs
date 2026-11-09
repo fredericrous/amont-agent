@@ -1018,6 +1018,42 @@ fn at_deny_each_agent_is_refused_once_and_a_window_never() {
     );
 }
 
+/// A reviewer is handed its brief to read whole: never refused or advised.
+#[test]
+fn a_reviewer_reads_its_brief_whole_unchallenged() {
+    let f = ReadFixture::with_size("unbounded-reviewer", 20_000);
+    for (session, kind) in [
+        ("urev-01", "implementation-review"),
+        ("urev-02", "code-review-backend"),
+        ("urev-03", "plan-review-language"),
+        ("urev-04", "relais:relais-reviewer-opus-medium"),
+    ] {
+        let cwd = serde_json::Value::String(f.dir.display().to_string());
+        let path = serde_json::Value::String(f.file.display().to_string());
+        let said = send_with_global(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Read","cwd":{cwd},
+                     "session_id":"{session}","permission_mode":"default",
+                     "agent_id":"r1","agent_type":"{kind}",
+                     "tool_input":{{"file_path":{path}}}}}"#
+            ),
+            LARGE_DENY,
+        );
+        assert!(
+            !said.stdout.contains("read-unbounded-large"),
+            "{kind}: {}",
+            said.stdout
+        );
+    }
+    // A worker is still refused once.
+    assert_eq!(
+        large_read_as(&f, "urev-05", Some("w1"), "")
+            .decision()
+            .as_deref(),
+        Some("deny")
+    );
+}
+
 /// A window, or a deliberate whole read spelled `offset: 1` plus a `limit`,
 /// is the way through.
 #[test]

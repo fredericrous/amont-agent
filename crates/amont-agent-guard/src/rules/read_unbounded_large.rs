@@ -90,6 +90,25 @@ pub enum Finder {
     Grep,
 }
 
+/// Whether `agent` is a reviewer: handed a brief, plan or diff to read whole,
+/// so a whole Read is the job, not a lapse. Measured 2026-11-09: without this,
+/// 332 of 775 would-refuse Reads (15.1 MB) were briefs reviewers are told to
+/// read in full.
+pub fn reviewer(agent: &crate::lsp::Agent) -> bool {
+    match agent {
+        crate::lsp::Agent::Named(kind) => {
+            let kind = kind.rsplit(':').next().unwrap_or(kind);
+            kind == "implementation-review"
+                || kind == "interface-review"
+                || kind.starts_with("code-review-")
+                || kind.starts_with("plan-review-")
+                || kind.starts_with("relais-reviewer-")
+                || kind == "relais-review"
+        }
+        crate::lsp::Agent::Main | crate::lsp::Agent::Unnamed => false,
+    }
+}
+
 /// What the hook says when it refuses the first whole Read of this file by
 /// this agent: the advice, then that the same Read repeated will pass.
 pub fn phrase_refusal(shown: &str, bytes: u64, finder: Finder) -> (String, String) {
