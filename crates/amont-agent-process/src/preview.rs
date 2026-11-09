@@ -1986,6 +1986,8 @@ pub fn record_before(
         if let (Some(t), amont_agent_guard::land::Answer::Would(l)) = (
             targets.first(),
             amont_agent_guard::land::dry_run(
+                cmd.program()
+                    .unwrap_or_else(|| amont_agent_guard::gate::gate_binary()),
                 &ctx.cwd_at(cmd.at),
                 amont_agent_guard::land::tag_of(cmd).as_deref(),
             ),

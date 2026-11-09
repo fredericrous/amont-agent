@@ -1,11 +1,17 @@
 //! The gate program under its two names. The tool is being renamed from
 //! `amont` to `greengate`; until the rename ends, the guard reads both as the
 //! same program and runs whichever is installed.
+//!
+//! holds-until: the step-5 census of ADR-0064 finds no amont-only install;
+//! then `OLD_GATE` goes.
 
 use std::ffi::OsStr;
 use std::path::Path;
 
 const OLD_GATE: &str = "amont";
+/// The single name tables keyed by program use for the gate, so a table
+/// holds its row once whichever name the clause used.
+pub const TABLE_NAME: &str = OLD_GATE;
 const NEW_GATE: &str = "greengate";
 
 /// Is this program name the gate (`amont` or `greengate`)?
@@ -69,8 +75,15 @@ mod tests {
     #[test]
     fn greengate_wins_only_when_an_executable_is_on_path() {
         use std::os::unix::fs::PermissionsExt;
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0); // a leftover temp dir is harmless
+            }
+        }
         let dir = std::env::temp_dir().join(format!("amont-agent-gate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let _cleanup = Cleanup(dir.clone());
         let file = dir.join("greengate");
         let path = std::env::join_paths([&dir]).unwrap();
         assert!(!is_executable_on("greengate", Some(&path)));
@@ -80,6 +93,5 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(is_executable_on("greengate", Some(&path)));
         assert!(!is_executable_on("greengate", None));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

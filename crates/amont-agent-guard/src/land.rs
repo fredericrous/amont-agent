@@ -165,22 +165,28 @@ pub struct Landing {
 /// The dry-run for a land that runs in `dir`, of `tag` when it names one.
 /// Asked once per directory and tag per hook process: the implementation
 /// review, the preview and the pre-push record all resolve the same land.
-pub fn dry_run(dir: &Path, tag: Option<&str>) -> Answer {
-    type Key = (PathBuf, Option<String>);
+/// `program` is the gate the clause names (`amont` or `greengate`): the
+/// dry-run asks that binary, the one that will push, never the other name.
+pub fn dry_run(program: &str, dir: &Path, tag: Option<&str>) -> Answer {
+    type Key = (String, PathBuf, Option<String>);
     static MEMO: OnceLock<Mutex<HashMap<Key, Answer>>> = OnceLock::new();
     let memo = MEMO.get_or_init(Default::default);
-    let key = (dir.to_path_buf(), tag.map(str::to_string));
+    let key = (
+        program.to_string(),
+        dir.to_path_buf(),
+        tag.map(str::to_string),
+    );
     if let Some(a) = memo.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return a.clone();
     }
-    let answer = ask(dir, tag);
+    let answer = ask(program, dir, tag);
     memo.lock()
         .unwrap_or_else(|p| p.into_inner())
         .insert(key, answer.clone());
     answer
 }
 
-fn ask(dir: &Path, tag: Option<&str>) -> Answer {
+fn ask(program: &str, dir: &Path, tag: Option<&str>) -> Answer {
     if !dir.is_dir() {
         return Answer::Unknown("the land's directory does not exist");
     }
@@ -189,7 +195,7 @@ fn ask(dir: &Path, tag: Option<&str>) -> Answer {
         args.push("--tag");
         args.push(name);
     }
-    let Ok(mut child) = Command::new(crate::gate::gate_binary())
+    let Ok(mut child) = Command::new(program)
         .args(&args)
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -197,7 +203,9 @@ fn ask(dir: &Path, tag: Option<&str>) -> Answer {
         .stderr(Stdio::piped())
         .spawn()
     else {
-        return Answer::Unknown("amont is not installed, so what a land would push cannot be read");
+        return Answer::Unknown(
+            "the gate (amont or greengate) is not installed, so what a land would push cannot be read",
+        );
     };
     // Both pipes drained while the child runs, as `guidance::ask` does: a
     // child blocked on a full pipe would otherwise be killed at the budget.
@@ -232,9 +240,11 @@ fn ask(dir: &Path, tag: Option<&str>) -> Answer {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Answer::Unknown("`amont land --dry-run` did not answer within 3 s");
+                return Answer::Unknown("the gate's `land --dry-run` did not answer within 3 s");
             }
-            Err(_) => return Answer::Unknown("`amont land --dry-run` could not be waited for"),
+            Err(_) => {
+                return Answer::Unknown("the gate's `land --dry-run` could not be waited for")
+            }
         }
     };
     let stdout = out.join().unwrap_or_default();

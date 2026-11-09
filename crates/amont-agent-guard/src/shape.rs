@@ -71,11 +71,16 @@ const MAX_TOKENS: usize = 48;
 /// its meaning without them": `git stash pop` and `git stash list` are two
 /// habits, `grep alpha` and `grep beta` are one. Every entry here was in the
 /// measured corpus; a program nobody runs does not need to be in a table.
+/// The gate and its fleet tool, under either name, are read through
+/// `crate::gate`, so a later name is one change there.
+fn is_verb_program(name: &str) -> bool {
+    VERB_PROGRAMS.contains(&name)
+        || crate::gate::is_gate_program(name)
+        || crate::gate::is_gate_fleet_program(name)
+}
+
 const VERB_PROGRAMS: &[&str] = &[
-    "amont",
     "amont-agent",
-    "greengate",
-    "greengate-fleet",
     "argocd",
     "aws",
     "az",
@@ -184,7 +189,7 @@ fn stage(c: &Simple, out: &mut Vec<String>) {
 
     // Two bare words survive where they are verbs; elsewhere the leading
     // operand is data and is masked like the rest. See the module note.
-    let verbs = if VERB_PROGRAMS.contains(&name) { 2 } else { 0 };
+    let verbs = if is_verb_program(name) { 2 } else { 0 };
     let mut kept = 0usize;
     for w in c.operands() {
         if kept < verbs && is_bare_word(w) {
@@ -515,8 +520,10 @@ mod tests {
     }
     #[test]
     fn greengate_programs_are_verb_programs() {
-        assert!(VERB_PROGRAMS.contains(&"greengate"));
-        assert!(VERB_PROGRAMS.contains(&"greengate-fleet"));
+        assert!(is_verb_program("greengate"));
+        assert!(is_verb_program("greengate-fleet"));
+        assert!(is_verb_program("amont-fleet"));
+        assert_ne!(shape("amont-fleet fix"), shape("amont-fleet status"));
         assert_ne!(shape("greengate land"), shape("greengate slots"));
         assert_ne!(
             shape("greengate-fleet fix"),

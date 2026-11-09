@@ -541,7 +541,8 @@ pub fn resolve_for(context: &crate::rules::Context, cmd: &Simple) -> Push {
         };
     }
     let tag = crate::land::tag_of(cmd);
-    match crate::land::dry_run(&cwd, tag.as_deref()) {
+    let program = cmd.program().unwrap_or_else(|| crate::gate::gate_binary());
+    match crate::land::dry_run(program, &cwd, tag.as_deref()) {
         crate::land::Answer::Would(l) => match toplevel(&cwd) {
             Some(repo) => Push::Resolved {
                 repo,

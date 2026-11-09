@@ -67,7 +67,7 @@ const MUTATING: &[(&str, &[&str])] = &[
     ("kubectl", &["apply", "delete", "replace"]),
     ("helm", &["install", "upgrade"]),
     ("npm", &["publish"]),
-    ("amont", &["land"]),
+    (crate::gate::TABLE_NAME, &["land"]),
 ];
 
 /// Sinks that TRIM. The defect is identical for `tee`, `less` and `jq`, and
@@ -107,9 +107,9 @@ fn is_mutating(cmd: &Simple) -> bool {
         return false;
     };
     // The gate's own name is read through `is_gate_program`, so the table
-    // holds its row once, under `amont`.
+    // holds its row once, under `gate::TABLE_NAME`.
     let table_program = if crate::gate::is_gate_program(program) {
-        "amont"
+        crate::gate::TABLE_NAME
     } else {
         program
     };
