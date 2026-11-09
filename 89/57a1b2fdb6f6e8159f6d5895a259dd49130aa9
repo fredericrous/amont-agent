@@ -1,0 +1,19 @@
+amont-provenance-v1
+commit 46b7f72583a629733155dd6b7d8f5e9fd9bbf3aa
+tree 8957a1b2fdb6f6e8159f6d5895a259dd49130aa9
+canon 969c9b853c91a30411269e1991b8930a7d358744
+patch 3de7edc5b3cc72c5bb9ce5c3f2578e22919518c9
+plan docs/plans/2026-11-09-a-step-that-can-fail.md 8b769dfc9aca3ef5b3b76f5302b83dff2caf31d99a040972fb4024375da97f71
+review reviewed 0f56dc43372dc50e9175ba80f3685b0bf9ea815021d51ff464cc741d1b1d7d7f
+code-review backend reviewed 0f56dc43372dc50e9175ba80f3685b0bf9ea815021d51ff464cc741d1b1d7d7f
+code-review lang:rust reviewed 0f56dc43372dc50e9175ba80f3685b0bf9ea815021d51ff464cc741d1b1d7d7f
+code-review unix reviewed 0f56dc43372dc50e9175ba80f3685b0bf9ea815021d51ff464cc741d1b1d7d7f
+preview not-required
+producer amont-agent 3.23.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBmJcjj6ICT6F+oOAIVgQhdejPvjs31DxqsqZ1fZDWzbsEUff
+ZE333EAFtRAjOa9plm1JipjhS7z7jDKoVJGbAC
+-----END SSH SIGNATURE-----
