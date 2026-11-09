@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- A rule's corpus can hold Read calls (`Read <window> <bytes> <agent>
+  <path>`), judged by the same decision the hook makes. Before, a rule
+  answered from the Read payload could only collect negatives and so could
+  never be graduated. `read-unbounded-large` now has 34 reviewed cases, 18 of
+  them negatives, taken from the 2026-11-09 replay.
+
 ## v3.24.0
 
 ### Changed

@@ -45,14 +45,47 @@ fn examine(_parsed: &Parsed) -> Option<Finding> {
 /// the tools returned; over 16 KiB, half of that.
 const LARGE: u64 = 8 * 1024;
 
-/// `Some(bytes)` when this Read has no window, is not exempt, and names a
-/// regular file over [`LARGE`]. A failed stat is silence.
-pub fn applies(path: &Path, window: &str) -> Option<u64> {
-    if window != "full" || exempt(path) {
+/// `Some(bytes)` when this Read by `agent` has no window, is not exempt, the
+/// agent is not a reviewer, and it names a regular file over [`LARGE`]. A
+/// failed stat is silence.
+pub fn applies(path: &Path, window: &str, agent: &crate::lsp::Agent) -> Option<u64> {
+    if !may_apply(path, window, agent) {
         return None;
     }
     let meta = std::fs::metadata(path).ok()?;
-    (meta.is_file() && meta.len() > LARGE).then_some(meta.len())
+    decide(path, window, agent, meta.is_file(), meta.len())
+}
+
+/// Everything [`applies`] decides before it stats the file, so a Read the
+/// rule never judges costs no `metadata` call.
+fn may_apply(path: &Path, window: &str, agent: &crate::lsp::Agent) -> bool {
+    window == "full" && !exempt(path) && !reviewer(agent)
+}
+
+/// The whole verdict, from what a stat would say: the hook's [`applies`]
+/// and the corpus's Read cases ([`judge_case`]) both answer through it, so a
+/// reviewed case judges the code the hook runs.
+pub fn decide(
+    path: &Path,
+    window: &str,
+    agent: &crate::lsp::Agent,
+    is_file: bool,
+    len: u64,
+) -> Option<u64> {
+    (may_apply(path, window, agent) && is_file && len > LARGE).then_some(len)
+}
+
+/// Whether the rule fires on one corpus Read case (`crate::corpus::ReadCase`):
+/// a regular file of the declared size, judged by [`decide`].
+pub fn judge_case(case: &crate::corpus::ReadCase) -> bool {
+    decide(
+        Path::new(&case.path),
+        &case.window,
+        &case.agent,
+        true,
+        case.bytes,
+    )
+    .is_some()
 }
 
 pub fn exempt(path: &Path) -> bool {
@@ -205,7 +238,7 @@ mod tests {
         let dir = scratch("large");
         let f = dir.join("a.rs");
         file(&f, 20_480);
-        assert_eq!(applies(&f, "full"), Some(20_480));
+        assert_eq!(applies(&f, "full", &crate::lsp::Agent::Main), Some(20_480));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -214,8 +247,8 @@ mod tests {
         let dir = scratch("window");
         let f = dir.join("a.rs");
         file(&f, 20_480);
-        assert_eq!(applies(&f, "0:200"), None);
-        assert_eq!(applies(&f, "1:5000"), None);
+        assert_eq!(applies(&f, "0:200", &crate::lsp::Agent::Main), None);
+        assert_eq!(applies(&f, "1:5000", &crate::lsp::Agent::Main), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -224,9 +257,9 @@ mod tests {
         let dir = scratch("threshold");
         let f = dir.join("a.rs");
         file(&f, 8_192);
-        assert_eq!(applies(&f, "full"), None);
+        assert_eq!(applies(&f, "full", &crate::lsp::Agent::Main), None);
         file(&f, 8_193);
-        let bytes = applies(&f, "full").expect("one byte over");
+        let bytes = applies(&f, "full", &crate::lsp::Agent::Main).expect("one byte over");
         assert_eq!(bytes, 8_193);
         assert!(phrase("a.rs", bytes, Finder::Grep).0.contains("9 KB"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -235,8 +268,11 @@ mod tests {
     #[test]
     fn nothing_to_stat_is_silent() {
         let dir = scratch("nostat");
-        assert_eq!(applies(&dir.join("missing.rs"), "full"), None);
-        assert_eq!(applies(&dir, "full"), None);
+        assert_eq!(
+            applies(&dir.join("missing.rs"), "full", &crate::lsp::Agent::Main),
+            None
+        );
+        assert_eq!(applies(&dir, "full", &crate::lsp::Agent::Main), None);
         #[cfg(unix)]
         {
             let fifo = dir.join("pipe.rs");
@@ -245,7 +281,7 @@ mod tests {
                 .status()
                 .expect("mkfifo");
             assert!(made.success(), "mkfifo {}", fifo.display());
-            assert_eq!(applies(&fifo, "full"), None);
+            assert_eq!(applies(&fifo, "full", &crate::lsp::Agent::Main), None);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -264,11 +300,51 @@ mod tests {
         ] {
             let f = dir.join(rel);
             file(&f, 20_480);
-            assert_eq!(applies(&f, "full"), None, "{rel}");
+            assert_eq!(applies(&f, "full", &crate::lsp::Agent::Main), None, "{rel}");
         }
         let f = dir.join("myplans/x.md");
         file(&f, 20_480);
-        assert!(applies(&f, "full").is_some(), "a substring is not enough");
+        assert!(
+            applies(&f, "full", &crate::lsp::Agent::Main).is_some(),
+            "a substring is not enough"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hook's stat path and the corpus's declared size reach one verdict
+    /// for the same Read, so a reviewed case judges what the hook runs.
+    #[test]
+    fn a_stat_and_a_declared_size_decide_alike() {
+        use crate::lsp::Agent;
+        let dir = scratch("parity");
+        let agents = [
+            Agent::Main,
+            Agent::Unnamed,
+            Agent::Named("general-purpose".into()),
+            Agent::Named("implementation-review".into()),
+            Agent::Named("relais:relais-reviewer-opus-medium".into()),
+        ];
+        for rel in ["src/a.rs", "docs/plans/p.md", "x.diff"] {
+            for size in [8_192usize, 8_193, 20_480] {
+                let f = dir.join(rel);
+                file(&f, size);
+                for window in ["full", "1:200"] {
+                    for agent in &agents {
+                        let case = crate::corpus::ReadCase {
+                            window: window.into(),
+                            bytes: size as u64,
+                            agent: agent.clone(),
+                            path: f.to_string_lossy().into_owned(),
+                        };
+                        assert_eq!(
+                            applies(&f, window, agent).is_some(),
+                            judge_case(&case),
+                            "{rel} {size} {window} {agent:?}"
+                        );
+                    }
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

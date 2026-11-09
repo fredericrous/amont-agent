@@ -108,6 +108,22 @@ Include the cases that should **not** match. A corpus of positives alone
 measures recall and says nothing about how often the rule is wrong, which is
 the number that decides whether it can be allowed to refuse anything.
 
+A rule answered from the Read tool's payload, not a command, never fires on
+a command line, so its file can only hold negatives that way. Its cases are
+Read calls instead, one per line:
+
+```text
+match	Read full 18425 relais:relais-worker-sonnet-medium src/graph.rs
+nomatch	Read full 20480 implementation-review src/graph.rs
+```
+
+The fields are the window (`full`, or `<offset>:<limit>` as the hook records
+it), the file's size in bytes, the agent (`main`, `-` for a subagent of
+unknown type, or its `agent_type`) and the path, to the end of the line. The
+corpus judges each one with the decision the hook makes, on a regular file of
+that size. Only `read-unbounded-large` has a Read judge today; a Read case in
+any other rule's file, or a malformed one, counts as a disagreement.
+
 ## 4. Compliance — is the advice worth its tokens?
 
 `advise` buys its place in the model's context with tokens, every session,
