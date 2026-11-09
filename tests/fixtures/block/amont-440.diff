@@ -1,0 +1,183 @@
+diff --git a/.github/workflows/ci.yaml b/.github/workflows/ci.yaml
+index b03f9b5d..5a6824f6 100644
+--- a/.github/workflows/ci.yaml
++++ b/.github/workflows/ci.yaml
+@@ -65,0 +66,2 @@ jobs:
++        env:
++          GH_TOKEN: ${{ github.token }}
+@@ -68 +70,3 @@ jobs:
+-          url=https://raw.githubusercontent.com/fredericrous/amont-agent/main/tests/fixtures/excerpt/MANIFEST.sha256
++          # Through the API, not raw.githubusercontent.com, which throttles
++          # anonymous reads like the release web route (504s on 2026-11-08).
++          path=repos/fredericrous/amont-agent/contents/tests/fixtures/excerpt/MANIFEST.sha256
+@@ -70,4 +74,10 @@ jobs:
+-          if ! curl -fsSL --retry 3 --max-time 30 "$url" -o /tmp/theirs.sha256; then
+-            echo "::error::could not fetch amont-agent's MANIFEST.sha256 from $url"
+-            exit 1
+-          fi
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 30 gh api "$path?ref=main" -H 'Accept: application/vnd.github.raw' > /tmp/theirs.sha256 || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not fetch amont-agent's MANIFEST.sha256 ($path, exit $rc; 124 = timed out after 30 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
+@@ -93,0 +104 @@ jobs:
++          GH_TOKEN: ${{ github.token }}
+@@ -110,4 +121,17 @@ jobs:
+-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors \
+-            "https://github.com/fredericrous/aval/releases/download/v${AVAL_VERSION}/aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+-            | tar xz -C "$RUNNER_TEMP/bin" --strip-components=1 \
+-                "aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu/aval"
++          # Through the API (`gh release download`), not the public download URL:
++          # that route throttles anonymous downloads, and it returned 504 for hours
++          # on 2026-11-08 while the API served the same files.
++          asset="aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "v${AVAL_VERSION}" --repo fredericrous/aval \
++              --pattern "$asset" -O "$RUNNER_TEMP/$asset" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download $asset from fredericrous/aval v${AVAL_VERSION} (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
++          tar xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" --strip-components=1 \
++            "aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu/aval"
+@@ -567,0 +592,2 @@ jobs:
++        env:
++          GH_TOKEN: ${{ github.token }}
+@@ -570,0 +597,3 @@ jobs:
++          # Authenticated: the anonymous API limit is 60 requests an hour per IP.
++          # Only a 404 means "no release yet"; a 401 or 403 is a broken token and
++          # must fail the step, not read as a skip.
+@@ -574 +603 @@ jobs:
+-              -Headers @{ 'User-Agent' = 'ci' }
++              -Headers @{ 'User-Agent' = 'ci'; 'Authorization' = "Bearer $env:GH_TOKEN" }
+@@ -576,2 +605,5 @@ jobs:
+-            Write-Host '::notice::no published release yet - skipping the installer test'
+-            exit 0
++            if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
++              Write-Host '::notice::no published release yet - skipping the installer test'
++              exit 0
++            }
++            throw
+@@ -839,0 +872 @@ jobs:
++          GH_TOKEN: ${{ github.token }}
+@@ -847,2 +880,12 @@ jobs:
+-          url="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-${arch}"
+-          curl -fsSL --retry 3 -o /tmp/hadolint "$url"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "${HADOLINT_VERSION}" --repo hadolint/hadolint \
++              --pattern "hadolint-Linux-${arch}" -O "/tmp/hadolint" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download hadolint-Linux-${arch} from hadolint/hadolint ${HADOLINT_VERSION} (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
+@@ -873,0 +917 @@ jobs:
++          GH_TOKEN: ${{ github.token }}
+@@ -881,2 +925,12 @@ jobs:
+-          url="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${arch}"
+-          curl -fsSL --retry 3 -o /tmp/yq "$url"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "${YQ_VERSION}" --repo mikefarah/yq \
++              --pattern "yq_linux_${arch}" -O "/tmp/yq" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download yq_linux_${arch} from mikefarah/yq ${YQ_VERSION} (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
+@@ -962,0 +1017,2 @@ jobs:
++        env:
++          GH_TOKEN: ${{ github.token }}
+@@ -966,6 +1022,23 @@ jobs:
+-          curl -sSfL https://github.com/stackrox/kube-linter/releases/download/v0.7.2/kube-linter-linux.tar.gz \
+-            | tar xz -C "$HOME/.local/bin" kube-linter
+-          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+-            | tar xz -C "$HOME/.local/bin" kubeconform
+-          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
+-            | tar xz -C "$HOME/.local/bin" kustomize
++          # Through the API, not the web route, which throttles anonymous
++          # downloads (504s on 2026-11-08). gh_dl <tag> <owner/repo> <asset>:
++          # three attempts of 120 s each, into $RUNNER_TEMP/<asset>.
++          gh_dl() {
++            local attempt rc
++            for attempt in 1 2 3; do
++              rc=0
++              timeout 120 gh release download "$1" --repo "$2" \
++                --pattern "$3" -O "$RUNNER_TEMP/$3" --clobber || rc=$?
++              [ "$rc" = 0 ] && return 0
++              if [ "$attempt" = 3 ]; then
++                echo "::error::could not download $3 from $2 $1 (exit $rc; 124 = timed out after 120 s)"
++                return 1
++              fi
++              sleep $((attempt * 5))
++            done
++          }
++          gh_dl v0.7.2 stackrox/kube-linter kube-linter-linux.tar.gz
++          tar xzf "$RUNNER_TEMP/kube-linter-linux.tar.gz" -C "$HOME/.local/bin" kube-linter
++          gh_dl v0.6.7 yannh/kubeconform kubeconform-linux-amd64.tar.gz
++          tar xzf "$RUNNER_TEMP/kubeconform-linux-amd64.tar.gz" -C "$HOME/.local/bin" kubeconform
++          gh_dl kustomize/v5.4.3 kubernetes-sigs/kustomize kustomize_v5.4.3_linux_amd64.tar.gz
++          tar xzf "$RUNNER_TEMP/kustomize_v5.4.3_linux_amd64.tar.gz" -C "$HOME/.local/bin" kustomize
+diff --git a/.github/workflows/docs.yaml b/.github/workflows/docs.yaml
+index c86c40bb..0d5a1632 100644
+--- a/.github/workflows/docs.yaml
++++ b/.github/workflows/docs.yaml
+@@ -59,0 +60,2 @@ jobs:
++        env:
++          GH_TOKEN: ${{ github.token }}
+@@ -62 +64 @@ jobs:
+-          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
++          asset="mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+@@ -64 +66,13 @@ jobs:
+-          curl -fsSL "$url" | tar -xz -C "$HOME/.local/bin"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "v${MDBOOK_VERSION}" --repo rust-lang/mdBook \
++              --pattern "$asset" -O "$RUNNER_TEMP/$asset" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download $asset from rust-lang/mdBook v${MDBOOK_VERSION} (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
++          tar -xzf "$RUNNER_TEMP/$asset" -C "$HOME/.local/bin"
+diff --git a/.github/workflows/release.yaml b/.github/workflows/release.yaml
+index 01501bb9..35e42481 100644
+--- a/.github/workflows/release.yaml
++++ b/.github/workflows/release.yaml
+@@ -296,0 +297,2 @@ jobs:
++        env:
++          GH_TOKEN: ${{ github.token }}
+@@ -300,2 +302,12 @@ jobs:
+-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tar.gz" \
+-            "https://github.com/fredericrous/attest/releases/download/v1.7.0/$name.tar.gz"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "v1.7.0" --repo fredericrous/attest \
++              --pattern "$name.tar.gz" -O "$RUNNER_TEMP/$name.tar.gz" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download $name.tar.gz from fredericrous/attest v1.7.0 (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done

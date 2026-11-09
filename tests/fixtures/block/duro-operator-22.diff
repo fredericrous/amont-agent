@@ -1,0 +1,60 @@
+diff --git a/.github/workflows/adr.yaml b/.github/workflows/adr.yaml
+index f81c1b3..2770f3a 100644
+--- a/.github/workflows/adr.yaml
++++ b/.github/workflows/adr.yaml
+@@ -35,0 +36 @@ jobs:
++          GH_TOKEN: ${{ github.token }}
+@@ -52,4 +53,17 @@ jobs:
+-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors \
+-            "https://github.com/fredericrous/aval/releases/download/v${AVAL_VERSION}/aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+-            | tar xz -C "$RUNNER_TEMP/bin" --strip-components=1 \
+-                "aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu/aval"
++          # Through the API (`gh release download`), not the public download URL:
++          # that route throttles anonymous downloads, and it returned 504 for hours
++          # on 2026-11-08 while the API served the same files.
++          asset="aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "v${AVAL_VERSION}" --repo fredericrous/aval \
++              --pattern "$asset" -O "$RUNNER_TEMP/$asset" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download $asset from fredericrous/aval v${AVAL_VERSION} (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
++          tar xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP/bin" --strip-components=1 \
++            "aval-${AVAL_VERSION}-x86_64-unknown-linux-gnu/aval"
+@@ -86,0 +101 @@ jobs:
++          GH_TOKEN: ${{ github.token }}
+@@ -94,2 +109,12 @@ jobs:
+-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors --max-time 60 -o "$RUNNER_TEMP/$name.tar.gz" \
+-            "https://github.com/fredericrous/adr-lint/releases/download/v$ADR_LINT/$name.tar.gz"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "v$ADR_LINT" --repo fredericrous/adr-lint \
++              --pattern "$name.tar.gz" -O "$RUNNER_TEMP/$name.tar.gz" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download $name.tar.gz from fredericrous/adr-lint v$ADR_LINT (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
+@@ -98,2 +123,12 @@ jobs:
+-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors --max-time 120 -o "$RUNNER_TEMP/ast-grep.zip" \
+-            "https://github.com/ast-grep/ast-grep/releases/download/$AST_GREP/app-x86_64-unknown-linux-gnu.zip"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "$AST_GREP" --repo ast-grep/ast-grep \
++              --pattern "app-x86_64-unknown-linux-gnu.zip" -O "$RUNNER_TEMP/ast-grep.zip" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download app-x86_64-unknown-linux-gnu.zip from ast-grep/ast-grep $AST_GREP (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
