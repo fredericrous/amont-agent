@@ -23,8 +23,24 @@ refuses warns once and falls back to the default rather than failing.
 |---|---|
 | `amont.agent.stance` | `observe` \| `advise` \| `deny` — every rule |
 | `amont.agent.<rule>.stance` | the same, for one rule |
+| `amont.agent.<rule>.denyAgents` | repeatable: an agent type (`relais:relais-worker-haiku-default`) or a prefix ending in `*` (`relais:relais-worker-haiku-*`) |
 
 Most specific wins. See [stances](stances.md).
+
+`denyAgents` raises `advise` to `deny` for a subagent of a named type, and only
+for `symbol-grep-not-lsp`. It is read from `--global` and `--system` config only
+(a repository cannot set it), and the two lists are merged. An empty value, a
+bare `*`, or a `*` anywhere but the end is ignored with one warning; a scope git
+refuses adds no values and is reported once. The deny is refuse-once: the first
+search for a pattern by that agent is refused, and the identical retry runs. If
+the refusal cannot be recorded, the rule advises instead of refusing every retry.
+
+```sh
+# add the value once (idempotent), and take it back out (exit 5 means it was already absent)
+git config --global --get-all amont.agent.symbol-grep-not-lsp.denyAgents | grep -qxF 'relais:relais-worker-haiku-*' \
+  || git config --global --add amont.agent.symbol-grep-not-lsp.denyAgents 'relais:relais-worker-haiku-*'
+git config --global --fixed-value --unset-all amont.agent.symbol-grep-not-lsp.denyAgents 'relais:relais-worker-haiku-*'
+```
 
 ## The session notice
 

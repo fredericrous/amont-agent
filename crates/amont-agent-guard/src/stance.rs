@@ -84,6 +84,52 @@ pub fn resolve(rule: &Rule) -> Stance {
     st
 }
 
+/// The key listing the agent types a rule is raised to `Deny` for.
+pub fn deny_agents_key(rule: &Rule) -> String {
+    format!("amont.agent.{}.denyAgents", rule.id)
+}
+
+/// Whether an agent type matches one pattern: equal, or the pattern is a
+/// prefix ending in `*`.
+fn type_matches(pattern: &str, agent_type: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => agent_type.starts_with(prefix),
+        None => pattern == agent_type,
+    }
+}
+
+/// The pure half of [`resolve_for`]: `Advise` becomes `Deny` for a named
+/// agent whose type matches a pattern, clamped by the rule's ceiling. Every
+/// other stance, and every other agent, is returned as it came.
+pub fn raise_for(
+    rule: &Rule,
+    base: Stance,
+    agent: &crate::lsp::Agent,
+    patterns: impl FnOnce() -> Vec<String>,
+) -> Stance {
+    let crate::lsp::Agent::Named(agent_type) = agent else {
+        return base;
+    };
+    if base != Stance::Advise {
+        return base;
+    }
+    if patterns().iter().any(|p| type_matches(p, agent_type)) {
+        Stance::Deny.min(rule.max_stance)
+    } else {
+        base
+    }
+}
+
+/// [`resolve`], raised from `Advise` to `Deny` for the agent types the
+/// machine's `amont.agent.<id>.denyAgents` lists (global and system git
+/// config only, like the stance keys). The key is read only for a named
+/// agent whose stance is `Advise`.
+pub fn resolve_for(rule: &Rule, agent: &crate::lsp::Agent) -> Stance {
+    raise_for(rule, resolve(rule), agent, || {
+        config::values(&deny_agents_key(rule))
+    })
+}
+
 /// The configured stance, or the rule's default, then the rule's ceiling.
 ///
 /// The pure half of [`resolve`]: `configured` is whatever the two keys
@@ -162,5 +208,76 @@ mod tests {
     fn the_key_names_the_rule() {
         let r = &crate::rules::pipe_to_tail::RULE;
         assert_eq!(key_for(r), format!("amont.agent.{}.stance", r.id));
+    }
+
+    fn named(t: &str) -> crate::lsp::Agent {
+        crate::lsp::Agent::Named(t.to_string())
+    }
+
+    fn pats(p: &[&str]) -> impl FnOnce() -> Vec<String> {
+        let owned: Vec<String> = p.iter().map(|s| s.to_string()).collect();
+        move || owned
+    }
+
+    #[test]
+    fn an_exact_value_and_a_trailing_star_match_a_named_agent() {
+        let rule = capped(Stance::Deny);
+        let haiku = named("relais:relais-worker-haiku-default");
+        assert_eq!(
+            raise_for(
+                &rule,
+                Stance::Advise,
+                &haiku,
+                pats(&["relais:relais-worker-haiku-default"])
+            ),
+            Stance::Deny
+        );
+        assert_eq!(
+            raise_for(
+                &rule,
+                Stance::Advise,
+                &haiku,
+                pats(&["relais:relais-worker-haiku-*"])
+            ),
+            Stance::Deny
+        );
+        assert_eq!(
+            raise_for(
+                &rule,
+                Stance::Advise,
+                &named("relais:relais-worker-sonnet-default"),
+                pats(&["relais:relais-worker-haiku-*"])
+            ),
+            Stance::Advise
+        );
+    }
+
+    #[test]
+    fn main_and_unnamed_agents_never_match() {
+        let rule = capped(Stance::Deny);
+        for agent in [crate::lsp::Agent::Main, crate::lsp::Agent::Unnamed] {
+            assert_eq!(
+                raise_for(&rule, Stance::Advise, &agent, pats(&["x*", "x"])),
+                Stance::Advise
+            );
+        }
+    }
+
+    #[test]
+    fn the_raise_is_clamped_by_the_ceiling() {
+        let rule = capped(Stance::Advise);
+        assert_eq!(
+            raise_for(&rule, Stance::Advise, &named("x"), pats(&["x"])),
+            Stance::Advise
+        );
+    }
+
+    #[test]
+    fn observe_is_never_raised() {
+        let rule = capped(Stance::Deny);
+        assert_eq!(
+            raise_for(&rule, Stance::Observe, &named("x"), pats(&["x"])),
+            Stance::Observe
+        );
     }
 }

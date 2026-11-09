@@ -236,6 +236,76 @@ fn lookup(scope_index: usize, scope: &str, key: &str) -> Value<Option<String>> {
     }
 }
 
+/// Every value `key` has in one snapshot, in file order. A valueless entry
+/// is the empty string. A refused scope is the mistake git reported.
+fn values_in(snap: &Snapshot, key: &str) -> Result<Vec<String>, String> {
+    match snap {
+        Snapshot::Refused(why) => Err(why.clone()),
+        Snapshot::Keys(keys) => {
+            let want = canonical(key);
+            Ok(keys
+                .iter()
+                .filter(|(k, _)| canonical(k) == want)
+                .map(|(_, v)| v.clone().unwrap_or_default())
+                .collect())
+        }
+    }
+}
+
+/// Keep the values usable as an agent-type pattern: an exact name, or a
+/// prefix ending in one `*`. Returns what was kept and, when something was
+/// dropped, why the first one was.
+fn usable_patterns(raw: Vec<String>) -> (Vec<String>, Option<String>) {
+    let mut kept = Vec::new();
+    let mut problem = None;
+    for value in raw {
+        let value = value.trim().to_string();
+        let star = value.find('*');
+        let why = if value.is_empty() {
+            Some("an empty or valueless entry".to_string())
+        } else if value == "*" {
+            Some("a bare \"*\" would match every agent".to_string())
+        } else if star.is_some_and(|at| at + 1 != value.len()) {
+            Some(format!("{value:?} has a \"*\" that is not at the end"))
+        } else {
+            None
+        };
+        match why {
+            Some(why) => {
+                problem.get_or_insert(why);
+            }
+            None => kept.push(value),
+        }
+    }
+    (kept, problem)
+}
+
+/// All values of a multi-valued key, `--global` then `--system`, merged.
+/// A scope git refuses adds none and is reported once; entries that are not
+/// a usable pattern are dropped with one warning for the key.
+pub fn values(key: &str) -> Vec<String> {
+    let mut raw = Vec::new();
+    for (index, scope) in [(0, "--global"), (1, "--system")] {
+        let answer = {
+            let Ok(mut all) = snapshots().lock() else {
+                continue;
+            };
+            fill(&mut all);
+            let snap = all[index].get_or_insert_with(|| snapshot_of(scope));
+            values_in(snap, key)
+        };
+        match answer {
+            Ok(found) => raw.extend(found),
+            Err(why) => complain(key, &why, "no values from this scope"),
+        }
+    }
+    let (kept, problem) = usable_patterns(raw);
+    if let Some(why) = problem {
+        complain(key, &why, "the other values");
+    }
+    kept
+}
+
 /// [`ask_git`], answered from the scope's snapshot. A typed read of a key
 /// that IS set still asks git, so git alone parses the dialect; the common
 /// case — the key is unset — costs no spawn at all.
@@ -502,6 +572,37 @@ mod tests {
             canonical("amont.Agent.stance"),
             canonical("amont.agent.stance")
         );
+    }
+
+    #[test]
+    fn values_merge_in_file_order_and_a_refused_scope_adds_none() {
+        let keys = Snapshot::Keys(vec![
+            ("amont.agent.r.denyAgents".into(), Some("a".into())),
+            ("amont.agent.other".into(), Some("x".into())),
+            ("AMONT.agent.r.denyagents".into(), Some("b*".into())),
+            ("amont.agent.r.denyAgents".into(), None),
+        ]);
+        assert_eq!(
+            values_in(&keys, "amont.agent.r.denyAgents"),
+            Ok(vec!["a".to_string(), "b*".to_string(), String::new()])
+        );
+        let refused = Snapshot::Refused("bad config".into());
+        assert_eq!(
+            values_in(&refused, "amont.agent.r.denyAgents"),
+            Err("bad config".to_string())
+        );
+    }
+
+    #[test]
+    fn unusable_patterns_are_ignored_with_one_problem() {
+        let input = ["x:y", "", "*", "a*b", "p:*", "  "]
+            .map(String::from)
+            .to_vec();
+        let (kept, problem) = usable_patterns(input);
+        assert_eq!(kept, vec!["x:y".to_string(), "p:*".to_string()]);
+        assert_eq!(problem.as_deref(), Some("an empty or valueless entry"));
+        let (kept, problem) = usable_patterns(vec!["ok".into()]);
+        assert_eq!((kept.len(), problem), (1, None));
     }
 
     #[test]

@@ -453,6 +453,11 @@ pub fn phrase(pattern: &str) -> (String, String) {
     )
 }
 
+/// The remedy for a refusal raised by `denyAgents`: the refusal is once per
+/// pattern, so the retry is part of the promise.
+pub const DENY_REMEDY: &str = "Refused for this agent type. Ask LSP: workspaceSymbol, then \
+     findReferences. If LSP refused this lookup, run the same search again: it runs.";
+
 #[cfg(test)]
 mod tests {
     use super::*;

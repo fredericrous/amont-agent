@@ -377,3 +377,83 @@ fn rules_shows_the_stance_in_force() {
     assert!(moved.contains("deny"), "{moved}");
     assert!(moved.contains("ships as observe"), "{moved}");
 }
+
+/// `denyAgents` is the machine's: a repository's `.git/config` cannot list an
+/// agent type, and a global value does. Read through the `status` output of
+/// the hook is not possible, so the hook itself is asked.
+#[test]
+fn a_repository_cannot_set_deny_agents_and_the_global_config_can() {
+    let key = "amont.agent.symbol-grep-not-lsp.denyAgents";
+    let f = Fixture::new("deny-agents");
+    f.set("--local", key, "relais:relais-worker-haiku-*");
+    assert!(!f.denies_haiku(), "a --local denyAgents raised a stance");
+    f.set("--global", key, "relais:relais-worker-haiku-*");
+    assert!(f.denies_haiku(), "a global denyAgents was not read");
+}
+
+impl Fixture {
+    /// Whether the hook refuses a haiku worker's symbol grep in the fixture.
+    fn denies_haiku(&self) -> bool {
+        use std::io::Write;
+        let repo = self.repo();
+        std::fs::create_dir_all(repo.join("src")).expect("src");
+        let bin = self.dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let stub = bin.join("fleet-lsp");
+        std::fs::write(&stub, "#!/bin/sh\n").expect("stub");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let claude = self.dir.join("claude");
+        std::fs::create_dir_all(&claude).expect("claude");
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"enabledPlugins":{"fleet-lsp@fleet-lsp":true}}"#,
+        )
+        .expect("settings");
+        let root = self.dir.join("relais");
+        std::fs::create_dir_all(root.join("agents")).expect("agents");
+        std::fs::write(
+            root.join("agents/relais-worker-haiku-default.md"),
+            "---\nname: w\n---\n",
+        )
+        .expect("agent");
+        std::fs::create_dir_all(claude.join("plugins")).expect("plugins");
+        std::fs::write(
+            claude.join("plugins/installed_plugins.json"),
+            serde_json::json!({"plugins": {"relais@relais": [{"installPath": root.display().to_string()}]}})
+                .to_string(),
+        )
+        .expect("manifest");
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse", "tool_name": "Grep",
+            "cwd": repo.display().to_string(), "session_id": "scope-1",
+            "permission_mode": "default",
+            "agent_id": "w1", "agent_type": "relais:relais-worker-haiku-default",
+            "tool_input": {"pattern": "fn agent_type", "path": "."},
+        })
+        .to_string();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("hook")
+            .current_dir(&repo)
+            .env("CLAUDE_CONFIG_DIR", &claude)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("GIT_CONFIG_GLOBAL", self.dir.join("global"))
+            .env("GIT_CONFIG_SYSTEM", self.dir.join("system"))
+            .env_remove("AMONT_AGENT_OFF")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the binary runs");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(payload.as_bytes())
+            .expect("payload");
+        let out = child.wait_with_output().expect("the hook exits");
+        String::from_utf8_lossy(&out.stdout).contains("\"deny\"")
+    }
+}
