@@ -354,6 +354,20 @@ mod tests {
     }
 
     #[test]
+    fn the_dry_run_asks_the_binary_the_clause_names() {
+        // A program that exists nowhere: were the dry-run to spawn whichever
+        // gate is on PATH instead, this would answer from that binary.
+        let program = "amont-agent-test-no-such-gate";
+        let dir = std::env::temp_dir();
+        assert_eq!(
+            dry_run(program, &dir, None),
+            Answer::Unknown(
+                "the gate (amont or greengate) is not installed, so what a land would push cannot be read"
+            )
+        );
+    }
+
+    #[test]
     fn the_supported_shapes_are_read() {
         assert_eq!(read("amont land", false), Ok(()));
         assert_eq!(read("amont land --json", false), Ok(()));

@@ -65,20 +65,21 @@ pub const NEAR: f64 = 0.34;
 /// scripts answers the question just as well as comparing all 300.
 const MAX_TOKENS: usize = 48;
 
-/// Programs whose leading operands are VERBS rather than data.
-///
-/// The test for membership is not "has subcommands" but "does the shape lose
-/// its meaning without them": `git stash pop` and `git stash list` are two
-/// habits, `grep alpha` and `grep beta` are one. Every entry here was in the
-/// measured corpus; a program nobody runs does not need to be in a table.
-/// The gate and its fleet tool, under either name, are read through
-/// `crate::gate`, so a later name is one change there.
+/// Is this a program whose leading operands are verbs? The table below, plus
+/// the gate and its fleet tool under either name, read through `crate::gate`
+/// so a later name is one change there.
 fn is_verb_program(name: &str) -> bool {
     VERB_PROGRAMS.contains(&name)
         || crate::gate::is_gate_program(name)
         || crate::gate::is_gate_fleet_program(name)
 }
 
+/// Programs whose leading operands are VERBS rather than data.
+///
+/// The test for membership is not "has subcommands" but "does the shape lose
+/// its meaning without them": `git stash pop` and `git stash list` are two
+/// habits, `grep alpha` and `grep beta` are one. Every entry here was in the
+/// measured corpus; a program nobody runs does not need to be in a table.
 const VERB_PROGRAMS: &[&str] = &[
     "amont-agent",
     "argocd",
