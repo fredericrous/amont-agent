@@ -616,16 +616,27 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
     }
     match &code_rules {
         Some((_, rules_text)) => {
-            brief.push_str(&format!("# Code rules (in full)\n\n{rules_text}\n"));
-            if let Some(section) = &judge_section {
-                brief.push_str(&format!("\n{section}\n"));
-            }
-
             let index = aval(&repo, &["rules", "--level", "constraint"])?;
-            brief.push_str(&format!(
-                "# Constraint rules\n\n{}\n\n",
-                String::from_utf8_lossy(&index).trim_end()
-            ));
+            let index = String::from_utf8_lossy(&index);
+            match &judge_section {
+                // A profile seat reads the rules it judges in full and an id
+                // index of the rest (ADR-0065): implementation-review reads
+                // every code rule, so none loses its reader.
+                Some(section) => {
+                    brief.push_str(&format!("{section}\n"));
+                    brief.push_str(&format!(
+                        "# Constraint rules (index)\n\n\
+                         The other constraints, by id. Implementation-review reads every \
+                         code rule in full; fetch one here only when your review needs \
+                         it, with the `aval_rule` tool or `aval rule <id>`.\n\n{}\n\n",
+                        constraint_ids(&index)
+                    ));
+                }
+                None => {
+                    brief.push_str(&format!("# Code rules (in full)\n\n{rules_text}\n"));
+                    brief.push_str(&format!("# Constraint rules\n\n{}\n\n", index.trim_end()));
+                }
+            }
 
             brief.push_str("# Decisions that apply to the changed paths\n\n");
             brief.push_str(&decisions(&repo, &range)?);
@@ -1205,6 +1216,16 @@ fn diff_of(before: &[u8], after: &[u8]) -> std::io::Result<Vec<u8>> {
             String::from_utf8_lossy(&out.stderr).trim()
         ))),
     }
+}
+
+/// The ids of `aval rules --level constraint`'s lines (`<level> <id>
+/// <statement>`), one per line.
+fn constraint_ids(index: &str) -> String {
+    index
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

@@ -4,11 +4,17 @@
 
 ### Changed
 
+- `review-brief --profile` carries the judge rules that profile owns in full,
+  the decisions on the changed paths, and an id index of the other
+  constraints (ADR-0065), not every code rule in full: a profile brief fell
+  from about 150 KB to about 70 KB on a real branch. The implementation-review
+  brief is unchanged and still carries every code rule in full.
 - `read-unbounded-large` speaks past 8 KB instead of 16 KB: over two weeks,
   subagents' whole Reads over 8 KB were about 27% of every byte the tools
   returned. At `deny` it now refuses once per agent, file and size, saying
   that the same Read repeated will pass, and lets that retry through,
-  journalled `allowed-after-feedback`. No prompt reaches the person.
+  journalled `allowed-after-feedback`. No prompt reaches the person. Reviewer
+  agents, handed their brief to read whole, are exempt.
 
 ### Added
 

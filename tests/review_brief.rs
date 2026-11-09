@@ -692,6 +692,30 @@ fn a_unix_profile_holds_the_judge_rules_unix_reviews() {
     assert!(!judge.contains("LANGUAGE-RULE-TEXT"), "{judge}");
 }
 
+/// A profile seat reads its own rules in full and an id index of the rest
+/// (ADR-0065); implementation-review still reads every code rule in full.
+#[cfg(unix)]
+#[test]
+fn a_profile_brief_carries_its_rules_and_an_id_index_only() {
+    let (out, brief) = profile_brief("profile-slim", "unix", PROFILE_AVAL);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(!brief.contains("# Code rules (in full)"), "{brief}");
+    assert!(!brief.contains("BACKEND-RULE-TEXT"), "{brief}");
+    assert!(brief.contains("UNIX-RULE-TEXT"), "{brief}");
+    assert!(brief.contains("# Constraint rules (index)"), "{brief}");
+    assert!(brief.contains("aval rule <id>"), "{brief}");
+    assert!(
+        brief.contains("<<<RULES sha="),
+        "the RULES line stays: {brief}"
+    );
+    let bin = scratch("profile-slim-ir");
+    fake_aval(&bin, PROFILE_AVAL);
+    let repo = two_commit_repo("profile-slim-ir-repo");
+    let (_, full) = brief_text(&bin, &repo);
+    assert!(full.contains("# Code rules (in full)"), "{full}");
+    assert!(full.contains("BACKEND-RULE-TEXT"), "{full}");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_lang_profile_holds_the_language_rules() {
