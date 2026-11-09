@@ -24,6 +24,7 @@
 | `sed-in-place` | `advise` | `sed -i` spelled for the other sed (`-i ''` on GNU, bare `-i` on BSD) |
 | `kubectl-gitops` | `advise` | an imperative `kubectl` write in a repository Flux or Argo reconciles |
 | `tag-after-commit` | `advise` | `git tag` chained onto a `git commit` that a hook may have refused |
+| `chain-with-and` | `observe` | an edit, add or test joined by `;` to a commit, push or test that runs even when it fails |
 | `release-tag-push` | `observe` | pushing a `v*` tag, which publishes: the tag may name the wrong commit, and a green workflow does not mean the artefact is right |
 | `worktree-remove-force` | `advise` | `git worktree remove --force` on a worktree that still holds uncommitted work |
 | `amend-pushed` | `advise` | `git commit --amend` on a commit the remote already has |

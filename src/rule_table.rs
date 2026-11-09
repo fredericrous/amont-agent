@@ -27,6 +27,7 @@ pub const RULES: &[Rule] = &[
     crate::rules::sed_in_place::RULE,
     crate::rules::kubectl_gitops::RULE,
     crate::rules::tag_after_commit::RULE,
+    crate::rules::chain_with_and::RULE,
     crate::rules::release_tag_push::RULE,
     crate::rules::worktree_remove_force::RULE,
     crate::rules::amend_pushed::RULE,
@@ -158,16 +159,16 @@ mod tests {
         }
     }
 
-    /// The table holds every rule, in its place: 49 rules, which are the 45
+    /// The table holds every rule, in its place: 50 rules, which are the 45
     /// left after the workspace split and the observe-rule retirements, plus
     /// `work-overlap`, `ask-unopened-page`, `suppressions-override` and
-    /// `plan-names-no-paths`, with `push-preview` between `push-preflight` and
+    /// `plan-names-no-paths` and `chain-with-and`, with `push-preview` between `push-preflight` and
     /// `plan-review-panel`, and `implementation-review` after
     /// `plan-phases-open`. A rule a crate stopped listing would vanish here.
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 49, "{ids:?}");
+        assert_eq!(ids.len(), 50, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)
