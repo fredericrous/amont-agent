@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.26.0
+
 ### Changed
 
 - `whole-file-dump` at `deny` refuses once, like `read-unbounded-large`: the
