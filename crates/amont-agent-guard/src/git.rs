@@ -131,19 +131,54 @@ pub fn bytes_in(
     args: &[&str],
     input: Option<&[u8]>,
 ) -> std::io::Result<Option<Vec<u8>>> {
+    match bytes_in_env(dir, args, input, &[]) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(BytesFailure::Spawn(e)) => Err(e),
+        Err(BytesFailure::Exited(_)) => Ok(None),
+    }
+}
+
+/// Why [`bytes_in_env`] has no output.
+#[derive(Debug)]
+pub enum BytesFailure {
+    /// git could not be started or read.
+    Spawn(std::io::Error),
+    /// git ran and exited non-zero; carries its trimmed stderr.
+    Exited(String),
+}
+
+impl std::fmt::Display for BytesFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BytesFailure::Spawn(e) => write!(f, "git could not be run: {e}"),
+            BytesFailure::Exited(stderr) if stderr.is_empty() => write!(f, "git failed"),
+            BytesFailure::Exited(stderr) => write!(f, "git failed: {stderr}"),
+        }
+    }
+}
+
+/// [`bytes_in`] with extra environment pairs set for the child, and git's
+/// stderr kept for the error text.
+pub fn bytes_in_env(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    environment: &[(&str, &str)],
+) -> Result<Vec<u8>, BytesFailure> {
     use std::io::Write;
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
         .args(args)
+        .envs(environment.iter().copied())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         });
-    let mut child = retrying(|| cmd.spawn())?;
+    let mut child = retrying(|| cmd.spawn()).map_err(BytesFailure::Spawn)?;
     // Fed from a thread: `cat-file --batch` writes while it reads, and a
     // pipe filled on both sides at once deadlocks.
     let feeder = match (input, child.stdin.take()) {
@@ -155,11 +190,17 @@ pub fn bytes_in(
         }
         _ => None,
     };
-    let out = child.wait_with_output()?;
+    let out = child.wait_with_output().map_err(BytesFailure::Spawn)?;
     if let Some(f) = feeder {
         let _ = f.join();
     }
-    Ok(out.status.success().then_some(out.stdout))
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(BytesFailure::Exited(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
 }
 
 /// Every path in `tree`, recursively, as raw bytes split on NUL.
@@ -322,6 +363,17 @@ pub fn bytes_bounded(
     input: Option<&[u8]>,
     deadline: Instant,
 ) -> Option<Vec<u8>> {
+    bytes_bounded_env(dir, args, input, &[], deadline)
+}
+
+/// [`bytes_bounded`] with extra environment pairs set for the child.
+pub fn bytes_bounded_env(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    environment: &[(&str, &str)],
+    deadline: Instant,
+) -> Option<Vec<u8>> {
     use std::io::{Read, Write};
     if Instant::now() >= deadline {
         return None;
@@ -332,6 +384,7 @@ pub fn bytes_bounded(
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(environment.iter().copied())
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {

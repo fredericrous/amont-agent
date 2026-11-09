@@ -27,10 +27,12 @@ use amont_agent_guard::compliance;
 use amont_agent_guard::corpus;
 use amont_agent_guard::decision;
 use amont_agent_guard::doctor;
+use amont_agent_guard::git;
 use amont_agent_guard::graduate;
 use amont_agent_guard::guidance;
 use amont_agent_guard::harness_review;
 use amont_agent_process::attestations;
+use amont_agent_process::block_fingerprint;
 use amont_agent_process::content_id;
 mod hook;
 mod open;
@@ -140,6 +142,9 @@ usage: amont-agent <command>
                         the content id an implementation review and a
                         preview approval bind to: HEAD's tree without
                         docs/plans/ (not attest's canonical tree)
+  block sha [-C <dir>] [--base <ref>]
+                        the fingerprint of the branch's change, as a copy of
+                        a reviewed block is recognised by
   rules-sha [-C <dir>]  the sha256 of the code rules `aval` reports, as an
                         implementation-review brief binds them
   review-brief [-C <dir>] [--plan <path>] [--base <ref>]
@@ -213,6 +218,7 @@ enum Sub {
     ImplementationReview,
     PlanApply,
     TreeSha,
+    Block,
     RulesSha,
     ReviewBrief,
     Attestations,
@@ -223,7 +229,7 @@ enum Sub {
     Suppressions,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 31] = [
+const SUBCOMMANDS: [(&str, Sub); 32] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -247,6 +253,7 @@ const SUBCOMMANDS: [(&str, Sub); 31] = [
     ("implementation-review", Sub::ImplementationReview),
     ("plan-apply", Sub::PlanApply),
     ("tree-sha", Sub::TreeSha),
+    ("block", Sub::Block),
     ("rules-sha", Sub::RulesSha),
     ("review-brief", Sub::ReviewBrief),
     ("attestations", Sub::Attestations),
@@ -486,6 +493,7 @@ fn main() -> ExitCode {
                 code
             }
             Sub::TreeSha => run_tree_sha(&args),
+            Sub::Block => run_block(&args),
             Sub::RulesSha => run_rules_sha(&args),
             Sub::ReviewBrief => run_review_brief(&args),
             Sub::Attestations => attestations::run_cli(&args),
@@ -1502,6 +1510,130 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         println!("{sha}");
     }
     ExitCode::SUCCESS
+}
+
+const BLOCK_USAGE: &str = "\
+usage: amont-agent block sha [-C <dir>] [--base <ref>]
+
+The fingerprint of a branch's change, which a copy of a reviewed block
+shares with its source: the sha256 of the `+` and `-` lines of `git diff`
+from the merge base to HEAD (docs/plans/ left out), without paths, line
+numbers or context, the common indentation removed, and CR and trailing
+blanks stripped. git runs with its own settings, not the person's.
+
+  sha          print `<64 hex>` TAB `fp:<12 hex>` on stdout
+  -C <dir>     the repository at <dir> (default: the current one)
+  --base <ref> the ref to take the merge base with (default: the default
+               branch of origin)
+
+Exit 0; 1 when there is no fingerprint (a binary file in the diff, which
+is never a copy, or git failing; the reason on stderr); 2 on a usage error.
+";
+
+/// How long finding the default branch, and then the diff, may each take.
+const BLOCK_GIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn run_block(args: &[OsString]) -> ExitCode {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{BLOCK_USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    match args.first().map(String::as_str) {
+        Some("sha") => run_block_sha(&args[1..]),
+        Some(other) => {
+            eprintln!("amont-agent: block: unknown verb `{other}`; try `amont-agent block --help`");
+            eprint!("{BLOCK_USAGE}");
+            ExitCode::from(2)
+        }
+        None => {
+            eprintln!("amont-agent: block: needs a verb; try `amont-agent block --help`");
+            eprint!("{BLOCK_USAGE}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_block_sha(args: &[String]) -> ExitCode {
+    let (mut dir, mut base) = (std::path::PathBuf::from("."), None);
+    let mut i = 0;
+    while i < args.len() {
+        let word = args[i].as_str();
+        i += 1;
+        let (flag, attached) = match word.split_once('=') {
+            Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
+            _ => match (word.get(..2), word.get(2..)) {
+                (Some("-C"), Some(rest)) if !rest.is_empty() => ("-C", Some(rest.to_string())),
+                _ => (word, None),
+            },
+        };
+        if flag != "-C" && flag != "--base" {
+            eprintln!(
+                "amont-agent: block: unknown argument `{word}`; try `amont-agent block --help`"
+            );
+            return ExitCode::from(2);
+        }
+        let value = match attached {
+            Some(value) => value,
+            None => {
+                let Some(value) = args.get(i) else {
+                    eprintln!("amont-agent: block: {flag} needs a value");
+                    return ExitCode::from(2);
+                };
+                i += 1;
+                value.clone()
+            }
+        };
+        if flag == "-C" {
+            dir = std::path::PathBuf::from(value);
+        } else {
+            base = Some(value);
+        }
+    }
+    let Some(repo) = push_target::toplevel(&dir) else {
+        eprintln!(
+            "amont-agent: block: {} is not inside a git repository",
+            dir.display()
+        );
+        return ExitCode::from(1);
+    };
+    let Some(base) = base.or_else(|| {
+        git::default_ref(&repo, std::time::Instant::now() + BLOCK_GIT_BUDGET)
+            .map(|(reference, _)| reference)
+    }) else {
+        eprintln!("amont-agent: block: no default branch of `origin` is known; pass --base <ref>");
+        return ExitCode::from(1);
+    };
+    let deadline = std::time::Instant::now() + BLOCK_GIT_BUDGET;
+    let Some(merge_base) =
+        git::stdout_bounded(&repo, &["merge-base", base.as_str(), "HEAD"], deadline)
+    else {
+        eprintln!("amont-agent: block: `git merge-base {base} HEAD` failed");
+        return ExitCode::from(1);
+    };
+    let diff = match block_fingerprint::diff_of(&repo, &merge_base, "HEAD", deadline) {
+        Ok(diff) => diff,
+        Err(why) => {
+            eprintln!("amont-agent: block: {why}");
+            return ExitCode::from(1);
+        }
+    };
+    match block_fingerprint::fingerprint_of_diff(&diff) {
+        Some(fingerprint) => {
+            println!("{}\t{}", fingerprint.full(), fingerprint.short());
+            ExitCode::SUCCESS
+        }
+        None => {
+            let path = block_fingerprint::binary_path(&diff).unwrap_or_default();
+            eprintln!(
+                "amont-agent: block: the diff has a binary file ({path}); a binary change is never a copy"
+            );
+            ExitCode::from(1)
+        }
+    }
 }
 
 const TREE_SHA_USAGE: &str = "\
