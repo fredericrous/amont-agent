@@ -13,6 +13,7 @@ use amont_agent_guard::sha256::{hex, sha256};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -155,11 +156,11 @@ fn write_once(dir: &Path, name: &str, body: &str) -> io::Result<()> {
     let staged = dir.join(format!(".tmp-{}-{name}", std::process::id()));
     let _ = fs::remove_file(&staged); // a killed run's leftover; absence is fine
     let written = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&staged)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&staged)?;
         file.write_all(body.as_bytes())?;
         file.sync_all()
     })();
@@ -578,6 +579,7 @@ mod tests {
         assert_eq!(fingerprints(&base), vec![fp()]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn staged_names_are_removed_and_files_are_private() {
         use std::os::unix::fs::PermissionsExt;

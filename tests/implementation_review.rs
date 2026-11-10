@@ -4480,6 +4480,7 @@ fn a_free_text_none_reason_is_untouched() {
     assert!(!w.journal().iter().any(|l| l.contains("profiles-copy")));
 }
 
+#[cfg(unix)] // a fake git script on PATH
 #[test]
 fn a_copy_whose_roles_cannot_be_told_is_held_not_narrowed_to_backend() {
     let (w, _, copy) = registered_pilot("copy-roles-unknown");
