@@ -33,6 +33,7 @@ pub mod agent_guidance_written;
 pub mod amend_pushed;
 pub mod ask_unopened_page;
 pub mod bare_stash_pop;
+pub mod block_reinstate;
 pub mod branch_force_delete;
 pub mod cd_carries_over;
 pub mod chain_with_and;

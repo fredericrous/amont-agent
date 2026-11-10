@@ -6,6 +6,7 @@
 | `bare-stash-pop` | `observe` | `git stash pop` with no ref, where `refs/stash` is shared across worktrees |
 | `cd-carries-over` | `advise` | a Bash call that runs in a directory an earlier call of its own parallel batch moved the shell to with a top-level `cd` or `pushd` (the shell is no longer where the batch's first call ran, and the harness does not announce a carry between siblings); use `(cd X && …)`, `git -C X` or absolute paths |
 | `gh-pr-merge-auto` | `observe` | `--auto` on a repository with no required checks, which merges immediately |
+| `block-reinstate` | `deny` | an agent running `amont-agent block reinstate`, which lifts the revocation of a reviewed block and re-admits its copies; the person runs it in their own shell |
 | `publish-without-skill` | `advise` | a `v*` tag pushed or a pull request merged with no call of the `tag-release` / `merge-when-green` skill in this turn or the one before, so the procedure ran from memory |
 | `forge-merge-by-hand` | `advise` | merging a pull request by POSTing to the forge's merge endpoint, which answers `200` whether the checks passed, failed or never started |
 | `no-verify` | `observe` | turning the whole commit gate off rather than one check |
