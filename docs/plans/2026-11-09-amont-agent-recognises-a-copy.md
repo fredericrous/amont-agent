@@ -71,7 +71,7 @@ carries phases 1 to 4 as separate commits. amont-agent is still named
 amont-agent in code; the rename to greenpiste is the gate-guardrails map's later
 step, and the registry sits under `journal::dir()` so it moves with it.
 
-### Phase 1: the fingerprint
+### Phase 1: the fingerprint ✅
 - `crates/amont-agent-guard/src/git.rs`: a new `bytes_in_env` (as `bytes_in`, plus
   environment pairs, and stderr captured for the error text).
 - `crates/amont-agent-process/src/block_fingerprint.rs` (new), declared in
@@ -120,7 +120,7 @@ step, and the registry sits under `journal::dir()` so it moves with it.
   `core.quotepath` set in the repository's config or in `~/.gitconfig`, and with
   `-C` pointing into a subdirectory.
 
-### Phase 2: the registry and the hook
+### Phase 2: the registry and the hook ✅
 - `crates/amont-agent-process/src/implementation_review.rs`:
   - The registry, under `store()` beside `by-tree/` (`pass_file`, `:488`), is
     made of files that are written once, so concurrent hooks lose no write.
@@ -211,7 +211,7 @@ step, and the registry sits under `journal::dir()` so it moves with it.
   existing carry tests (`:3457-3830`) and `only_the_hook_writes_a_pass_file`
   (`:954`) pass unchanged.
 
-### Phase 3: the proposal and the pin check
+### Phase 3: the proposal and the pin check ✅
 - `crates/amont-agent-process/src/code_review.rs`: `NoReviewReason::CopyOf`
   (`:190`, `Display` at `:202`) printing `copy of fp:<12 hex>`.
 - `src/main.rs`, `run_plan_panel` (`:1871`): optional `-C <dir>` and `--base
@@ -252,7 +252,7 @@ step, and the registry sits under `journal::dir()` so it moves with it.
   `--code-review` exits 2; the help text of `block` and `plan-panel` stays within
   80 columns.
 
-### Phase 4: ledger, docs, changelog
+### Phase 4: ledger, docs, changelog ✅
 - `crates/amont-agent-process/src/impl_review_outcomes.rs` and
   `crates/amont-agent-process/src/review_outcomes.rs`: tag a review as copy or
   not, set when the hook journalled `profiles-copy-matched`, and
@@ -355,5 +355,22 @@ declares the profiles.
 - amont-agent: backend, lang:rust, unix, tui (the new `block` subcommand's TSV and JSON output, exit codes and usage text, and the proposal line, are user-facing output; architect left out: ADR-0067 already decided the structure)
 - greenharness-skills: none — markdown skill and agent text only, checked by `scripts/check.sh`
 - grh: none — a pin bump in `catalog.toml` and a changelog line
+
+## Decision log
+- 2026-11-10: another session released 3.28.0 (#235) while this branch was built, so this work ships as 3.29.0, and Phase 5's gate is `amont-agent --version` 3.29.0 or later.
+- 2026-11-10: `block reinstate` kept, as the plan was approved as written.
+- 2026-11-10: the merge-base and the diff of `block sha` run under a 20 s deadline (`git::bytes_bounded_env`); `run_bounded` keeps its fixed 30 s, and the pin check uses its own 20 s through `run_bounded_for`.
+- 2026-11-10: the hook takes the full role set from `plan_review::repo_areas` (the proposal's areas), so a repository with a command line needs unix and tui too; when the set cannot be told, the push is held under deny, never narrowed.
+- 2026-11-10: the copy tag reads the journal's `profiles-copy-matched` line by its 12-hex tree prefix.
+
+## Verification results
+- Phase 1, fixtures and the near-miss table through `block sha` and the library → expected as listed → actual: `tests/block.rs` passes, hostile git settings and a subdirectory give one fingerprint, a binary diff exits 1.
+- Phase 1, the real merged commits (adr-lint `1499a39`, attest `6467ab4`, decisions `72ccdf7`, kb-vision `d852a29`) through `block sha --base <c>~1` → expected: the three adr-lint copies share one fingerprint, kb-vision another → actual: `fp:e61db7b36e21` ×3, `fp:269847aad292`.
+- Phase 2, the hook tests in a throwaway repository → expected: registration, hit, each named miss, advise miss, revocation, refusals, the race → actual: `tests/implementation_review.rs` and `tests/block_registry` cases pass; `block list/revoke/reinstate` covered in `tests/block.rs`.
+- Phase 3, `plan-panel -C --base` and `review-brief` with a fake `gh` (asset present, missing, failing, slow, absent) → expected as listed → actual: `tests/plan_review.rs` and `tests/review_brief.rs` pass.
+- Phase 3, a real `gh`: attest's block with a `# release-pin: fredericrous/aval v{version} aval-{version}-x86_64-unknown-linux-gnu.tar.gz AVAL_VERSION` line, its fingerprint seeded in a scratch registry (`CLAUDE_CONFIG_DIR`) → expected: a passing Pin check and a pass record → actual: "fredericrous/aval release v1.12.0 lists aval-1.12.0-x86_64-unknown-linux-gnu.tar.gz", record `passed: true, gh_override_set: false`. With the marker uncommitted: a failure record "no `# release-pin:` line among the added lines". With the pin changed to 0.0.999 inside the change: a new fingerprint, unregistered, no Pin check section. Evidence: `attestations/block-copy-real-run`.
+- Phase 4, a journal with one `profiles-copy-matched` push and one ordinary push → expected: 1 copy, 0 defects, the ordinary review untagged → actual: `review_outcomes::tests::a_copy_matched_push_is_counted_and_an_ordinary_one_is_not` passes.
+- Whole tree after the rebase on 3.28.0: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace --locked` → pass.
+- Not done: registering a pilot through a real hook run with real reviewer transcripts; the hook tests drive the same path with recorded transcripts. The first real pilot after install is that check, read from the journal.
 
 <!-- panel: repos=amont-agent,greenharness-skills,grh adds=contract reviewers=architect,backend,lang:rust,po,tui,unix,codex body-sha=dfc422a7a1f7 -->
