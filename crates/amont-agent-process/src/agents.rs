@@ -38,9 +38,12 @@ const CODE_REVIEW_AGENTS: [&str; 8] = [
     "interface-review",
 ];
 
+/// The extension of an agent file; the stem is the agent's name.
+const AGENT_EXTENSION: &str = ".md";
+
 impl Need {
     fn matches(self, file_name: &str) -> bool {
-        let Some(stem) = file_name.strip_suffix(".md") else {
+        let Some(stem) = file_name.strip_suffix(AGENT_EXTENSION) else {
             return false;
         };
         match self {
@@ -99,20 +102,46 @@ pub fn carried(need: Need, project: &Path) -> bool {
 }
 
 fn carried_in(need: Need, config_dir: Option<&Path>, project: &Path) -> bool {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    match config_dir {
-        Some(config) => {
-            dirs.push(config.join("agents"));
-            match plugin_roots(config) {
-                Some(roots) => dirs.extend(roots.into_iter().map(|r| r.join("agents"))),
-                None => return true,
-            }
-        }
-        // Where the agents would be is unknown: missing evidence is not permission.
-        None => return true,
+    match agent_dirs_in(config_dir, project) {
+        Some(dirs) => dirs.iter().any(|dir| dir_has(dir, need)),
+        None => true,
     }
+}
+
+/// Every `agents/` directory Claude Code loads agents from, for the
+/// repository holding `project`: the config directory, installed plugins,
+/// the repository. `None` when where the agents would be cannot be known.
+pub fn agent_dirs(project: &Path) -> Option<Vec<PathBuf>> {
+    agent_dirs_in(
+        amont_agent_guard::settings::config_dir().as_deref(),
+        project,
+    )
+}
+
+/// The files an agent named `agent` could be loaded from, in load order:
+/// one candidate per directory of [`agent_dirs`]. `None` when the
+/// directories cannot be known. A file may not exist.
+pub fn agent_files(project: &Path, agent: &str) -> Option<Vec<PathBuf>> {
+    let file_name = format!("{agent}{AGENT_EXTENSION}");
+    Some(
+        agent_dirs(project)?
+            .into_iter()
+            .map(|dir| dir.join(&file_name))
+            .collect(),
+    )
+}
+
+fn agent_dirs_in(config_dir: Option<&Path>, project: &Path) -> Option<Vec<PathBuf>> {
+    // Where the agents would be is unknown without a config directory.
+    let config = config_dir?;
+    let mut dirs: Vec<PathBuf> = vec![config.join("agents")];
+    dirs.extend(
+        plugin_roots(config)?
+            .into_iter()
+            .map(|root| root.join("agents")),
+    );
     dirs.push(repository_root(project).join(".claude").join("agents"));
-    dirs.iter().any(|dir| dir_has(dir, need))
+    Some(dirs)
 }
 
 /// The repository root holding `project`, else `project` itself: the walk

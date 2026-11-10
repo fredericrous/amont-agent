@@ -4163,3 +4163,435 @@ fn an_invalid_pointer_line_at_the_reviewed_commit_does_not_carry() {
     assert!(advised(&said).contains("code-review-backend"), "{said:?}");
     assert!(carried_lines(&w).is_empty(), "{:?}", w.journal());
 }
+
+// Reviewed-block copies (`work.reviewed-block-copy`).
+
+const FULL_SET: &str = "backend, lang:rust";
+
+fn deny(w: &World) {
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+}
+
+fn state_dir(w: &World) -> PathBuf {
+    w.root.join("claude").join("amont-agent")
+}
+
+/// The fingerprint of the repository's branch against `origin/main`.
+fn block_of(repo: &Path) -> amont_agent_process::block_fingerprint::Fingerprint {
+    let base = git(repo, &["merge-base", "HEAD", "origin/main"]);
+    amont_agent_process::block_fingerprint::fingerprint(
+        repo,
+        &base,
+        "HEAD",
+        std::time::Instant::now() + std::time::Duration::from_secs(20),
+    )
+    .expect("git diff")
+    .expect("no binary file")
+}
+
+fn generations(w: &World, fingerprint: &str) -> usize {
+    amont_agent_process::block_registry::entries(&state_dir(w), fingerprint).len()
+}
+
+/// The implementation review and the backend profile, both approving.
+fn backend_approvals(w: &World, repo: &Path) -> Transcript {
+    let mut t = Transcript::default();
+    t.review(
+        w,
+        AGENT,
+        &w.block(repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        w,
+        "code-review-backend",
+        &profile_prompt(w, repo, "Profile: backend"),
+        "Verdict: approve",
+    );
+    t
+}
+
+/// [`backend_approvals`] and the Rust language profile, approving.
+fn full_approvals(w: &World, repo: &Path) -> Transcript {
+    let mut t = backend_approvals(w, repo);
+    t.profile_review(
+        w,
+        "code-review-language",
+        &profile_prompt(w, repo, "Profile: lang:rust"),
+        "Verdict: approve",
+    );
+    t
+}
+
+/// A pilot `app` pushed with every profile approving, and a second
+/// repository `other` of the same World holding the same change.
+fn registered_pilot(name: &str) -> (World, PathBuf, PathBuf) {
+    let w = World::new(name);
+    deny(&w);
+    let pilot = w.repo("app");
+    declare(&w, &pilot, &format!("- app: {FULL_SET}"));
+    let t = full_approvals(&w, &pilot);
+    let transcript = w.transcript("pilot", &t);
+    assert_eq!(w.push(&pilot, "s1", Some(&transcript)), Said::Silent);
+    let copy = w.repo("other");
+    let line = format!("- other: none — copy of {}", block_of(&pilot).short());
+    declare(&w, &copy, &line);
+    (w, pilot, copy)
+}
+
+fn pin_with(passed: bool) -> amont_agent_process::block_registry::Pin {
+    amont_agent_process::block_registry::Pin {
+        passed,
+        detail: "test".into(),
+        gh_override_set: false,
+    }
+}
+
+fn pin_passed(w: &World, copy: &Path) {
+    store_pin(w, copy, &pin_with(true));
+}
+
+fn pin_failed(w: &World, copy: &Path) {
+    store_pin(w, copy, &pin_with(false));
+}
+
+fn store_pin(w: &World, copy: &Path, pin: &amont_agent_process::block_registry::Pin) {
+    let fingerprint = block_of(copy);
+    amont_agent_process::block_registry::write_pin(
+        &state_dir(w),
+        fingerprint.full(),
+        &w.tree(copy),
+        pin,
+    )
+    .unwrap();
+}
+
+fn push_copy(w: &World, copy: &Path, session: &str) -> Said {
+    let mut t = Transcript::default();
+    t.review(
+        w,
+        AGENT,
+        &w.block(copy),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript(session, &t);
+    w.push(copy, session, Some(&transcript))
+}
+
+fn denied_with(said: Said, cause: &str) {
+    match said {
+        Said::Deny(text) => {
+            assert!(text.contains(cause), "{cause}: {text}");
+            assert!(text.contains("code-review-backend"), "{text}");
+        }
+        other => panic!("{cause}: expected a hold, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_pilot_registers_only_after_the_last_profile_approves() {
+    let w = World::new("copy-pilot");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let fingerprint = block_of(&repo);
+    let mut t = backend_approvals(&w, &repo);
+    let first = w.transcript("first", &t);
+    assert!(matches!(w.push(&repo, "s1", Some(&first)), Said::Deny(_)));
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+
+    t.profile_review(
+        &w,
+        "code-review-language",
+        &profile_prompt(&w, &repo, "Profile: lang:rust"),
+        "Verdict: approve",
+    );
+    let second = w.transcript("second", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&second)), Said::Silent);
+    assert_eq!(generations(&w, fingerprint.full()), 1);
+
+    // Later hook attempts, with and without the transcript, register nothing new.
+    assert_eq!(w.push(&repo, "s1", Some(&second)), Said::Silent);
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    assert_eq!(generations(&w, fingerprint.full()), 1);
+}
+
+#[test]
+fn a_copy_with_a_passed_pin_check_needs_no_profiles() {
+    let (w, pilot, copy) = registered_pilot("copy-hit");
+    pin_passed(&w, &copy);
+    assert_eq!(push_copy(&w, &copy, "s2"), Said::Silent);
+    assert!(
+        w.journal()
+            .iter()
+            .any(|l| l.contains(" profiles-copy-matched ")),
+        "{:?}",
+        w.journal()
+    );
+    let copies =
+        amont_agent_process::block_registry::copies(&state_dir(&w), block_of(&pilot).full());
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(copies[0].repo, "other");
+    assert_eq!(copies[0].commit, git(&copy, &["rev-parse", "HEAD"]));
+}
+
+#[test]
+fn a_copy_without_a_pin_record_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-no-pin");
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "no passed pin check; run amont-agent review-brief -C",
+    );
+    assert!(w
+        .journal()
+        .iter()
+        .any(|l| l.contains(" profiles-copy-missed ")));
+}
+
+#[test]
+fn a_pass_then_a_failed_pin_check_at_the_same_tree_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-pin-fails");
+    pin_passed(&w, &copy);
+    pin_failed(&w, &copy);
+    denied_with(push_copy(&w, &copy, "s2"), "no passed pin check");
+}
+
+#[test]
+fn a_copy_of_an_unregistered_block_is_a_miss() {
+    let w = World::new("copy-no-entry");
+    deny(&w);
+    let copy = w.repo("other");
+    declare(&w, &copy, "- other: none — copy of fp:0123456789ab");
+    denied_with(push_copy(&w, &copy, "s1"), "no entry for fp:0123456789ab");
+}
+
+#[test]
+fn a_copy_after_a_rules_change_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-rules");
+    pin_passed(&w, &copy);
+    w.fake_aval("another");
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "rules changed since registration",
+    );
+}
+
+#[test]
+fn a_copy_after_an_agent_change_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-agent");
+    pin_passed(&w, &copy);
+    std::fs::write(
+        w.root.join("claude/agents/code-review-backend.md"),
+        "---\nname: code-review-backend\n---\nnew\n",
+    )
+    .unwrap();
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "agent code-review-backend changed since registration",
+    );
+}
+
+#[test]
+fn a_revoked_block_never_matches_even_with_a_later_generation() {
+    let (w, pilot, copy) = registered_pilot("copy-revoked");
+    pin_passed(&w, &copy);
+    let fingerprint = block_of(&pilot);
+    let base = state_dir(&w);
+    amont_agent_process::block_registry::revoke(&base, fingerprint.full(), "a defect").unwrap();
+    // A generation that a concurrent registration creates after the revoke.
+    amont_agent_process::block_registry::register_entry(
+        &base,
+        fingerprint.full(),
+        &amont_agent_process::block_registry::Generation {
+            rules_sha: ABC_SHA.into(),
+            agent_digest: "e".repeat(64),
+        },
+        &amont_agent_process::block_registry::EntryData {
+            roles: vec!["backend".into(), "lang:rust".into()],
+            agents: Vec::new(),
+            source_branch: "late".into(),
+            content_id: "f".repeat(64),
+        },
+    )
+    .unwrap();
+    denied_with(push_copy(&w, &copy, "s2"), "revoked: a defect");
+    amont_agent_process::block_registry::reinstate(&base, fingerprint.full()).unwrap();
+    assert_eq!(push_copy(&w, &copy, "s3"), Said::Silent);
+}
+
+#[test]
+fn under_the_advise_stance_a_copy_line_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-advise");
+    pin_passed(&w, &copy);
+    w.set_global("amont.agent.implementation-review.stance", "advise");
+    let said = push_copy(&w, &copy, "s2");
+    let text = advised(&said);
+    assert!(text.contains("code-review-backend"), "{text}");
+    assert!(text.contains("the hook is not enforcing"), "{text}");
+}
+
+#[test]
+fn a_free_text_none_reason_is_untouched() {
+    let w = World::new("copy-free-text");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: none — prose only");
+    assert_eq!(push_copy(&w, &repo, "s1"), Said::Silent);
+    assert!(!w.journal().iter().any(|l| l.contains("profiles-copy")));
+}
+
+#[test]
+fn a_copy_whose_roles_cannot_be_told_is_held_not_narrowed_to_backend() {
+    let (w, _, copy) = registered_pilot("copy-roles-unknown");
+    pin_passed(&w, &copy);
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    common::write_fake(
+        &bin.join("git"),
+        &format!(
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --name-only ] && exit 1; done\nexec {} \"$@\"\n",
+            real.trim()
+        ),
+    );
+    match push_copy(&w, &copy, "s2") {
+        Said::Deny(text) => assert!(text.contains("cannot be told"), "{text}"),
+        other => panic!("expected a hold, got {other:?}"),
+    }
+}
+
+/// A repository like `World::repo`, whose default branch also holds a
+/// `src/main.rs`, so its areas include `cli`.
+fn cli_repo(w: &World, name: &str) -> PathBuf {
+    let repo = w.repo(name);
+    git(&repo, &["checkout", "-q", "main"]);
+    w.commit(&repo, &[("src/main.rs", "fn main() {}\n")]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["checkout", "-q", "feat/x"]);
+    git(&repo, &["rebase", "-q", "main"]);
+    repo
+}
+
+#[test]
+fn a_pilot_of_a_command_line_repository_needs_the_command_line_seats() {
+    let w = World::new("copy-cli-pilot");
+    deny(&w);
+    let repo = cli_repo(&w, "app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let fingerprint = block_of(&repo);
+    let t = full_approvals(&w, &repo);
+    let transcript = w.transcript("t", &t);
+    let _ = w.push(&repo, "s1", Some(&transcript)); // the verdict is not what this checks
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+}
+
+#[test]
+fn a_copy_in_a_command_line_repository_misses_an_entry_without_those_seats() {
+    let (w, _, _) = registered_pilot("copy-cli-copy");
+    let copy = cli_repo(&w, "cli");
+    declare(
+        &w,
+        &copy,
+        &format!("- cli: none — copy of {}", block_of(&copy).short()),
+    );
+    pin_passed(&w, &copy);
+    match push_copy(&w, &copy, "s2") {
+        Said::Deny(text) => {
+            assert!(text.contains("not covered"), "{text}");
+            assert!(text.contains("code-review-unix"), "{text}");
+            assert!(text.contains("code-review-tui"), "{text}");
+        }
+        other => panic!("expected a hold, got {other:?}"),
+    }
+}
+
+/// A repository pushed with `section` declared and the transcript `build` makes.
+fn registers_nothing(name: &str, section: &str, build: impl Fn(&World, &Path) -> Transcript) {
+    let w = World::new(name);
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, section);
+    let fingerprint = block_of(&repo);
+    let t = build(&w, &repo);
+    let transcript = w.transcript("t", &t);
+    let _ = w.push(&repo, "s1", Some(&transcript)); // the verdict is not what this checks
+    assert_eq!(generations(&w, fingerprint.full()), 0, "{name}");
+}
+
+#[test]
+fn nothing_registers_for_a_narrowed_plan_an_approve_with_changes_or_a_missing_profile() {
+    registers_nothing("copy-narrowed", "- app: backend", full_approvals);
+    registers_nothing("copy-awc", &format!("- app: {FULL_SET}"), |w, repo| {
+        let mut t = backend_approvals(w, repo);
+        t.profile_review(
+            w,
+            "code-review-language",
+            &profile_prompt(w, repo, "Profile: lang:rust"),
+            "Verdict: approve-with-changes",
+        );
+        t
+    });
+    registers_nothing(
+        "copy-missing",
+        &format!("- app: {FULL_SET}"),
+        backend_approvals,
+    );
+}
+
+#[test]
+fn nothing_registers_after_an_overrule() {
+    let w = World::new("copy-overrule");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let fingerprint = block_of(&repo);
+    let tree = w.tree(&repo);
+    let mut t = backend_approvals(&w, &repo);
+    t.profile_review(
+        &w,
+        "code-review-language",
+        &profile_prompt(&w, &repo, "Profile: lang:rust"),
+        "Verdict: rework",
+    );
+    let transcript = w.transcript("t", &t);
+    let q = format!("[implementation-review app@{tree} profile=lang:rust] Overrule?");
+    w.ask_pre("q1", &q, false, Some(&transcript));
+    w.ask_post("q1", &q, "Overrule", Some(&transcript));
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+}
+
+#[test]
+fn a_carried_pass_registers_nothing() {
+    let w = World::new("copy-carried");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let t = full_approvals(&w, &repo);
+    let first = w.transcript("a", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&first)), Said::Silent);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 1; }\n")]);
+    let fingerprint = block_of(&repo);
+    let mut second = Transcript::default();
+    second.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("b", &second);
+    assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
+    assert!(!carried_lines(&w).is_empty(), "{:?}", w.journal());
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+}

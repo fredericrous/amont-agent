@@ -46,6 +46,10 @@ impl Generation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryData {
     pub roles: Vec<String>,
+    /// Each profile agent read at registration and the sha256 of its file
+    /// (`-` when no file was found), so a later miss can name the agent that
+    /// changed.
+    pub agents: Vec<(String, String)>,
     pub source_branch: String,
     pub content_id: String,
 }
@@ -55,7 +59,7 @@ pub struct EntryData {
 pub struct Entry {
     pub generation: Generation,
     pub fingerprint: String,
-    pub data: EntryData,
+    pub registered: EntryData,
 }
 
 /// One recorded copy of a block.
@@ -172,6 +176,7 @@ pub fn register_entry(
     let body = json!({
         "fingerprint": fingerprint,
         "roles": data.roles,
+        "agents": data.agents.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
         "rules_sha": generation.rules_sha,
         "agent_digest": generation.agent_digest,
         "source_branch": data.source_branch,
@@ -187,14 +192,25 @@ fn parse_entry(value: &Value) -> Option<Entry> {
         .iter()
         .map(|role| role.as_str().map(str::to_string))
         .collect::<Option<Vec<_>>>()?;
+    let agents = value
+        .get("agents")
+        .and_then(Value::as_object)
+        .map(|listed| {
+            listed
+                .iter()
+                .filter_map(|(agent, digest)| Some((agent.clone(), digest.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
     Some(Entry {
         generation: Generation {
             rules_sha: text(value, "rules_sha")?,
             agent_digest: text(value, "agent_digest")?,
         },
         fingerprint: text(value, "fingerprint")?,
-        data: EntryData {
+        registered: EntryData {
             roles,
+            agents,
             source_branch: text(value, "source_branch")?,
             content_id: text(value, "content_id")?,
         },
@@ -366,6 +382,7 @@ mod tests {
     fn data() -> EntryData {
         EntryData {
             roles: vec!["backend".into(), "lang:rust".into()],
+            agents: vec![("code-review-backend".into(), "-".into())],
             source_branch: "pilot".into(),
             content_id: "c0ffee".into(),
         }
@@ -378,7 +395,7 @@ mod tests {
         register_entry(&base, &fp(), &generation(1), &data()).expect("second");
         let found = entries(&base, &fp());
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].data, data());
+        assert_eq!(found[0].registered, data());
         assert_eq!(found[0].generation, generation(1));
     }
 
