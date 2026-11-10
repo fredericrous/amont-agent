@@ -7,6 +7,7 @@
 pub mod agents;
 pub mod attestations;
 pub mod block_fingerprint;
+pub mod block_registry;
 pub mod board;
 pub mod candidates_block;
 pub mod code_review;
