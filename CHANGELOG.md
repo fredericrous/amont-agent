@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v3.28.0
+
+### Added
+
+- `amont.agent.<rule>.denyAgents`: a repeatable key (global or system git
+  config only) that raises `advise` to `deny` for the subagent types it lists,
+  by exact name or a prefix ending in `*`. Only `symbol-grep-not-lsp` reads it.
+  The refusal is once per pattern and agent, so a parent session already told
+  about a pattern does not stop its worker's refusal; it never raises
+  `observe`, and it respects the rule's ceiling. See `docs/configuration.md`.
+
 ## v3.27.0
 
 ### Changed
