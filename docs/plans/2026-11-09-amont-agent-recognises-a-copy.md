@@ -9,7 +9,7 @@ adrs: [ADR-0067]
 ## Review panel
 📄 Full reviews: [2026-11-09-amont-agent-recognises-a-copy.reviews.md](2026-11-09-amont-agent-recognises-a-copy.reviews.md)
 👉 **Decide:** `block reinstate`, a way to undo a revocation, goes beyond ADR-0067 (the po's note). I recommend dropping it: a revocation stays final, a corrected block has a new fingerprint, and a mistaken revocation only costs full reviews for that block; dropping removes one verb, one guard rule and one known limit. The plan as written keeps it; say so and I apply a one-seat delta.
-📍 amont-agent, greenharness-skills, grh · planned, nothing built · next: Phase 1, the fingerprint and the `block` subcommand. Panel: architect, backend, rust, po, tui, unix (all opus), codex.
+📍 amont-agent, greenharness-skills, grh · phases 1–4 built and reviewed · next: release 3.29.0, then Phase 5 once it is installed. Panel: architect, backend, rust, po, tui, unix (all opus), codex.
 **Changed by review:** registration moves into `hold` and needs each profile's explicit approve; revocation is per fingerprint, undone only by `block reinstate`, which a guard refuses to an agent; the pin check leaves a latest-check record the hook requires.
 **Verdicts:** architect and unix approve, backend, rust, po and tui approve-with-changes on the final body, after two rounds and two deltas; Codex's four highs applied; no blocker left; about 30 medium or low findings carried into implementation.
 
@@ -362,6 +362,10 @@ declares the profiles.
 - 2026-11-10: the merge-base and the diff of `block sha` run under a 20 s deadline (`git::bytes_bounded_env`); `run_bounded` keeps its fixed 30 s, and the pin check uses its own 20 s through `run_bounded_for`.
 - 2026-11-10: the hook takes the full role set from `plan_review::repo_areas` (the proposal's areas), so a repository with a command line needs unix and tui too; when the set cannot be told, the push is held under deny, never narrowed.
 - 2026-11-10: the copy tag reads the journal's `profiles-copy-matched` line by its 12-hex tree prefix.
+- 2026-11-10: the planned real run that registers a pilot through a live hook run, with real reviewer transcripts, is deferred to the first real pilot after 3.29.0 is installed, read from the journal (`profiles-copy-matched`, `block-unregistered`); the hook tests drive the same path with recorded transcripts, and real-commit fingerprints and a real-`gh` pin check were run.
+- 2026-11-10: the reinstate guard is tested by its corpus case file and `tests/rules_json.rs` / `tests/precision.rs`, as the carried list says, and the race by 16 real hook processes plus a `block revoke`.
+- 2026-11-10: deliberate after review: a `Fingerprint` newtype through the registry (every entry point validates the hex before it joins a path) and moving `pin_check`'s environment read to its caller (the `AMONT_AGENT_<TOOL>` override pattern every tool call uses) are left for a later pass.
+- 2026-11-10: the low findings of the Delta round are follow-ups for the next release, not fixed here, since a code change would need a third review pass: `BoundedFailure` reports a spawn failure as `Exited` and missing pipes as `TimedOut` (a `NotStarted` variant); the brief prints a Pin check section with no journal directory even on an unregistered branch; one failure is labelled `fingerprint failed` in the brief and `git failed` elsewhere; the ambiguous-prefix and override messages do not name the full command; `the role set failed` wording; `no journal directory` cannot be journalled, so goes to stderr; `branch_proposal` is silent on a `registered_cover` error other than no entry or revoked; `pin_check::Outcome` and `block_registry::Pin` are one type twice; `text(value)` is a placeholder name; the unreadable-revoked test asserts nothing when run as root.
 
 ## Verification results
 - Phase 1, fixtures and the near-miss table through `block sha` and the library → expected as listed → actual: `tests/block.rs` passes, hostile git settings and a subdirectory give one fingerprint, a binary diff exits 1.
@@ -372,5 +376,12 @@ declares the profiles.
 - Phase 4, a journal with one `profiles-copy-matched` push and one ordinary push → expected: 1 copy, 0 defects, the ordinary review untagged → actual: `review_outcomes::tests::a_copy_matched_push_is_counted_and_an_ordinary_one_is_not` passes.
 - Whole tree after the rebase on 3.28.0: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace --locked` → pass.
 - Not done: registering a pilot through a real hook run with real reviewer transcripts; the hook tests drive the same path with recorded transcripts. The first real pilot after install is that check, read from the journal.
+
+## Implementation review
+- implementation-review: approve-with-changes, then Delta approve-with-changes; reinstate on stderr, Stance not a bool, source repo stored, names; deferral of the live pilot run recorded; 115k+94k tokens, 135+105 s.
+- backend: approve-with-changes, then Delta approve-with-changes; pin-section failure shown, 16-hook race test, refusals journalled, empty override agreed; 101k+79k tokens, 140+45 s.
+- lang:rust: approve-with-changes, then Delta approve-with-changes; typed Pin and FpError, revoked on I/O error, tab is not a space, bounded git show; deliberate: Fingerprint newtype, env read in pin_check; 91k+76k tokens, 101+54 s.
+- unix: approve-with-changes, then Delta approve-with-changes; plan-panel -C falls back with exit 0, flag parsing, gh unprompted; 70k+75k tokens, 75+53 s.
+- tui: approve-with-changes, then Delta approve-with-changes; pin-miss causes, gh hint, help wording, ambiguous prefix; Delta lows are follow-ups (Decision log); 72k+60k tokens, 83+29 s.
 
 <!-- panel: repos=amont-agent,greenharness-skills,grh adds=contract reviewers=architect,backend,lang:rust,po,tui,unix,codex body-sha=dfc422a7a1f7 -->
