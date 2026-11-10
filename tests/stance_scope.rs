@@ -380,7 +380,9 @@ fn rules_shows_the_stance_in_force() {
 
 /// `denyAgents` is the machine's: a repository's `.git/config` cannot list an
 /// agent type, and a global value does. Read through the `status` output of
-/// the hook is not possible, so the hook itself is asked.
+/// the hook is not possible, so the hook itself is asked. Unix only: the
+/// `fleet-lsp` it needs on PATH is a `#!/bin/sh` stub.
+#[cfg(unix)]
 #[test]
 fn a_repository_cannot_set_deny_agents_and_the_global_config_can() {
     let key = "amont.agent.symbol-grep-not-lsp.denyAgents";
@@ -391,6 +393,7 @@ fn a_repository_cannot_set_deny_agents_and_the_global_config_can() {
     assert!(f.denies_haiku(), "a global denyAgents was not read");
 }
 
+#[cfg(unix)]
 impl Fixture {
     /// Whether the hook refuses a haiku worker's symbol grep in the fixture.
     fn denies_haiku(&self) -> bool {
