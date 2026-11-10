@@ -1,0 +1,19 @@
+amont-provenance-v1
+commit af2aa9b440cbb6a885d65946fc22ee585b6b893c
+tree edf71a36b492d70a08fc7ac7f003bb8c878028e0
+canon 5f4569d7d7d983f93029061b09445190864700e4
+patch e35aee18dab50449b41bf94c69f73e3b8196586b
+plan docs/plans/2026-11-09-call-order-error-haiku-deny.md 8d49e0d02e9403692dbff35e40f70a75c5c59cae1b9ea7d49e67afb0ceafe39d
+review reviewed c00793691ce0b0608afec4b7c585d27ba17f65f8dac82758bf79e8d42174db8c
+code-review backend reviewed c00793691ce0b0608afec4b7c585d27ba17f65f8dac82758bf79e8d42174db8c
+code-review lang:rust reviewed c00793691ce0b0608afec4b7c585d27ba17f65f8dac82758bf79e8d42174db8c
+code-review unix reviewed c00793691ce0b0608afec4b7c585d27ba17f65f8dac82758bf79e8d42174db8c
+preview not-required
+producer amont-agent 3.27.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAEBSeGtFrWmkmTRrULm1WwW2XuiZsJqZP56UrjYLJMVfWfTrMB
+gtW8ts8JnHQovAMyvzc9z+Z5I2MHoP8Dgq9jEI
+-----END SSH SIGNATURE-----
