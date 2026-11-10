@@ -195,6 +195,8 @@ pub struct GrepOp {
     pub session: String,
     pub permission_mode: String,
     pub agent: crate::lsp::Agent,
+    /// The payload's `agent_id`; `None` for the main conversation.
+    pub agent_id: Option<String>,
 }
 
 /// The text a write tool was handed, before anything is applied.
@@ -572,6 +574,7 @@ pub fn parse(raw: &str) -> Event {
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
                 agent: agent(),
+                agent_id: agent_id(),
             }))
         }
         Some(stage @ ("PreToolUse" | "PostToolUse"))

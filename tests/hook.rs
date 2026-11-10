@@ -1814,6 +1814,11 @@ impl LspWorld {
     }
 
     fn grep_tool(&self, session: &str, input: &str) -> Reply {
+        self.grep_main(session, input, "")
+    }
+
+    /// A Grep tool payload from the main conversation, under `global`.
+    fn grep_main(&self, session: &str, input: &str, global: &str) -> Reply {
         let cwd = serde_json::Value::String(self.repo.display().to_string());
         self.send(
             &format!(
@@ -1821,7 +1826,44 @@ impl LspWorld {
                      "session_id":"{session}","permission_mode":"default",
                      "tool_input":{input}}}"#
             ),
-            "",
+            global,
+        )
+    }
+
+    /// Install a `relais` plugin whose haiku and sonnet workers grant every
+    /// tool, so the LSP gate lets their payloads through.
+    fn install_relais_workers(&self) {
+        let root = self.config.join("plugins/relais");
+        std::fs::create_dir_all(root.join("agents")).expect("agents");
+        for name in [
+            "relais-worker-haiku-default",
+            "relais-worker-sonnet-default",
+        ] {
+            std::fs::write(
+                root.join("agents").join(format!("{name}.md")),
+                "---\nname: w\n---\nbody\n",
+            )
+            .expect("agent");
+        }
+        let manifest = serde_json::json!({"plugins": {"relais@relais": [{"installPath": root.display().to_string()}]}});
+        std::fs::write(
+            self.config.join("plugins/installed_plugins.json"),
+            manifest.to_string(),
+        )
+        .expect("manifest");
+    }
+
+    /// A Grep tool payload from a subagent of `agent_type`, under `global`.
+    fn grep_as(&self, session: &str, agent_type: &str, input: &str, global: &str) -> Reply {
+        let cwd = serde_json::Value::String(self.repo.display().to_string());
+        self.send(
+            &format!(
+                r#"{{"hook_event_name":"PreToolUse","tool_name":"Grep","cwd":{cwd},
+                     "session_id":"{session}","permission_mode":"default",
+                     "agent_id":"w1","agent_type":"{agent_type}",
+                     "tool_input":{input}}}"#
+            ),
+            global,
         )
     }
 
@@ -2020,6 +2062,129 @@ fn a_shell_symbol_grep_over_code_is_advised_once() {
         "{}",
         filter.stdout
     );
+}
+
+const DENY_HAIKU: &str =
+    "[amont \"agent.symbol-grep-not-lsp\"]\n\tdenyAgents = relais:relais-worker-haiku-*\n";
+const HAIKU: &str = "relais:relais-worker-haiku-default";
+const SYMBOL_GREP: &str = r#"{"pattern":"fn agent_type","path":"."}"#;
+
+/// `denyAgents` raises the first grep of a matching worker to a refusal; the
+/// identical retry runs, main and other types stay advised.
+#[test]
+fn a_denied_worker_is_refused_once_and_the_retry_runs() {
+    let w = LspWorld::new("deny-agents", true);
+    w.install_relais_workers();
+    let main = w.grep_main("da-1", SYMBOL_GREP, DENY_HAIKU);
+    assert!(
+        !main.stdout.contains("\"deny\""),
+        "main stays advised under denyAgents: {}",
+        main.stdout
+    );
+    assert!(
+        main.reason().contains("symbol-grep-not-lsp"),
+        "{}",
+        main.stdout
+    );
+    let sonnet = w.grep_as(
+        "da-2",
+        "relais:relais-worker-sonnet-default",
+        SYMBOL_GREP,
+        DENY_HAIKU,
+    );
+    assert!(
+        !sonnet.stdout.contains("\"deny\""),
+        "another worker type stays advised: {}",
+        sonnet.stdout
+    );
+    assert!(
+        sonnet.reason().contains("symbol-grep-not-lsp"),
+        "{}",
+        sonnet.stdout
+    );
+    let denied = w.grep_as("da-3", HAIKU, SYMBOL_GREP, DENY_HAIKU);
+    assert!(denied.stdout.contains("\"deny\""), "{}", denied.stdout);
+    assert!(
+        denied.reason().contains("Refused for this agent type"),
+        "{}",
+        denied.stdout
+    );
+    let retry = w.grep_as("da-3", HAIKU, SYMBOL_GREP, DENY_HAIKU);
+    assert_eq!(retry.stdout, "", "the identical retry runs");
+}
+
+/// The deny is keyed per agent: a parent already advised on the pattern does
+/// not stop the worker's refusal, and a non-denied subagent stays silent
+/// after its parent was told.
+#[test]
+fn a_denied_worker_is_refused_after_its_parent_was_advised() {
+    let w = LspWorld::new("deny-agents-parent", true);
+    w.install_relais_workers();
+    let parent = w.grep_tool("dp-1", SYMBOL_GREP);
+    assert!(
+        parent.reason().contains("symbol-grep-not-lsp"),
+        "{}",
+        parent.stdout
+    );
+    let denied = w.grep_as("dp-1", HAIKU, SYMBOL_GREP, DENY_HAIKU);
+    assert!(denied.stdout.contains("\"deny\""), "{}", denied.stdout);
+    let other = w.grep_as(
+        "dp-1",
+        "relais:relais-worker-sonnet-default",
+        SYMBOL_GREP,
+        DENY_HAIKU,
+    );
+    assert_eq!(
+        other.stdout, "",
+        "told once per pattern for a non-denied agent"
+    );
+}
+
+/// A shell grep by a denied worker is refused too and passes the gate.
+#[test]
+fn a_denied_worker_shell_grep_is_refused_once() {
+    let w = LspWorld::new("deny-agents-bash", true);
+    w.install_relais_workers();
+    w.file("src/lib.rs", 100);
+    let cwd = serde_json::Value::String(w.repo.display().to_string());
+    let payload = format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{cwd},
+             "session_id":"db-1","tool_use_id":"t1","permission_mode":"default",
+             "agent_id":"w1","agent_type":"{HAIKU}",
+             "tool_input":{{"command":"grep -rn agent_types src"}}}}"#
+    );
+    let first = w.send(&payload, DENY_HAIKU);
+    assert!(first.stdout.contains("\"deny\""), "{}", first.stdout);
+    assert!(
+        first.stdout.contains("Refused for this agent type"),
+        "{}",
+        first.stdout
+    );
+    let again = w.send(&payload, DENY_HAIKU);
+    assert!(
+        !again.stdout.contains("symbol-grep-not-lsp"),
+        "{}",
+        again.stdout
+    );
+}
+
+/// A refusal that cannot be recorded would refuse every retry: it falls back
+/// to advice and is journalled `unrecorded`.
+#[test]
+fn a_denied_worker_whose_telling_cannot_be_recorded_is_advised() {
+    let w = LspWorld::new("deny-agents-unrecorded", true);
+    w.install_relais_workers();
+    std::fs::create_dir_all(w.config.join("amont-agent")).expect("journal dir");
+    std::fs::write(w.config.join("amont-agent").join("sessions"), "x").expect("block sessions");
+    let reply = w.grep_as("du-1", HAIKU, SYMBOL_GREP, DENY_HAIKU);
+    assert!(!reply.stdout.contains("\"deny\""), "{}", reply.stdout);
+    assert!(
+        reply.reason().contains("symbol-grep-not-lsp"),
+        "{}",
+        reply.stdout
+    );
+    let rows = w.journal_rows("du-1");
+    assert!(rows.iter().any(|r| r.contains("unrecorded")), "{rows:?}");
 }
 
 const DENY: &str = "[amont \"agent.code-read-not-lsp\"]\n\tstance = deny\n";

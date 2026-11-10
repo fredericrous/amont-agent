@@ -53,6 +53,21 @@ The cap is applied after every configured key, so neither
 `graduate --to deny` refuses a capped rule with the reason. `amont-agent
 rules` prints each rule's ceiling beside its stance.
 
+## Raising a stance for named agents
+
+`amont.agent.<id>.denyAgents` lifts one rule from `advise` to `deny` for the
+subagent types it lists, and leaves every other agent, the main conversation
+included, at the configured stance. It never raises `observe` (a switched-off
+guard, a shadow session, a rule set to observe), and the rule's ceiling still
+applies. `symbol-grep-not-lsp` is the only rule that reads it.
+
+The refusal is told once per pattern and agent (`grep <pattern> @<agent id>`),
+so a parent session that was already advised on a pattern does not stop its
+worker's refusal. Every other stance keeps the session's `grep <pattern>` key
+unchanged. A refusal whose record cannot be written falls back to `advise` and
+is journalled `unrecorded`, because refusing every retry would break the
+promise in the refusal text: the same search again runs.
+
 ## Why git config and not a committed file
 
 Promotion power stays on the machine, with the person. A rule that a committed

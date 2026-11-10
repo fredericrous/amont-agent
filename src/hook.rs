@@ -493,7 +493,15 @@ fn on_bash(bash: &Bash) -> Decision {
     let mut settled: std::collections::HashSet<std::path::PathBuf> =
         std::collections::HashSet::new();
     for (rule, finding) in &fired {
-        let stance = crate::stance::resolve(rule);
+        let is_grep = rule.id == rules::symbol_grep_not_lsp::RULE.id;
+        let (stance, source) = if is_grep {
+            crate::stance::resolve_for(rule, &bash.agent)
+        } else {
+            (
+                crate::stance::resolve(rule),
+                crate::stance::Source::Configured,
+            )
+        };
         let Confirmation {
             floor,
             ceiling,
@@ -514,12 +522,17 @@ fn on_bash(bash: &Bash) -> Decision {
                 continue;
             }
         };
-        if rule.id == rules::symbol_grep_not_lsp::RULE.id {
-            if let Err(why) = grep_gate(bash, &parsed, finding, stance) {
-                note(rule, "unconfirmed", why, bash, finding);
-                continue;
+        let grep_pattern = if is_grep {
+            match grep_gate(bash, &parsed, finding, stance) {
+                Ok(pattern) => pattern,
+                Err(why) => {
+                    note(rule, "unconfirmed", why, bash, finding);
+                    continue;
+                }
             }
-        }
+        } else {
+            String::new()
+        };
         // A `confirm` that learned the reason by looking speaks and journals
         // it in place of the finding's; every other rule keeps the finding's
         // reason and the command span.
@@ -531,7 +544,6 @@ fn on_bash(bash: &Bash) -> Decision {
             ),
             None => (finding.reason.as_str(), None, finding.remedy.as_str()),
         };
-        let text = decision::phrase(rule.id, reason, remedy);
         let stance = final_stance(
             stance,
             floor,
@@ -539,6 +551,39 @@ fn on_bash(bash: &Bash) -> Decision {
             reading_for(rule, &parsed),
             rule.max_stance,
         );
+        // The telling follows `final_stance`: a floor or a ceiling may have
+        // moved the stance, and the key recorded is the one that is spoken.
+        let stance = if is_grep {
+            match grep_telling(
+                &bash.session,
+                &grep_pattern,
+                bash.agent_id.as_deref(),
+                stance,
+                source,
+                &bash.cwd,
+                &bash.permission_mode,
+            ) {
+                Some(spoken) => spoken,
+                None => {
+                    note(
+                        rule,
+                        "unconfirmed",
+                        "this session was told about this pattern",
+                        bash,
+                        finding,
+                    );
+                    continue;
+                }
+            }
+        } else {
+            stance
+        };
+        let remedy = if is_grep && is_denial_by_agent(stance, source) {
+            rules::symbol_grep_not_lsp::DENY_REMEDY
+        } else {
+            remedy
+        };
+        let text = decision::phrase(rule.id, reason, remedy);
         match stance {
             Stance::Observe => note_with(rule, "observe", "watched", bash, finding, excerpt),
             Stance::Advise => {
@@ -1785,32 +1830,73 @@ fn on_post_write(op: &crate::payload::FileOp) -> Decision {
 }
 
 /// What `symbol-grep-not-lsp` needs beyond its `confirm`: the facts are in
-/// the payload, not the command. The agent must have the LSP tool, and a
-/// session is told about one pattern once. An observing rule records nothing,
-/// so it never uses up the one telling.
+/// the payload, not the command. The agent must have the LSP tool. Returns
+/// the searched pattern; the telling follows `final_stance` ([`grep_telling`]).
 fn grep_gate(
     bash: &Bash,
     parsed: &Parsed,
     finding: &Finding,
     stance: Stance,
-) -> Result<(), &'static str> {
+) -> Result<String, &'static str> {
     crate::lsp::agent_has_tool(&bash.agent, &bash.cwd)?;
     if stance == Stance::Observe {
-        return Ok(());
+        return Ok(String::new());
     }
-    let search = rules::symbol_grep_not_lsp::search_at(parsed, finding.span.start)
-        .ok_or("the command no longer matches")?;
-    let key = format!("grep {}", search.pattern);
-    if first_telling(
-        &rules::symbol_grep_not_lsp::RULE,
-        &bash.session,
-        &key,
-        &bash.cwd,
-        &bash.permission_mode,
-    ) {
-        Ok(())
-    } else {
-        Err("this session was told about this pattern")
+    rules::symbol_grep_not_lsp::search_at(parsed, finding.span.start)
+        .map(|search| search.pattern.to_string())
+        .ok_or("the command no longer matches")
+}
+
+/// Whether this spoken stance is a refusal that `denyAgents` raised, as
+/// opposed to a `deny` the person configured for everyone.
+fn is_denial_by_agent(stance: Stance, source: crate::stance::Source) -> bool {
+    stance == Stance::Deny && source == crate::stance::Source::DenyAgents
+}
+
+/// The stance `symbol-grep-not-lsp` speaks with for this pattern, or `None`
+/// when the telling was already made. An observing rule records nothing, so
+/// it never uses up the one telling. A refusal `denyAgents` raised is told
+/// once per pattern and agent (`grep <pattern> @<agent id>`), so a parent
+/// session advised on the pattern does not stop the worker's refusal; every
+/// other stance keeps the session's `grep <pattern>` key. A refusal that
+/// cannot be recorded would refuse the retry it promises forever, so it
+/// falls back to Advise, journalled `unrecorded`.
+fn grep_telling(
+    session: &str,
+    pattern: &str,
+    agent_id: Option<&str>,
+    stance: Stance,
+    source: crate::stance::Source,
+    cwd: &std::path::Path,
+    mode: &str,
+) -> Option<Stance> {
+    let rule = &rules::symbol_grep_not_lsp::RULE;
+    let plain = format!("grep {pattern}");
+    if stance == Stance::Observe {
+        return Some(stance);
+    }
+    if !is_denial_by_agent(stance, source) {
+        return first_telling(rule, session, &plain, cwd, mode).then_some(stance);
+    }
+    let unrecorded = |why: &str| {
+        journal::record(&journal::Entry {
+            rule: rule.id,
+            stance: Stance::Deny.as_str(),
+            outcome: "unrecorded",
+            session,
+            repo: &repo_name(cwd),
+            mode,
+            excerpt: why,
+        });
+        first_telling(rule, session, &plain, cwd, mode).then_some(Stance::Advise)
+    };
+    let Some(key_agent) = crate::lsp::agent_key(agent_id) else {
+        return unrecorded("no usable agent id");
+    };
+    match crate::lsp::told(session, &format!("{plain} @{key_agent}")) {
+        crate::lsp::Told::First => Some(Stance::Deny),
+        crate::lsp::Told::Before => None,
+        crate::lsp::Told::Unrecorded(why) => unrecorded(why),
     }
 }
 
@@ -1842,18 +1928,18 @@ fn on_grep(op: &crate::payload::GrepOp) -> Decision {
         return Decision::Silent;
     }
     let rule = &sg::RULE;
-    let stance = crate::stance::resolve(rule);
-    if stance != Stance::Observe
-        && !first_telling(
-            rule,
-            &op.session,
-            &format!("grep {}", op.pattern),
-            &op.cwd,
-            &op.permission_mode,
-        )
-    {
+    let (resolved, source) = crate::stance::resolve_for(rule, &op.agent);
+    let Some(stance) = grep_telling(
+        &op.session,
+        &op.pattern,
+        op.agent_id.as_deref(),
+        resolved,
+        source,
+        &op.cwd,
+        &op.permission_mode,
+    ) else {
         return Decision::Silent;
-    }
+    };
     journal::record(&journal::Entry {
         rule: rule.id,
         stance: stance.as_str(),
@@ -1864,7 +1950,12 @@ fn on_grep(op: &crate::payload::GrepOp) -> Decision {
         excerpt: &format!("Grep {}", op.pattern),
     });
     let (reason, remedy) = sg::phrase(&op.pattern);
-    let text = decision::phrase(rule.id, &reason, &remedy);
+    let remedy: &str = if is_denial_by_agent(stance, source) {
+        sg::DENY_REMEDY
+    } else {
+        &remedy
+    };
+    let text = decision::phrase(rule.id, &reason, remedy);
     match stance {
         Stance::Observe => Decision::Silent,
         Stance::Advise => Decision::Advise(text),

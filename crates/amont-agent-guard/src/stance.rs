@@ -84,6 +84,67 @@ pub fn resolve(rule: &Rule) -> Stance {
     st
 }
 
+/// The key listing the agent types a rule is raised to `Deny` for.
+pub fn deny_agents_key(rule: &Rule) -> String {
+    format!("amont.agent.{}.denyAgents", rule.id)
+}
+
+/// Whether an agent type matches one pattern: equal, or the pattern is a
+/// prefix ending in `*`.
+fn type_matches(pattern: &str, agent_type: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => agent_type.starts_with(prefix),
+        None => pattern == agent_type,
+    }
+}
+
+/// The pure half of [`resolve_for`]: `Advise` becomes `Deny` for a named
+/// agent whose type matches a pattern, clamped by the rule's ceiling. Every
+/// other stance, and every other agent, is returned as it came.
+pub fn raise_for(
+    rule: &Rule,
+    base: Stance,
+    agent: &crate::lsp::Agent,
+    patterns: impl FnOnce() -> Vec<String>,
+) -> Stance {
+    let crate::lsp::Agent::Named(agent_type) = agent else {
+        return base;
+    };
+    if base != Stance::Advise {
+        return base;
+    }
+    if patterns().iter().any(|p| type_matches(p, agent_type)) {
+        Stance::Deny.min(rule.max_stance)
+    } else {
+        base
+    }
+}
+
+/// Where a rule's stance for one agent came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The configured ladder: the default, the floor, the rule's own key.
+    Configured,
+    /// `Advise` raised to `Deny` because the agent's type is in the rule's
+    /// `denyAgents`.
+    DenyAgents,
+}
+
+/// [`resolve`], raised from `Advise` to `Deny` for the agent types the
+/// machine's `amont.agent.<id>.denyAgents` lists (global and system git
+/// config only, like the stance keys), with where the stance came from. The
+/// key is read only for a named agent whose stance is `Advise`.
+pub fn resolve_for(rule: &Rule, agent: &crate::lsp::Agent) -> (Stance, Source) {
+    let base = resolve(rule);
+    let stance = raise_for(rule, base, agent, || config::values(&deny_agents_key(rule)));
+    let source = if stance == base {
+        Source::Configured
+    } else {
+        Source::DenyAgents
+    };
+    (stance, source)
+}
+
 /// The configured stance, or the rule's default, then the rule's ceiling.
 ///
 /// The pure half of [`resolve`]: `configured` is whatever the two keys
@@ -162,5 +223,76 @@ mod tests {
     fn the_key_names_the_rule() {
         let r = &crate::rules::pipe_to_tail::RULE;
         assert_eq!(key_for(r), format!("amont.agent.{}.stance", r.id));
+    }
+
+    fn named(t: &str) -> crate::lsp::Agent {
+        crate::lsp::Agent::Named(t.to_string())
+    }
+
+    fn patterns_of(names: &[&str]) -> impl FnOnce() -> Vec<String> {
+        let owned: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+        move || owned
+    }
+
+    #[test]
+    fn an_exact_value_and_a_trailing_star_match_a_named_agent() {
+        let rule = capped(Stance::Deny);
+        let haiku = named("relais:relais-worker-haiku-default");
+        assert_eq!(
+            raise_for(
+                &rule,
+                Stance::Advise,
+                &haiku,
+                patterns_of(&["relais:relais-worker-haiku-default"])
+            ),
+            Stance::Deny
+        );
+        assert_eq!(
+            raise_for(
+                &rule,
+                Stance::Advise,
+                &haiku,
+                patterns_of(&["relais:relais-worker-haiku-*"])
+            ),
+            Stance::Deny
+        );
+        assert_eq!(
+            raise_for(
+                &rule,
+                Stance::Advise,
+                &named("relais:relais-worker-sonnet-default"),
+                patterns_of(&["relais:relais-worker-haiku-*"])
+            ),
+            Stance::Advise
+        );
+    }
+
+    #[test]
+    fn main_and_unnamed_agents_never_match() {
+        let rule = capped(Stance::Deny);
+        for agent in [crate::lsp::Agent::Main, crate::lsp::Agent::Unnamed] {
+            assert_eq!(
+                raise_for(&rule, Stance::Advise, &agent, patterns_of(&["x*", "x"])),
+                Stance::Advise
+            );
+        }
+    }
+
+    #[test]
+    fn the_raise_is_clamped_by_the_ceiling() {
+        let rule = capped(Stance::Advise);
+        assert_eq!(
+            raise_for(&rule, Stance::Advise, &named("x"), patterns_of(&["x"])),
+            Stance::Advise
+        );
+    }
+
+    #[test]
+    fn observe_is_never_raised() {
+        let rule = capped(Stance::Deny);
+        assert_eq!(
+            raise_for(&rule, Stance::Observe, &named("x"), patterns_of(&["x"])),
+            Stance::Observe
+        );
     }
 }
