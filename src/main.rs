@@ -1530,17 +1530,24 @@ blanks stripped. git runs with its own settings, not the person's.
   --base <ref> the ref to take the merge base with (default: the default
                branch of origin)
 
-Exit 0; 1 when there is no fingerprint (a binary file in the diff, which
-is never a copy, or git failing; the reason on stderr); 2 on a usage error.
+Exit codes of `sha`: 0; 1 when there is no fingerprint (a binary file in
+the diff, which is never a copy, or git failing; the reason on stderr); 2 on
+a usage error.
 
   list         one row per registered block, no header, on stdout:
                fp:<12 hex> TAB active|revoked TAB <roles, comma-separated>
-               TAB <copy count> TAB <source repo>; --json adds the copies
-  revoke       revoke a block for good: every recorded copy is printed as
-               <repo> TAB <branch> TAB <commit> for a re-check; revoking
-               again prints them again
-  reinstate    lift a revocation; the person runs it, not an agent
+               TAB <copy count> TAB <source repo, - when unknown>; --json
+               adds the copies and `source_repo` (null when unknown)
+  revoke       revoke a block until the person reinstates it: the pilot is
+               printed as <source repo> TAB <branch> TAB - and every
+               recorded copy as <repo> TAB <branch> TAB <commit> for a
+               re-check; revoking again prints them again
+  reinstate    lift a revocation, on stderr; the person runs it, not an agent
   <fp>         fp:<12 hex>, a unique prefix of it, or the 64 hex
+
+Exit codes of `list`, `revoke` and `reinstate`: 0; 1 when the fingerprint
+names no block or several (`give more hex`), the registry cannot be found or
+written; 2 on a usage error.
 ";
 
 /// How long finding the default branch, and then the diff, may each take.
@@ -1551,15 +1558,13 @@ fn run_block(args: &[OsString]) -> ExitCode {
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print!("{BLOCK_USAGE}");
-        return ExitCode::SUCCESS;
-    }
     match args.first().map(String::as_str) {
+        Some("--help" | "-h") => block_help(),
         Some("sha") => run_block_sha(&args[1..]),
         Some("list") => run_block_list(&args[1..]),
         Some("revoke") => run_block_revoke(&args[1..]),
         Some("reinstate") => run_block_reinstate(&args[1..]),
+        Some(_) if args.iter().any(|word| is_help(word)) => block_help(),
         Some(other) => {
             eprintln!("amont-agent: block: unknown verb `{other}`; try `amont-agent block --help`");
             eprint!("{BLOCK_USAGE}");
@@ -1571,6 +1576,15 @@ fn run_block(args: &[OsString]) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn is_help(word: &str) -> bool {
+    word == "--help" || word == "-h"
+}
+
+fn block_help() -> ExitCode {
+    print!("{BLOCK_USAGE}");
+    ExitCode::SUCCESS
 }
 
 /// The registry's base directory: the journal directory.
@@ -1596,7 +1610,14 @@ fn resolve_block_fp(base: &std::path::Path, given: &str) -> Result<String, ExitC
     }
     match hits.pop() {
         Some(only) if hits.is_empty() => Ok(only),
-        _ => {
+        Some(_) => {
+            eprintln!(
+                "amont-agent: block: fp:{id} matches {} blocks; give more hex",
+                hits.len() + 1
+            );
+            Err(ExitCode::from(1))
+        }
+        None => {
             eprintln!("amont-agent: block: no entry fp:{id}; see amont-agent block list");
             Err(ExitCode::from(1))
         }
@@ -1612,6 +1633,7 @@ fn run_block_list(args: &[String]) -> ExitCode {
     let mut json = false;
     for word in args {
         match word.as_str() {
+            help if is_help(help) => return block_help(),
             "--json" => json = true,
             other => return block_usage_error(&format!("unknown argument `{other}`")),
         }
@@ -1629,10 +1651,9 @@ fn run_block_list(args: &[String]) -> ExitCode {
         roles.dedup();
         let copies = block_registry::copies(&base, &fingerprint);
         let revoked = block_registry::revoked(&base, &fingerprint);
-        let source = copies
-            .first()
-            .map_or("-", |copy| copy.repo.as_str())
-            .to_string();
+        let source = block_registry::entries(&base, &fingerprint)
+            .into_iter()
+            .find_map(|entry| entry.registered.source_repo);
         let short = format!("fp:{}", &fingerprint[..12]);
         if json {
             let listed: Vec<serde_json::Value> = copies
@@ -1661,9 +1682,10 @@ fn run_block_list(args: &[String]) -> ExitCode {
                 "active"
             };
             println!(
-                "{short}\t{state}\t{}\t{}\t{source}",
+                "{short}\t{state}\t{}\t{}\t{}",
                 roles.join(","),
-                copies.len()
+                copies.len(),
+                source.as_deref().unwrap_or("-")
             );
         }
     }
@@ -1679,7 +1701,9 @@ fn run_block_revoke(args: &[String]) -> ExitCode {
     while i < args.len() {
         let word = args[i].as_str();
         i += 1;
-        if let Some(value) = word.strip_prefix("--because=") {
+        if is_help(word) {
+            return block_help();
+        } else if let Some(value) = word.strip_prefix("--because=") {
             because = Some(value.to_string());
         } else if word == "--because" {
             let Some(value) = args.get(i) else {
@@ -1715,6 +1739,13 @@ fn run_block_revoke(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     eprintln!("amont-agent: block: fp:{} is revoked", &fingerprint[..12]);
+    if let Some(pilot) = block_registry::entries(&base, &fingerprint)
+        .into_iter()
+        .next()
+    {
+        let source = pilot.registered.source_repo.as_deref().unwrap_or("-");
+        println!("{source}\t{}\t-", pilot.registered.source_branch);
+    }
     for copy in block_registry::copies(&base, &fingerprint) {
         println!("{}\t{}\t{}", copy.repo, copy.branch, copy.commit);
     }
@@ -1722,6 +1753,9 @@ fn run_block_revoke(args: &[String]) -> ExitCode {
 }
 
 fn run_block_reinstate(args: &[String]) -> ExitCode {
+    if args.iter().any(|word| is_help(word)) {
+        return block_help();
+    }
     let [given] = args else {
         return block_usage_error("reinstate takes one fingerprint");
     };
@@ -1744,7 +1778,7 @@ fn run_block_reinstate(args: &[String]) -> ExitCode {
         eprintln!("amont-agent: block: could not reinstate fp:{short}: {why}");
         return ExitCode::from(1);
     }
-    println!("fp:{short} reinstated");
+    eprintln!("amont-agent: block: fp:{short} reinstated");
     ExitCode::SUCCESS
 }
 
@@ -1754,6 +1788,15 @@ fn run_block_sha(args: &[String]) -> ExitCode {
     while i < args.len() {
         let word = args[i].as_str();
         i += 1;
+        if is_help(word) {
+            return block_help();
+        }
+        if word == "--" {
+            if let Some(extra) = args.get(i) {
+                return block_usage_error(&format!("unknown argument `{extra}`"));
+            }
+            break;
+        }
         let (flag, attached) = match word.split_once('=') {
             Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
             _ => match (word.get(..2), word.get(2..)) {
@@ -1778,6 +1821,9 @@ fn run_block_sha(args: &[String]) -> ExitCode {
                 value.clone()
             }
         };
+        if value.is_empty() {
+            return block_usage_error(&format!("{flag} needs a non-empty value"));
+        }
         if flag == "-C" {
             dir = std::path::PathBuf::from(value);
         } else {

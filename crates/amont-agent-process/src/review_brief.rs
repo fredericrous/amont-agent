@@ -186,21 +186,23 @@ fn run_bounded(
     dir: &Path,
     args: &[&str],
 ) -> Result<AvalAnswer, AvalFailed> {
-    run_bounded_for(program, name, dir, args, AVAL_DEADLINE)
+    run_bounded_for(program, name, dir, args, &[], AVAL_DEADLINE)
 }
 
-/// [`run_bounded`] with the caller's own deadline.
+/// [`run_bounded`] with the caller's own deadline and extra child environment.
 pub(crate) fn run_bounded_for(
     program: &std::ffi::OsStr,
     name: &str,
     dir: &Path,
     args: &[&str],
+    envs: &[(&str, &str)],
     limit: std::time::Duration,
 ) -> Result<AvalAnswer, AvalFailed> {
     use std::io::Read;
     let line = format!("{name} {}", args.join(" "));
     let mut child = Command::new(program)
         .args(args)
+        .envs(envs.iter().copied())
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

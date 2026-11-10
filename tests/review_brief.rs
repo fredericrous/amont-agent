@@ -1427,6 +1427,7 @@ impl PinWorld {
                 roles: vec!["backend".into()],
                 agents: vec![],
                 source_branch: "topic".into(),
+                source_repo: None,
                 content_id: "e".repeat(64),
             },
         )
@@ -1541,7 +1542,10 @@ fn a_failing_slow_or_absent_gh_writes_a_failure() {
     let out = world.brief(Some(&failing), "10000");
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let pin = world.recorded().unwrap();
-    assert!(!pin.passed && pin.detail.contains("exited"), "{pin:?}");
+    assert!(
+        !pin.passed && pin.detail.contains("failed (exit 1)"),
+        "{pin:?}"
+    );
 
     let hanging = world.gh("#!/bin/sh\nexec sleep 30\n");
     let out = world.brief(Some(&hanging), "300");
@@ -1553,7 +1557,10 @@ fn a_failing_slow_or_absent_gh_writes_a_failure() {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let pin = world.recorded().unwrap();
     assert!(!pin.passed, "{pin:?}");
-    assert_eq!(pin.detail, "gh not found; install it or set AMONT_AGENT_GH");
+    assert_eq!(
+        pin.detail,
+        "gh not found; install GitHub CLI and run gh auth login"
+    );
     assert!(!pin.gh_override_set);
 }
 

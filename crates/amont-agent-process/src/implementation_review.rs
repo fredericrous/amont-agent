@@ -1894,10 +1894,13 @@ impl ProfileGate<'_> {
         let pin =
             crate::block_registry::read_pin(base, fingerprint, self.tree).ok_or_else(missing)?;
         if !pin.passed {
-            return Err(missing());
+            return Err(format!("pin check failed: {}", pin.detail));
         }
         if pin.gh_override_set && std::env::var_os("AMONT_AGENT_GH").is_none() {
-            return Err(missing());
+            return Err(
+                "the pin record was made with AMONT_AGENT_GH set; run review-brief without it"
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -1979,6 +1982,7 @@ impl ProfileGate<'_> {
             roles,
             agents,
             source_branch: self.dst.trim_start_matches("refs/heads/").to_string(),
+            source_repo: Some(self.name.to_string()),
             content_id: self.tree.to_string(),
         };
         match crate::block_registry::register_entry(&base, full, &generation, &registered) {

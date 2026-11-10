@@ -51,6 +51,9 @@ pub struct EntryData {
     /// changed.
     pub agents: Vec<(String, String)>,
     pub source_branch: String,
+    /// The repository the block was registered from; absent in an entry
+    /// written before the field existed.
+    pub source_repo: Option<String>,
     pub content_id: String,
 }
 
@@ -180,6 +183,7 @@ pub fn register_entry(
         "rules_sha": generation.rules_sha,
         "agent_digest": generation.agent_digest,
         "source_branch": data.source_branch,
+        "source_repo": data.source_repo,
         "content_id": data.content_id,
     });
     write_once(&dir, "entry.json", &body.to_string())
@@ -212,6 +216,7 @@ fn parse_entry(value: &Value) -> Option<Entry> {
             roles,
             agents,
             source_branch: text(value, "source_branch")?,
+            source_repo: text(value, "source_repo"),
             content_id: text(value, "content_id")?,
         },
     })
@@ -384,6 +389,7 @@ mod tests {
             roles: vec!["backend".into(), "lang:rust".into()],
             agents: vec![("code-review-backend".into(), "-".into())],
             source_branch: "pilot".into(),
+            source_repo: Some("app".into()),
             content_id: "c0ffee".into(),
         }
     }

@@ -303,29 +303,44 @@ pub fn branch_proposal(
         notices: Vec::new(),
     };
     let deadline = std::time::Instant::now() + BRANCH_GIT_BUDGET;
+    let unproven = |mut proposal: BranchProposal, cause: String| {
+        proposal.notices.push(format!(
+            "amont-agent: plan-panel: {cause}; the profiles are proposed"
+        ));
+        Ok(proposal)
+    };
     let base = match base {
         Some(base) => base.to_string(),
-        None => amont_agent_guard::git::default_ref(&repo, deadline)
-            .map(|(reference, _)| reference)
-            .ok_or("no default branch of `origin` is known; pass --base <ref>")?,
+        None => match amont_agent_guard::git::default_ref(&repo, deadline) {
+            Some((reference, _)) => reference,
+            None => {
+                return unproven(
+                    proposal,
+                    "no default branch of `origin` is known; pass --base <ref>".to_string(),
+                )
+            }
+        },
     };
-    let merge_base = amont_agent_guard::git::stdout_bounded(
+    let Some(merge_base) = amont_agent_guard::git::stdout_bounded(
         &repo,
         &["merge-base", base.as_str(), "HEAD"],
         deadline,
-    )
-    .ok_or_else(|| format!("`git merge-base {base} HEAD` failed"))?;
-    let Ok(Some(fingerprint)) =
-        crate::block_fingerprint::fingerprint(&repo, &merge_base, "HEAD", deadline)
-    else {
-        return Ok(proposal);
+    ) else {
+        return unproven(proposal, format!("`git merge-base {base} HEAD` failed"));
     };
+    let fingerprint =
+        match crate::block_fingerprint::fingerprint(&repo, &merge_base, "HEAD", deadline) {
+            Ok(Some(fingerprint)) => fingerprint,
+            Ok(None) => return Ok(proposal),
+            Err(why) => return unproven(proposal, format!("fingerprint failed: {why}")),
+        };
     let Some(state) = amont_agent_guard::journal::dir() else {
         return Ok(proposal);
     };
     let id = fingerprint.short();
-    let Ok(needed) = crate::implementation_review::roles_needed(&repo, &merge_base, "HEAD") else {
-        return Ok(proposal);
+    let needed = match crate::implementation_review::roles_needed(&repo, &merge_base, "HEAD") {
+        Ok(needed) => needed,
+        Err(why) => return unproven(proposal, format!("the role set failed: {why}")),
     };
     if crate::implementation_review::registered_cover(
         &repo,

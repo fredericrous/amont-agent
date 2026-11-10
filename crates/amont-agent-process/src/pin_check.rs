@@ -17,6 +17,9 @@ use crate::review_brief::{run_bounded_for, AvalFailed};
 
 const MARKER: &str = "# release-pin:";
 const VERSION_SLOT: &str = "{version}";
+const GH_MISSING: &str = "gh not found; install GitHub CLI and run gh auth login";
+/// The child must never wait for a prompt or print an update notice.
+const GH_ENV: [(&str, &str); 2] = [("GH_PROMPT_DISABLED", "1"), ("GH_NO_UPDATE_NOTIFIER", "1")];
 const GH_DEADLINE: Duration = Duration::from_secs(20);
 const DIFF_BUDGET: Duration = Duration::from_secs(10);
 
@@ -62,7 +65,7 @@ fn gh_program() -> Result<std::ffi::OsString, String> {
     if found {
         Ok(std::ffi::OsString::from("gh"))
     } else {
-        Err("gh not found; install it or set AMONT_AGENT_GH".to_string())
+        Err(GH_MISSING.to_string())
     }
 }
 
@@ -188,18 +191,19 @@ pub fn check(repo: &Path, merge_base: &str) -> Outcome {
         "--json",
         "assets",
     ];
-    let answer = match run_bounded_for(&program, "gh", repo, &args, gh_deadline()) {
+    let answer = match run_bounded_for(&program, "gh", repo, &args, &GH_ENV, gh_deadline()) {
         Ok(answer) => answer,
-        Err(AvalFailed::NotInstalled) => {
-            return Outcome::failed("gh not found; install it or set AMONT_AGENT_GH")
-        }
+        Err(AvalFailed::NotInstalled) => return Outcome::failed(GH_MISSING),
         Err(AvalFailed::Failed(why)) => return Outcome::failed(why),
     };
     if !answer.status.success() {
         let said = answer.stderr.lines().next().unwrap_or_default();
+        let exit = answer
+            .status
+            .code()
+            .map_or_else(|| "killed by a signal".to_string(), |code| code.to_string());
         return Outcome::failed(format!(
-            "`gh release view {tag}` exited {}: {said}",
-            answer.status
+            "gh release view {tag} failed (exit {exit}): {said}"
         ));
     }
     let listed = serde_json::from_slice::<serde_json::Value>(&answer.stdout)

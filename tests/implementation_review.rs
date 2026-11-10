@@ -4355,7 +4355,25 @@ fn a_pass_then_a_failed_pin_check_at_the_same_tree_is_a_miss() {
     let (w, _, copy) = registered_pilot("copy-pin-fails");
     pin_passed(&w, &copy);
     pin_failed(&w, &copy);
-    denied_with(push_copy(&w, &copy, "s2"), "no passed pin check");
+    denied_with(push_copy(&w, &copy, "s2"), "pin check failed: test");
+}
+
+#[test]
+fn a_pin_record_made_with_the_gh_override_is_a_miss_without_it() {
+    let (w, _, copy) = registered_pilot("copy-pin-override");
+    store_pin(
+        &w,
+        &copy,
+        &amont_agent_process::block_registry::Pin {
+            passed: true,
+            detail: "test".into(),
+            gh_override_set: true,
+        },
+    );
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "the pin record was made with AMONT_AGENT_GH set; run review-brief without it",
+    );
 }
 
 #[test]
@@ -4412,6 +4430,7 @@ fn a_revoked_block_never_matches_even_with_a_later_generation() {
             roles: vec!["backend".into(), "lang:rust".into()],
             agents: Vec::new(),
             source_branch: "late".into(),
+            source_repo: None,
             content_id: "f".repeat(64),
         },
     )

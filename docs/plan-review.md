@@ -430,7 +430,8 @@ The pin check reads one marker line in the added lines of the block:
 ```
 
 `review-brief` reads the pin `<ENV_KEY>` from the same file, expands the two
-templates and runs `gh release view` for that tag; a missing `gh`, marker or
+templates and runs `gh release view` for that tag; a missing `gh` (`gh not found; install GitHub
+CLI and run gh auth login`), marker or
 asset means the match does not count and the profiles are required.
 
 ## What a code-review profile reads

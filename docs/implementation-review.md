@@ -428,15 +428,20 @@ block's file types has its own `approve` on that exact tree. The entry keeps
 that profile set and the rules sha. A miss names its cause: `no entry for
 fp:<id>`, `revoked: <because>`, `role <r> not covered`, `rules changed since
 registration`, `agent <a> changed since registration`, `no passed pin check;
-run amont-agent review-brief -C <dir>`, `binary diff`, `git failed`.
+run amont-agent review-brief -C <dir>` (no record), `pin check failed:
+<detail>` (the record's own detail), `the pin record was made with
+AMONT_AGENT_GH set; run review-brief without it`, `binary diff`, `git failed`.
 
 `amont-agent block` manages the registry:
 
 - `block sha [-C <dir>] [--base <ref>]` prints the fingerprint of the branch.
-- `block list [--json]` lists the registered blocks and their copies.
+- `block list [--json]` lists the registered blocks, with the repository each came from (`-` and
+  `source_repo: null` when the entry predates the field).
 - `block revoke <fp> --because <text>` ends a registration, for instance after
-  a defect is found in a copy, and prints every recorded copy for a re-check.
-- `block reinstate <fp>` lifts a revocation. It is the person's to run, in
+  a defect is found in a copy, until the person reinstates it; it prints the
+  pilot (`<source repo> TAB <branch> TAB -`) and every recorded copy for a
+  re-check. An ambiguous prefix exits 1: `matches <N> blocks; give more hex`.
+- `block reinstate <fp>` lifts a revocation and says so on stderr. It is the person's to run, in
   their own shell; the guard refuses it to an agent (`block-reinstate`).
 
 A review recorded with `implementation-review record` carries `copy: true`

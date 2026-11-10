@@ -396,6 +396,17 @@ impl Registry {
     }
 
     fn register(&self, fingerprint: &str, roles: &[&str], repo: &str, commit: &str) {
+        self.register_from(fingerprint, roles, Some(repo), repo, commit);
+    }
+
+    fn register_from(
+        &self,
+        fingerprint: &str,
+        roles: &[&str],
+        source_repo: Option<&str>,
+        repo: &str,
+        commit: &str,
+    ) {
         use amont_agent_process::block_registry::{
             record_copy, register_entry, EntryData, Generation,
         };
@@ -410,6 +421,7 @@ impl Registry {
                 roles: roles.iter().map(|r| r.to_string()).collect(),
                 agents: vec![],
                 source_branch: "topic".into(),
+                source_repo: source_repo.map(str::to_string),
                 content_id: "e".repeat(64),
             },
         )
@@ -502,7 +514,11 @@ fn revoke_by_short_id_prefix_and_full_hex() {
         registry.register(REVOKED_FP, &["backend"], "o/beta", "def456");
         let out = registry.run(&["revoke", &given, "--because", "found a defect"]);
         assert_eq!(out.status.code(), Some(0), "{given}: {}", err_text(&out));
-        assert_eq!(out_text(&out), "o/alpha\ttopic\tabc123\n", "{given}");
+        assert_eq!(
+            out_text(&out),
+            "o/alpha\ttopic\t-\no/alpha\ttopic\tabc123\n",
+            "{given}"
+        );
         assert!(err_text(&out).contains("fp:aaaaaaaaaaaa is revoked"));
         assert_eq!(
             amont_agent_process::block_registry::revoked(&registry.base(), ACTIVE).as_deref(),
@@ -522,7 +538,10 @@ fn a_second_revoke_exits_0_and_prints_the_copies_again() {
     for _ in 0..2 {
         let out = registry.run(&["revoke", "fp:aaaaaaaaaaaa", "--because=twice"]);
         assert_eq!(out.status.code(), Some(0), "{}", err_text(&out));
-        assert_eq!(out_text(&out), "o/alpha\ttopic\tabc123\n");
+        assert_eq!(
+            out_text(&out),
+            "o/alpha\ttopic\t-\no/alpha\ttopic\tabc123\n"
+        );
     }
 }
 
@@ -563,12 +582,12 @@ fn an_unknown_or_ambiguous_fingerprint_exits_1_naming_it() {
         assert!(out.stdout.is_empty(), "{args:?}");
         let said = err_text(&out);
         let id = args[1].strip_prefix("fp:").unwrap();
-        assert!(
-            said.contains(&format!(
-                "amont-agent: block: no entry fp:{id}; see amont-agent block list"
-            )),
-            "{args:?}: {said}"
-        );
+        let expected = if id == "aaa" {
+            "amont-agent: block: fp:aaa matches 2 blocks; give more hex".to_string()
+        } else {
+            format!("amont-agent: block: no entry fp:{id}; see amont-agent block list")
+        };
+        assert!(said.contains(&expected), "{args:?}: {said}");
     }
 }
 
@@ -581,7 +600,12 @@ fn reinstate_a_revoked_block_prints_a_success_line() {
 
     let out = registry.run(&["reinstate", "fp:aaaaaaaaaaaa"]);
     assert_eq!(out.status.code(), Some(0), "{}", err_text(&out));
-    assert_eq!(out_text(&out), "fp:aaaaaaaaaaaa reinstated\n");
+    assert!(out.stdout.is_empty(), "{}", out_text(&out));
+    assert!(
+        err_text(&out).contains("amont-agent: block: fp:aaaaaaaaaaaa reinstated"),
+        "{}",
+        err_text(&out)
+    );
     assert_eq!(
         amont_agent_process::block_registry::revoked(&registry.base(), ACTIVE),
         None
@@ -597,6 +621,62 @@ fn reinstate_a_block_that_was_not_revoked_says_so_on_stderr_and_exits_0() {
     assert!(out.stdout.is_empty());
     assert!(
         err_text(&out).contains("amont-agent: block: fp:aaaaaaaaaaaa was not revoked"),
+        "{}",
+        err_text(&out)
+    );
+}
+
+#[test]
+fn an_entry_without_a_source_repo_lists_a_dash_and_a_null() {
+    let registry = Registry::new("list-no-source");
+    registry.register_from(ACTIVE, &["backend"], None, "o/alpha", "abc123");
+    let out = registry.run(&["list"]);
+    assert_eq!(out_text(&out), "fp:aaaaaaaaaaaa\tactive\tbackend\t1\t-\n");
+    let json = registry.run(&["list", "--json"]);
+    let rows: serde_json::Value = serde_json::from_str(&out_text(&json)).unwrap();
+    assert!(rows[0]["source_repo"].is_null());
+    let revoked = registry.run(&["revoke", "fp:aaaaaaaaaaaa", "--because", "x"]);
+    assert_eq!(out_text(&revoked), "-\ttopic\t-\no/alpha\ttopic\tabc123\n");
+}
+
+#[test]
+fn help_is_a_verb_flag_never_a_flag_value() {
+    let registry = Registry::new("help-position");
+    registry.register(ACTIVE, &["backend"], "o/alpha", "abc123");
+    for args in [
+        &["--help"][..],
+        &["-h"][..],
+        &["revoke", "--help"][..],
+        &["list", "-h"][..],
+        &["sha", "--help"][..],
+        &["reinstate", "-h"][..],
+    ] {
+        let out = registry.run(args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert!(out_text(&out).starts_with("usage:"), "{args:?}");
+    }
+    let out = registry.run(&["revoke", "fp:aaaaaaaaaaaa", "--because", "-h"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err_text(&out));
+    assert!(!out_text(&out).starts_with("usage:"));
+    assert_eq!(
+        amont_agent_process::block_registry::revoked(&registry.base(), ACTIVE).as_deref(),
+        Some("-h")
+    );
+}
+
+#[test]
+fn sha_accepts_a_double_dash_and_refuses_an_empty_base() {
+    let registry = Registry::new("sha-args");
+    let out = registry.run(&["sha", "--base="]);
+    assert_eq!(out.status.code(), Some(2), "{}", err_text(&out));
+    let out = registry.run(&["sha", "--base", ""]);
+    assert_eq!(out.status.code(), Some(2));
+    let out = registry.run(&["sha", "--", "extra"]);
+    assert_eq!(out.status.code(), Some(2));
+    // `--` alone ends the options and is not an unknown argument.
+    let out = registry.run(&["sha", "--"]);
+    assert!(
+        !err_text(&out).contains("unknown argument"),
         "{}",
         err_text(&out)
     );

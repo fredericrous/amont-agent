@@ -1963,6 +1963,7 @@ impl CopyWorld {
                 roles: roles.into_iter().collect(),
                 agents,
                 source_branch: "topic".into(),
+                source_repo: None,
                 content_id: "e".repeat(64),
             },
         )
@@ -2116,9 +2117,12 @@ fn plan_panel_proposes_the_profiles_when_the_pin_check_fails() {
     let hanging = c.gh("gh-hangs", "#!/bin/sh\nexec sleep 30\n");
     for (gh, why) in [
         (Some(missing), "does not list tool-1.2.tgz"),
-        (Some(failing), "exited"),
+        (Some(failing), "failed (exit 1)"),
         (Some(hanging), "timed out"),
-        (None, "gh not found; install it or set AMONT_AGENT_GH"),
+        (
+            None,
+            "gh not found; install GitHub CLI and run gh auth login",
+        ),
     ] {
         let deadline = if why == "timed out" { "300" } else { "10000" };
         let out = c.panel(gh.as_deref(), deadline);
@@ -2169,4 +2173,33 @@ fn plan_panel_help_stays_within_80_columns() {
     for line in String::from_utf8_lossy(&block.stdout).lines() {
         assert!(line.chars().count() <= 80, "{line}");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_panel_proposes_the_profiles_when_no_default_branch_is_known() {
+    let w = World::new("copy-no-default-branch");
+    let repo = w.repo("tool", &[("src/main.rs", "fn main() {}\n")]);
+    git(&repo, &["branch", "-m", "trunk"]);
+    git(&repo, &["remote", "remove", "origin"]);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let out = w
+        .bin()
+        .args(["plan-panel", "--code-review", "-C"])
+        .arg(&repo)
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(stdout_of(&out), "tool\tbackend,lang:rust,unix,tui\n");
+    let err = stderr_of(&out);
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(
+        err.contains("no default branch of `origin` is known"),
+        "{err}"
+    );
+    assert!(
+        err.trim_end().ends_with("; the profiles are proposed"),
+        "{err}"
+    );
 }
