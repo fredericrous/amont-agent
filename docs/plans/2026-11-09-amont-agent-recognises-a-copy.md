@@ -385,6 +385,6 @@ declares the profiles.
 - lang:rust: approve-with-changes, then Delta approve-with-changes; typed Pin and FpError, revoked on I/O error, tab is not a space, bounded git show; deliberate: Fingerprint newtype, env read in pin_check; 91k+76k tokens, 101+54 s.
 - unix: approve-with-changes, then Delta approve-with-changes; plan-panel -C falls back with exit 0, flag parsing, gh unprompted; 70k+75k tokens, 75+53 s.
 - tui: approve-with-changes, then Delta approve-with-changes; pin-miss causes, gh hint, help wording, ambiguous prefix; Delta lows are follow-ups (Decision log); 72k+60k tokens, 83+29 s.
-- implementation-review, Windows fix Delta: approve-with-changes; the cfg(unix) gating is correct, plan record added; 32k tokens, 52 s.
+- Windows fix Delta: implementation-review approve-with-changes (plan record added; 32k, 52 s); backend, lang:rust, unix and tui approve (20k, 19k, 21k, 18k tokens; 14–27 s).
 
 <!-- panel: repos=amont-agent,greenharness-skills,grh adds=contract reviewers=architect,backend,lang:rust,po,tui,unix,codex body-sha=dfc422a7a1f7 -->
