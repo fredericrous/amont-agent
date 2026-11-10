@@ -620,10 +620,10 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
         "# Project\n\n<!-- greengate:start -->\nSTALE\n<!-- greengate:end -->\n",
     )
     .unwrap();
-    let r = send_with_path(&session_start(&work), Some(&bin));
-    let doc = r
+    let reply = send_with_path(&session_start(&work), Some(&bin));
+    let doc = reply
         .json()
-        .unwrap_or_else(|| panic!("greengate markers: stdout={:?}", r.stdout));
+        .unwrap_or_else(|| panic!("greengate markers: stdout={:?}", reply.stdout));
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();

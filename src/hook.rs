@@ -1735,7 +1735,7 @@ fn adr_lint_gate(op: &crate::payload::FileOp, root: &std::path::Path) -> bool {
     }
     let shown = root.display().to_string();
     let answer = run_with_deadline(
-        std::ffi::OsStr::new("amont"),
+        std::ffi::OsStr::new(amont_agent_guard::gate::gate_binary()),
         &["list", "--json"],
         root,
         AMONT_LIST_DEADLINE,

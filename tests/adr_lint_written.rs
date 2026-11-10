@@ -49,7 +49,9 @@ impl World {
         self.root.join(format!("{name}.log"))
     }
 
-    /// An `amont` that records where it ran and prints `document`.
+    /// A gate that records where it ran and prints `document`, under both
+    /// names: the hook asks `greengate` when one is on PATH, and this
+    /// machine's own would otherwise answer. Both log to `amont.log`.
     #[cfg(unix)] // a #!/bin/sh fake
     fn fake_amont(&self, document: &str) {
         let script = format!(
@@ -57,6 +59,7 @@ impl World {
             self.log("amont").display()
         );
         common::write_fake(&self.bin("amont"), &script);
+        common::write_fake(&self.bin("greengate"), &script);
     }
 
     /// An `adr-lint` that records its arguments, then runs `body`.
@@ -251,6 +254,17 @@ fn the_gate_is_asked_once_per_session_and_repository() {
     w.edit("adr-f", "src/a.rs");
     assert_eq!(w.runs("amont").len(), 1);
     assert_eq!(w.runs("adr-lint").len(), 2);
+}
+
+#[cfg(unix)] // fake programs are #!/bin/sh scripts
+#[test]
+fn a_greengate_list_envelope_opens_the_gate() {
+    let w = World::new("greengate-list");
+    w.fake_amont(&GATE_OPEN.replace("amont-list-v1", "greengate-list-v1"));
+    w.fake_adr_lint("exit 0");
+    w.edit("adr-gg", "src/a.rs");
+    assert_eq!(w.runs("amont").len(), 1);
+    assert_eq!(w.runs("adr-lint"), ["check --json -- src/a.rs"]);
 }
 
 #[cfg(unix)] // fake programs are #!/bin/sh scripts
