@@ -370,3 +370,234 @@ fn usage_errors_exit_2_and_help_exits_0() {
         }
     }
 }
+
+/// A registry in a temp journal directory; `CLAUDE_CONFIG_DIR` points at it,
+/// so the real journal is never read or written.
+struct Registry {
+    config: PathBuf,
+}
+
+const ACTIVE: &str = "aaaaaaaaaaaa00000000000000000000000000000000000000000000000000aa";
+const REVOKED_FP: &str = "bbbbbbbbbbbb11111111111111111111111111111111111111111111111111bb";
+
+impl Registry {
+    fn new(name: &str) -> Registry {
+        let config = std::env::temp_dir().join(format!(
+            "amont-agent-registry-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&config); // a leftover dir from an earlier run; absence is the goal
+        std::fs::create_dir_all(&config).unwrap();
+        Registry { config }
+    }
+
+    fn base(&self) -> PathBuf {
+        self.config.join("amont-agent")
+    }
+
+    fn register(&self, fingerprint: &str, roles: &[&str], repo: &str, commit: &str) {
+        use amont_agent_process::block_registry::{
+            record_copy, register_entry, EntryData, Generation,
+        };
+        register_entry(
+            &self.base(),
+            fingerprint,
+            &Generation {
+                rules_sha: "c".repeat(64),
+                agent_digest: "d".repeat(64),
+            },
+            &EntryData {
+                roles: roles.iter().map(|r| r.to_string()).collect(),
+                agents: vec![],
+                source_branch: "topic".into(),
+                content_id: "e".repeat(64),
+            },
+        )
+        .unwrap();
+        record_copy(&self.base(), fingerprint, repo, commit, "topic").unwrap();
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+            .arg("block")
+            .args(args)
+            .env("CLAUDE_CONFIG_DIR", &self.config)
+            .output()
+            .unwrap()
+    }
+}
+
+impl Drop for Registry {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.config); // test cleanup in Drop; nothing to report to
+    }
+}
+
+fn out_text(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn err_text(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn list_on_an_empty_store_prints_nothing_and_json_an_empty_array() {
+    let registry = Registry::new("list-empty");
+    let out = registry.run(&["list"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+    let json = registry.run(&["list", "--json"]);
+    assert_eq!(json.status.code(), Some(0));
+    assert_eq!(out_text(&json).trim(), "[]");
+}
+
+#[test]
+fn list_shows_active_and_revoked_blocks_as_tsv_and_json() {
+    let registry = Registry::new("list-two");
+    registry.register(ACTIVE, &["backend", "lang:rust"], "o/alpha", "abc123");
+    registry.register(REVOKED_FP, &["backend"], "o/beta", "def456");
+    amont_agent_process::block_registry::revoke(&registry.base(), REVOKED_FP, "a defect").unwrap();
+
+    let out = registry.run(&["list"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err_text(&out));
+    assert_eq!(
+        out_text(&out),
+        "fp:aaaaaaaaaaaa\tactive\tbackend,lang:rust\t1\to/alpha\n\
+         fp:bbbbbbbbbbbb\trevoked\tbackend\t1\to/beta\n"
+    );
+
+    let json = registry.run(&["list", "--json"]);
+    assert_eq!(json.status.code(), Some(0));
+    let rows: serde_json::Value = serde_json::from_str(&out_text(&json)).unwrap();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["fingerprint"], ACTIVE);
+    assert_eq!(rows[0]["short"], "fp:aaaaaaaaaaaa");
+    assert_eq!(rows[0]["state"], "active");
+    assert!(rows[0]["because"].is_null());
+    assert_eq!(
+        rows[0]["roles"],
+        serde_json::json!(["backend", "lang:rust"])
+    );
+    assert_eq!(rows[0]["source_repo"], "o/alpha");
+    assert_eq!(
+        rows[0]["copies"],
+        serde_json::json!([{"repo": "o/alpha", "branch": "topic", "commit": "abc123"}])
+    );
+    assert_eq!(rows[1]["state"], "revoked");
+    assert_eq!(rows[1]["because"], "a defect");
+}
+
+#[test]
+fn revoke_by_short_id_prefix_and_full_hex() {
+    for (name, given) in [
+        ("short", "fp:aaaaaaaaaaaa".to_string()),
+        ("prefix", "fp:aaaa".to_string()),
+        ("bare-prefix", "aaaaaaaaaaaa0".to_string()),
+        ("full", ACTIVE.to_string()),
+    ] {
+        let registry = Registry::new(&format!("revoke-{name}"));
+        registry.register(ACTIVE, &["backend"], "o/alpha", "abc123");
+        registry.register(REVOKED_FP, &["backend"], "o/beta", "def456");
+        let out = registry.run(&["revoke", &given, "--because", "found a defect"]);
+        assert_eq!(out.status.code(), Some(0), "{given}: {}", err_text(&out));
+        assert_eq!(out_text(&out), "o/alpha\ttopic\tabc123\n", "{given}");
+        assert!(err_text(&out).contains("fp:aaaaaaaaaaaa is revoked"));
+        assert_eq!(
+            amont_agent_process::block_registry::revoked(&registry.base(), ACTIVE).as_deref(),
+            Some("found a defect")
+        );
+        assert_eq!(
+            amont_agent_process::block_registry::revoked(&registry.base(), REVOKED_FP),
+            None
+        );
+    }
+}
+
+#[test]
+fn a_second_revoke_exits_0_and_prints_the_copies_again() {
+    let registry = Registry::new("revoke-twice");
+    registry.register(ACTIVE, &["backend"], "o/alpha", "abc123");
+    for _ in 0..2 {
+        let out = registry.run(&["revoke", "fp:aaaaaaaaaaaa", "--because=twice"]);
+        assert_eq!(out.status.code(), Some(0), "{}", err_text(&out));
+        assert_eq!(out_text(&out), "o/alpha\ttopic\tabc123\n");
+    }
+}
+
+#[test]
+fn revoke_without_because_exits_2() {
+    let registry = Registry::new("revoke-no-because");
+    registry.register(ACTIVE, &["backend"], "o/alpha", "abc123");
+    for args in [
+        &["revoke", "fp:aaaaaaaaaaaa"][..],
+        &["revoke", "fp:aaaaaaaaaaaa", "--because", "  "][..],
+        &["revoke", "fp:aaaaaaaaaaaa", "--because"][..],
+    ] {
+        let out = registry.run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
+    assert_eq!(
+        amont_agent_process::block_registry::revoked(&registry.base(), ACTIVE),
+        None
+    );
+}
+
+#[test]
+fn an_unknown_or_ambiguous_fingerprint_exits_1_naming_it() {
+    let registry = Registry::new("unknown");
+    registry.register(ACTIVE, &["backend"], "o/alpha", "abc123");
+    let other = format!("aaab{}", "2".repeat(60));
+    registry.register(&other, &["backend"], "o/beta", "def456");
+
+    for args in [
+        &["revoke", "fp:ffff", "--because", "x"][..],
+        &["revoke", "fp:aaa", "--because", "x"][..],
+        &["reinstate", "fp:ffff"][..],
+        &["reinstate", "fp:aaa"][..],
+    ] {
+        let out = registry.run(args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+        let said = err_text(&out);
+        let id = args[1].strip_prefix("fp:").unwrap();
+        assert!(
+            said.contains(&format!(
+                "amont-agent: block: no entry fp:{id}; see amont-agent block list"
+            )),
+            "{args:?}: {said}"
+        );
+    }
+}
+
+#[test]
+fn reinstate_a_revoked_block_prints_a_success_line() {
+    let registry = Registry::new("reinstate");
+    registry.register(ACTIVE, &["backend"], "o/alpha", "abc123");
+    let revoked = registry.run(&["revoke", "fp:aaaaaaaaaaaa", "--because", "mistake"]);
+    assert_eq!(revoked.status.code(), Some(0));
+
+    let out = registry.run(&["reinstate", "fp:aaaaaaaaaaaa"]);
+    assert_eq!(out.status.code(), Some(0), "{}", err_text(&out));
+    assert_eq!(out_text(&out), "fp:aaaaaaaaaaaa reinstated\n");
+    assert_eq!(
+        amont_agent_process::block_registry::revoked(&registry.base(), ACTIVE),
+        None
+    );
+}
+
+#[test]
+fn reinstate_a_block_that_was_not_revoked_says_so_on_stderr_and_exits_0() {
+    let registry = Registry::new("reinstate-active");
+    registry.register(ACTIVE, &["backend"], "o/alpha", "abc123");
+    let out = registry.run(&["reinstate", "fp:aaaaaaaaaaaa"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty());
+    assert!(
+        err_text(&out).contains("amont-agent: block: fp:aaaaaaaaaaaa was not revoked"),
+        "{}",
+        err_text(&out)
+    );
+}
