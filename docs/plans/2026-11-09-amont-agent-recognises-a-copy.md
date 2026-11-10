@@ -366,6 +366,7 @@ declares the profiles.
 - 2026-11-10: the reinstate guard is tested by its corpus case file and `tests/rules_json.rs` / `tests/precision.rs`, as the carried list says, and the race by 16 real hook processes plus a `block revoke`.
 - 2026-11-10: deliberate after review: a `Fingerprint` newtype through the registry (every entry point validates the hex before it joins a path) and moving `pin_check`'s environment read to its caller (the `AMONT_AGENT_<TOOL>` override pattern every tool call uses) are left for a later pass.
 - 2026-11-10: the low findings of the Delta round are follow-ups for the next release, not fixed here, since a code change would need a third review pass: `BoundedFailure` reports a spawn failure as `Exited` and missing pipes as `TimedOut` (a `NotStarted` variant); the brief prints a Pin check section with no journal directory even on an unregistered branch; one failure is labelled `fingerprint failed` in the brief and `git failed` elsewhere; the ambiguous-prefix and override messages do not name the full command; `the role set failed` wording; `no journal directory` cannot be journalled, so goes to stderr; `branch_proposal` is silent on a `registered_cover` error other than no entry or revoked; `pin_check::Outcome` and `block_registry::Pin` are one type twice; `text(value)` is a placeholder name; the unreadable-revoked test asserts nothing when run as root.
+- 2026-11-10: the registry's 0600 file mode is applied on unix only (`cfg(unix)`); on Windows the staged file gets default permissions, so "private" holds on unix. Two unix-only tests (file mode, a fake git script) are gated the same way.
 
 ## Verification results
 - Phase 1, fixtures and the near-miss table through `block sha` and the library → expected as listed → actual: `tests/block.rs` passes, hostile git settings and a subdirectory give one fingerprint, a binary diff exits 1.
@@ -376,6 +377,7 @@ declares the profiles.
 - Phase 4, a journal with one `profiles-copy-matched` push and one ordinary push → expected: 1 copy, 0 defects, the ordinary review untagged → actual: `review_outcomes::tests::a_copy_matched_push_is_counted_and_an_ordinary_one_is_not` passes.
 - Whole tree after the rebase on 3.28.0: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace --locked` → pass.
 - Not done: registering a pilot through a real hook run with real reviewer transcripts; the hook tests drive the same path with recorded transcripts. The first real pilot after install is that check, read from the journal.
+- Windows build: `cargo check --workspace --all-targets --locked --target x86_64-pc-windows-msvc` → expected: compiles (CI had failed with E0433/E0599 in `block_registry.rs`) → actual: compiles; unix registry tests and clippy pass.
 
 ## Implementation review
 - implementation-review: approve-with-changes, then Delta approve-with-changes; reinstate on stderr, Stance not a bool, source repo stored, names; deferral of the live pilot run recorded; 115k+94k tokens, 135+105 s.
@@ -383,5 +385,6 @@ declares the profiles.
 - lang:rust: approve-with-changes, then Delta approve-with-changes; typed Pin and FpError, revoked on I/O error, tab is not a space, bounded git show; deliberate: Fingerprint newtype, env read in pin_check; 91k+76k tokens, 101+54 s.
 - unix: approve-with-changes, then Delta approve-with-changes; plan-panel -C falls back with exit 0, flag parsing, gh unprompted; 70k+75k tokens, 75+53 s.
 - tui: approve-with-changes, then Delta approve-with-changes; pin-miss causes, gh hint, help wording, ambiguous prefix; Delta lows are follow-ups (Decision log); 72k+60k tokens, 83+29 s.
+- implementation-review, Windows fix Delta: approve-with-changes; the cfg(unix) gating is correct, plan record added; 32k tokens, 52 s.
 
 <!-- panel: repos=amont-agent,greenharness-skills,grh adds=contract reviewers=architect,backend,lang:rust,po,tui,unix,codex body-sha=dfc422a7a1f7 -->
