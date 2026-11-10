@@ -180,14 +180,44 @@ pub fn run(args: &[OsString], handoff: IndexHandoff, git_index: Option<OsString>
     }
 }
 
-/// `AMONT_INDEX_FILE` and `AMONT_INDEX_GIT_DIR` as `main` captured them: the
-/// index amont's commit gate selected, and the absolute per-worktree git-dir
-/// of the repository that owns it. The pair is one hint; the index is honoured
-/// only where the owner is this command's own repository.
+/// `GREENGATE_INDEX_FILE` and `GREENGATE_INDEX_GIT_DIR` as `main` captured
+/// them: the index the gate's commit check selected, and the absolute
+/// per-worktree git-dir of the repository that owns it. The pair is one hint;
+/// the index is honoured only where the owner is this command's own
+/// repository. greengate 3.x and amont hand the same pair as `AMONT_INDEX_*`,
+/// read only when the new file name is absent, and always as a pair, so one
+/// name of each never mixes.
 #[derive(Debug, Default)]
 pub struct IndexHandoff {
     pub index_file: Option<OsString>,
     pub owner_git_dir: Option<OsString>,
+}
+
+/// The pair names, greengate 4.0's first. The old pair goes at the census of
+/// greengate's hard rename.
+const INDEX_PAIRS: [(&str, &str); 2] = [
+    ("GREENGATE_INDEX_FILE", "GREENGATE_INDEX_GIT_DIR"),
+    ("AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"),
+];
+
+impl IndexHandoff {
+    /// The first pair whose file variable is set in this process's
+    /// environment, else none.
+    pub fn from_env() -> Self {
+        Self::from_lookup(|name| std::env::var_os(name))
+    }
+
+    fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {
+        INDEX_PAIRS
+            .iter()
+            .find_map(|(file, dir)| {
+                lookup(file).map(|index_file| Self {
+                    index_file: Some(index_file),
+                    owner_git_dir: lookup(dir),
+                })
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// The index the scan reads. An absent or empty index hint keeps
@@ -203,7 +233,7 @@ fn select_index(
         return Ok(git_index);
     };
     let Some(owner) = usable_owner(handoff.owner_git_dir) else {
-        note_ignored_hint("AMONT_INDEX_GIT_DIR is absent, empty, relative or missing");
+        note_ignored_hint("the index git-dir is absent, empty, relative or missing");
         return Ok(git_index);
     };
     if own_git_dir()? != owner {
@@ -869,6 +899,42 @@ fn read_blobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn handoff_of(vars: &[(&str, &str)]) -> IndexHandoff {
+        IndexHandoff::from_lookup(|name| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| OsString::from(v))
+        })
+    }
+
+    #[test]
+    fn the_new_index_pair_wins_and_the_old_pair_is_read_alone() {
+        let new = handoff_of(&[
+            ("GREENGATE_INDEX_FILE", "/n/index"),
+            ("GREENGATE_INDEX_GIT_DIR", "/n/.git"),
+            ("AMONT_INDEX_FILE", "/o/index"),
+            ("AMONT_INDEX_GIT_DIR", "/o/.git"),
+        ]);
+        assert_eq!(new.index_file.as_deref(), Some("/n/index".as_ref()));
+        assert_eq!(new.owner_git_dir.as_deref(), Some("/n/.git".as_ref()));
+
+        let old = handoff_of(&[
+            ("AMONT_INDEX_FILE", "/o/index"),
+            ("AMONT_INDEX_GIT_DIR", "/o/.git"),
+        ]);
+        assert_eq!(old.index_file.as_deref(), Some("/o/index".as_ref()));
+        assert_eq!(old.owner_git_dir.as_deref(), Some("/o/.git".as_ref()));
+
+        // Never one name of each: the new file without its git-dir keeps none.
+        let mixed = handoff_of(&[
+            ("GREENGATE_INDEX_FILE", "/n/index"),
+            ("AMONT_INDEX_GIT_DIR", "/o/.git"),
+        ]);
+        assert_eq!(mixed.owner_git_dir, None);
+
+        assert!(handoff_of(&[]).index_file.is_none());
+    }
 
     fn no_env(_: &str) -> Option<String> {
         None

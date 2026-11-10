@@ -44,6 +44,10 @@ fn examine(_parsed: &Parsed) -> Option<Finding> {
 /// The `format` token of the document `amont list --json` prints.
 pub const LIST_FORMAT: &str = "amont-list-v1";
 
+/// The same envelope under greengate 4.0's name; both are read until the
+/// census of greengate's hard rename.
+pub const LIST_FORMATS: [&str; 2] = ["greengate-list-v1", LIST_FORMAT];
+
 /// The id amont gives the row adr-lint's `amont.pack` declares.
 pub const ROW_ID: &str = "pre-commit-adr-lint-check";
 
@@ -72,7 +76,11 @@ pub fn gate(document: &str) -> Gate {
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(document) else {
         return Gate::Unexpected;
     };
-    if doc.get("format").and_then(|f| f.as_str()) != Some(LIST_FORMAT) {
+    if !doc
+        .get("format")
+        .and_then(|f| f.as_str())
+        .is_some_and(|f| LIST_FORMATS.contains(&f))
+    {
         return Gate::Unexpected;
     }
     let Some(checks) = doc.get("checks").and_then(|c| c.as_array()) else {
@@ -199,6 +207,11 @@ mod tests {
         let trusted = r#"{"format":"amont-list-v1","checks":[{"id":"pre-commit-adr-lint-check","status":"runs","command":"adr-lint check --"}]}"#;
         assert_eq!(gate(untrusted), Gate::Open);
         assert_eq!(gate(trusted), Gate::Open);
+        // greengate 4.0 names the same envelope `greengate-list-v1`.
+        assert_eq!(
+            gate(&trusted.replace("amont-list-v1", "greengate-list-v1")),
+            Gate::Open
+        );
         assert_eq!(
             gate(
                 r#"{"format":"amont-list-v1","checks":[{"id":"pre-commit-mine","command":"adr-lint check --"}]}"#
@@ -207,6 +220,7 @@ mod tests {
         );
         for unexpected in [
             r#"{"format":"amont-list-v2","checks":[{"id":"pre-commit-adr-lint-check"}]}"#,
+            r#"{"format":"greengate-list-v2","checks":[{"id":"pre-commit-adr-lint-check"}]}"#,
             r#"{"checks":[{"id":"pre-commit-adr-lint-check"}]}"#,
             r#"{"format":"amont-list-v1"}"#,
             "not json",
