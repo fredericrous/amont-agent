@@ -17,6 +17,7 @@ pub mod guide;
 pub mod impl_review_outcomes;
 pub mod implementation_review;
 pub mod implementation_review_rule;
+pub mod pin_check;
 pub mod plan_apply;
 pub mod plan_phases;
 pub mod plan_review;

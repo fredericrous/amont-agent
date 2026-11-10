@@ -2158,7 +2158,8 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
 }
 
 const PLAN_PANEL_USAGE: &str = "\
-usage: amont-agent plan-panel [--code-review] <plan.md>
+usage: amont-agent plan-panel [--code-review [-C <dir>] [--base <ref>]]
+                              <plan.md>
 
 The review agents a plan still needs, computed as the plan-review-panel
 hook will judge it at ExitPlanMode, and whether this is the whole panel or
@@ -2187,9 +2188,48 @@ or `no language area`; `cut -f2` reads `none`, and the line pastes as
 declares them; without the flag a plan with no such section is warned
 about on stderr and the output above is unchanged.
 
+  -C <dir>      with --code-review: also read the branch of the repository
+                at <dir>; a registered, unrevoked, pin-checked copy of a
+                reviewed block is proposed as `<repo>\tnone\tcopy of fp:<id>`
+                while the implementation-review hook enforces; otherwise
+                the profiles are proposed, with the cause on stderr
+  --base <ref>  the branch starts at its merge base with <ref> (default:
+                origin's default branch); needs --code-review, like -C
+                (without it: exit 2)
+
 Exit 0, 1 when the plan cannot be read, its comment is wrong or its Code
 review section does not parse (the reason on stderr), 2 on a usage error.
 ";
+
+/// The proposal `lines`, with the branch's own repository proposed as a copy
+/// when `-C` or `--base` named a branch that is a verified registered block.
+/// Without either flag the lines are unchanged.
+fn plan_panel_branch(lines: &str, dir: Option<&str>, base: Option<&str>) -> Result<String, String> {
+    if dir.is_none() && base.is_none() {
+        return Ok(lines.to_string());
+    }
+    let enforcing = amont_agent_guard::stance::resolve(&implementation_review_rule::RULE)
+        == amont_agent_guard::rules::Stance::Deny;
+    let branch =
+        code_review::branch_proposal(std::path::Path::new(dir.unwrap_or(".")), base, enforcing)?;
+    for notice in &branch.notices {
+        eprintln!("{notice}");
+    }
+    let Some(id) = branch.copy_of else {
+        return Ok(lines.to_string());
+    };
+    let reason = code_review::NoReviewReason::CopyOf(id);
+    let mut out = String::new();
+    for line in lines.lines() {
+        if line.split('\t').next() == Some(branch.repo.as_str()) {
+            out.push_str(&format!("{}\tnone\t{reason}\n", branch.repo));
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
 
 fn run_plan_panel(args: &[OsString]) -> ExitCode {
     let args: Vec<String> = args
@@ -2200,8 +2240,49 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
         print!("{PLAN_PANEL_USAGE}");
         return ExitCode::SUCCESS;
     }
-    let proposing = args.iter().any(|a| a == "--code-review");
-    let operands: Vec<&String> = args.iter().filter(|a| *a != "--code-review").collect();
+    let mut proposing = false;
+    let (mut branch_dir, mut branch_base): (Option<String>, Option<String>) = (None, None);
+    let mut operands: Vec<&String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let word = args[i].as_str();
+        i += 1;
+        if word == "--code-review" {
+            proposing = true;
+            continue;
+        }
+        let (flag, attached) = match word.split_once('=') {
+            Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
+            _ => match (word.get(..2), word.get(2..)) {
+                (Some("-C"), Some(rest)) if !rest.is_empty() => ("-C", Some(rest.to_string())),
+                _ => (word, None),
+            },
+        };
+        if flag != "-C" && flag != "--base" {
+            operands.push(&args[i - 1]);
+            continue;
+        }
+        let value = match attached {
+            Some(value) => value,
+            None => {
+                let Some(value) = args.get(i) else {
+                    eprintln!("amont-agent: plan-panel: {flag} needs a value");
+                    return ExitCode::from(2);
+                };
+                i += 1;
+                value.clone()
+            }
+        };
+        if flag == "-C" {
+            branch_dir = Some(value);
+        } else {
+            branch_base = Some(value);
+        }
+    }
+    if !proposing && (branch_dir.is_some() || branch_base.is_some()) {
+        eprint!("amont-agent: plan-panel: -C and --base need --code-review\n\n{PLAN_PANEL_USAGE}");
+        return ExitCode::from(2);
+    }
     let [file] = operands.as_slice() else {
         eprint!("amont-agent: plan-panel takes one plan file\n\n{PLAN_PANEL_USAGE}");
         return ExitCode::from(2);
@@ -2226,6 +2307,17 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
     if proposing {
         return match code_review::proposal(&text) {
             Ok(lines) => {
+                let lines = match plan_panel_branch(
+                    &lines,
+                    branch_dir.as_deref(),
+                    branch_base.as_deref(),
+                ) {
+                    Ok(lines) => lines,
+                    Err(why) => {
+                        eprintln!("amont-agent: plan-panel: {why}");
+                        return ExitCode::from(1);
+                    }
+                };
                 print!("{lines}");
                 ExitCode::SUCCESS
             }

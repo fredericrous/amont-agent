@@ -1647,7 +1647,7 @@ fn ordered(roles: &std::collections::BTreeSet<String>) -> Vec<String> {
 /// The agent behind each role and the sha256 of its file (`-` when no source
 /// carries one), sorted by agent name. An agent file that exists and cannot
 /// be read, or directories that cannot be listed, are an error.
-fn agent_digests(repo: &Path, roles: &[String]) -> Result<Vec<(String, String)>, String> {
+pub fn agent_digests(repo: &Path, roles: &[String]) -> Result<Vec<(String, String)>, String> {
     let agents: std::collections::BTreeSet<String> = roles
         .iter()
         .filter_map(|role| crate::code_review::agent_for(role))
@@ -1674,7 +1674,7 @@ fn agent_digests(repo: &Path, roles: &[String]) -> Result<Vec<(String, String)>,
 }
 
 /// One digest of the agents a generation was registered under.
-fn agents_digest(agents: &[(String, String)]) -> String {
+pub fn agents_digest(agents: &[(String, String)]) -> String {
     let lines: String = agents
         .iter()
         .map(|(agent, digest)| format!("{agent}\t{digest}\n"))
@@ -1682,39 +1682,101 @@ fn agents_digest(agents: &[(String, String)]) -> String {
     hex(&sha256(lines.as_bytes()))
 }
 
+/// The roles the files of `merge_base..pushed` (without `docs/plans/`) call
+/// for, seated from the repository's areas as `code_review` seats them.
+pub fn roles_needed(
+    repo: &Path,
+    merge_base: &str,
+    pushed: &str,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let plans_excluded = format!(":(top,exclude){PLANS_PATH}");
+    let listing = git::stdout_in(
+        repo,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-relative",
+            merge_base,
+            pushed,
+            "--",
+            ":(top)",
+            &plans_excluded,
+        ],
+    )
+    .ok_or_else(|| "git failed".to_string())?;
+    let paths: Vec<String> = listing
+        .lines()
+        .map(str::to_string)
+        .filter(|path| !path.is_empty())
+        .collect();
+    let areas = crate::plan_review::repo_areas(repo)
+        .map_err(|why| format!("repository areas unavailable: {why}"))?
+        .ok_or_else(|| "repository areas unavailable".to_string())?;
+    Ok(crate::code_review::code_roles(&crate::file_types::classes(
+        &paths, &areas,
+    )))
+}
+
+/// Whether a registered, unrevoked generation of the block `full`, for
+/// today's rules and agents, covers every role in `needed`; else the named
+/// cause of the miss.
+pub fn registered_cover(
+    repo: &Path,
+    base: &Path,
+    full: &str,
+    wanted_id: &str,
+    needed: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    if let Some(because) = crate::block_registry::revoked(base, full) {
+        return Err(format!("revoked: {because}"));
+    }
+    let entries = crate::block_registry::entries(base, full);
+    if entries.is_empty() {
+        return Err(format!("no entry for {wanted_id}"));
+    }
+    let rules =
+        crate::review_brief::rules_sha(repo).map_err(|why| format!("rules unavailable: {why}"))?;
+    let mut role_gap: Option<String> = None;
+    let mut agent_change: Option<String> = None;
+    for entry in &entries {
+        if entry.generation.rules_sha != rules {
+            continue;
+        }
+        let now = agent_digests(repo, &entry.registered.roles)?;
+        if agents_digest(&now) != entry.generation.agent_digest {
+            let changed: Vec<&str> = now
+                .iter()
+                .filter(|pair| !entry.registered.agents.contains(pair))
+                .map(|(agent, _)| agent.as_str())
+                .collect();
+            agent_change.get_or_insert_with(|| {
+                format!("agent {} changed since registration", changed.join(", "))
+            });
+            continue;
+        }
+        match needed
+            .iter()
+            .find(|role| !entry.registered.roles.contains(role))
+        {
+            Some(role) => {
+                role_gap.get_or_insert_with(|| format!("role {role} not covered"));
+            }
+            None => return Ok(()),
+        }
+    }
+    Err(role_gap
+        .or(agent_change)
+        .unwrap_or_else(|| "rules changed since registration".to_string()))
+}
+
 impl ProfileGate<'_> {
     /// The roles the files of the branch (without `docs/plans/`) call for,
     /// seated from the repository's areas as `code_review` seats them.
     fn needed_roles(&self) -> Result<std::collections::BTreeSet<String>, String> {
-        let plans_excluded = format!(":(top,exclude){PLANS_PATH}");
-        let listing = git::stdout_in(
-            self.repo,
-            &[
-                "-c",
-                "core.quotepath=false",
-                "diff",
-                "--name-only",
-                "--no-renames",
-                "--no-relative",
-                self.merge_base,
-                self.pushed,
-                "--",
-                ":(top)",
-                &plans_excluded,
-            ],
-        )
-        .ok_or_else(|| "git failed".to_string())?;
-        let paths: Vec<String> = listing
-            .lines()
-            .map(str::to_string)
-            .filter(|path| !path.is_empty())
-            .collect();
-        let areas = crate::plan_review::repo_areas(self.repo)
-            .map_err(|why| format!("repository areas unavailable: {why}"))?
-            .ok_or_else(|| "repository areas unavailable".to_string())?;
-        Ok(crate::code_review::code_roles(&crate::file_types::classes(
-            &paths, &areas,
-        )))
+        roles_needed(self.repo, self.merge_base, self.pushed)
     }
 
     fn copy_outcome(&self, reason: &str) -> CopyOutcome {
@@ -1818,46 +1880,8 @@ impl ProfileGate<'_> {
         let Some(base) = journal::dir() else {
             return Err(format!("no entry for {wanted_id}"));
         };
-        if let Some(because) = crate::block_registry::revoked(&base, &full) {
-            return Err(format!("revoked: {because}"));
-        }
-        let entries = crate::block_registry::entries(&base, &full);
-        if entries.is_empty() {
-            return Err(format!("no entry for {wanted_id}"));
-        }
-        let rules = crate::review_brief::rules_sha(self.repo)
-            .map_err(|why| format!("rules unavailable: {why}"))?;
-        let mut role_gap: Option<String> = None;
-        let mut agent_change: Option<String> = None;
-        for entry in &entries {
-            if entry.generation.rules_sha != rules {
-                continue;
-            }
-            let now = agent_digests(self.repo, &entry.registered.roles)?;
-            if agents_digest(&now) != entry.generation.agent_digest {
-                let changed: Vec<&str> = now
-                    .iter()
-                    .filter(|pair| !entry.registered.agents.contains(pair))
-                    .map(|(agent, _)| agent.as_str())
-                    .collect();
-                agent_change.get_or_insert_with(|| {
-                    format!("agent {} changed since registration", changed.join(", "))
-                });
-                continue;
-            }
-            match needed
-                .iter()
-                .find(|role| !entry.registered.roles.contains(role))
-            {
-                Some(role) => {
-                    role_gap.get_or_insert_with(|| format!("role {role} not covered"));
-                }
-                None => return self.pin_passed(&base, &full).map(|()| full),
-            }
-        }
-        Err(role_gap
-            .or(agent_change)
-            .unwrap_or_else(|| "rules changed since registration".to_string()))
+        registered_cover(self.repo, &base, &full, &wanted_id, needed)?;
+        self.pin_passed(&base, &full).map(|()| full)
     }
 
     fn pin_passed(&self, base: &Path, fingerprint: &str) -> Result<(), String> {

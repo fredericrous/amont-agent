@@ -186,7 +186,7 @@ pub enum Proposal {
 }
 
 /// Why a repository is proposed `none`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoReviewReason {
     /// Every file named in it is markdown (or a directory).
     MarkdownOnly,
@@ -197,16 +197,20 @@ pub enum NoReviewReason {
     NoFileNamed,
     /// Seated from areas, and its areas carry no language.
     NoLanguageArea,
+    /// The change is a registered, fully reviewed block (ADR-0067): the
+    /// short id of its fingerprint, `fp:` and 12 hex characters.
+    CopyOf(String),
 }
 
 impl std::fmt::Display for NoReviewReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            NoReviewReason::MarkdownOnly => "markdown only",
-            NoReviewReason::NoReviewedFileType => "no reviewed file type",
-            NoReviewReason::NoFileNamed => "no file named",
-            NoReviewReason::NoLanguageArea => "no language area",
-        })
+        match self {
+            NoReviewReason::MarkdownOnly => f.write_str("markdown only"),
+            NoReviewReason::NoReviewedFileType => f.write_str("no reviewed file type"),
+            NoReviewReason::NoFileNamed => f.write_str("no file named"),
+            NoReviewReason::NoLanguageArea => f.write_str("no language area"),
+            NoReviewReason::CopyOf(id) => write!(f, "copy of {id}"),
+        }
     }
 }
 
@@ -262,6 +266,95 @@ pub fn proposal(plan_text: &str) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+/// What `plan-panel --code-review -C <dir>` makes of the branch at `dir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchProposal {
+    /// The repository's name, as a plan's machine comment spells it.
+    pub repo: String,
+    /// `Some(fp:<12 hex>)` when the branch is a registered, unrevoked block
+    /// whose pin check passed and the hook enforces.
+    pub copy_of: Option<String>,
+    /// Lines for stderr: why a registered block is not proposed as a copy.
+    pub notices: Vec<String>,
+}
+
+/// How long the proposal gives `git` to find the merge base and the diff.
+const BRANCH_GIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Look at the branch `base..HEAD` of the repository holding `dir`. A branch
+/// that is not a registered block, or that cannot be fingerprinted, proposes
+/// nothing and says nothing; `enforcing` is whether the implementation-review
+/// hook denies, since a copy line is only verified then. The pin check runs
+/// here without writing a record.
+pub fn branch_proposal(
+    dir: &Path,
+    base: Option<&str>,
+    enforcing: bool,
+) -> Result<BranchProposal, String> {
+    let repo = amont_agent_guard::push_target::toplevel(dir)
+        .ok_or_else(|| format!("{} is not inside a git repository", dir.display()))?;
+    let repo_name = crate::implementation_review::repo_name(&repo)
+        .ok_or_else(|| "the repository has no name".to_string())?;
+    let mut proposal = BranchProposal {
+        repo: repo_name,
+        copy_of: None,
+        notices: Vec::new(),
+    };
+    let deadline = std::time::Instant::now() + BRANCH_GIT_BUDGET;
+    let base = match base {
+        Some(base) => base.to_string(),
+        None => amont_agent_guard::git::default_ref(&repo, deadline)
+            .map(|(reference, _)| reference)
+            .ok_or("no default branch of `origin` is known; pass --base <ref>")?,
+    };
+    let merge_base = amont_agent_guard::git::stdout_bounded(
+        &repo,
+        &["merge-base", base.as_str(), "HEAD"],
+        deadline,
+    )
+    .ok_or_else(|| format!("`git merge-base {base} HEAD` failed"))?;
+    let Ok(Some(fingerprint)) =
+        crate::block_fingerprint::fingerprint(&repo, &merge_base, "HEAD", deadline)
+    else {
+        return Ok(proposal);
+    };
+    let Some(state) = amont_agent_guard::journal::dir() else {
+        return Ok(proposal);
+    };
+    let id = fingerprint.short();
+    let Ok(needed) = crate::implementation_review::roles_needed(&repo, &merge_base, "HEAD") else {
+        return Ok(proposal);
+    };
+    if crate::implementation_review::registered_cover(
+        &repo,
+        &state,
+        fingerprint.full(),
+        &id,
+        &needed,
+    )
+    .is_err()
+    {
+        return Ok(proposal);
+    }
+    if !enforcing {
+        proposal.notices.push(
+            "amont-agent: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
+                .to_string(),
+        );
+        return Ok(proposal);
+    }
+    let pin = crate::pin_check::check(&repo, &merge_base);
+    if pin.passed {
+        proposal.copy_of = Some(id);
+    } else {
+        proposal.notices.push(format!(
+            "amont-agent: plan-panel: {id} is a registered copy but the pin check failed: {}; the profiles are proposed",
+            pin.detail
+        ));
+    }
+    Ok(proposal)
 }
 
 /// The body's `## Code review` section: `Ok(None)` when there is none.
