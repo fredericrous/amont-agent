@@ -20,7 +20,8 @@ usage: amont-agent implementation-review record <plan.md> --verdict <v>
 Append one row to ~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl
 (schema amont-agent-impl-review-outcome-v1): recorded_at, tree (the content id
 of HEAD, as `amont-agent tree-sha`), round (one more than the rows already
-kept for this plan; a per-plan count), plan_path, model (the
+kept for this plan; a per-plan count), copy (true when the hook journalled
+profiles-copy-matched for the tree), plan_path, model (the
 resolvedModel of the completed implementation-review agent in the newest
 transcript of this directory's session, or empty) and verdict. A remembered
 pass for the tree that disagrees with --verdict is warned about on stderr.
@@ -183,6 +184,14 @@ fn record(plan: &Path, verdict: &str, findings: Vec<serde_json::Value>) -> Resul
         .count();
     let round = earlier + 1;
     let at = now();
+    let journal: String = amont_agent_guard::journal::paths()
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok()) // an absent or unreadable journal file holds no copy match; the row is then untagged
+        .collect();
+    let copy = crate::review_outcomes::tree_is_copy(
+        &crate::review_outcomes::copy_trees_in(&journal),
+        &tree,
+    );
     warn_on_disagreement(&repo, &tree, verdict);
     let row = serde_json::json!({
         "schema": SCHEMA,
@@ -192,6 +201,7 @@ fn record(plan: &Path, verdict: &str, findings: Vec<serde_json::Value>) -> Resul
         "plan_path": real,
         "model": session_model(&cwd).unwrap_or_default(),
         "verdict": verdict,
+        "copy": copy,
         "findings": findings,
     });
     let mut f =
