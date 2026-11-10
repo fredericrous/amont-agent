@@ -184,8 +184,23 @@ impl World {
     }
 
     fn hook(&self, payload: serde_json::Value) -> Said {
-        let mut child = self
-            .bin()
+        self.hook_via(self.bin(), payload)
+    }
+
+    /// A push of `dir` judged by the hook run through `cmd`.
+    fn hook_with(&self, cmd: Command, dir: &Path, session: &str, transcript: &Path) -> Said {
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "cwd": dir, "session_id": session, "prompt_id": "p1",
+            "tool_use_id": self.id(), "permission_mode": "default",
+            "transcript_path": transcript,
+            "tool_input": {"command": "git push -u origin feat/x"}
+        });
+        self.hook_via(cmd, payload)
+    }
+
+    fn hook_via(&self, mut cmd: Command, payload: serde_json::Value) -> Said {
+        let mut child = cmd
             .arg("hook")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -4240,23 +4255,35 @@ fn registered_pilot(name: &str) -> (World, PathBuf, PathBuf) {
     (w, pilot, copy)
 }
 
-fn pin_with(passed: bool) -> amont_agent_process::block_registry::Pin {
-    amont_agent_process::block_registry::Pin {
-        passed,
-        detail: "test".into(),
-        gh_override_set: false,
+fn passed_pin() -> amont_agent_process::block_registry::Pin {
+    amont_agent_process::block_registry::Pin::Passed {
+        release: "test".into(),
+    }
+}
+
+fn failed_pin() -> amont_agent_process::block_registry::Pin {
+    amont_agent_process::block_registry::Pin::Failed { why: "test".into() }
+}
+
+fn pin_record(
+    pin: amont_agent_process::block_registry::Pin,
+    gh_override_set: bool,
+) -> amont_agent_process::block_registry::PinRecord {
+    amont_agent_process::block_registry::PinRecord {
+        pin,
+        gh_override_set,
     }
 }
 
 fn pin_passed(w: &World, copy: &Path) {
-    store_pin(w, copy, &pin_with(true));
+    store_pin(w, copy, &pin_record(passed_pin(), false));
 }
 
 fn pin_failed(w: &World, copy: &Path) {
-    store_pin(w, copy, &pin_with(false));
+    store_pin(w, copy, &pin_record(failed_pin(), false));
 }
 
-fn store_pin(w: &World, copy: &Path, pin: &amont_agent_process::block_registry::Pin) {
+fn store_pin(w: &World, copy: &Path, pin: &amont_agent_process::block_registry::PinRecord) {
     let fingerprint = block_of(copy);
     amont_agent_process::block_registry::write_pin(
         &state_dir(w),
@@ -4361,15 +4388,7 @@ fn a_pass_then_a_failed_pin_check_at_the_same_tree_is_a_miss() {
 #[test]
 fn a_pin_record_made_with_the_gh_override_is_a_miss_without_it() {
     let (w, _, copy) = registered_pilot("copy-pin-override");
-    store_pin(
-        &w,
-        &copy,
-        &amont_agent_process::block_registry::Pin {
-            passed: true,
-            detail: "test".into(),
-            gh_override_set: true,
-        },
-    );
+    store_pin(&w, &copy, &pin_record(passed_pin(), true));
     denied_with(
         push_copy(&w, &copy, "s2"),
         "the pin record was made with AMONT_AGENT_GH set; run review-brief without it",
@@ -4613,4 +4632,139 @@ fn a_carried_pass_registers_nothing() {
     assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
     assert!(!carried_lines(&w).is_empty(), "{:?}", w.journal());
     assert_eq!(generations(&w, fingerprint.full()), 0);
+}
+
+#[test]
+fn sixteen_hooks_and_a_revoke_at_once_lose_no_copy_and_leave_no_temp_file() {
+    use std::io::Write;
+    let (w, pilot, copy) = registered_pilot("copy-concurrent");
+    pin_passed(&w, &copy);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&copy),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("race", &t);
+    let payloads: Vec<String> = (0..16)
+        .map(|n| {
+            serde_json::json!({
+                "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                "cwd": copy, "session_id": "race", "prompt_id": "p1",
+                "tool_use_id": format!("toolu_race_{n:02}"), "permission_mode": "default",
+                "transcript_path": transcript,
+                "tool_input": {"command": "git push -u origin feat/x"}
+            })
+            .to_string()
+        })
+        .collect();
+    let mut children: Vec<std::process::Child> = payloads
+        .iter()
+        .map(|payload| {
+            let mut child = w
+                .bin()
+                .arg("hook")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(payload.as_bytes())
+                .unwrap();
+            child
+        })
+        .collect();
+    let fingerprint = block_of(&pilot);
+    // The first hook finishes before the revoke, so its copy must be on disk;
+    // the other fifteen are still racing the revoke.
+    let first = children.remove(0).wait_with_output().unwrap();
+    assert!(first.status.success(), "{first:?}");
+    let revoke = w
+        .bin()
+        .args(["block", "revoke", fingerprint.full(), "--because", "race"])
+        .output()
+        .unwrap();
+    assert_eq!(revoke.status.code(), Some(0), "{revoke:?}");
+    for child in children.drain(..) {
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    let block = state_dir(&w)
+        .join("implementation-review")
+        .join("by-block")
+        .join(fingerprint.full());
+    assert_eq!(
+        amont_agent_process::block_registry::revoked(&state_dir(&w), fingerprint.full()).as_deref(),
+        Some("race")
+    );
+    let copies = amont_agent_process::block_registry::copies(&state_dir(&w), fingerprint.full());
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(copies[0].repo, "other");
+    let commit = git(&copy, &["rev-parse", "HEAD"]);
+    let copy_files: Vec<String> = std::fs::read_dir(block.join("copies"))
+        .map(|listing| {
+            listing
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    // Every hook that ran before the revoke recorded the same copy once; none
+    // may leave a staged file, whichever side of the revoke it fell on.
+    assert!(
+        copy_files.iter().all(|name| !name.starts_with(".tmp-")),
+        "{copy_files:?}"
+    );
+    assert_eq!(copy_files.len(), 1, "{copy_files:?}");
+    assert!(
+        copy_files[0].ends_with(&format!("{commit}.json")),
+        "{copy_files:?}"
+    );
+    let mut stray = Vec::new();
+    let mut pending = vec![block];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".tmp-")
+            {
+                stray.push(path);
+            }
+        }
+    }
+    assert!(stray.is_empty(), "{stray:?}");
+}
+
+#[test]
+fn an_empty_gh_override_in_the_hook_counts_as_unset() {
+    let (w, _, copy) = registered_pilot("copy-pin-empty-override");
+    store_pin(&w, &copy, &pin_record(passed_pin(), true));
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&copy),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("empty", &t);
+    let said = {
+        let mut cmd = w.bin();
+        cmd.env("AMONT_AGENT_GH", "");
+        w.hook_with(cmd, &copy, "empty", &transcript)
+    };
+    denied_with(
+        said,
+        "the pin record was made with AMONT_AGENT_GH set; run review-brief without it",
+    );
 }

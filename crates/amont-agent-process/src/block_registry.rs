@@ -73,11 +73,35 @@ pub struct Copy {
     pub branch: String,
 }
 
-/// The latest pin check for a pushed tree.
+/// What a pin check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pin {
-    pub passed: bool,
-    pub detail: String,
+pub enum Pin {
+    /// The release was confirmed to list the asset.
+    Passed { release: String },
+    /// The check did not confirm it, for this reason.
+    Failed { why: String },
+}
+
+impl PinRecord {
+    /// Whether the check passed.
+    pub fn is_passed(&self) -> bool {
+        matches!(self.pin, Pin::Passed { .. })
+    }
+
+    /// The release confirmed, or the reason it was not.
+    pub fn detail(&self) -> &str {
+        match &self.pin {
+            Pin::Passed { release } => release,
+            Pin::Failed { why } => why,
+        }
+    }
+}
+
+/// The latest pin check for a pushed tree, and whether `AMONT_AGENT_GH` was
+/// set for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinRecord {
+    pub pin: Pin,
     pub gh_override_set: bool,
 }
 
@@ -173,30 +197,30 @@ pub fn register_entry(
     base: &Path,
     fingerprint: &str,
     generation: &Generation,
-    data: &EntryData,
+    entry: &EntryData,
 ) -> io::Result<()> {
     let dir = block_dir(base, fingerprint)?.join(generation.dir_name()?);
     let body = json!({
         "fingerprint": fingerprint,
-        "roles": data.roles,
-        "agents": data.agents.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
+        "roles": entry.roles,
+        "agents": entry.agents.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
         "rules_sha": generation.rules_sha,
         "agent_digest": generation.agent_digest,
-        "source_branch": data.source_branch,
-        "source_repo": data.source_repo,
-        "content_id": data.content_id,
+        "source_branch": entry.source_branch,
+        "source_repo": entry.source_repo,
+        "content_id": entry.content_id,
     });
     write_once(&dir, "entry.json", &body.to_string())
 }
 
-fn parse_entry(value: &Value) -> Option<Entry> {
-    let roles = value
+fn parse_entry(entry_json: &Value) -> Option<Entry> {
+    let roles = entry_json
         .get("roles")?
         .as_array()?
         .iter()
         .map(|role| role.as_str().map(str::to_string))
         .collect::<Option<Vec<_>>>()?;
-    let agents = value
+    let agents = entry_json
         .get("agents")
         .and_then(Value::as_object)
         .map(|listed| {
@@ -208,16 +232,16 @@ fn parse_entry(value: &Value) -> Option<Entry> {
         .unwrap_or_default();
     Some(Entry {
         generation: Generation {
-            rules_sha: text(value, "rules_sha")?,
-            agent_digest: text(value, "agent_digest")?,
+            rules_sha: text(entry_json, "rules_sha")?,
+            agent_digest: text(entry_json, "agent_digest")?,
         },
-        fingerprint: text(value, "fingerprint")?,
+        fingerprint: text(entry_json, "fingerprint")?,
         registered: EntryData {
             roles,
             agents,
-            source_branch: text(value, "source_branch")?,
-            source_repo: text(value, "source_repo"),
-            content_id: text(value, "content_id")?,
+            source_branch: text(entry_json, "source_branch")?,
+            source_repo: text(entry_json, "source_repo"),
+            content_id: text(entry_json, "content_id")?,
         },
     })
 }
@@ -238,6 +262,15 @@ pub fn entries(base: &Path, fingerprint: &str) -> Vec<Entry> {
             (entry.fingerprint == fingerprint && named == name).then_some(entry)
         })
         .collect()
+}
+
+/// The generation that names the repository a block was registered from: the
+/// first, in directory-name order, that carries `source_repo`. `block list`
+/// and `block revoke` both pick the source through it.
+pub fn source_entry(base: &Path, fingerprint: &str) -> Option<Entry> {
+    entries(base, fingerprint)
+        .into_iter()
+        .find(|entry| entry.registered.source_repo.is_some())
 }
 
 /// Every fingerprint directory in the registry (exactly 64 hex characters).
@@ -278,11 +311,11 @@ pub fn copies(base: &Path, fingerprint: &str) -> Vec<Copy> {
     visible_names(&dir)
         .into_iter()
         .filter_map(|name| {
-            let value = read_json(&dir.join(name))?;
+            let copy_json = read_json(&dir.join(name))?;
             Some(Copy {
-                repo: text(&value, "repo")?,
-                commit: text(&value, "commit")?,
-                branch: text(&value, "branch")?,
+                repo: text(&copy_json, "repo")?,
+                commit: text(&copy_json, "commit")?,
+                branch: text(&copy_json, "branch")?,
             })
         })
         .collect()
@@ -304,15 +337,18 @@ pub fn reinstate(base: &Path, fingerprint: &str) -> io::Result<()> {
 }
 
 /// `Some(reason)` when the fingerprint is revoked. The file's presence
-/// revokes even when it cannot be parsed; the reason is then empty.
+/// revokes even when it cannot be parsed (the reason is then empty), and so
+/// does a file that cannot be examined: only `NotFound` means not revoked.
 pub fn revoked(base: &Path, fingerprint: &str) -> Option<String> {
     let path = block_dir(base, fingerprint).ok()?.join(REVOKED);
-    if !path.exists() {
-        return None;
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(format!("unreadable: {error}")),
     }
     Some(
         read_json(&path)
-            .and_then(|value| text(&value, "because"))
+            .and_then(|revoked_json| text(&revoked_json, "because"))
             .unwrap_or_default(),
     )
 }
@@ -327,27 +363,53 @@ fn pin_path(base: &Path, fingerprint: &str, content_id: &str) -> io::Result<Path
 }
 
 /// Replace the latest pin check for a tree atomically: the last write wins.
-/// `gh_override_set` notes whether `AMONT_AGENT_GH` was set for the check.
-pub fn write_pin(base: &Path, fingerprint: &str, content_id: &str, pin: &Pin) -> io::Result<()> {
+pub fn write_pin(
+    base: &Path,
+    fingerprint: &str,
+    content_id: &str,
+    record: &PinRecord,
+) -> io::Result<()> {
     let path = pin_path(base, fingerprint, content_id)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let body = json!({
-        "passed": pin.passed,
-        "detail": pin.detail,
-        "gh_override_set": pin.gh_override_set,
-    });
+    let body = match &record.pin {
+        Pin::Passed { release } => json!({
+            "result": "passed",
+            "release": release,
+            "gh_override_set": record.gh_override_set,
+        }),
+        Pin::Failed { why } => json!({
+            "result": "failed",
+            "why": why,
+            "gh_override_set": record.gh_override_set,
+        }),
+    };
     write_atomic(&path, &body.to_string())
 }
 
-/// The latest pin check for a tree; an unreadable record reads as absent.
-pub fn read_pin(base: &Path, fingerprint: &str, content_id: &str) -> Option<Pin> {
-    let value = read_json(&pin_path(base, fingerprint, content_id).ok()?)?;
-    Some(Pin {
-        passed: value.get("passed")?.as_bool()?,
-        detail: text(&value, "detail")?,
-        gh_override_set: value.get("gh_override_set")?.as_bool()?,
+/// The latest pin check for a tree; an unreadable record reads as absent. A
+/// record written before the tagged form (`passed` and `detail`) still reads.
+pub fn read_pin(base: &Path, fingerprint: &str, content_id: &str) -> Option<PinRecord> {
+    let pin_json = read_json(&pin_path(base, fingerprint, content_id).ok()?)?;
+    let pin = match pin_json.get("result").and_then(Value::as_str) {
+        Some("passed") => Pin::Passed {
+            release: text(&pin_json, "release")?,
+        },
+        Some("failed") => Pin::Failed {
+            why: text(&pin_json, "why")?,
+        },
+        Some(_) => return None,
+        None if pin_json.get("passed")?.as_bool()? => Pin::Passed {
+            release: text(&pin_json, "detail")?,
+        },
+        None => Pin::Failed {
+            why: text(&pin_json, "detail")?,
+        },
+    };
+    Some(PinRecord {
+        pin,
+        gh_override_set: pin_json.get("gh_override_set")?.as_bool()?,
     })
 }
 
@@ -554,19 +616,60 @@ mod tests {
     #[test]
     fn pin_replace_keeps_the_last_write() {
         let base = scratch("pin");
-        let failed = Pin {
-            passed: false,
-            detail: "asset missing".into(),
+        let failed = PinRecord {
+            pin: Pin::Failed {
+                why: "asset missing".into(),
+            },
             gh_override_set: true,
         };
-        let passed = Pin {
-            passed: true,
-            detail: "ok".into(),
+        let passed = PinRecord {
+            pin: Pin::Passed {
+                release: "ok".into(),
+            },
             gh_override_set: false,
         };
         assert_eq!(read_pin(&base, &fp(), "beef"), None);
         write_pin(&base, &fp(), "beef", &passed).expect("first");
         write_pin(&base, &fp(), "beef", &failed).expect("second");
         assert_eq!(read_pin(&base, &fp(), "beef"), Some(failed));
+    }
+
+    #[test]
+    fn an_older_pin_record_still_reads() {
+        let base = scratch("old-pin");
+        let path = pin_path(&base, &fp(), "beef").expect("path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        fs::write(
+            &path,
+            r#"{"passed":false,"detail":"gone","gh_override_set":false}"#,
+        )
+        .expect("write");
+        assert_eq!(
+            read_pin(&base, &fp(), "beef"),
+            Some(PinRecord {
+                pin: Pin::Failed { why: "gone".into() },
+                gh_override_set: false,
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_revoked_file_revokes() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = scratch("unreadable-revoked");
+        let dir = block_dir(&base, &fp()).expect("dir");
+        fs::create_dir_all(&dir).expect("mkdir");
+        revoke(&base, &fp(), "defect").expect("revoke");
+        // symlink_metadata needs search permission on the directory
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).expect("chmod");
+        let found = revoked(&base, &fp());
+        let searchable = fs::read_dir(&dir).is_ok();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("chmod back");
+        if searchable {
+            return; // running as root: permissions do not bind, so no unreadable file can be made
+        }
+        let reason = found.expect("revoked");
+        assert!(reason.starts_with("unreadable: "), "{reason}");
     }
 }

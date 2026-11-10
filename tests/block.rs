@@ -681,3 +681,51 @@ fn sha_accepts_a_double_dash_and_refuses_an_empty_base() {
         err_text(&out)
     );
 }
+
+#[test]
+fn a_tab_is_not_a_space_in_the_common_indentation() {
+    let tabbed = of(&added(&["\tx", "\t\ty"])).unwrap();
+    let spaced = of(&added(&[" x", "  y"])).unwrap();
+    assert_ne!(tabbed, spaced);
+    let tab_then_space = of(&added(&["\tx", " y"])).unwrap();
+    let tab_then_tab = of(&added(&["\tx", "\ty"])).unwrap();
+    assert_ne!(
+        tab_then_space, tab_then_tab,
+        "mixed indentation shares no byte prefix"
+    );
+    let one_more_tab = of(&added(&["\t\ta", "\t\t\tb"])).unwrap();
+    let base = of(&added(&["\ta", "\t\tb"])).unwrap();
+    assert_eq!(one_more_tab, base, "a block indented by one more tab");
+}
+
+#[test]
+fn list_and_revoke_pick_the_same_source_across_generations() {
+    use amont_agent_process::block_registry::{register_entry, EntryData, Generation};
+    let registry = Registry::new("two-generations");
+    for (digit, source_repo) in [("1", None), ("2", Some("o/second"))] {
+        register_entry(
+            &registry.base(),
+            ACTIVE,
+            &Generation {
+                rules_sha: digit.repeat(64),
+                agent_digest: "d".repeat(64),
+            },
+            &EntryData {
+                roles: vec!["backend".into()],
+                agents: vec![],
+                source_branch: "topic".into(),
+                source_repo: source_repo.map(str::to_string),
+                content_id: "e".repeat(64),
+            },
+        )
+        .unwrap();
+    }
+    let listed = registry.run(&["list"]);
+    assert!(
+        out_text(&listed).ends_with("\to/second\n"),
+        "{}",
+        out_text(&listed)
+    );
+    let revoked = registry.run(&["revoke", "fp:aaaaaaaaaaaa", "--because", "x"]);
+    assert_eq!(out_text(&revoked), "o/second\ttopic\t-\n");
+}

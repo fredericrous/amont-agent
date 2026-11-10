@@ -10,6 +10,7 @@ use std::path::Path;
 use crate::file_types;
 use crate::plan_review::{locate, meta, root, seating, SeatSource};
 use crate::plan_text::Fence;
+use amont_agent_guard::rules::Stance;
 
 const SECTION: &str = "Code review";
 /// The names a rule's `**Reviewed by:**` line may carry.
@@ -283,15 +284,16 @@ pub struct BranchProposal {
 /// How long the proposal gives `git` to find the merge base and the diff.
 const BRANCH_GIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Look at the branch `base..HEAD` of the repository holding `dir`. A branch
-/// that is not a registered block, or that cannot be fingerprinted, proposes
-/// nothing and says nothing; `enforcing` is whether the implementation-review
-/// hook denies, since a copy line is only verified then. The pin check runs
-/// here without writing a record.
+/// Look at the branch `base..HEAD` of the repository holding `dir`. A binary
+/// diff, or a branch that is not a registered block, proposes nothing and says
+/// nothing. A git or role failure says why on stderr and the profiles are
+/// proposed. `hook` is the stance of the implementation-review hook: a copy
+/// line is only verified when it denies. The pin check runs here without
+/// writing a record.
 pub fn branch_proposal(
     dir: &Path,
     base: Option<&str>,
-    enforcing: bool,
+    hook: Stance,
 ) -> Result<BranchProposal, String> {
     let repo = amont_agent_guard::push_target::toplevel(dir)
         .ok_or_else(|| format!("{} is not inside a git repository", dir.display()))?;
@@ -332,7 +334,7 @@ pub fn branch_proposal(
         match crate::block_fingerprint::fingerprint(&repo, &merge_base, "HEAD", deadline) {
             Ok(Some(fingerprint)) => fingerprint,
             Ok(None) => return Ok(proposal),
-            Err(why) => return unproven(proposal, format!("fingerprint failed: {why}")),
+            Err(why) => return unproven(proposal, format!("git failed: {why}")),
         };
     let Some(state) = amont_agent_guard::journal::dir() else {
         return Ok(proposal);
@@ -353,21 +355,22 @@ pub fn branch_proposal(
     {
         return Ok(proposal);
     }
-    if !enforcing {
-        proposal.notices.push(
-            "amont-agent: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
-                .to_string(),
-        );
-        return Ok(proposal);
+    match hook {
+        Stance::Deny => {}
+        Stance::Observe | Stance::Advise => {
+            proposal.notices.push(
+                "amont-agent: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
+                    .to_string(),
+            );
+            return Ok(proposal);
+        }
     }
     let pin = crate::pin_check::check(&repo, &merge_base);
-    if pin.passed {
-        proposal.copy_of = Some(id);
-    } else {
-        proposal.notices.push(format!(
-            "amont-agent: plan-panel: {id} is a registered copy but the pin check failed: {}; the profiles are proposed",
-            pin.detail
-        ));
+    match pin {
+        crate::pin_check::Outcome::Passed { .. } => proposal.copy_of = Some(id),
+        crate::pin_check::Outcome::Failed { why } => proposal.notices.push(format!(
+            "amont-agent: plan-panel: {id} is a registered copy but the pin check failed: {why}; the profiles are proposed"
+        )),
     }
     Ok(proposal)
 }

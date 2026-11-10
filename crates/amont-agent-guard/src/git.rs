@@ -374,9 +374,36 @@ pub fn bytes_bounded_env(
     environment: &[(&str, &str)],
     deadline: Instant,
 ) -> Option<Vec<u8>> {
+    bytes_bounded_detail(dir, args, input, environment, deadline).ok()
+}
+
+/// Why a bounded git run gave no bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundedFailure {
+    /// The deadline passed before git answered.
+    TimedOut,
+    /// git ran and exited non-zero; `stderr` is the start of what it said.
+    Exited { stderr: String },
+}
+
+/// How much of git's stderr a [`BoundedFailure::Exited`] keeps.
+const STDERR_KEPT: usize = 2048;
+
+/// How long to wait for the stderr reader once the child has exited.
+const STDERR_GRACE: Duration = Duration::from_millis(200);
+
+/// [`bytes_bounded_env`] that says why it failed: a deadline, or git's own
+/// stderr.
+pub fn bytes_bounded_detail(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    environment: &[(&str, &str)],
+    deadline: Instant,
+) -> Result<Vec<u8>, BoundedFailure> {
     use std::io::{Read, Write};
     if Instant::now() >= deadline {
-        return None;
+        return Err(BoundedFailure::TimedOut);
     }
     let mut cmd = Command::new("git");
     cmd.arg("-C")
@@ -391,16 +418,20 @@ pub fn bytes_bounded_env(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = retrying(|| cmd.spawn()).ok()?;
-    let (Some(mut stdout), stdin) = (child.stdout.take(), child.stdin.take()) else {
+    let mut child = retrying(|| cmd.spawn()).map_err(|error| BoundedFailure::Exited {
+        stderr: format!("cannot start git: {error}"),
+    })?;
+    let (Some(mut stdout), Some(mut stderr), stdin) =
+        (child.stdout.take(), child.stderr.take(), child.stdin.take())
+    else {
         abandon(&mut child);
-        return None;
+        return Err(BoundedFailure::TimedOut);
     };
     if let (Some(bytes), Some(mut stdin)) = (input, stdin) {
         let bytes = bytes.to_vec();
@@ -408,6 +439,20 @@ pub fn bytes_bounded_env(
             let _ = stdin.write_all(&bytes); // a broken pipe means git stopped reading; its exit status is the answer
         });
     }
+    let (error_sender, error_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while let Ok(count) = stderr.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            if kept.len() < STDERR_KEPT {
+                kept.extend_from_slice(&chunk[..count.min(STDERR_KEPT - kept.len())]);
+            }
+        }
+        let _ = error_sender.send(kept); // the receiver is gone once the deadline passed; nobody wants the text
+    });
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = Vec::new();
@@ -418,7 +463,7 @@ pub fn bytes_bounded_env(
         Ok(Ok(bytes)) => bytes,
         _ => {
             abandon(&mut child);
-            return None;
+            return Err(BoundedFailure::TimedOut);
         }
     };
     // The leader is reaped only here, after the last point that may signal its group.
@@ -430,11 +475,19 @@ pub fn bytes_bounded_env(
             }
             _ => {
                 abandon(&mut child);
-                return None;
+                return Err(BoundedFailure::TimedOut);
             }
         }
     };
-    status.success().then_some(bytes)
+    if status.success() {
+        return Ok(bytes);
+    }
+    let said = error_receiver
+        .recv_timeout(STDERR_GRACE)
+        .unwrap_or_default();
+    Err(BoundedFailure::Exited {
+        stderr: String::from_utf8_lossy(&said).trim().to_string(),
+    })
 }
 
 /// [`bytes_bounded`], decoded lossily and trimmed.

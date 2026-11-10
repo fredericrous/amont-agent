@@ -1062,12 +1062,17 @@ pub fn copy_trees_in(journal: &str) -> Vec<String> {
     journal
         .lines()
         .filter_map(|line| {
-            let mut f = line.strip_prefix("F ")?.splitn(10, ' ');
-            let (_ts, rule, _stance, outcome) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            let mut fields = line.strip_prefix("F ")?.splitn(10, ' ');
+            let (_ts, rule, _stance, outcome) = (
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+            );
             if rule != crate::implementation_review::RULE_ID || outcome != COPY_MATCHED {
                 return None;
             }
-            let excerpt = f.nth(4)?;
+            let excerpt = fields.nth(4)?;
             let short = excerpt.split_whitespace().next()?.strip_prefix("tree=")?;
             (!short.is_empty()).then(|| short.to_string())
         })

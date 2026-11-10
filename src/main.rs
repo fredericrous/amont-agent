@@ -1651,9 +1651,8 @@ fn run_block_list(args: &[String]) -> ExitCode {
         roles.dedup();
         let copies = block_registry::copies(&base, &fingerprint);
         let revoked = block_registry::revoked(&base, &fingerprint);
-        let source = block_registry::entries(&base, &fingerprint)
-            .into_iter()
-            .find_map(|entry| entry.registered.source_repo);
+        let source = block_registry::source_entry(&base, &fingerprint)
+            .and_then(|entry| entry.registered.source_repo);
         let short = format!("fp:{}", &fingerprint[..12]);
         if json {
             let listed: Vec<serde_json::Value> = copies
@@ -1739,10 +1738,11 @@ fn run_block_revoke(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     eprintln!("amont-agent: block: fp:{} is revoked", &fingerprint[..12]);
-    if let Some(pilot) = block_registry::entries(&base, &fingerprint)
-        .into_iter()
-        .next()
-    {
+    if let Some(pilot) = block_registry::source_entry(&base, &fingerprint).or_else(|| {
+        block_registry::entries(&base, &fingerprint)
+            .into_iter()
+            .next()
+    }) {
         let source = pilot.registered.source_repo.as_deref().unwrap_or("-");
         println!("{source}\t{}\t-", pilot.registered.source_branch);
     }
@@ -2254,10 +2254,9 @@ fn plan_panel_branch(lines: &str, dir: Option<&str>, base: Option<&str>) -> Resu
     if dir.is_none() && base.is_none() {
         return Ok(lines.to_string());
     }
-    let enforcing = amont_agent_guard::stance::resolve(&implementation_review_rule::RULE)
-        == amont_agent_guard::rules::Stance::Deny;
+    let hook = amont_agent_guard::stance::resolve(&implementation_review_rule::RULE);
     let branch =
-        code_review::branch_proposal(std::path::Path::new(dir.unwrap_or(".")), base, enforcing)?;
+        code_review::branch_proposal(std::path::Path::new(dir.unwrap_or(".")), base, hook)?;
     for notice in &branch.notices {
         eprintln!("{notice}");
     }

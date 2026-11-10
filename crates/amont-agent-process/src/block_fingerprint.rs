@@ -46,12 +46,23 @@ impl Fingerprint {
 }
 
 /// Why the diff could not be taken.
-#[derive(Debug)]
-pub struct FpError(String);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FpError {
+    /// `git diff` ran past its time budget.
+    TimedOut,
+    /// `git diff` exited non-zero; `stderr` is what it said.
+    Git { stderr: String },
+}
 
 impl std::fmt::Display for FpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        match self {
+            FpError::TimedOut => f.write_str("`git diff` ran past its time budget"),
+            FpError::Git { stderr } if stderr.is_empty() => {
+                f.write_str("`git diff` exited non-zero without a message")
+            }
+            FpError::Git { stderr } => write!(f, "`git diff` said: {stderr}"),
+        }
     }
 }
 
@@ -96,10 +107,11 @@ pub fn diff_of(
         head,
     ];
     args.extend(PATHSPECS);
-    git::bytes_bounded_env(repo, &args, None, &environment, deadline).ok_or_else(|| {
-        FpError(format!(
-            "`git diff {merge_base} {head}` failed or ran past its time budget"
-        ))
+    git::bytes_bounded_detail(repo, &args, None, &environment, deadline).map_err(|failure| {
+        match failure {
+            git::BoundedFailure::TimedOut => FpError::TimedOut,
+            git::BoundedFailure::Exited { stderr } => FpError::Git { stderr },
+        }
     })
 }
 
@@ -230,7 +242,7 @@ fn hunk_lengths(counts: &[u8]) -> Option<(usize, usize)> {
 }
 
 /// The bytes that get hashed: lines stripped of CR and trailing blanks, the
-/// common indentation removed after the sign, joined by `\n`.
+/// longest common leading-whitespace byte prefix removed after the sign (a tab is not a space), joined by `\n`.
 fn normalised(lines: &[&[u8]]) -> Vec<u8> {
     let stripped: Vec<&[u8]> = lines
         .iter()
@@ -248,12 +260,20 @@ fn normalised(lines: &[&[u8]]) -> Vec<u8> {
             .take_while(|b| matches!(b, b' ' | b'\t'))
             .count()
     };
-    let common = stripped
+    let common_prefix: &[u8] = stripped
         .iter()
         .filter(|line| line.len() > 1)
-        .map(|line| indent_of(line))
-        .min()
-        .unwrap_or(0);
+        .map(|line| &line[1..1 + indent_of(line)])
+        .reduce(|shared, indent| {
+            let length = shared
+                .iter()
+                .zip(indent)
+                .take_while(|(left, right)| left == right)
+                .count();
+            &shared[..length]
+        })
+        .unwrap_or(&[]);
+    let common = common_prefix.len();
     let mut out: Vec<u8> = Vec::new();
     for (index, line) in stripped.iter().enumerate() {
         if index > 0 {

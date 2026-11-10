@@ -26,16 +26,28 @@ const DIFF_BUDGET: Duration = Duration::from_secs(10);
 /// What the check found: whether the asset is listed, and why when it is not
 /// (or which release was confirmed when it is).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Outcome {
-    pub passed: bool,
-    pub detail: String,
+pub enum Outcome {
+    /// The release lists the asset; `release` says which.
+    Passed { release: String },
+    /// The check did not confirm it, for this reason.
+    Failed { why: String },
 }
 
 impl Outcome {
-    fn failed(detail: impl Into<String>) -> Self {
-        Outcome {
-            passed: false,
-            detail: detail.into(),
+    fn failed(why: impl Into<String>) -> Self {
+        Outcome::Failed { why: why.into() }
+    }
+
+    /// Whether the asset was confirmed.
+    pub fn is_passed(&self) -> bool {
+        matches!(self, Outcome::Passed { .. })
+    }
+
+    /// The release confirmed, or the reason it was not.
+    pub fn detail(&self) -> &str {
+        match self {
+            Outcome::Passed { release } => release,
+            Outcome::Failed { why } => why,
         }
     }
 }
@@ -158,15 +170,17 @@ pub fn check(repo: &Path, merge_base: &str) -> Outcome {
         Instant::now() + DIFF_BUDGET,
     ) {
         Ok(diff) => diff,
-        Err(why) => return Outcome::failed(why.to_string()),
+        Err(why) => return Outcome::failed(format!("git failed: {why}")),
     };
     let marker = match marker_in(&diff) {
         Ok(marker) => marker,
         Err(why) => return Outcome::failed(why),
     };
-    let Some(file) =
-        amont_agent_guard::git::stdout_in(repo, &["show", &format!("HEAD:{}", marker.path)])
-    else {
+    let Some(file) = amont_agent_guard::git::stdout_bounded(
+        repo,
+        &["show", &format!("HEAD:{}", marker.path)],
+        Instant::now() + DIFF_BUDGET,
+    ) else {
         return Outcome::failed(format!("{} cannot be read at HEAD", marker.path));
     };
     let Some(version) = value_of(&file, &marker.key) else {
@@ -218,9 +232,8 @@ pub fn check(repo: &Path, merge_base: &str) -> Outcome {
             })
         });
     match listed {
-        Some(true) => Outcome {
-            passed: true,
-            detail: format!("{} release {tag} lists {asset}", marker.repo),
+        Some(true) => Outcome::Passed {
+            release: format!("{} release {tag} lists {asset}", marker.repo),
         },
         Some(false) => Outcome::failed(format!(
             "{} release {tag} does not list {asset}",

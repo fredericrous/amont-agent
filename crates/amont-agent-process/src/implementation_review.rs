@@ -1868,7 +1868,7 @@ impl ProfileGate<'_> {
         ) {
             Ok(Some(fingerprint)) => fingerprint,
             Ok(None) => return Err("binary diff".to_string()),
-            Err(why) => return Err(format!("fingerprint failed: {why}")),
+            Err(why) => return Err(format!("git failed: {why}")),
         };
         if fingerprint.short() != wanted_id {
             return Err(format!(
@@ -1891,12 +1891,12 @@ impl ProfileGate<'_> {
                 self.repo.display()
             )
         };
-        let pin =
+        let record =
             crate::block_registry::read_pin(base, fingerprint, self.tree).ok_or_else(missing)?;
-        if !pin.passed {
-            return Err(format!("pin check failed: {}", pin.detail));
+        if let crate::block_registry::Pin::Failed { why } = &record.pin {
+            return Err(format!("pin check failed: {why}"));
         }
-        if pin.gh_override_set && std::env::var_os("AMONT_AGENT_GH").is_none() {
+        if record.gh_override_set && !crate::pin_check::gh_override_set() {
             return Err(
                 "the pin record was made with AMONT_AGENT_GH set; run review-brief without it"
                     .to_string(),
@@ -1934,7 +1934,7 @@ impl ProfileGate<'_> {
             return;
         }
         let Some(base) = journal::dir() else {
-            return;
+            return self.unregistered("no journal directory");
         };
         let needed = match self.needed_roles() {
             Ok(needed) => needed,
@@ -1943,7 +1943,15 @@ impl ProfileGate<'_> {
         let declared_set: std::collections::BTreeSet<String> =
             declared.profiles.iter().cloned().collect();
         if declared_set != needed {
-            return;
+            let relation = if declared_set.is_subset(&needed) {
+                "narrower than"
+            } else {
+                "differs from"
+            };
+            return self.unregistered(&format!(
+                "declared set {relation} {}",
+                ordered(&needed).join(", ")
+            ));
         }
         let fingerprint = match crate::block_fingerprint::fingerprint(
             self.repo,
@@ -1953,11 +1961,11 @@ impl ProfileGate<'_> {
         ) {
             Ok(Some(fingerprint)) => fingerprint,
             Ok(None) => return self.unregistered("binary diff"),
-            Err(why) => return self.unregistered(&format!("fingerprint failed: {why}")),
+            Err(why) => return self.unregistered(&format!("git failed: {why}")),
         };
         let full = fingerprint.full();
         if crate::block_registry::revoked(&base, full).is_some() {
-            return;
+            return self.unregistered("revoked");
         }
         let rules_sha = match crate::review_brief::rules_sha(self.repo) {
             Ok(rules_sha) => rules_sha,
