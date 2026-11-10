@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.29.0
+
 ### Added
 
 - A copy of a reviewed block is recognised by the hook. `amont-agent block
