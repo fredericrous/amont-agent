@@ -1,0 +1,8 @@
+# amont-agent-cases-v1
+match	amont-agent block reinstate fp:0123456789ab
+match	cd /tmp && amont-agent block reinstate fp:0123456789ab --yes
+nomatch	amont-agent block list
+nomatch	amont-agent block revoke fp:0123456789ab --because "defect"
+nomatch	amont-agent block sha
+nomatch	echo "amont-agent block reinstate fp:0123456789ab"
+nomatch	grep -rn "block reinstate" docs

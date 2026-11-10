@@ -913,6 +913,13 @@ pub struct Stat {
     /// Accepted plus unresolved blocking and high findings of the reviews
     /// that carry `tokens`.
     pub serious_in_cost_rows: u64,
+    /// Implementation reviews of a tree the hook matched as a copy of a
+    /// registered block (`copy` on the row, or `profiles-copy-matched` in the
+    /// journal for its tree).
+    pub copies: u64,
+    /// Blocking and high findings fixed in those reviews: code defects found
+    /// in a copy.
+    pub copy_defects: u64,
 }
 
 impl Stat {
@@ -1046,6 +1053,50 @@ impl<'a> Settled<'a> {
 /// The rows of both ledgers folded to one [`Stat`] per (role, model), in key
 /// order. Rows of another schema (merge rows) are not reviews.
 pub fn tally(rows: &[serde_json::Value]) -> std::collections::BTreeMap<(String, String), Stat> {
+    tally_with(rows, &[])
+}
+
+/// The tree prefixes (12 hex digits) of the pushes the hook journalled as
+/// `profiles-copy-matched`, in `journal` text.
+pub fn copy_trees_in(journal: &str) -> Vec<String> {
+    journal
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.strip_prefix("F ")?.splitn(10, ' ');
+            let (_ts, rule, _stance, outcome) = (
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+            );
+            if rule != crate::implementation_review::RULE_ID || outcome != COPY_MATCHED {
+                return None;
+            }
+            let excerpt = fields.nth(4)?;
+            let short = excerpt.split_whitespace().next()?.strip_prefix("tree=")?;
+            (!short.is_empty()).then(|| short.to_string())
+        })
+        .collect()
+}
+
+/// The journal outcome of a push the hook matched as a copy.
+pub(crate) const COPY_MATCHED: &str = "profiles-copy-matched";
+
+/// Whether the hook journalled a copy match for `tree` (a full content id):
+/// the journal's prefix is the start of it.
+pub(crate) fn tree_is_copy(copy_trees: &[String], tree: &str) -> bool {
+    copy_trees
+        .iter()
+        .any(|short| tree.starts_with(short.as_str()))
+}
+
+/// [`tally`] with the trees the journal says were copies. A row is a copy
+/// when it carries `"copy": true` or its tree is in `copy_trees`; a row
+/// without the key is not a copy by its own word.
+pub fn tally_with(
+    rows: &[serde_json::Value],
+    copy_trees: &[String],
+) -> std::collections::BTreeMap<(String, String), Stat> {
     let settled = Settled::of(rows);
     let mut out: std::collections::BTreeMap<(String, String), Stat> = Default::default();
     for r in rows {
@@ -1055,8 +1106,12 @@ pub fn tally(rows: &[serde_json::Value]) -> std::collections::BTreeMap<(String, 
             IMPL_SCHEMA => (IMPL_ROLE.to_string(), "fixed", false),
             _ => continue,
         };
+        let is_copy = !plan_review
+            && (r.get("copy").and_then(|c| c.as_bool()) == Some(true)
+                || tree_is_copy(copy_trees, text("tree")));
         let stat = out.entry((role, text("model").to_string())).or_default();
         stat.reviews += 1;
+        stat.copies += u64::from(is_copy);
         let mut row_serious = 0;
         let list = r.get("findings").and_then(|f| f.as_array());
         if plan_review && list.is_none_or(|l| l.is_empty()) {
@@ -1083,6 +1138,7 @@ pub fn tally(rows: &[serde_json::Value]) -> std::collections::BTreeMap<(String, 
             if disposition == accepted_word {
                 stat.accepted[i] += 1;
                 row_serious += u64::from(SERIOUS.contains(&i));
+                stat.copy_defects += u64::from(is_copy && SERIOUS.contains(&i));
             } else if disposition == "unresolved" {
                 stat.unresolved[i] += 1;
                 row_serious += u64::from(SERIOUS.contains(&i));
@@ -1166,17 +1222,18 @@ pub enum Format {
 
 /// `plan-review stats`: what the panel's seats caught, per role and model.
 pub fn stats_report(rows: &[serde_json::Value], model: Option<&str>, format: Format) -> String {
-    stats_report_with(rows, &[], model, format)
+    stats_report_with(rows, &[], &[], model, format)
 }
 
 /// [`stats_report`] with the journalled skips, for the plans a record missed.
 pub fn stats_report_with(
     rows: &[serde_json::Value],
     skips: &[Skip],
+    copy_trees: &[String],
     model: Option<&str>,
     format: Format,
 ) -> String {
-    let tallied = tally(rows);
+    let tallied = tally_with(rows, copy_trees);
     let shown: Vec<_> = tallied
         .iter()
         .filter(|((_, m), _)| model.is_none_or(|want| want == m))
@@ -1205,6 +1262,8 @@ pub fn stats_report_with(
                     "seconds_rows": s.seconds_rows,
                     "cost_missing": s.cost_missing,
                     "tokens_per_serious": s.tokens_per_serious(),
+                    "copies": s.copies,
+                    "copy_defects": s.copy_defects,
                     "predate_change": s.predating,
                     "verdict_without_findings": s.verdict_without_findings,
                     "retire_candidate": s.retire_candidate(),
@@ -1237,6 +1296,12 @@ pub fn stats_report_with(
             whole(s.seconds_per_review()),
             whole(s.ktok_per_serious()),
         ));
+        if s.copies > 0 {
+            out.push_str(&format!(
+                "\tcopies={}\tcopy-defects={}",
+                s.copies, s.copy_defects
+            ));
+        }
         if s.predating > 0 {
             out.push_str(&format!("\tpredate-change={}", s.predating));
         }
@@ -1309,12 +1374,13 @@ fn run_stats(args: &[String]) -> (String, ExitCode) {
     }
     let journal: String = amont_agent_guard::journal::paths()
         .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|p| std::fs::read_to_string(p).ok()) // an absent or unreadable journal file holds no copy match; the row is then untagged
         .collect();
     (
         stats_report_with(
             &rows,
             &skips_in(&journal),
+            &copy_trees_in(&journal),
             model.as_deref(),
             if json { Format::Json } else { Format::Text },
         ),
@@ -1381,6 +1447,32 @@ mod tests {
             "schema": SCHEMA, "role": "architect", "model": "opus",
             "findings": findings, "tokens": tokens, "seconds": seconds,
         })
+    }
+
+    /// One push the hook matched as a copy and one ordinary push: stats count
+    /// one copy with no defect, and the ordinary review stays untagged.
+    #[test]
+    fn a_copy_matched_push_is_counted_and_an_ordinary_one_is_not() {
+        let copy_tree = "aaaaaaaaaaaa".to_string() + &"1".repeat(52);
+        let plain_tree = "bbbbbbbbbbbb".to_string() + &"2".repeat(52);
+        let journal = format!(
+            "F 2026-11-10T00:00:00Z {rule} deny profiles-copy-matched sess1234 repo default x tree=aaaaaaaaaaaa fp:0123456789ab\n\
+             F 2026-11-10T00:00:01Z {rule} deny profiles-copy-missed sess1234 repo default x tree=bbbbbbbbbbbb no entry\n",
+            rule = crate::implementation_review::RULE_ID,
+        );
+        let copy_trees = copy_trees_in(&journal);
+        assert_eq!(copy_trees, vec!["aaaaaaaaaaaa".to_string()]);
+        assert!(tree_is_copy(&copy_trees, &copy_tree));
+        assert!(!tree_is_copy(&copy_trees, &plain_tree));
+        let row = |tree: &str| {
+            serde_json::json!({
+                "schema": IMPL_SCHEMA, "model": "opus", "tree": tree, "findings": [], "tokens": 1000, "seconds": 10.0,
+            })
+        };
+        let tallied = tally_with(&[row(&copy_tree), row(&plain_tree)], &copy_trees);
+        let copies: u64 = tallied.values().map(|s| s.copies).sum();
+        let defects: u64 = tallied.values().map(|s| s.copy_defects).sum();
+        assert_eq!((copies, defects), (1, 0), "{tallied:?}");
     }
 
     #[test]

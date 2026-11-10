@@ -1378,3 +1378,237 @@ fn a_move_across_languages_shows_each_language_its_side() {
     );
     assert!(!ts_patch.contains("main moved") && !rust_patch.contains("main moved"));
 }
+
+/// A repository whose last commit adds a `# release-pin:` marker, registered
+/// as a reviewed block in an isolated journal.
+#[cfg(unix)]
+struct PinWorld {
+    bin: PathBuf,
+    repo: PathBuf,
+    fingerprint: String,
+}
+
+#[cfg(unix)]
+impl PinWorld {
+    fn new(name: &str) -> PinWorld {
+        let bin = scratch(&format!("{name}-bin"));
+        fake_aval(&bin, BRIEF_AVAL);
+        let repo = scratch(&format!("{name}-repo"));
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("ci.yml"), "env:\n  TOOL_VERSION: \"1.2\"\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "base"]);
+        std::fs::write(
+            repo.join("ci.yml"),
+            "env:\n  TOOL_VERSION: \"1.2\"\n  # release-pin: o/r v{version} tool-{version}.tgz TOOL_VERSION\n  run: x\n",
+        )
+        .unwrap();
+        git(&repo, &["commit", "-qam", "pin"]);
+        let fingerprint = amont_agent_process::block_fingerprint::fingerprint(
+            &repo,
+            "HEAD~1",
+            "HEAD",
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        )
+        .unwrap()
+        .unwrap()
+        .full()
+        .to_string();
+        amont_agent_process::block_registry::register_entry(
+            &bin.join("config/amont-agent"),
+            &fingerprint,
+            &amont_agent_process::block_registry::Generation {
+                rules_sha: "c".repeat(64),
+                agent_digest: "d".repeat(64),
+            },
+            &amont_agent_process::block_registry::EntryData {
+                roles: vec!["backend".into()],
+                agents: vec![],
+                source_branch: "topic".into(),
+                source_repo: None,
+                content_id: "e".repeat(64),
+            },
+        )
+        .unwrap();
+        PinWorld {
+            bin,
+            repo,
+            fingerprint,
+        }
+    }
+
+    fn gh(&self, body: &str) -> PathBuf {
+        let path = self.bin.join("gh-fake");
+        let staged = self.bin.join("gh-fake.new");
+        std::fs::write(&staged, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&staged, &path).unwrap();
+        path
+    }
+
+    /// `review-brief`, with `gh` as the override or, for `None`, a PATH that
+    /// holds git and the fake aval and nothing else.
+    fn brief(&self, gh: Option<&std::path::Path>, deadline_ms: &str) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        cmd.args(["review-brief", "-C"])
+            .arg(&self.repo)
+            .args(["--base", "HEAD~1"]);
+        cmd.env("AMONT_AGENT_ADR_LINT", self.bin.join("adr-lint"));
+        cmd.env("CLAUDE_CONFIG_DIR", self.bin.join("config"));
+        cmd.env("AMONT_AGENT_GH_DEADLINE_MS", deadline_ms);
+        cmd.env_remove("AMONT_AGENT_GH");
+        match gh {
+            Some(gh) => {
+                let inherited = std::env::var_os("PATH").unwrap_or_default();
+                let mut dirs = vec![self.bin.clone()];
+                dirs.extend(std::env::split_paths(&inherited));
+                cmd.env("PATH", std::env::join_paths(dirs).unwrap());
+                cmd.env("AMONT_AGENT_GH", gh);
+            }
+            None => {
+                let only = self.bin.join("only-git");
+                std::fs::create_dir_all(&only).unwrap();
+                let git_path =
+                    String::from_utf8(Command::new("which").arg("git").output().unwrap().stdout)
+                        .unwrap();
+                let _ = std::fs::remove_file(only.join("git")); // a link from an earlier call; absence is the goal
+                std::os::unix::fs::symlink(git_path.trim(), only.join("git")).unwrap();
+                let _ = std::fs::remove_file(only.join("aval")); // same
+                std::os::unix::fs::symlink(self.bin.join("aval"), only.join("aval")).unwrap();
+                cmd.env("PATH", &only);
+            }
+        }
+        cmd.output().unwrap()
+    }
+
+    fn recorded(&self) -> Option<amont_agent_process::block_registry::PinRecord> {
+        let tree = amont_agent_process::content_id::content_id(&self.repo, "HEAD").unwrap();
+        amont_agent_process::block_registry::read_pin(
+            &self.bin.join("config/amont-agent"),
+            &self.fingerprint,
+            &tree,
+        )
+    }
+}
+
+#[cfg(unix)]
+const GH_HAS: &str = "#!/bin/sh\nprintf '{\"assets\":[{\"name\":\"tool-1.2.tgz\"}]}'\n";
+#[cfg(unix)]
+const GH_LACKS: &str = "#!/bin/sh\nprintf '{\"assets\":[{\"name\":\"other.tgz\"}]}'\n";
+
+#[cfg(unix)]
+#[test]
+fn a_listed_asset_passes_the_pin_check_and_writes_the_record() {
+    let world = PinWorld::new("pin-pass");
+    let gh = world.gh(GH_HAS);
+    let out = world.brief(Some(&gh), "10000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("## Pin check"), "{text}");
+    assert!(text.contains("passed"), "{text}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("gh release view v1.2 --repo o/r"), "{err}");
+    assert!(err.contains("pin check passed"), "{err}");
+    let pin = world.recorded().expect("a pin record");
+    assert!(pin.is_passed(), "{pin:?}");
+    assert!(pin.gh_override_set, "{pin:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_journal_directory_is_said_in_the_pin_section() {
+    let world = PinWorld::new("pin-no-journal");
+    let gh = world.gh(GH_HAS);
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![world.bin.clone()];
+    dirs.extend(std::env::split_paths(&inherited));
+    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .args(["review-brief", "-C"])
+        .arg(&world.repo)
+        .args(["--base", "HEAD~1"])
+        .env("AMONT_AGENT_ADR_LINT", world.bin.join("adr-lint"))
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .env("AMONT_AGENT_GH", &gh)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("## Pin check"), "{text}");
+    assert!(text.contains("no journal directory"), "{text}");
+    assert!(world.recorded().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_pin_check_overwrites_an_earlier_pass() {
+    let world = PinWorld::new("pin-last-wins");
+    let gh = world.gh(GH_HAS);
+    world.brief(Some(&gh), "10000");
+    assert!(world.recorded().unwrap().is_passed());
+    let gh = world.gh(GH_LACKS);
+    let out = world.brief(Some(&gh), "10000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("FAILED"), "{text}");
+    let pin = world.recorded().unwrap();
+    assert!(!pin.is_passed(), "{pin:?}");
+    assert!(
+        pin.detail().contains("does not list tool-1.2.tgz"),
+        "{pin:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failing_slow_or_absent_gh_writes_a_failure() {
+    let world = PinWorld::new("pin-gh-broken");
+    let failing = world.gh("#!/bin/sh\necho boom >&2\nexit 1\n");
+    let out = world.brief(Some(&failing), "10000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let pin = world.recorded().unwrap();
+    assert!(
+        !pin.is_passed() && pin.detail().contains("failed (exit 1)"),
+        "{pin:?}"
+    );
+
+    let hanging = world.gh("#!/bin/sh\nexec sleep 30\n");
+    let out = world.brief(Some(&hanging), "300");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let pin = world.recorded().unwrap();
+    assert!(
+        !pin.is_passed() && pin.detail().contains("timed out"),
+        "{pin:?}"
+    );
+
+    let out = world.brief(None, "10000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let pin = world.recorded().unwrap();
+    assert!(!pin.is_passed(), "{pin:?}");
+    assert_eq!(
+        pin.detail(),
+        "gh not found; install GitHub CLI and run gh auth login"
+    );
+    assert!(!pin.gh_override_set);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_branch_that_is_not_a_registered_block_has_no_pin_section() {
+    let world = PinWorld::new("pin-unregistered");
+    std::fs::write(world.repo.join("other.txt"), "x\n").unwrap();
+    git(&world.repo, &["add", "."]);
+    git(&world.repo, &["commit", "-qm", "more"]);
+    let gh = world.gh(GH_HAS);
+    let out = world.brief(Some(&gh), "10000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("## Pin check"));
+    assert!(world.recorded().is_none());
+}

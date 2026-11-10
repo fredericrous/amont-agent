@@ -131,19 +131,54 @@ pub fn bytes_in(
     args: &[&str],
     input: Option<&[u8]>,
 ) -> std::io::Result<Option<Vec<u8>>> {
+    match bytes_in_env(dir, args, input, &[]) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(BytesFailure::Spawn(e)) => Err(e),
+        Err(BytesFailure::Exited(_)) => Ok(None),
+    }
+}
+
+/// Why [`bytes_in_env`] has no output.
+#[derive(Debug)]
+pub enum BytesFailure {
+    /// git could not be started or read.
+    Spawn(std::io::Error),
+    /// git ran and exited non-zero; carries its trimmed stderr.
+    Exited(String),
+}
+
+impl std::fmt::Display for BytesFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BytesFailure::Spawn(e) => write!(f, "git could not be run: {e}"),
+            BytesFailure::Exited(stderr) if stderr.is_empty() => write!(f, "git failed"),
+            BytesFailure::Exited(stderr) => write!(f, "git failed: {stderr}"),
+        }
+    }
+}
+
+/// [`bytes_in`] with extra environment pairs set for the child, and git's
+/// stderr kept for the error text.
+pub fn bytes_in_env(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    environment: &[(&str, &str)],
+) -> Result<Vec<u8>, BytesFailure> {
     use std::io::Write;
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
         .args(args)
+        .envs(environment.iter().copied())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         });
-    let mut child = retrying(|| cmd.spawn())?;
+    let mut child = retrying(|| cmd.spawn()).map_err(BytesFailure::Spawn)?;
     // Fed from a thread: `cat-file --batch` writes while it reads, and a
     // pipe filled on both sides at once deadlocks.
     let feeder = match (input, child.stdin.take()) {
@@ -155,11 +190,17 @@ pub fn bytes_in(
         }
         _ => None,
     };
-    let out = child.wait_with_output()?;
+    let out = child.wait_with_output().map_err(BytesFailure::Spawn)?;
     if let Some(f) = feeder {
         let _ = f.join();
     }
-    Ok(out.status.success().then_some(out.stdout))
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(BytesFailure::Exited(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
 }
 
 /// Every path in `tree`, recursively, as raw bytes split on NUL.
@@ -322,9 +363,47 @@ pub fn bytes_bounded(
     input: Option<&[u8]>,
     deadline: Instant,
 ) -> Option<Vec<u8>> {
+    bytes_bounded_env(dir, args, input, &[], deadline)
+}
+
+/// [`bytes_bounded`] with extra environment pairs set for the child.
+pub fn bytes_bounded_env(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    environment: &[(&str, &str)],
+    deadline: Instant,
+) -> Option<Vec<u8>> {
+    bytes_bounded_detail(dir, args, input, environment, deadline).ok()
+}
+
+/// Why a bounded git run gave no bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundedFailure {
+    /// The deadline passed before git answered.
+    TimedOut,
+    /// git ran and exited non-zero; `stderr` is the start of what it said.
+    Exited { stderr: String },
+}
+
+/// How much of git's stderr a [`BoundedFailure::Exited`] keeps.
+const STDERR_KEPT: usize = 2048;
+
+/// How long to wait for the stderr reader once the child has exited.
+const STDERR_GRACE: Duration = Duration::from_millis(200);
+
+/// [`bytes_bounded_env`] that says why it failed: a deadline, or git's own
+/// stderr.
+pub fn bytes_bounded_detail(
+    dir: &std::path::Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    environment: &[(&str, &str)],
+    deadline: Instant,
+) -> Result<Vec<u8>, BoundedFailure> {
     use std::io::{Read, Write};
     if Instant::now() >= deadline {
-        return None;
+        return Err(BoundedFailure::TimedOut);
     }
     let mut cmd = Command::new("git");
     cmd.arg("-C")
@@ -332,22 +411,27 @@ pub fn bytes_bounded(
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(environment.iter().copied())
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = retrying(|| cmd.spawn()).ok()?;
-    let (Some(mut stdout), stdin) = (child.stdout.take(), child.stdin.take()) else {
+    let mut child = retrying(|| cmd.spawn()).map_err(|error| BoundedFailure::Exited {
+        stderr: format!("cannot start git: {error}"),
+    })?;
+    let (Some(mut stdout), Some(mut stderr), stdin) =
+        (child.stdout.take(), child.stderr.take(), child.stdin.take())
+    else {
         abandon(&mut child);
-        return None;
+        return Err(BoundedFailure::TimedOut);
     };
     if let (Some(bytes), Some(mut stdin)) = (input, stdin) {
         let bytes = bytes.to_vec();
@@ -355,6 +439,20 @@ pub fn bytes_bounded(
             let _ = stdin.write_all(&bytes); // a broken pipe means git stopped reading; its exit status is the answer
         });
     }
+    let (error_sender, error_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while let Ok(count) = stderr.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            if kept.len() < STDERR_KEPT {
+                kept.extend_from_slice(&chunk[..count.min(STDERR_KEPT - kept.len())]);
+            }
+        }
+        let _ = error_sender.send(kept); // the receiver is gone once the deadline passed; nobody wants the text
+    });
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = Vec::new();
@@ -365,7 +463,7 @@ pub fn bytes_bounded(
         Ok(Ok(bytes)) => bytes,
         _ => {
             abandon(&mut child);
-            return None;
+            return Err(BoundedFailure::TimedOut);
         }
     };
     // The leader is reaped only here, after the last point that may signal its group.
@@ -377,11 +475,19 @@ pub fn bytes_bounded(
             }
             _ => {
                 abandon(&mut child);
-                return None;
+                return Err(BoundedFailure::TimedOut);
             }
         }
     };
-    status.success().then_some(bytes)
+    if status.success() {
+        return Ok(bytes);
+    }
+    let said = error_receiver
+        .recv_timeout(STDERR_GRACE)
+        .unwrap_or_default();
+    Err(BoundedFailure::Exited {
+        stderr: String::from_utf8_lossy(&said).trim().to_string(),
+    })
 }
 
 /// [`bytes_bounded`], decoded lossily and trimmed.

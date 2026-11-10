@@ -6,6 +6,8 @@
 
 pub mod agents;
 pub mod attestations;
+pub mod block_fingerprint;
+pub mod block_registry;
 pub mod board;
 pub mod candidates_block;
 pub mod code_review;
@@ -15,6 +17,7 @@ pub mod guide;
 pub mod impl_review_outcomes;
 pub mod implementation_review;
 pub mod implementation_review_rule;
+pub mod pin_check;
 pub mod plan_apply;
 pub mod plan_phases;
 pub mod plan_review;

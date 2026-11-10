@@ -119,10 +119,10 @@ impl From<AvalFailed> for BriefError {
 }
 
 /// What an `aval` call answered: how it exited and what it printed.
-struct AvalAnswer {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stderr: String,
+pub(crate) struct AvalAnswer {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: String,
 }
 
 /// The `aval` program to run: `AMONT_AGENT_AVAL` names another one (tests,
@@ -186,10 +186,23 @@ fn run_bounded(
     dir: &Path,
     args: &[&str],
 ) -> Result<AvalAnswer, AvalFailed> {
+    run_bounded_for(program, name, dir, args, &[], AVAL_DEADLINE)
+}
+
+/// [`run_bounded`] with the caller's own deadline and extra child environment.
+pub(crate) fn run_bounded_for(
+    program: &std::ffi::OsStr,
+    name: &str,
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    limit: std::time::Duration,
+) -> Result<AvalAnswer, AvalFailed> {
     use std::io::Read;
     let line = format!("{name} {}", args.join(" "));
     let mut child = Command::new(program)
         .args(args)
+        .envs(envs.iter().copied())
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -213,7 +226,7 @@ fn run_bounded(
         let mut said = Vec::new();
         err_pipe.read_to_end(&mut said).map(|_| said)
     });
-    let deadline = std::time::Instant::now() + AVAL_DEADLINE;
+    let deadline = std::time::Instant::now() + limit;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -224,7 +237,7 @@ fn run_bounded(
                 let killed = child.kill().and_then(|()| child.wait());
                 return Err(AvalFailed::Failed(format!(
                     "`{line}` timed out after {} s (kill: {killed:?})",
-                    AVAL_DEADLINE.as_secs()
+                    limit.as_secs()
                 )));
             }
             Err(e) => {
@@ -492,8 +505,12 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
         .ok_or_else(|| BriefError::Repository("no default branch of `origin` is known".into()))?;
     let merge_base = git::stdout_in(&repo, &["merge-base", &base, "HEAD"])
         .ok_or_else(|| BriefError::Repository(format!("`git merge-base {base} HEAD` failed")))?;
+    let pin = match &request.profile {
+        None => pin_section(&repo, &merge_base, &tree),
+        Some(_) => None,
+    };
     if let Some(old) = &request.interdiff {
-        return interdiff_brief(&Delta {
+        let mut delta = interdiff_brief(&Delta {
             repo: &repo,
             name: &name,
             tree: &tree,
@@ -502,7 +519,12 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
             old,
             rules_sha: code_rules.as_ref().map(|(sha, _)| sha.as_str()),
             profile: request.profile.as_deref(),
-        });
+        })?;
+        if let Some((section, notice)) = pin {
+            delta.text.push_str(&section);
+            delta.notices.push(notice);
+        }
+        return Ok(delta);
     }
     let range = format!("{merge_base}...HEAD");
     let exclude_plans = format!(":!{PLANS_DIR}");
@@ -686,10 +708,80 @@ pub fn build(request: &BriefRequest) -> Result<Brief, BriefError> {
             .unwrap_or_else(|| missing_section(plan_text.as_deref(), heading));
         brief.push_str(&format!("\n{text}\n"));
     }
+    if let Some((section, notice)) = pin {
+        brief.push_str(&section);
+        notices.push(notice);
+    }
     Ok(Brief {
         text: brief,
         notices,
     })
+}
+
+/// How long the pin check gives `git diff` to fingerprint the branch.
+const PIN_FINGERPRINT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The "Pin check" section and its stderr notice for a branch whose
+/// fingerprint is a registered block. The check's result is also written as
+/// the latest pin record of this tree, a pass or a failure, where the hook
+/// reads it. A branch whose fingerprint cannot be computed, or a missing
+/// journal directory, gets a section that says so and no record. `None` when
+/// the diff is binary or no entry is registered.
+fn pin_section(repo: &Path, merge_base: &str, tree: &str) -> Option<(String, String)> {
+    let unproven = |cause: String| {
+        let section = format!("\n## Pin check\n\n{cause}\n");
+        Some((section, format!("pin check not run: {cause}")))
+    };
+    let fingerprint = match crate::block_fingerprint::fingerprint(
+        repo,
+        merge_base,
+        "HEAD",
+        std::time::Instant::now() + PIN_FINGERPRINT_BUDGET,
+    ) {
+        Ok(Some(fingerprint)) => fingerprint,
+        Ok(None) => return None,
+        Err(why) => return unproven(format!("fingerprint failed: {why}")),
+    };
+    let Some(base) = amont_agent_guard::journal::dir() else {
+        return unproven("no journal directory".to_string());
+    };
+    if crate::block_registry::entries(&base, fingerprint.full()).is_empty() {
+        return None;
+    }
+    let outcome = crate::pin_check::check(repo, merge_base);
+    let pin = match &outcome {
+        crate::pin_check::Outcome::Passed { release } => crate::block_registry::Pin::Passed {
+            release: release.clone(),
+        },
+        crate::pin_check::Outcome::Failed { why } => {
+            crate::block_registry::Pin::Failed { why: why.clone() }
+        }
+    };
+    let record = crate::block_registry::PinRecord {
+        pin,
+        gh_override_set: crate::pin_check::gh_override_set(),
+    };
+    let recorded = match crate::block_registry::write_pin(&base, fingerprint.full(), tree, &record)
+    {
+        Ok(()) => String::new(),
+        Err(why) => format!(" (the record could not be written: {why})"),
+    };
+    let verdict = if outcome.is_passed() {
+        "passed"
+    } else {
+        "FAILED"
+    };
+    let section = format!(
+        "\n## Pin check\n\n{}: {verdict}: {}{recorded}\n",
+        fingerprint.short(),
+        outcome.detail()
+    );
+    let notice = format!(
+        "pin check {verdict} for {}: {}{recorded}",
+        fingerprint.short(),
+        outcome.detail()
+    );
+    Some((section, notice))
 }
 
 fn missing_section(plan_text: Option<&str>, heading: &str) -> String {
@@ -1249,6 +1341,18 @@ fn constraint_index(index: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_fingerprint_that_cannot_be_computed_is_said_in_the_pin_section() {
+        let dir = std::env::temp_dir().join(format!("amont-pin-section-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let found = super::pin_section(&dir, "HEAD", &"a".repeat(64));
+        std::fs::remove_dir_all(&dir).expect("scratch cleanup");
+        let (section, notice) = found.expect("a section");
+        assert!(section.contains("## Pin check"), "{section}");
+        assert!(section.contains("fingerprint failed: "), "{section}");
+        assert!(notice.contains("fingerprint failed: "), "{notice}");
+    }
+
     #[test]
     fn the_constraint_index_keeps_ids_and_short_titles_of_constraint_rows() {
         let long = "word ".repeat(30);

@@ -118,6 +118,7 @@ fn the_rules_that_refuse_by_default() {
         deny,
         [
             "ask-unopened-page",
+            "block-reinstate",
             "pipe-to-tail",
             "plan-phases-open",
             "plan-review-panel",

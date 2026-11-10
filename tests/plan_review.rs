@@ -1882,3 +1882,324 @@ fn a_pass_on_a_baseline_from_before_slices_keeps_the_old_rule() {
         "{said:?}"
     );
 }
+
+/// A plan-panel run against a branch that is a registered copy of a reviewed
+/// block, with a fake `gh` chosen per test.
+struct CopyWorld {
+    w: World,
+    repo: PathBuf,
+    plan: PathBuf,
+}
+
+const COPY_AVAL: &str = "#!/bin/sh\ncase \"$*\" in\n  \"--json rules --level constraint --governs code --full\") printf '{\"rules\":[]}' ;;\n  *) exit 1 ;;\nesac\n";
+const COPY_RULES: &str = "{\"rules\":[]}";
+
+#[cfg(unix)]
+fn script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+impl CopyWorld {
+    fn new(name: &str) -> CopyWorld {
+        let w = World::new(name);
+        let repo = w.repo(
+            "tool",
+            &[
+                ("src/main.rs", "fn main() {}\n"),
+                ("ci.yml", "env:\n  TOOL_VERSION: \"1.2\"\n"),
+            ],
+        );
+        git(&repo, &["checkout", "-qb", "topic"]);
+        let ci = std::fs::read_to_string(repo.join("ci.yml")).unwrap();
+        std::fs::write(
+            repo.join("ci.yml"),
+            format!("{ci}  # release-pin: o/r v{{version}} tool-{{version}}.tgz TOOL_VERSION\n  run: x\n"),
+        )
+        .unwrap();
+        git(&repo, &["commit", "-qam", "pin"]);
+        std::fs::create_dir_all(w.root.join("bin")).unwrap();
+        script(&w.root.join("bin/aval"), COPY_AVAL);
+        let plan = w.plan("p.md", BODY, "repos=tool");
+        let world = CopyWorld { w, repo, plan };
+        world.register();
+        world
+    }
+
+    fn register(&self) {
+        use amont_agent_process::block_registry::{register_entry, EntryData, Generation};
+        let fingerprint = amont_agent_process::block_fingerprint::fingerprint(
+            &self.repo,
+            "origin/main",
+            "HEAD",
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        )
+        .unwrap()
+        .unwrap();
+        let roles = amont_agent_process::implementation_review::roles_needed(
+            &self.repo,
+            "origin/main",
+            "HEAD",
+        )
+        .unwrap();
+        let agents: Vec<(String, String)> = roles
+            .iter()
+            .filter_map(|role| amont_agent_process::code_review::agent_for(role))
+            .map(|(agent, _)| agent)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|agent| (agent, "-".to_string()))
+            .collect();
+        register_entry(
+            &self.w.root.join("claude/amont-agent"),
+            fingerprint.full(),
+            &Generation {
+                rules_sha: amont_agent_process::review_brief::sha_of(COPY_RULES.as_bytes()),
+                agent_digest: amont_agent_process::implementation_review::agents_digest(&agents),
+            },
+            &EntryData {
+                roles: roles.into_iter().collect(),
+                agents,
+                source_branch: "topic".into(),
+                source_repo: None,
+                content_id: "e".repeat(64),
+            },
+        )
+        .unwrap();
+    }
+
+    fn enforce(&self) {
+        git(
+            &self.repo,
+            &[
+                "config",
+                "--file",
+                &self.w.root.join("global").display().to_string(),
+                "amont.agent.implementation-review.stance",
+                "deny",
+            ],
+        );
+    }
+
+    fn gh(&self, name: &str, body: &str) -> PathBuf {
+        let path = self.w.root.join("bin").join(name);
+        script(&path, body);
+        path
+    }
+
+    fn panel(&self, gh: Option<&Path>, deadline_ms: &str) -> std::process::Output {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![self.w.root.join("bin")];
+        dirs.extend(std::env::split_paths(&inherited));
+        let mut cmd = self.w.bin();
+        cmd.args(["plan-panel", "--code-review", "-C"])
+            .arg(&self.repo)
+            .args(["--base", "origin/main"])
+            .arg(&self.plan)
+            .env("AMONT_AGENT_GH_DEADLINE_MS", deadline_ms)
+            .env_remove("AMONT_AGENT_GH");
+        match gh {
+            Some(gh) => {
+                cmd.env("PATH", std::env::join_paths(dirs).unwrap());
+                cmd.env("AMONT_AGENT_GH", gh);
+            }
+            None => {
+                // A PATH with git and the fake aval and no gh at all.
+                let only = self.w.root.join("only-git");
+                std::fs::create_dir_all(&only).unwrap();
+                let git_path =
+                    String::from_utf8(Command::new("which").arg("git").output().unwrap().stdout)
+                        .unwrap();
+                let _ = std::fs::remove_file(only.join("git")); // a link from an earlier call; absence is the goal
+                std::os::unix::fs::symlink(git_path.trim(), only.join("git")).unwrap();
+                let _ = std::fs::remove_file(only.join("aval")); // same
+                std::os::unix::fs::symlink(self.w.root.join("bin/aval"), only.join("aval"))
+                    .unwrap();
+                cmd.env("PATH", &only);
+            }
+        }
+        cmd.output().unwrap()
+    }
+}
+
+#[cfg(unix)]
+fn stdout_of(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[cfg(unix)]
+fn stderr_of(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[cfg(unix)]
+const PROFILES_LINE: &str = "tool\tbackend,lang:rust,unix,tui\n";
+
+#[cfg(unix)]
+#[test]
+fn plan_panel_proposes_a_copy_when_the_asset_is_listed_and_the_hook_enforces() {
+    let c = CopyWorld::new("copy-asset-present");
+    c.enforce();
+    let gh = c.gh(
+        "gh-ok",
+        "#!/bin/sh\necho \"$*\" > \"$(dirname \"$0\")/gh-args\"\nprintf '{\"assets\":[{\"name\":\"tool-1.2.tgz\"}]}'\n",
+    );
+    let out = c.panel(Some(&gh), "10000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.starts_with("tool\tnone\tcopy of fp:"),
+        "{stdout} {}",
+        stderr_of(&out)
+    );
+    let id = stdout.trim_end().rsplit("fp:").next().unwrap().to_string();
+    assert_eq!(id.len(), 12, "{stdout}");
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    let args = std::fs::read_to_string(c.w.root.join("bin/gh-args")).unwrap();
+    assert_eq!(args.trim(), "release view v1.2 --repo o/r --json assets");
+    let err = stderr_of(&out);
+    assert!(err.contains("pin check"), "{err}");
+    assert!(!err.contains("profiles are proposed"), "{err}");
+    // plan-panel writes no record: the record belongs to a pushed tree.
+    let pins =
+        c.w.root
+            .join("claude/amont-agent/implementation-review/by-block");
+    let wrote_pin = walk(&pins)
+        .iter()
+        .any(|p| p.to_string_lossy().contains("/pins/"));
+    assert!(!wrote_pin);
+}
+
+#[cfg(unix)]
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            out.push(path.clone());
+            if path.is_dir() {
+                out.extend(walk(&path));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_panel_prints_no_copy_line_while_the_hook_does_not_enforce() {
+    let c = CopyWorld::new("copy-advise");
+    let gh = c.gh(
+        "gh-ok",
+        "#!/bin/sh\nprintf '{\"assets\":[{\"name\":\"tool-1.2.tgz\"}]}'\n",
+    );
+    let out = c.panel(Some(&gh), "10000");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(stdout_of(&out), PROFILES_LINE);
+    assert_eq!(
+        stderr_of(&out).trim(),
+        "amont-agent: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_panel_proposes_the_profiles_when_the_pin_check_fails() {
+    let c = CopyWorld::new("copy-pin-fails");
+    c.enforce();
+    let missing = c.gh(
+        "gh-missing",
+        "#!/bin/sh\nprintf '{\"assets\":[{\"name\":\"other.tgz\"}]}'\n",
+    );
+    let failing = c.gh("gh-fails", "#!/bin/sh\necho boom >&2\nexit 1\n");
+    let hanging = c.gh("gh-hangs", "#!/bin/sh\nexec sleep 30\n");
+    for (gh, why) in [
+        (Some(missing), "does not list tool-1.2.tgz"),
+        (Some(failing), "failed (exit 1)"),
+        (Some(hanging), "timed out"),
+        (
+            None,
+            "gh not found; install GitHub CLI and run gh auth login",
+        ),
+    ] {
+        let deadline = if why == "timed out" { "300" } else { "10000" };
+        let out = c.panel(gh.as_deref(), deadline);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        assert_eq!(stdout_of(&out), PROFILES_LINE, "{why}");
+        let err = stderr_of(&out);
+        let line = err
+            .lines()
+            .find(|l| l.contains("is a registered copy but the pin check failed"))
+            .unwrap_or_else(|| panic!("{why}: {err}"));
+        assert!(line.starts_with("amont-agent: plan-panel: fp:"), "{line}");
+        assert!(line.contains(why), "{line}");
+        assert!(line.ends_with("; the profiles are proposed"), "{line}");
+    }
+}
+
+#[test]
+fn plan_panel_branch_flags_need_code_review() {
+    let w = World::new("copy-flags-need-code-review");
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    for flag in [["-C", "."], ["--base", "main"]] {
+        let out = w
+            .bin()
+            .arg("plan-panel")
+            .args(flag)
+            .arg(&plan)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("need --code-review"),
+            "{out:?}"
+        );
+    }
+}
+
+#[test]
+fn plan_panel_help_stays_within_80_columns() {
+    let w = World::new("copy-help-width");
+    let out = w.bin().args(["plan-panel", "--help"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("--base <ref>"), "{help}");
+    for line in help.lines() {
+        assert!(line.chars().count() <= 80, "{line}");
+    }
+    let block = w.bin().args(["block", "--help"]).output().unwrap();
+    for line in String::from_utf8_lossy(&block.stdout).lines() {
+        assert!(line.chars().count() <= 80, "{line}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_panel_proposes_the_profiles_when_no_default_branch_is_known() {
+    let w = World::new("copy-no-default-branch");
+    let repo = w.repo("tool", &[("src/main.rs", "fn main() {}\n")]);
+    git(&repo, &["branch", "-m", "trunk"]);
+    git(&repo, &["remote", "remove", "origin"]);
+    let plan = w.plan("p.md", BODY, "repos=tool");
+    let out = w
+        .bin()
+        .args(["plan-panel", "--code-review", "-C"])
+        .arg(&repo)
+        .arg(&plan)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(stdout_of(&out), "tool\tbackend,lang:rust,unix,tui\n");
+    let err = stderr_of(&out);
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(
+        err.contains("no default branch of `origin` is known"),
+        "{err}"
+    );
+    assert!(
+        err.trim_end().ends_with("; the profiles are proposed"),
+        "{err}"
+    );
+}

@@ -27,10 +27,13 @@ use amont_agent_guard::compliance;
 use amont_agent_guard::corpus;
 use amont_agent_guard::decision;
 use amont_agent_guard::doctor;
+use amont_agent_guard::git;
 use amont_agent_guard::graduate;
 use amont_agent_guard::guidance;
 use amont_agent_guard::harness_review;
 use amont_agent_process::attestations;
+use amont_agent_process::block_fingerprint;
+use amont_agent_process::block_registry;
 use amont_agent_process::content_id;
 mod hook;
 mod open;
@@ -140,6 +143,9 @@ usage: amont-agent <command>
                         the content id an implementation review and a
                         preview approval bind to: HEAD's tree without
                         docs/plans/ (not attest's canonical tree)
+  block sha [-C <dir>] [--base <ref>]
+                        the fingerprint of the branch's change, as a copy of
+                        a reviewed block is recognised by
   rules-sha [-C <dir>]  the sha256 of the code rules `aval` reports, as an
                         implementation-review brief binds them
   review-brief [-C <dir>] [--plan <path>] [--base <ref>]
@@ -213,6 +219,7 @@ enum Sub {
     ImplementationReview,
     PlanApply,
     TreeSha,
+    Block,
     RulesSha,
     ReviewBrief,
     Attestations,
@@ -223,7 +230,7 @@ enum Sub {
     Suppressions,
 }
 
-const SUBCOMMANDS: [(&str, Sub); 31] = [
+const SUBCOMMANDS: [(&str, Sub); 32] = [
     ("hook", Sub::Hook),
     ("install", Sub::Install),
     ("uninstall", Sub::Uninstall),
@@ -247,6 +254,7 @@ const SUBCOMMANDS: [(&str, Sub); 31] = [
     ("implementation-review", Sub::ImplementationReview),
     ("plan-apply", Sub::PlanApply),
     ("tree-sha", Sub::TreeSha),
+    ("block", Sub::Block),
     ("rules-sha", Sub::RulesSha),
     ("review-brief", Sub::ReviewBrief),
     ("attestations", Sub::Attestations),
@@ -486,6 +494,7 @@ fn main() -> ExitCode {
                 code
             }
             Sub::TreeSha => run_tree_sha(&args),
+            Sub::Block => run_block(&args),
             Sub::RulesSha => run_rules_sha(&args),
             Sub::ReviewBrief => run_review_brief(&args),
             Sub::Attestations => attestations::run_cli(&args),
@@ -1504,6 +1513,366 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+const BLOCK_USAGE: &str = "\
+usage: amont-agent block sha [-C <dir>] [--base <ref>]
+       amont-agent block list [--json]
+       amont-agent block revoke <fp> --because <text>
+       amont-agent block reinstate <fp>
+
+The fingerprint of a branch's change, which a copy of a reviewed block
+shares with its source: the sha256 of the `+` and `-` lines of `git diff`
+from the merge base to HEAD (docs/plans/ left out), without paths, line
+numbers or context, the common indentation removed, and CR and trailing
+blanks stripped. git runs with its own settings, not the person's.
+
+  sha          print `<64 hex>` TAB `fp:<12 hex>` on stdout
+  -C <dir>     the repository at <dir> (default: the current one)
+  --base <ref> the ref to take the merge base with (default: the default
+               branch of origin)
+
+Exit codes of `sha`: 0; 1 when there is no fingerprint (a binary file in
+the diff, which is never a copy, or git failing; the reason on stderr); 2 on
+a usage error.
+
+  list         one row per registered block, no header, on stdout:
+               fp:<12 hex> TAB active|revoked TAB <roles, comma-separated>
+               TAB <copy count> TAB <source repo, - when unknown>; --json
+               adds the copies and `source_repo` (null when unknown)
+  revoke       revoke a block until the person reinstates it: the pilot is
+               printed as <source repo> TAB <branch> TAB - and every
+               recorded copy as <repo> TAB <branch> TAB <commit> for a
+               re-check; revoking again prints them again
+  reinstate    lift a revocation, on stderr; the person runs it, not an agent
+  <fp>         fp:<12 hex>, a unique prefix of it, or the 64 hex
+
+Exit codes of `list`, `revoke` and `reinstate`: 0; 1 when the fingerprint
+names no block or several (`give more hex`), the registry cannot be found or
+written; 2 on a usage error.
+";
+
+/// How long finding the default branch, and then the diff, may each take.
+const BLOCK_GIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn run_block(args: &[OsString]) -> ExitCode {
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    match args.first().map(String::as_str) {
+        Some("--help" | "-h") => block_help(),
+        Some("sha") => run_block_sha(&args[1..]),
+        Some("list") => run_block_list(&args[1..]),
+        Some("revoke") => run_block_revoke(&args[1..]),
+        Some("reinstate") => run_block_reinstate(&args[1..]),
+        Some(_) if args.iter().any(|word| is_help(word)) => block_help(),
+        Some(other) => {
+            eprintln!("amont-agent: block: unknown verb `{other}`; try `amont-agent block --help`");
+            eprint!("{BLOCK_USAGE}");
+            ExitCode::from(2)
+        }
+        None => {
+            eprintln!("amont-agent: block: needs a verb; try `amont-agent block --help`");
+            eprint!("{BLOCK_USAGE}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn is_help(word: &str) -> bool {
+    word == "--help" || word == "-h"
+}
+
+fn block_help() -> ExitCode {
+    print!("{BLOCK_USAGE}");
+    ExitCode::SUCCESS
+}
+
+/// The registry's base directory: the journal directory.
+fn block_base() -> Option<std::path::PathBuf> {
+    let base = journal::dir();
+    if base.is_none() {
+        eprintln!("amont-agent: block: no home or CLAUDE_CONFIG_DIR to find the registry in");
+    }
+    base
+}
+
+/// The one registered fingerprint `given` names (`fp:<hex>`, a hex prefix or
+/// all 64 hex). Anything else is matched against the registry's own listing
+/// and never joins a path.
+fn resolve_block_fp(base: &std::path::Path, given: &str) -> Result<String, ExitCode> {
+    let id = given.strip_prefix("fp:").unwrap_or(given);
+    let mut hits: Vec<String> = Vec::new();
+    if !id.is_empty() {
+        hits = block_registry::fingerprints(base)
+            .into_iter()
+            .filter(|fingerprint| fingerprint.starts_with(id))
+            .collect();
+    }
+    match hits.pop() {
+        Some(only) if hits.is_empty() => Ok(only),
+        Some(_) => {
+            eprintln!(
+                "amont-agent: block: fp:{id} matches {} blocks; give more hex",
+                hits.len() + 1
+            );
+            Err(ExitCode::from(1))
+        }
+        None => {
+            eprintln!("amont-agent: block: no entry fp:{id}; see amont-agent block list");
+            Err(ExitCode::from(1))
+        }
+    }
+}
+
+fn block_usage_error(why: &str) -> ExitCode {
+    eprintln!("amont-agent: block: {why}; try `amont-agent block --help`");
+    ExitCode::from(2)
+}
+
+fn run_block_list(args: &[String]) -> ExitCode {
+    let mut json = false;
+    for word in args {
+        match word.as_str() {
+            help if is_help(help) => return block_help(),
+            "--json" => json = true,
+            other => return block_usage_error(&format!("unknown argument `{other}`")),
+        }
+    }
+    let Some(base) = block_base() else {
+        return ExitCode::from(1);
+    };
+    let mut rows = Vec::new();
+    for fingerprint in block_registry::fingerprints(&base) {
+        let mut roles: Vec<String> = block_registry::entries(&base, &fingerprint)
+            .into_iter()
+            .flat_map(|entry| entry.registered.roles)
+            .collect();
+        roles.sort();
+        roles.dedup();
+        let copies = block_registry::copies(&base, &fingerprint);
+        let revoked = block_registry::revoked(&base, &fingerprint);
+        let source = block_registry::source_entry(&base, &fingerprint)
+            .and_then(|entry| entry.registered.source_repo);
+        let short = format!("fp:{}", &fingerprint[..12]);
+        if json {
+            let listed: Vec<serde_json::Value> = copies
+                .iter()
+                .map(|copy| {
+                    serde_json::json!({
+                        "repo": copy.repo,
+                        "branch": copy.branch,
+                        "commit": copy.commit,
+                    })
+                })
+                .collect();
+            rows.push(serde_json::json!({
+                "fingerprint": fingerprint,
+                "short": short,
+                "state": if revoked.is_some() { "revoked" } else { "active" },
+                "because": revoked,
+                "roles": roles,
+                "copies": listed,
+                "source_repo": source,
+            }));
+        } else {
+            let state = if revoked.is_some() {
+                "revoked"
+            } else {
+                "active"
+            };
+            println!(
+                "{short}\t{state}\t{}\t{}\t{}",
+                roles.join(","),
+                copies.len(),
+                source.as_deref().unwrap_or("-")
+            );
+        }
+    }
+    if json {
+        println!("{}", serde_json::Value::Array(rows));
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_block_revoke(args: &[String]) -> ExitCode {
+    let (mut fingerprint, mut because) = (None, None);
+    let mut i = 0;
+    while i < args.len() {
+        let word = args[i].as_str();
+        i += 1;
+        if is_help(word) {
+            return block_help();
+        } else if let Some(value) = word.strip_prefix("--because=") {
+            because = Some(value.to_string());
+        } else if word == "--because" {
+            let Some(value) = args.get(i) else {
+                return block_usage_error("--because needs a value");
+            };
+            i += 1;
+            because = Some(value.clone());
+        } else if word.starts_with('-') {
+            return block_usage_error(&format!("unknown argument `{word}`"));
+        } else if fingerprint.replace(word).is_some() {
+            return block_usage_error("revoke takes one fingerprint");
+        }
+    }
+    let Some(fingerprint) = fingerprint else {
+        return block_usage_error("revoke needs a fingerprint");
+    };
+    let because = because.unwrap_or_default();
+    if because.trim().is_empty() {
+        return block_usage_error("revoke needs --because <text>");
+    }
+    let Some(base) = block_base() else {
+        return ExitCode::from(1);
+    };
+    let fingerprint = match resolve_block_fp(&base, fingerprint) {
+        Ok(fingerprint) => fingerprint,
+        Err(code) => return code,
+    };
+    if let Err(why) = block_registry::revoke(&base, &fingerprint, &because) {
+        eprintln!(
+            "amont-agent: block: could not revoke fp:{}: {why}",
+            &fingerprint[..12]
+        );
+        return ExitCode::from(1);
+    }
+    eprintln!("amont-agent: block: fp:{} is revoked", &fingerprint[..12]);
+    if let Some(pilot) = block_registry::source_entry(&base, &fingerprint).or_else(|| {
+        block_registry::entries(&base, &fingerprint)
+            .into_iter()
+            .next()
+    }) {
+        let source = pilot.registered.source_repo.as_deref().unwrap_or("-");
+        println!("{source}\t{}\t-", pilot.registered.source_branch);
+    }
+    for copy in block_registry::copies(&base, &fingerprint) {
+        println!("{}\t{}\t{}", copy.repo, copy.branch, copy.commit);
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_block_reinstate(args: &[String]) -> ExitCode {
+    if args.iter().any(|word| is_help(word)) {
+        return block_help();
+    }
+    let [given] = args else {
+        return block_usage_error("reinstate takes one fingerprint");
+    };
+    if given.starts_with('-') {
+        return block_usage_error(&format!("unknown argument `{given}`"));
+    }
+    let Some(base) = block_base() else {
+        return ExitCode::from(1);
+    };
+    let fingerprint = match resolve_block_fp(&base, given) {
+        Ok(fingerprint) => fingerprint,
+        Err(code) => return code,
+    };
+    let short = &fingerprint[..12];
+    if block_registry::revoked(&base, &fingerprint).is_none() {
+        eprintln!("amont-agent: block: fp:{short} was not revoked");
+        return ExitCode::SUCCESS;
+    }
+    if let Err(why) = block_registry::reinstate(&base, &fingerprint) {
+        eprintln!("amont-agent: block: could not reinstate fp:{short}: {why}");
+        return ExitCode::from(1);
+    }
+    eprintln!("amont-agent: block: fp:{short} reinstated");
+    ExitCode::SUCCESS
+}
+
+fn run_block_sha(args: &[String]) -> ExitCode {
+    let (mut dir, mut base) = (std::path::PathBuf::from("."), None);
+    let mut i = 0;
+    while i < args.len() {
+        let word = args[i].as_str();
+        i += 1;
+        if is_help(word) {
+            return block_help();
+        }
+        if word == "--" {
+            if let Some(extra) = args.get(i) {
+                return block_usage_error(&format!("unknown argument `{extra}`"));
+            }
+            break;
+        }
+        let (flag, attached) = match word.split_once('=') {
+            Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
+            _ => match (word.get(..2), word.get(2..)) {
+                (Some("-C"), Some(rest)) if !rest.is_empty() => ("-C", Some(rest.to_string())),
+                _ => (word, None),
+            },
+        };
+        if flag != "-C" && flag != "--base" {
+            eprintln!(
+                "amont-agent: block: unknown argument `{word}`; try `amont-agent block --help`"
+            );
+            return ExitCode::from(2);
+        }
+        let value = match attached {
+            Some(value) => value,
+            None => {
+                let Some(value) = args.get(i) else {
+                    eprintln!("amont-agent: block: {flag} needs a value");
+                    return ExitCode::from(2);
+                };
+                i += 1;
+                value.clone()
+            }
+        };
+        if value.is_empty() {
+            return block_usage_error(&format!("{flag} needs a non-empty value"));
+        }
+        if flag == "-C" {
+            dir = std::path::PathBuf::from(value);
+        } else {
+            base = Some(value);
+        }
+    }
+    let Some(repo) = push_target::toplevel(&dir) else {
+        eprintln!(
+            "amont-agent: block: {} is not inside a git repository",
+            dir.display()
+        );
+        return ExitCode::from(1);
+    };
+    let Some(base) = base.or_else(|| {
+        git::default_ref(&repo, std::time::Instant::now() + BLOCK_GIT_BUDGET)
+            .map(|(reference, _)| reference)
+    }) else {
+        eprintln!("amont-agent: block: no default branch of `origin` is known; pass --base <ref>");
+        return ExitCode::from(1);
+    };
+    let deadline = std::time::Instant::now() + BLOCK_GIT_BUDGET;
+    let Some(merge_base) =
+        git::stdout_bounded(&repo, &["merge-base", base.as_str(), "HEAD"], deadline)
+    else {
+        eprintln!("amont-agent: block: `git merge-base {base} HEAD` failed");
+        return ExitCode::from(1);
+    };
+    let diff = match block_fingerprint::diff_of(&repo, &merge_base, "HEAD", deadline) {
+        Ok(diff) => diff,
+        Err(why) => {
+            eprintln!("amont-agent: block: {why}");
+            return ExitCode::from(1);
+        }
+    };
+    match block_fingerprint::fingerprint_of_diff(&diff) {
+        Some(fingerprint) => {
+            println!("{}\t{}", fingerprint.full(), fingerprint.short());
+            ExitCode::SUCCESS
+        }
+        None => {
+            let path = block_fingerprint::binary_path(&diff).unwrap_or_default();
+            eprintln!(
+                "amont-agent: block: the diff has a binary file ({path}); a binary change is never a copy"
+            );
+            ExitCode::from(1)
+        }
+    }
+}
+
 const TREE_SHA_USAGE: &str = "\
 usage: amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]
 
@@ -1835,7 +2204,8 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
 }
 
 const PLAN_PANEL_USAGE: &str = "\
-usage: amont-agent plan-panel [--code-review] <plan.md>
+usage: amont-agent plan-panel [--code-review [-C <dir>] [--base <ref>]]
+                              <plan.md>
 
 The review agents a plan still needs, computed as the plan-review-panel
 hook will judge it at ExitPlanMode, and whether this is the whole panel or
@@ -1864,9 +2234,47 @@ or `no language area`; `cut -f2` reads `none`, and the line pastes as
 declares them; without the flag a plan with no such section is warned
 about on stderr and the output above is unchanged.
 
+  -C <dir>      with --code-review: also read the branch of the repository
+                at <dir>; a registered, unrevoked, pin-checked copy of a
+                reviewed block is proposed as `<repo>\tnone\tcopy of fp:<id>`
+                while the implementation-review hook enforces; otherwise
+                the profiles are proposed, with the cause on stderr
+  --base <ref>  the branch starts at its merge base with <ref> (default:
+                origin's default branch); needs --code-review, like -C
+                (without it: exit 2)
+
 Exit 0, 1 when the plan cannot be read, its comment is wrong or its Code
 review section does not parse (the reason on stderr), 2 on a usage error.
 ";
+
+/// The proposal `lines`, with the branch's own repository proposed as a copy
+/// when `-C` or `--base` named a branch that is a verified registered block.
+/// Without either flag the lines are unchanged.
+fn plan_panel_branch(lines: &str, dir: Option<&str>, base: Option<&str>) -> Result<String, String> {
+    if dir.is_none() && base.is_none() {
+        return Ok(lines.to_string());
+    }
+    let hook = amont_agent_guard::stance::resolve(&implementation_review_rule::RULE);
+    let branch =
+        code_review::branch_proposal(std::path::Path::new(dir.unwrap_or(".")), base, hook)?;
+    for notice in &branch.notices {
+        eprintln!("{notice}");
+    }
+    let Some(id) = branch.copy_of else {
+        return Ok(lines.to_string());
+    };
+    let reason = code_review::NoReviewReason::CopyOf(id);
+    let mut out = String::new();
+    for line in lines.lines() {
+        if line.split('\t').next() == Some(branch.repo.as_str()) {
+            out.push_str(&format!("{}\tnone\t{reason}\n", branch.repo));
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
 
 fn run_plan_panel(args: &[OsString]) -> ExitCode {
     let args: Vec<String> = args
@@ -1877,8 +2285,49 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
         print!("{PLAN_PANEL_USAGE}");
         return ExitCode::SUCCESS;
     }
-    let proposing = args.iter().any(|a| a == "--code-review");
-    let operands: Vec<&String> = args.iter().filter(|a| *a != "--code-review").collect();
+    let mut proposing = false;
+    let (mut branch_dir, mut branch_base): (Option<String>, Option<String>) = (None, None);
+    let mut operands: Vec<&String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let word = args[i].as_str();
+        i += 1;
+        if word == "--code-review" {
+            proposing = true;
+            continue;
+        }
+        let (flag, attached) = match word.split_once('=') {
+            Some((long, value)) if long.starts_with("--") => (long, Some(value.to_string())),
+            _ => match (word.get(..2), word.get(2..)) {
+                (Some("-C"), Some(rest)) if !rest.is_empty() => ("-C", Some(rest.to_string())),
+                _ => (word, None),
+            },
+        };
+        if flag != "-C" && flag != "--base" {
+            operands.push(&args[i - 1]);
+            continue;
+        }
+        let value = match attached {
+            Some(value) => value,
+            None => {
+                let Some(value) = args.get(i) else {
+                    eprintln!("amont-agent: plan-panel: {flag} needs a value");
+                    return ExitCode::from(2);
+                };
+                i += 1;
+                value.clone()
+            }
+        };
+        if flag == "-C" {
+            branch_dir = Some(value);
+        } else {
+            branch_base = Some(value);
+        }
+    }
+    if !proposing && (branch_dir.is_some() || branch_base.is_some()) {
+        eprint!("amont-agent: plan-panel: -C and --base need --code-review\n\n{PLAN_PANEL_USAGE}");
+        return ExitCode::from(2);
+    }
     let [file] = operands.as_slice() else {
         eprint!("amont-agent: plan-panel takes one plan file\n\n{PLAN_PANEL_USAGE}");
         return ExitCode::from(2);
@@ -1903,6 +2352,17 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
     if proposing {
         return match code_review::proposal(&text) {
             Ok(lines) => {
+                let lines = match plan_panel_branch(
+                    &lines,
+                    branch_dir.as_deref(),
+                    branch_base.as_deref(),
+                ) {
+                    Ok(lines) => lines,
+                    Err(why) => {
+                        eprintln!("amont-agent: plan-panel: {why}");
+                        return ExitCode::from(1);
+                    }
+                };
                 print!("{lines}");
                 ExitCode::SUCCESS
             }

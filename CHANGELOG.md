@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- A copy of a reviewed block is recognised by the hook. `amont-agent block
+  sha` prints a branch's block fingerprint (the sha256 of its `+`/`-` lines,
+  context, paths and common indentation dropped, read under a pinned git
+  config). The implementation-review hook registers a block once every
+  declared profile approved its tree, and a plan line `none — copy of
+  fp:<id>` is rechecked at the push: a hit needs implementation-review alone;
+  a miss requires every profile and names its cause (no entry, revoked, role
+  not covered, rules or agent changed, no passed pin check, binary diff, git
+  failed). Journal outcomes `profiles-copy-matched` and
+  `profiles-copy-missed`.
+- `block list [--json]`, `block revoke <fp> --because <text>` and `block
+  reinstate <fp>`; a new deny rule `block-reinstate` refuses an agent's call
+  to `block reinstate`, which is the person's.
+- `plan-panel --code-review -C <dir> [--base <ref>]` proposes `copy of
+  fp:<id>` for a registered, pin-checked block while the hook enforces.
+- `review-brief` runs a release-pin check for a registered block: the
+  `# release-pin: <owner/repo> <tag-template> <asset-template> <ENV_KEY>`
+  marker line, then `gh release view` (20 s, `AMONT_AGENT_GH` override); the
+  brief gains a "Pin check" section and the hook reads its record.
+- `implementation-review record` tags a row `copy: true` when the hook
+  journalled `profiles-copy-matched` for the tree; older rows read as not a
+  copy. `plan-review stats` shows `copies` and `copy-defects` per seat, so
+  the copy rule can be revisited at the first defect found in a copy or at
+  30 copies. `gh` joins the optional tools in the README.
+
 ## v3.28.0
 
 ### Added

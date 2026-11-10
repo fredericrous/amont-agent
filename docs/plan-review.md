@@ -416,6 +416,24 @@ has no `## Code review` section it says so on stderr and still exits 0. A
 section that does not parse (unknown profile, no colon, empty list, `none`
 without a reason, a repository twice) exits 1 with or without the flag.
 
+`plan-panel --code-review <plan.md> -C <dir> --base <ref>` also reads the
+branch in `<dir>` (the base defaults to the merge base with `origin/HEAD`).
+When its diff is an exact copy of a registered, unrevoked block whose pin
+check passed, and the implementation-review hook enforces, the proposal is
+`<repo>\tnone\tcopy of fp:<12 hex>`; otherwise the profiles are proposed as
+before. Either flag without `--code-review` exits 2.
+
+The pin check reads one marker line in the added lines of the block:
+
+```
+# release-pin: <owner/repo> <tag-template> <asset-template> <ENV_KEY>
+```
+
+`review-brief` reads the pin `<ENV_KEY>` from the same file, expands the two
+templates and runs `gh release view` for that tag; a missing `gh` (`gh not found; install GitHub
+CLI and run gh auth login`), marker or
+asset means the match does not count and the profiles are required.
+
 ## What a code-review profile reads
 
 `review-brief --profile <p>` gives `lang:<x>`, `react`, `ui-design` and

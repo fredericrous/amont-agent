@@ -119,6 +119,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         "gh-pr-merge-auto",
         include_str!("../tests/corpus/gh-pr-merge-auto.cases"),
     ),
+    (
+        "block-reinstate",
+        include_str!("../tests/corpus/block-reinstate.cases"),
+    ),
     ("no-verify", include_str!("../tests/corpus/no-verify.cases")),
     (
         "stdin-hang",

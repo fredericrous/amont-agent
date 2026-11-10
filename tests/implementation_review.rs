@@ -184,8 +184,23 @@ impl World {
     }
 
     fn hook(&self, payload: serde_json::Value) -> Said {
-        let mut child = self
-            .bin()
+        self.hook_via(self.bin(), payload)
+    }
+
+    /// A push of `dir` judged by the hook run through `cmd`.
+    fn hook_with(&self, cmd: Command, dir: &Path, session: &str, transcript: &Path) -> Said {
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "cwd": dir, "session_id": session, "prompt_id": "p1",
+            "tool_use_id": self.id(), "permission_mode": "default",
+            "transcript_path": transcript,
+            "tool_input": {"command": "git push -u origin feat/x"}
+        });
+        self.hook_via(cmd, payload)
+    }
+
+    fn hook_via(&self, mut cmd: Command, payload: serde_json::Value) -> Said {
+        let mut child = cmd
             .arg("hook")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -4162,4 +4177,595 @@ fn an_invalid_pointer_line_at_the_reviewed_commit_does_not_carry() {
     let said = w.push(&repo, "s1", Some(&transcript));
     assert!(advised(&said).contains("code-review-backend"), "{said:?}");
     assert!(carried_lines(&w).is_empty(), "{:?}", w.journal());
+}
+
+// Reviewed-block copies (`work.reviewed-block-copy`).
+
+const FULL_SET: &str = "backend, lang:rust";
+
+fn deny(w: &World) {
+    w.set_global("amont.agent.implementation-review.stance", "deny");
+}
+
+fn state_dir(w: &World) -> PathBuf {
+    w.root.join("claude").join("amont-agent")
+}
+
+/// The fingerprint of the repository's branch against `origin/main`.
+fn block_of(repo: &Path) -> amont_agent_process::block_fingerprint::Fingerprint {
+    let base = git(repo, &["merge-base", "HEAD", "origin/main"]);
+    amont_agent_process::block_fingerprint::fingerprint(
+        repo,
+        &base,
+        "HEAD",
+        std::time::Instant::now() + std::time::Duration::from_secs(20),
+    )
+    .expect("git diff")
+    .expect("no binary file")
+}
+
+fn generations(w: &World, fingerprint: &str) -> usize {
+    amont_agent_process::block_registry::entries(&state_dir(w), fingerprint).len()
+}
+
+/// The implementation review and the backend profile, both approving.
+fn backend_approvals(w: &World, repo: &Path) -> Transcript {
+    let mut t = Transcript::default();
+    t.review(
+        w,
+        AGENT,
+        &w.block(repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    t.profile_review(
+        w,
+        "code-review-backend",
+        &profile_prompt(w, repo, "Profile: backend"),
+        "Verdict: approve",
+    );
+    t
+}
+
+/// [`backend_approvals`] and the Rust language profile, approving.
+fn full_approvals(w: &World, repo: &Path) -> Transcript {
+    let mut t = backend_approvals(w, repo);
+    t.profile_review(
+        w,
+        "code-review-language",
+        &profile_prompt(w, repo, "Profile: lang:rust"),
+        "Verdict: approve",
+    );
+    t
+}
+
+/// A pilot `app` pushed with every profile approving, and a second
+/// repository `other` of the same World holding the same change.
+fn registered_pilot(name: &str) -> (World, PathBuf, PathBuf) {
+    let w = World::new(name);
+    deny(&w);
+    let pilot = w.repo("app");
+    declare(&w, &pilot, &format!("- app: {FULL_SET}"));
+    let t = full_approvals(&w, &pilot);
+    let transcript = w.transcript("pilot", &t);
+    assert_eq!(w.push(&pilot, "s1", Some(&transcript)), Said::Silent);
+    let copy = w.repo("other");
+    let line = format!("- other: none — copy of {}", block_of(&pilot).short());
+    declare(&w, &copy, &line);
+    (w, pilot, copy)
+}
+
+fn passed_pin() -> amont_agent_process::block_registry::Pin {
+    amont_agent_process::block_registry::Pin::Passed {
+        release: "test".into(),
+    }
+}
+
+fn failed_pin() -> amont_agent_process::block_registry::Pin {
+    amont_agent_process::block_registry::Pin::Failed { why: "test".into() }
+}
+
+fn pin_record(
+    pin: amont_agent_process::block_registry::Pin,
+    gh_override_set: bool,
+) -> amont_agent_process::block_registry::PinRecord {
+    amont_agent_process::block_registry::PinRecord {
+        pin,
+        gh_override_set,
+    }
+}
+
+fn pin_passed(w: &World, copy: &Path) {
+    store_pin(w, copy, &pin_record(passed_pin(), false));
+}
+
+fn pin_failed(w: &World, copy: &Path) {
+    store_pin(w, copy, &pin_record(failed_pin(), false));
+}
+
+fn store_pin(w: &World, copy: &Path, pin: &amont_agent_process::block_registry::PinRecord) {
+    let fingerprint = block_of(copy);
+    amont_agent_process::block_registry::write_pin(
+        &state_dir(w),
+        fingerprint.full(),
+        &w.tree(copy),
+        pin,
+    )
+    .unwrap();
+}
+
+fn push_copy(w: &World, copy: &Path, session: &str) -> Said {
+    let mut t = Transcript::default();
+    t.review(
+        w,
+        AGENT,
+        &w.block(copy),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript(session, &t);
+    w.push(copy, session, Some(&transcript))
+}
+
+fn denied_with(said: Said, cause: &str) {
+    match said {
+        Said::Deny(text) => {
+            assert!(text.contains(cause), "{cause}: {text}");
+            assert!(text.contains("code-review-backend"), "{text}");
+        }
+        other => panic!("{cause}: expected a hold, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_pilot_registers_only_after_the_last_profile_approves() {
+    let w = World::new("copy-pilot");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let fingerprint = block_of(&repo);
+    let mut t = backend_approvals(&w, &repo);
+    let first = w.transcript("first", &t);
+    assert!(matches!(w.push(&repo, "s1", Some(&first)), Said::Deny(_)));
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+
+    t.profile_review(
+        &w,
+        "code-review-language",
+        &profile_prompt(&w, &repo, "Profile: lang:rust"),
+        "Verdict: approve",
+    );
+    let second = w.transcript("second", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&second)), Said::Silent);
+    assert_eq!(generations(&w, fingerprint.full()), 1);
+
+    // Later hook attempts, with and without the transcript, register nothing new.
+    assert_eq!(w.push(&repo, "s1", Some(&second)), Said::Silent);
+    assert_eq!(w.push(&repo, "s2", None), Said::Silent);
+    assert_eq!(generations(&w, fingerprint.full()), 1);
+}
+
+#[test]
+fn a_copy_with_a_passed_pin_check_needs_no_profiles() {
+    let (w, pilot, copy) = registered_pilot("copy-hit");
+    pin_passed(&w, &copy);
+    assert_eq!(push_copy(&w, &copy, "s2"), Said::Silent);
+    assert!(
+        w.journal()
+            .iter()
+            .any(|l| l.contains(" profiles-copy-matched ")),
+        "{:?}",
+        w.journal()
+    );
+    let copies =
+        amont_agent_process::block_registry::copies(&state_dir(&w), block_of(&pilot).full());
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(copies[0].repo, "other");
+    assert_eq!(copies[0].commit, git(&copy, &["rev-parse", "HEAD"]));
+}
+
+#[test]
+fn a_copy_without_a_pin_record_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-no-pin");
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "no passed pin check; run amont-agent review-brief -C",
+    );
+    assert!(w
+        .journal()
+        .iter()
+        .any(|l| l.contains(" profiles-copy-missed ")));
+}
+
+#[test]
+fn a_pass_then_a_failed_pin_check_at_the_same_tree_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-pin-fails");
+    pin_passed(&w, &copy);
+    pin_failed(&w, &copy);
+    denied_with(push_copy(&w, &copy, "s2"), "pin check failed: test");
+}
+
+#[test]
+fn a_pin_record_made_with_the_gh_override_is_a_miss_without_it() {
+    let (w, _, copy) = registered_pilot("copy-pin-override");
+    store_pin(&w, &copy, &pin_record(passed_pin(), true));
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "the pin record was made with AMONT_AGENT_GH set; run review-brief without it",
+    );
+}
+
+#[test]
+fn a_copy_of_an_unregistered_block_is_a_miss() {
+    let w = World::new("copy-no-entry");
+    deny(&w);
+    let copy = w.repo("other");
+    declare(&w, &copy, "- other: none — copy of fp:0123456789ab");
+    denied_with(push_copy(&w, &copy, "s1"), "no entry for fp:0123456789ab");
+}
+
+#[test]
+fn a_copy_after_a_rules_change_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-rules");
+    pin_passed(&w, &copy);
+    w.fake_aval("another");
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "rules changed since registration",
+    );
+}
+
+#[test]
+fn a_copy_after_an_agent_change_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-agent");
+    pin_passed(&w, &copy);
+    std::fs::write(
+        w.root.join("claude/agents/code-review-backend.md"),
+        "---\nname: code-review-backend\n---\nnew\n",
+    )
+    .unwrap();
+    denied_with(
+        push_copy(&w, &copy, "s2"),
+        "agent code-review-backend changed since registration",
+    );
+}
+
+#[test]
+fn a_revoked_block_never_matches_even_with_a_later_generation() {
+    let (w, pilot, copy) = registered_pilot("copy-revoked");
+    pin_passed(&w, &copy);
+    let fingerprint = block_of(&pilot);
+    let base = state_dir(&w);
+    amont_agent_process::block_registry::revoke(&base, fingerprint.full(), "a defect").unwrap();
+    // A generation that a concurrent registration creates after the revoke.
+    amont_agent_process::block_registry::register_entry(
+        &base,
+        fingerprint.full(),
+        &amont_agent_process::block_registry::Generation {
+            rules_sha: ABC_SHA.into(),
+            agent_digest: "e".repeat(64),
+        },
+        &amont_agent_process::block_registry::EntryData {
+            roles: vec!["backend".into(), "lang:rust".into()],
+            agents: Vec::new(),
+            source_branch: "late".into(),
+            source_repo: None,
+            content_id: "f".repeat(64),
+        },
+    )
+    .unwrap();
+    denied_with(push_copy(&w, &copy, "s2"), "revoked: a defect");
+    amont_agent_process::block_registry::reinstate(&base, fingerprint.full()).unwrap();
+    assert_eq!(push_copy(&w, &copy, "s3"), Said::Silent);
+}
+
+#[test]
+fn under_the_advise_stance_a_copy_line_is_a_miss() {
+    let (w, _, copy) = registered_pilot("copy-advise");
+    pin_passed(&w, &copy);
+    w.set_global("amont.agent.implementation-review.stance", "advise");
+    let said = push_copy(&w, &copy, "s2");
+    let text = advised(&said);
+    assert!(text.contains("code-review-backend"), "{text}");
+    assert!(text.contains("the hook is not enforcing"), "{text}");
+}
+
+#[test]
+fn a_free_text_none_reason_is_untouched() {
+    let w = World::new("copy-free-text");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, "- app: none — prose only");
+    assert_eq!(push_copy(&w, &repo, "s1"), Said::Silent);
+    assert!(!w.journal().iter().any(|l| l.contains("profiles-copy")));
+}
+
+#[cfg(unix)] // a fake git script on PATH
+#[test]
+fn a_copy_whose_roles_cannot_be_told_is_held_not_narrowed_to_backend() {
+    let (w, _, copy) = registered_pilot("copy-roles-unknown");
+    pin_passed(&w, &copy);
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let bin = w.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    common::write_fake(
+        &bin.join("git"),
+        &format!(
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --name-only ] && exit 1; done\nexec {} \"$@\"\n",
+            real.trim()
+        ),
+    );
+    match push_copy(&w, &copy, "s2") {
+        Said::Deny(text) => assert!(text.contains("cannot be told"), "{text}"),
+        other => panic!("expected a hold, got {other:?}"),
+    }
+}
+
+/// A repository like `World::repo`, whose default branch also holds a
+/// `src/main.rs`, so its areas include `cli`.
+fn cli_repo(w: &World, name: &str) -> PathBuf {
+    let repo = w.repo(name);
+    git(&repo, &["checkout", "-q", "main"]);
+    w.commit(&repo, &[("src/main.rs", "fn main() {}\n")]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["checkout", "-q", "feat/x"]);
+    git(&repo, &["rebase", "-q", "main"]);
+    repo
+}
+
+#[test]
+fn a_pilot_of_a_command_line_repository_needs_the_command_line_seats() {
+    let w = World::new("copy-cli-pilot");
+    deny(&w);
+    let repo = cli_repo(&w, "app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let fingerprint = block_of(&repo);
+    let t = full_approvals(&w, &repo);
+    let transcript = w.transcript("t", &t);
+    let _ = w.push(&repo, "s1", Some(&transcript)); // the verdict is not what this checks
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+}
+
+#[test]
+fn a_copy_in_a_command_line_repository_misses_an_entry_without_those_seats() {
+    let (w, _, _) = registered_pilot("copy-cli-copy");
+    let copy = cli_repo(&w, "cli");
+    declare(
+        &w,
+        &copy,
+        &format!("- cli: none — copy of {}", block_of(&copy).short()),
+    );
+    pin_passed(&w, &copy);
+    match push_copy(&w, &copy, "s2") {
+        Said::Deny(text) => {
+            assert!(text.contains("not covered"), "{text}");
+            assert!(text.contains("code-review-unix"), "{text}");
+            assert!(text.contains("code-review-tui"), "{text}");
+        }
+        other => panic!("expected a hold, got {other:?}"),
+    }
+}
+
+/// A repository pushed with `section` declared and the transcript `build` makes.
+fn registers_nothing(name: &str, section: &str, build: impl Fn(&World, &Path) -> Transcript) {
+    let w = World::new(name);
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, section);
+    let fingerprint = block_of(&repo);
+    let t = build(&w, &repo);
+    let transcript = w.transcript("t", &t);
+    let _ = w.push(&repo, "s1", Some(&transcript)); // the verdict is not what this checks
+    assert_eq!(generations(&w, fingerprint.full()), 0, "{name}");
+}
+
+#[test]
+fn nothing_registers_for_a_narrowed_plan_an_approve_with_changes_or_a_missing_profile() {
+    registers_nothing("copy-narrowed", "- app: backend", full_approvals);
+    registers_nothing("copy-awc", &format!("- app: {FULL_SET}"), |w, repo| {
+        let mut t = backend_approvals(w, repo);
+        t.profile_review(
+            w,
+            "code-review-language",
+            &profile_prompt(w, repo, "Profile: lang:rust"),
+            "Verdict: approve-with-changes",
+        );
+        t
+    });
+    registers_nothing(
+        "copy-missing",
+        &format!("- app: {FULL_SET}"),
+        backend_approvals,
+    );
+}
+
+#[test]
+fn nothing_registers_after_an_overrule() {
+    let w = World::new("copy-overrule");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let fingerprint = block_of(&repo);
+    let tree = w.tree(&repo);
+    let mut t = backend_approvals(&w, &repo);
+    t.profile_review(
+        &w,
+        "code-review-language",
+        &profile_prompt(&w, &repo, "Profile: lang:rust"),
+        "Verdict: rework",
+    );
+    let transcript = w.transcript("t", &t);
+    let q = format!("[implementation-review app@{tree} profile=lang:rust] Overrule?");
+    w.ask_pre("q1", &q, false, Some(&transcript));
+    w.ask_post("q1", &q, "Overrule", Some(&transcript));
+    assert_eq!(w.push(&repo, "s1", Some(&transcript)), Said::Silent);
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+}
+
+#[test]
+fn a_carried_pass_registers_nothing() {
+    let w = World::new("copy-carried");
+    deny(&w);
+    let repo = w.repo("app");
+    declare(&w, &repo, &format!("- app: {FULL_SET}"));
+    let t = full_approvals(&w, &repo);
+    let first = w.transcript("a", &t);
+    assert_eq!(w.push(&repo, "s1", Some(&first)), Said::Silent);
+    w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() { 1; }\n")]);
+    let fingerprint = block_of(&repo);
+    let mut second = Transcript::default();
+    second.review(
+        &w,
+        AGENT,
+        &w.block(&repo),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("b", &second);
+    assert_eq!(w.push(&repo, "s2", Some(&transcript)), Said::Silent);
+    assert!(!carried_lines(&w).is_empty(), "{:?}", w.journal());
+    assert_eq!(generations(&w, fingerprint.full()), 0);
+}
+
+#[test]
+fn sixteen_hooks_and_a_revoke_at_once_lose_no_copy_and_leave_no_temp_file() {
+    use std::io::Write;
+    let (w, pilot, copy) = registered_pilot("copy-concurrent");
+    pin_passed(&w, &copy);
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&copy),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("race", &t);
+    let payloads: Vec<String> = (0..16)
+        .map(|n| {
+            serde_json::json!({
+                "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                "cwd": copy, "session_id": "race", "prompt_id": "p1",
+                "tool_use_id": format!("toolu_race_{n:02}"), "permission_mode": "default",
+                "transcript_path": transcript,
+                "tool_input": {"command": "git push -u origin feat/x"}
+            })
+            .to_string()
+        })
+        .collect();
+    let mut children: Vec<std::process::Child> = payloads
+        .iter()
+        .map(|payload| {
+            let mut child = w
+                .bin()
+                .arg("hook")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(payload.as_bytes())
+                .unwrap();
+            child
+        })
+        .collect();
+    let fingerprint = block_of(&pilot);
+    // The first hook finishes before the revoke, so its copy must be on disk;
+    // the other fifteen are still racing the revoke.
+    let first = children.remove(0).wait_with_output().unwrap();
+    assert!(first.status.success(), "{first:?}");
+    let revoke = w
+        .bin()
+        .args(["block", "revoke", fingerprint.full(), "--because", "race"])
+        .output()
+        .unwrap();
+    assert_eq!(revoke.status.code(), Some(0), "{revoke:?}");
+    for child in children.drain(..) {
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    let block = state_dir(&w)
+        .join("implementation-review")
+        .join("by-block")
+        .join(fingerprint.full());
+    assert_eq!(
+        amont_agent_process::block_registry::revoked(&state_dir(&w), fingerprint.full()).as_deref(),
+        Some("race")
+    );
+    let copies = amont_agent_process::block_registry::copies(&state_dir(&w), fingerprint.full());
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(copies[0].repo, "other");
+    let commit = git(&copy, &["rev-parse", "HEAD"]);
+    let copy_files: Vec<String> = std::fs::read_dir(block.join("copies"))
+        .map(|listing| {
+            listing
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    // Every hook that ran before the revoke recorded the same copy once; none
+    // may leave a staged file, whichever side of the revoke it fell on.
+    assert!(
+        copy_files.iter().all(|name| !name.starts_with(".tmp-")),
+        "{copy_files:?}"
+    );
+    assert_eq!(copy_files.len(), 1, "{copy_files:?}");
+    assert!(
+        copy_files[0].ends_with(&format!("{commit}.json")),
+        "{copy_files:?}"
+    );
+    let mut stray = Vec::new();
+    let mut pending = vec![block];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".tmp-")
+            {
+                stray.push(path);
+            }
+        }
+    }
+    assert!(stray.is_empty(), "{stray:?}");
+}
+
+#[test]
+fn an_empty_gh_override_in_the_hook_counts_as_unset() {
+    let (w, _, copy) = registered_pilot("copy-pin-empty-override");
+    store_pin(&w, &copy, &pin_record(passed_pin(), true));
+    let mut t = Transcript::default();
+    t.review(
+        &w,
+        AGENT,
+        &w.block(&copy),
+        "Verdict: approve",
+        Done::Foreground,
+    );
+    let transcript = w.transcript("empty", &t);
+    let said = {
+        let mut cmd = w.bin();
+        cmd.env("AMONT_AGENT_GH", "");
+        w.hook_with(cmd, &copy, "empty", &transcript)
+    };
+    denied_with(
+        said,
+        "the pin record was made with AMONT_AGENT_GH set; run review-brief without it",
+    );
 }

@@ -10,6 +10,7 @@ use std::path::Path;
 use crate::file_types;
 use crate::plan_review::{locate, meta, root, seating, SeatSource};
 use crate::plan_text::Fence;
+use amont_agent_guard::rules::Stance;
 
 const SECTION: &str = "Code review";
 /// The names a rule's `**Reviewed by:**` line may carry.
@@ -186,7 +187,7 @@ pub enum Proposal {
 }
 
 /// Why a repository is proposed `none`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoReviewReason {
     /// Every file named in it is markdown (or a directory).
     MarkdownOnly,
@@ -197,16 +198,20 @@ pub enum NoReviewReason {
     NoFileNamed,
     /// Seated from areas, and its areas carry no language.
     NoLanguageArea,
+    /// The change is a registered, fully reviewed block (ADR-0067): the
+    /// short id of its fingerprint, `fp:` and 12 hex characters.
+    CopyOf(String),
 }
 
 impl std::fmt::Display for NoReviewReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            NoReviewReason::MarkdownOnly => "markdown only",
-            NoReviewReason::NoReviewedFileType => "no reviewed file type",
-            NoReviewReason::NoFileNamed => "no file named",
-            NoReviewReason::NoLanguageArea => "no language area",
-        })
+        match self {
+            NoReviewReason::MarkdownOnly => f.write_str("markdown only"),
+            NoReviewReason::NoReviewedFileType => f.write_str("no reviewed file type"),
+            NoReviewReason::NoFileNamed => f.write_str("no file named"),
+            NoReviewReason::NoLanguageArea => f.write_str("no language area"),
+            NoReviewReason::CopyOf(id) => write!(f, "copy of {id}"),
+        }
     }
 }
 
@@ -262,6 +267,112 @@ pub fn proposal(plan_text: &str) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+/// What `plan-panel --code-review -C <dir>` makes of the branch at `dir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchProposal {
+    /// The repository's name, as a plan's machine comment spells it.
+    pub repo: String,
+    /// `Some(fp:<12 hex>)` when the branch is a registered, unrevoked block
+    /// whose pin check passed and the hook enforces.
+    pub copy_of: Option<String>,
+    /// Lines for stderr: why a registered block is not proposed as a copy.
+    pub notices: Vec<String>,
+}
+
+/// How long the proposal gives `git` to find the merge base and the diff.
+const BRANCH_GIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Look at the branch `base..HEAD` of the repository holding `dir`. A binary
+/// diff, or a branch that is not a registered block, proposes nothing and says
+/// nothing. A git or role failure says why on stderr and the profiles are
+/// proposed. `hook` is the stance of the implementation-review hook: a copy
+/// line is only verified when it denies. The pin check runs here without
+/// writing a record.
+pub fn branch_proposal(
+    dir: &Path,
+    base: Option<&str>,
+    hook: Stance,
+) -> Result<BranchProposal, String> {
+    let repo = amont_agent_guard::push_target::toplevel(dir)
+        .ok_or_else(|| format!("{} is not inside a git repository", dir.display()))?;
+    let repo_name = crate::implementation_review::repo_name(&repo)
+        .ok_or_else(|| "the repository has no name".to_string())?;
+    let mut proposal = BranchProposal {
+        repo: repo_name,
+        copy_of: None,
+        notices: Vec::new(),
+    };
+    let deadline = std::time::Instant::now() + BRANCH_GIT_BUDGET;
+    let unproven = |mut proposal: BranchProposal, cause: String| {
+        proposal.notices.push(format!(
+            "amont-agent: plan-panel: {cause}; the profiles are proposed"
+        ));
+        Ok(proposal)
+    };
+    let base = match base {
+        Some(base) => base.to_string(),
+        None => match amont_agent_guard::git::default_ref(&repo, deadline) {
+            Some((reference, _)) => reference,
+            None => {
+                return unproven(
+                    proposal,
+                    "no default branch of `origin` is known; pass --base <ref>".to_string(),
+                )
+            }
+        },
+    };
+    let Some(merge_base) = amont_agent_guard::git::stdout_bounded(
+        &repo,
+        &["merge-base", base.as_str(), "HEAD"],
+        deadline,
+    ) else {
+        return unproven(proposal, format!("`git merge-base {base} HEAD` failed"));
+    };
+    let fingerprint =
+        match crate::block_fingerprint::fingerprint(&repo, &merge_base, "HEAD", deadline) {
+            Ok(Some(fingerprint)) => fingerprint,
+            Ok(None) => return Ok(proposal),
+            Err(why) => return unproven(proposal, format!("git failed: {why}")),
+        };
+    let Some(state) = amont_agent_guard::journal::dir() else {
+        return Ok(proposal);
+    };
+    let id = fingerprint.short();
+    let needed = match crate::implementation_review::roles_needed(&repo, &merge_base, "HEAD") {
+        Ok(needed) => needed,
+        Err(why) => return unproven(proposal, format!("the role set failed: {why}")),
+    };
+    if crate::implementation_review::registered_cover(
+        &repo,
+        &state,
+        fingerprint.full(),
+        &id,
+        &needed,
+    )
+    .is_err()
+    {
+        return Ok(proposal);
+    }
+    match hook {
+        Stance::Deny => {}
+        Stance::Observe | Stance::Advise => {
+            proposal.notices.push(
+                "amont-agent: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
+                    .to_string(),
+            );
+            return Ok(proposal);
+        }
+    }
+    let pin = crate::pin_check::check(&repo, &merge_base);
+    match pin {
+        crate::pin_check::Outcome::Passed { .. } => proposal.copy_of = Some(id),
+        crate::pin_check::Outcome::Failed { why } => proposal.notices.push(format!(
+            "amont-agent: plan-panel: {id} is a registered copy but the pin check failed: {why}; the profiles are proposed"
+        )),
+    }
+    Ok(proposal)
 }
 
 /// The body's `## Code review` section: `Ok(None)` when there is none.

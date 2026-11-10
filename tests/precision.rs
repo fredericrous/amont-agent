@@ -264,6 +264,14 @@ fn the_smaller_rules_catch_their_own_shapes() {
         "gh pr merge 381 --squash --auto",
         "gh-pr-merge-auto"
     ));
+    assert!(fires_rule(
+        "amont-agent block reinstate fp:0123456789ab",
+        "block-reinstate"
+    ));
+    assert!(!fires_rule(
+        "amont-agent block revoke fp:0123456789ab --because x",
+        "block-reinstate"
+    ));
     assert!(fires_rule("git commit --no-verify -m x", "no-verify"));
     assert!(fires_rule("git add -A", "git-add-broad"));
     assert!(fires_rule("git add .", "git-add-broad"));

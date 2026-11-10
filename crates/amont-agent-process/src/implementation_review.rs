@@ -1016,6 +1016,9 @@ struct Declaration {
     any_section: bool,
     /// The sha256 of this repository's parsed declarations, in plan order.
     digest: String,
+    /// The reason of a `none — copy of fp:<12 hex>` line: a claim the hook
+    /// verifies, never trusts.
+    copy_of: Option<String>,
 }
 
 /// What this session's profile reviews say about carrying a pass.
@@ -1158,6 +1161,15 @@ impl ProfileGate<'_> {
             if let Some(line) = declared.get(self.name) {
                 described.push_str(&line.describe());
                 described.push('\n');
+            }
+            if let Some(crate::code_review::Declared::NoReview { reason }) = declared.get(self.name)
+            {
+                if reason.starts_with(COPY_PREFIX) && found.copy_of.is_none() {
+                    found.copy_of = Some(reason.clone());
+                    if found.plan.is_empty() {
+                        found.plan = path.clone();
+                    }
+                }
             }
             if let Some(crate::code_review::Declared::Profiles { profiles, .. }) =
                 declared.get(self.name)
@@ -1463,7 +1475,7 @@ impl ProfileGate<'_> {
     /// What holds the push, when the implementation review has passed: the
     /// verdict of every declared profile, in declaration order, when each has
     /// a pass (empty when none is declared).
-    fn hold(&self) -> Result<Vec<ProfileVerdict>, Judged> {
+    fn hold(&self, implementation: Implementation) -> Result<Vec<ProfileVerdict>, Judged> {
         // A branch that changes nothing outside docs/plans/ has no code for a
         // profile to read: implementation-review alone checks its record.
         // Decided before the declaration is read, so an unreadable one cannot
@@ -1477,7 +1489,7 @@ impl ProfileGate<'_> {
             );
             return Ok(Vec::new());
         }
-        let declared = match self.declaration() {
+        let mut declared = match self.declaration() {
             Ok(declared) => declared,
             Err(why) if self.stance == Stance::Deny => {
                 return Err(unknown(Some(self.tree), &why));
@@ -1492,6 +1504,33 @@ impl ProfileGate<'_> {
                 return Ok(Vec::new());
             }
         };
+        let mut copy_miss: Option<String> = None;
+        if declared.profiles.is_empty() {
+            if let Some(reason) = declared.copy_of.clone() {
+                match self.copy_outcome(&reason) {
+                    CopyOutcome::Hit => return Ok(Vec::new()),
+                    CopyOutcome::Unknown(why) if self.stance == Stance::Deny => {
+                        return Err(unknown(Some(self.tree), &why));
+                    }
+                    CopyOutcome::Unknown(why) => {
+                        note(
+                            "profiles-unreadable",
+                            "-",
+                            self.name,
+                            &format!("tree={} {why}", short(self.tree)),
+                        );
+                        return Ok(Vec::new());
+                    }
+                    CopyOutcome::Miss { cause, roles } => {
+                        declared.profiles = roles;
+                        copy_miss = Some(format!(
+                            "the declared copy `{}` did not match ({cause}), so the full code review is required.",
+                            reason.trim()
+                        ));
+                    }
+                }
+            }
+        }
         if declared.profiles.is_empty() {
             if !declared.any_section {
                 note(
@@ -1538,11 +1577,13 @@ impl ProfileGate<'_> {
             }
         }
         if missing.is_empty() && reworked.is_empty() {
+            self.register(&declared, &passed, implementation, &reviews);
             return Ok(passed);
         }
-        let mut reason = reworked.join(" ");
+        let mut reason = copy_miss.map(|why| format!("{why} ")).unwrap_or_default();
+        reason.push_str(&reworked.join(" "));
         if !missing.is_empty() {
-            if !reason.is_empty() {
+            if !reason.is_empty() && !reason.ends_with(' ') {
                 reason.push(' ');
             }
             reason.push_str(&format!(
@@ -1565,6 +1606,411 @@ impl ProfileGate<'_> {
                 }
             ),
         })
+    }
+}
+
+/// The start of a `none —` reason that claims the change copies a registered
+/// block.
+const COPY_PREFIX: &str = "copy of fp:";
+
+/// How long the hook gives `git diff` to fingerprint the branch.
+const FINGERPRINT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the implementation review of the pushed tree said, for the one
+/// decision that needs it: whether the tree may register as a block.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Implementation {
+    Approved,
+    Otherwise,
+}
+
+/// The hook's verdict on a `copy of fp:<12 hex>` declaration.
+enum CopyOutcome {
+    Hit,
+    /// The full set of profiles the change needs, and the named cause.
+    Miss {
+        cause: String,
+        roles: Vec<String>,
+    },
+    /// The roles the change needs could not be told, so neither a hit nor a
+    /// miss with a full set can be stated.
+    Unknown(String),
+}
+
+/// Backend first, then the rest in set order.
+fn ordered(roles: &std::collections::BTreeSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = roles.iter().filter(|r| *r == "backend").cloned().collect();
+    out.extend(roles.iter().filter(|r| *r != "backend").cloned());
+    out
+}
+
+/// The agent behind each role and the sha256 of its file (`-` when no source
+/// carries one), sorted by agent name. An agent file that exists and cannot
+/// be read, or directories that cannot be listed, are an error.
+pub fn agent_digests(repo: &Path, roles: &[String]) -> Result<Vec<(String, String)>, String> {
+    let agents: std::collections::BTreeSet<String> = roles
+        .iter()
+        .filter_map(|role| crate::code_review::agent_for(role))
+        .map(|(agent, _)| agent)
+        .collect();
+    let mut digests = Vec::new();
+    for agent in agents {
+        let files = crate::agents::agent_files(repo, &agent)
+            .ok_or_else(|| "the agent directories cannot be listed".to_string())?;
+        let mut digest = "-".to_string();
+        for path in files {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    digest = hex(&sha256(&bytes));
+                    break;
+                }
+                Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+                Err(why) => return Err(format!("cannot read {}: {why}", path.display())),
+            }
+        }
+        digests.push((agent, digest));
+    }
+    Ok(digests)
+}
+
+/// One digest of the agents a generation was registered under.
+pub fn agents_digest(agents: &[(String, String)]) -> String {
+    let lines: String = agents
+        .iter()
+        .map(|(agent, digest)| format!("{agent}\t{digest}\n"))
+        .collect();
+    hex(&sha256(lines.as_bytes()))
+}
+
+/// The roles the files of `merge_base..pushed` (without `docs/plans/`) call
+/// for, seated from the repository's areas as `code_review` seats them.
+pub fn roles_needed(
+    repo: &Path,
+    merge_base: &str,
+    pushed: &str,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let plans_excluded = format!(":(top,exclude){PLANS_PATH}");
+    let listing = git::stdout_in(
+        repo,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-relative",
+            merge_base,
+            pushed,
+            "--",
+            ":(top)",
+            &plans_excluded,
+        ],
+    )
+    .ok_or_else(|| "git failed".to_string())?;
+    let paths: Vec<String> = listing
+        .lines()
+        .map(str::to_string)
+        .filter(|path| !path.is_empty())
+        .collect();
+    let areas = crate::plan_review::repo_areas(repo)
+        .map_err(|why| format!("repository areas unavailable: {why}"))?
+        .ok_or_else(|| "repository areas unavailable".to_string())?;
+    Ok(crate::code_review::code_roles(&crate::file_types::classes(
+        &paths, &areas,
+    )))
+}
+
+/// Whether a registered, unrevoked generation of the block `full`, for
+/// today's rules and agents, covers every role in `needed`; else the named
+/// cause of the miss.
+pub fn registered_cover(
+    repo: &Path,
+    base: &Path,
+    full: &str,
+    wanted_id: &str,
+    needed: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    if let Some(because) = crate::block_registry::revoked(base, full) {
+        return Err(format!("revoked: {because}"));
+    }
+    let entries = crate::block_registry::entries(base, full);
+    if entries.is_empty() {
+        return Err(format!("no entry for {wanted_id}"));
+    }
+    let rules =
+        crate::review_brief::rules_sha(repo).map_err(|why| format!("rules unavailable: {why}"))?;
+    let mut role_gap: Option<String> = None;
+    let mut agent_change: Option<String> = None;
+    for entry in &entries {
+        if entry.generation.rules_sha != rules {
+            continue;
+        }
+        let now = agent_digests(repo, &entry.registered.roles)?;
+        if agents_digest(&now) != entry.generation.agent_digest {
+            let changed: Vec<&str> = now
+                .iter()
+                .filter(|pair| !entry.registered.agents.contains(pair))
+                .map(|(agent, _)| agent.as_str())
+                .collect();
+            agent_change.get_or_insert_with(|| {
+                format!("agent {} changed since registration", changed.join(", "))
+            });
+            continue;
+        }
+        match needed
+            .iter()
+            .find(|role| !entry.registered.roles.contains(role))
+        {
+            Some(role) => {
+                role_gap.get_or_insert_with(|| format!("role {role} not covered"));
+            }
+            None => return Ok(()),
+        }
+    }
+    Err(role_gap
+        .or(agent_change)
+        .unwrap_or_else(|| "rules changed since registration".to_string()))
+}
+
+impl ProfileGate<'_> {
+    /// The roles the files of the branch (without `docs/plans/`) call for,
+    /// seated from the repository's areas as `code_review` seats them.
+    fn needed_roles(&self) -> Result<std::collections::BTreeSet<String>, String> {
+        roles_needed(self.repo, self.merge_base, self.pushed)
+    }
+
+    fn copy_outcome(&self, reason: &str) -> CopyOutcome {
+        let needed = match self.needed_roles() {
+            Ok(needed) => needed,
+            Err(cause) => {
+                note(
+                    "profiles-copy-missed",
+                    "-",
+                    self.name,
+                    &format!("tree={} {cause}", short(self.tree)),
+                );
+                return CopyOutcome::Unknown(cause);
+            }
+        };
+        let roles = ordered(&needed);
+        let outcome = self.verify_copy(reason, &needed);
+        match outcome {
+            Ok(fingerprint) => {
+                note(
+                    "profiles-copy-matched",
+                    "-",
+                    self.name,
+                    &format!("tree={} fp:{}", short(self.tree), &fingerprint[..12]),
+                );
+                self.record_copy(&fingerprint);
+                CopyOutcome::Hit
+            }
+            Err(cause) => {
+                note(
+                    "profiles-copy-missed",
+                    "-",
+                    self.name,
+                    &format!("tree={} {cause}", short(self.tree)),
+                );
+                CopyOutcome::Miss { cause, roles }
+            }
+        }
+    }
+
+    fn record_copy(&self, fingerprint: &str) {
+        let Some(base) = journal::dir() else {
+            return;
+        };
+        let branch = self.dst.trim_start_matches("refs/heads/");
+        if let Err(why) =
+            crate::block_registry::record_copy(&base, fingerprint, self.name, self.pushed, branch)
+        {
+            note(
+                "block-copy-unrecorded",
+                "-",
+                self.name,
+                &format!("tree={} {why}", short(self.tree)),
+            );
+        }
+    }
+
+    /// The full fingerprint the declaration names when the change really is
+    /// that registered block, else the named cause of the miss.
+    fn verify_copy(
+        &self,
+        reason: &str,
+        needed: &std::collections::BTreeSet<String>,
+    ) -> Result<String, String> {
+        let wanted = reason
+            .strip_prefix("copy of ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|token| token.strip_prefix("fp:"))
+            .map_or_else(String::new, str::to_string);
+        let wanted_id = format!("fp:{wanted}");
+        // A reason must name exactly 12 lowercase hex characters.
+        if wanted.len() != 12
+            || !wanted
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(format!("no entry for {wanted_id}"));
+        }
+        if self.stance != Stance::Deny {
+            return Err(format!(
+                "the hook is not enforcing, so {wanted_id} is not verified"
+            ));
+        }
+        let fingerprint = match crate::block_fingerprint::fingerprint(
+            self.repo,
+            self.merge_base,
+            self.pushed,
+            std::time::Instant::now() + FINGERPRINT_BUDGET,
+        ) {
+            Ok(Some(fingerprint)) => fingerprint,
+            Ok(None) => return Err("binary diff".to_string()),
+            Err(why) => return Err(format!("git failed: {why}")),
+        };
+        if fingerprint.short() != wanted_id {
+            return Err(format!(
+                "no entry for {wanted_id} (this change is {})",
+                fingerprint.short()
+            ));
+        }
+        let full = fingerprint.full().to_string();
+        let Some(base) = journal::dir() else {
+            return Err(format!("no entry for {wanted_id}"));
+        };
+        registered_cover(self.repo, &base, &full, &wanted_id, needed)?;
+        self.pin_passed(&base, &full).map(|()| full)
+    }
+
+    fn pin_passed(&self, base: &Path, fingerprint: &str) -> Result<(), String> {
+        let missing = || {
+            format!(
+                "no passed pin check; run amont-agent review-brief -C {}",
+                self.repo.display()
+            )
+        };
+        let record =
+            crate::block_registry::read_pin(base, fingerprint, self.tree).ok_or_else(missing)?;
+        if let crate::block_registry::Pin::Failed { why } = &record.pin {
+            return Err(format!("pin check failed: {why}"));
+        }
+        if record.gh_override_set && !crate::pin_check::gh_override_set() {
+            return Err(
+                "the pin record was made with AMONT_AGENT_GH set; run review-brief without it"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Record the pushed change as a reviewed block when every profile of the
+    /// full set for its file classes said `approve` for this exact content id,
+    /// in the transcript, and the implementation review approved it.
+    fn register<'r>(
+        &self,
+        declared: &Declaration,
+        passed: &[ProfileVerdict],
+        implementation: Implementation,
+        reviews: &dyn Fn() -> &'r [ProfileReview],
+    ) {
+        if implementation != Implementation::Approved
+            || declared.profiles.is_empty()
+            || passed
+                .iter()
+                .any(|p| matches!(p.how, ProfileHow::Overruled | ProfileHow::Carried))
+        {
+            return;
+        }
+        let approved = declared.profiles.iter().all(|profile| {
+            reviews()
+                .iter()
+                .rev()
+                .find(|r| r.repo == self.name && r.sha == self.tree && r.profile == *profile)
+                .is_some_and(|r| r.verdict == Some(Verdict::Approve))
+        });
+        if !approved {
+            return;
+        }
+        let Some(base) = journal::dir() else {
+            return self.unregistered("no journal directory");
+        };
+        let needed = match self.needed_roles() {
+            Ok(needed) => needed,
+            Err(why) => return self.unregistered(&why),
+        };
+        let declared_set: std::collections::BTreeSet<String> =
+            declared.profiles.iter().cloned().collect();
+        if declared_set != needed {
+            let relation = if declared_set.is_subset(&needed) {
+                "narrower than"
+            } else {
+                "differs from"
+            };
+            return self.unregistered(&format!(
+                "declared set {relation} {}",
+                ordered(&needed).join(", ")
+            ));
+        }
+        let fingerprint = match crate::block_fingerprint::fingerprint(
+            self.repo,
+            self.merge_base,
+            self.pushed,
+            std::time::Instant::now() + FINGERPRINT_BUDGET,
+        ) {
+            Ok(Some(fingerprint)) => fingerprint,
+            Ok(None) => return self.unregistered("binary diff"),
+            Err(why) => return self.unregistered(&format!("git failed: {why}")),
+        };
+        let full = fingerprint.full();
+        if crate::block_registry::revoked(&base, full).is_some() {
+            return self.unregistered("revoked");
+        }
+        let rules_sha = match crate::review_brief::rules_sha(self.repo) {
+            Ok(rules_sha) => rules_sha,
+            Err(why) => return self.unregistered(&format!("rules unavailable: {why}")),
+        };
+        let roles = ordered(&declared_set);
+        let agents = match agent_digests(self.repo, &roles) {
+            Ok(agents) => agents,
+            Err(why) => return self.unregistered(&why),
+        };
+        let generation = crate::block_registry::Generation {
+            rules_sha,
+            agent_digest: agents_digest(&agents),
+        };
+        let known = crate::block_registry::entries(&base, full)
+            .iter()
+            .any(|entry| entry.generation == generation);
+        if known {
+            return;
+        }
+        let registered = crate::block_registry::EntryData {
+            roles,
+            agents,
+            source_branch: self.dst.trim_start_matches("refs/heads/").to_string(),
+            source_repo: Some(self.name.to_string()),
+            content_id: self.tree.to_string(),
+        };
+        match crate::block_registry::register_entry(&base, full, &generation, &registered) {
+            Ok(()) => note(
+                "block-registered",
+                "-",
+                self.name,
+                &format!("tree={} {}", short(self.tree), fingerprint.short()),
+            ),
+            Err(why) => self.unregistered(&why.to_string()),
+        }
+    }
+
+    fn unregistered(&self, cause: &str) {
+        note(
+            "block-unregistered",
+            "-",
+            self.name,
+            &format!("tree={} {cause}", short(self.tree)),
+        );
     }
 }
 
@@ -1731,7 +2177,11 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                 &candidates,
             );
         }
-        let profiles = match gate.hold() {
+        let profiles = match gate.hold(if verdict == "approve" {
+            Implementation::Approved
+        } else {
+            Implementation::Otherwise
+        }) {
             Ok(profiles) => profiles,
             Err(held) => return held,
         };
@@ -1766,7 +2216,11 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             &prompt_rules,
             &candidates,
         );
-        let profiles = match gate.hold() {
+        let profiles = match gate.hold(if verdict == "approve" {
+            Implementation::Approved
+        } else {
+            Implementation::Otherwise
+        }) {
             Ok(profiles) => profiles,
             Err(held) => return held,
         };
@@ -1860,7 +2314,11 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
                         candidates,
                     );
                 }
-                let profiles = match gate.hold() {
+                let profiles = match gate.hold(if v == Verdict::Approve {
+                    Implementation::Approved
+                } else {
+                    Implementation::Otherwise
+                }) {
                     Ok(profiles) => profiles,
                     Err(held) => return held,
                 };

@@ -406,6 +406,52 @@ journalled (`profiles-unreadable`) otherwise. A plan with no section, or a
 repository line `none — …`, requires the implementation review alone; a
 plan with no section journals `undeclared-profiles`.
 
+### A copy of a reviewed block
+
+A branch whose whole change is an exact copy of a block that was fully
+reviewed once needs no declared profile (ADR-0067). The plan says so on the
+repository's line:
+
+```
+- <repo>: none — copy of fp:<12 hex>
+```
+
+`amont-agent plan-panel --code-review <plan.md> -C <dir> --base <ref>`
+proposes that line. The hook does not trust the sentence: it recomputes the
+fingerprint of the pushed branch (`amont-agent block sha`) and rechecks the
+registry. A hit requires the implementation review alone and journals
+`profiles-copy-matched`; a miss requires the full declared profiles, with no
+question to the person, and journals `profiles-copy-missed`.
+
+Only the hook registers a block, after every profile in the full set for the
+block's file types has its own `approve` on that exact tree. The entry keeps
+that profile set and the rules sha. A miss names its cause: `no entry for
+fp:<id>`, `revoked: <because>`, `role <r> not covered`, `rules changed since
+registration`, `agent <a> changed since registration`, `no passed pin check;
+run amont-agent review-brief -C <dir>` (no record), `pin check failed:
+<detail>` (the record's own detail), `the pin record was made with
+AMONT_AGENT_GH set; run review-brief without it`, `binary diff`, `git failed`.
+
+`amont-agent block` manages the registry:
+
+- `block sha [-C <dir>] [--base <ref>]` prints the fingerprint of the branch.
+- `block list [--json]` lists the registered blocks, with the repository each came from (`-` and
+  `source_repo: null` when the entry predates the field).
+- `block revoke <fp> --because <text>` ends a registration, for instance after
+  a defect is found in a copy, until the person reinstates it; it prints the
+  pilot (`<source repo> TAB <branch> TAB -`) and every recorded copy for a
+  re-check. An ambiguous prefix exits 1: `matches <N> blocks; give more hex`.
+- `block reinstate <fp>` lifts a revocation and says so on stderr. It is the person's to run, in
+  their own shell; the guard refuses it to an agent (`block-reinstate`).
+
+A review recorded with `implementation-review record` carries `copy: true`
+when the hook journalled `profiles-copy-matched` for its tree, and `copy:
+false` otherwise; a row written before the key existed reads as not a copy.
+`amont-agent plan-review stats` counts, per seat, the copy-tagged reviews
+(`copies`) and the blocking or high findings fixed in them (`copy-defects`),
+which is how the rule is revisited at the first defect found in a copy or at
+30 copies.
+
 A branch that changes nothing outside `docs/plans/` needs no profile: there
 is no code for one to read (3.14.0). The hook decides it with `git diff
 --quiet --no-relative --ignore-submodules=none` over the whole tree minus

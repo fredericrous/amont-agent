@@ -1,0 +1,78 @@
+diff --git a/.forgejo/workflows/adr.yaml b/.forgejo/workflows/adr.yaml
+index bc3295b..b3221c2 100644
+--- a/.forgejo/workflows/adr.yaml
++++ b/.forgejo/workflows/adr.yaml
+@@ -43 +43,2 @@ jobs:
+-        timeout-minutes: 5
++        # Up to 3 attempts of 120 s per download, plus the back-off.
++        timeout-minutes: 7
+@@ -44,0 +46,4 @@ jobs:
++          # Forgejo's own GITHUB_TOKEN is a Forgejo token (api.github.com 401s);
++          # GH_HOST pins gh to github.com, since origin is git.daddyshome.fr.
++          GH_TOKEN: ${{ secrets.GH_BRIDGE_TOKEN }}
++          GH_HOST: github.com
+@@ -55,0 +61,4 @@ jobs:
++          if [ -z "${GH_TOKEN:-}" ]; then
++            echo "::error::GH_BRIDGE_TOKEN is empty, and api.github.com cannot be reached without it"
++            exit 1
++          fi
+@@ -57,3 +66,12 @@ jobs:
+-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors --max-time 60 \
+-            -o "$RUNNER_TEMP/$asset" \
+-            "https://github.com/fredericrous/aval/releases/download/v${AVAL_VERSION}/${asset}"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "v${AVAL_VERSION}" --repo fredericrous/aval \
++              --pattern "${asset}" -O "$RUNNER_TEMP/$asset" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download ${asset} from fredericrous/aval v${AVAL_VERSION} (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
+@@ -91 +109,2 @@ jobs:
+-        timeout-minutes: 5
++        # Up to 3 attempts of 120 s per download, plus the back-off.
++        timeout-minutes: 13
+@@ -92,0 +112,4 @@ jobs:
++          # Forgejo's own GITHUB_TOKEN is a Forgejo token (api.github.com 401s);
++          # GH_HOST pins gh to github.com, since origin is git.daddyshome.fr.
++          GH_TOKEN: ${{ secrets.GH_BRIDGE_TOKEN }}
++          GH_HOST: github.com
+@@ -98,0 +122,4 @@ jobs:
++          if [ -z "${GH_TOKEN:-}" ]; then
++            echo "::error::GH_BRIDGE_TOKEN is empty, and api.github.com cannot be reached without it"
++            exit 1
++          fi
+@@ -100,2 +127,12 @@ jobs:
+-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors --max-time 60 -o "$RUNNER_TEMP/$name.tar.gz" \
+-            "https://github.com/fredericrous/adr-lint/releases/download/v$ADR_LINT/$name.tar.gz"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "v$ADR_LINT" --repo fredericrous/adr-lint \
++              --pattern "$name.tar.gz" -O "$RUNNER_TEMP/$name.tar.gz" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download $name.tar.gz from fredericrous/adr-lint v$ADR_LINT (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
+@@ -104,2 +141,12 @@ jobs:
+-          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors --max-time 120 -o "$RUNNER_TEMP/ast-grep.zip" \
+-            "https://github.com/ast-grep/ast-grep/releases/download/$AST_GREP/app-x86_64-unknown-linux-gnu.zip"
++          # Through the API, not the web route, which throttles anonymous downloads (504s on 2026-11-08).
++          for attempt in 1 2 3; do
++            rc=0
++            timeout 120 gh release download "$AST_GREP" --repo ast-grep/ast-grep \
++              --pattern "app-x86_64-unknown-linux-gnu.zip" -O "$RUNNER_TEMP/ast-grep.zip" --clobber || rc=$?
++            [ "$rc" = 0 ] && break
++            if [ "$attempt" = 3 ]; then
++              echo "::error::could not download app-x86_64-unknown-linux-gnu.zip from ast-grep/ast-grep $AST_GREP (exit $rc; 124 = timed out after 120 s)"
++              exit 1
++            fi
++            sleep $((attempt * 5))
++          done
