@@ -89,6 +89,9 @@ enum HostSlot {
     /// The variable is removed, so a test run under amont's own gate (which
     /// holds a slot) sees what a session sees.
     Free,
+    /// Only greengate 3.x's variable is set: not read, so the hook is outside
+    /// a slot as far as it can tell.
+    OldNameOnly,
 }
 
 fn send_inner(payload: &str, path: String, slot: HostSlot) -> Reply {
@@ -96,6 +99,9 @@ fn send_inner(payload: &str, path: String, slot: HostSlot) -> Reply {
     match slot {
         HostSlot::Held => command.env("GREENHARNESS_HOST_SLOT", "held"),
         HostSlot::Free => command.env_remove("GREENHARNESS_HOST_SLOT"),
+        HostSlot::OldNameOnly => command
+            .env_remove("GREENHARNESS_HOST_SLOT")
+            .env("AMONT_HOST_SLOT", "held"),
     };
     let mut child = command
         .arg("hook")
@@ -207,6 +213,28 @@ fn an_unqueued_test_run_is_advised_toward_the_slot_queue() {
     assert!(
         journal.lines().any(|l| l.contains("heavy-build-unqueued")),
         "no heavy-build-unqueued row in:\n{journal}"
+    );
+}
+
+/// The slot names switch once (the install window): greengate 3.x's
+/// `AMONT_HOST_SLOT` is no longer read, so a command under a 3.x slot is
+/// advised like any other, never silenced by the old name.
+#[cfg(unix)]
+#[test]
+fn the_old_slot_variable_no_longer_silences_the_advice() {
+    let bin = amont_stub("1.63.0");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let r = send_inner(&bash("cargo test --workspace"), path, HostSlot::OldNameOnly);
+    assert_eq!(r.code, 0);
+    assert!(
+        r.reason()
+            .contains("amont slot run -- cargo test --workspace"),
+        "the advice fires with only AMONT_HOST_SLOT set: {}",
+        r.stdout
     );
 }
 

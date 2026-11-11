@@ -54,9 +54,7 @@ const PROBE_DEADLINE: Duration = Duration::from_millis(1500);
 
 /// Set by `amont slot run` in the environment of the command it launches.
 /// The variable a slot holder exports to what it runs (greengate 4.0 and
-/// relais). greengate 3.x's `AMONT_HOST_SLOT` is not read: the slot names
-/// switch once, in the install window where all three tools are upgraded
-/// together (plan "greengate 4.0 renames its data names").
+/// relais). greengate 3.x's `AMONT_HOST_SLOT` is not read.
 const HELD_SLOT_VARIABLE: &str = "GREENHARNESS_HOST_SLOT";
 
 /// The most words of the command the advice repeats.
