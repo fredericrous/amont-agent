@@ -173,13 +173,17 @@ fn amont_stub(version: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = home().join("amont-version-stub");
     std::fs::create_dir_all(&bin).unwrap();
-    let stub = bin.join("amont");
-    std::fs::write(&stub, format!("#!/bin/sh\necho 'amont {version}'\n")).unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // macOS can hold the first exec of a fresh script past the probe's
-    // deadline; run it once so the hook's call is not the first.
-    let primed = Command::new(&stub).output().expect("the stub runs");
-    assert!(primed.status.success());
+    // Both gate names: the hook asks `greengate` when one is on PATH, and
+    // this machine's own would otherwise answer instead of the stub.
+    for name in ["amont", "greengate"] {
+        let stub = bin.join(name);
+        std::fs::write(&stub, format!("#!/bin/sh\necho '{name} {version}'\n")).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS can hold the first exec of a fresh script past the probe's
+        // deadline; run it once so the hook's call is not the first.
+        let primed = Command::new(&stub).output().expect("the stub runs");
+        assert!(primed.status.success());
+    }
     bin
 }
 
@@ -582,15 +586,19 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
 
     let bin = home().join("stub-bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let stub = bin.join("amont");
+    // Both gate names: the hook spawns `greengate` when one is on PATH, and
+    // this machine's own would otherwise answer instead of the stub.
+    let stubs = [bin.join("amont"), bin.join("greengate")];
     let write_stub = |body: &str| {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub, body).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // macOS can hold the first exec of a freshly written script for
-        // seconds, past the hook's wait for amont; run it once here so the
-        // hook's call is not the first.
-        let _ = std::process::Command::new(&stub).output();
+        for stub in &stubs {
+            std::fs::write(stub, body).unwrap();
+            std::fs::set_permissions(stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            // macOS can hold the first exec of a freshly written script for
+            // seconds, past the hook's wait for amont; run it once here so
+            // the hook's call is not the first.
+            let _ = std::process::Command::new(stub).output();
+        }
     };
 
     // Drifted: amont exits 1 and says so on stderr.
@@ -605,6 +613,26 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
         .unwrap_or_default();
     assert!(text.contains("amont-agent/agents-md: AGENTS.md"), "{text}");
     assert!(text.contains("amont agents-md"), "{text}");
+
+    // greengate 4.0's markers open the same gate.
+    std::fs::write(
+        work.join("AGENTS.md"),
+        "# Project\n\n<!-- greengate:start -->\nSTALE\n<!-- greengate:end -->\n",
+    )
+    .unwrap();
+    let reply = send_with_path(&session_start(&work), Some(&bin));
+    let doc = reply
+        .json()
+        .unwrap_or_else(|| panic!("greengate markers: stdout={:?}", reply.stdout));
+    let text = doc["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.contains("amont-agent/agents-md: AGENTS.md"), "{text}");
+    std::fs::write(
+        work.join("AGENTS.md"),
+        "# Project\n\n<!-- amont:start -->\nSTALE\n<!-- amont:end -->\n",
+    )
+    .unwrap();
 
     // Exit 1 WITHOUT a drift line — amont could not read the file. Same
     // exit code, and it must not be reported as staleness.
@@ -660,13 +688,16 @@ fn a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not() {
     std::fs::create_dir_all(&bin).unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
-        let stub = bin.join("amont");
-        std::fs::write(
-            &stub,
-            "#!/bin/sh\necho '{\"checks\":[{\"id\":\"pre-push-run-tests-js\",\"stage\":\"pre-push\",\"source\":\"builtin\",\"status\":\"runs\"}]}'\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Both gate names, as in the stale-guidance test above.
+        for name in ["amont", "greengate"] {
+            let stub = bin.join(name);
+            std::fs::write(
+                &stub,
+                "#!/bin/sh\necho '{\"checks\":[{\"id\":\"pre-push-run-tests-js\",\"stage\":\"pre-push\",\"source\":\"builtin\",\"status\":\"runs\"}]}'\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
     let payload = format!(
         r#"{{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":{},

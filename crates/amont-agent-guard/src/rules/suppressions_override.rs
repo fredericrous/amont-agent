@@ -11,7 +11,8 @@
 //!   and `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_PARAMETERS` carrying that key;
 //! - `hook.skip` naming `suppressions` or `pre-commit-suppressions`
 //!   (`hook.skip=pre-commit` as a whole is a different decision and passes);
-//! - an `amont.severity.pre-commit-suppressions` other than `block`;
+//! - a `greengate.severity.pre-commit-suppressions` (or 3.x's
+//!   `amont.severity.…`) other than `block`;
 //! - a write of `amont.agent.lint-suppression-added.stance`, the rollback
 //!   switch.
 //!
@@ -38,7 +39,12 @@ pub const RULE: Rule = Rule {
 
 const OVERRIDE_KEY: &str = "amont.agent.suppressions";
 const STANCE_KEY: &str = "amont.agent.lint-suppression-added.stance";
-const SEVERITY_KEY: &str = "amont.severity.pre-commit-suppressions";
+/// greengate 4.0's severity key, then the one greengate 3.x and amont read.
+/// The old one is refused as long as an installed gate may still read it.
+const SEVERITY_KEYS: [&str; 2] = [
+    "greengate.severity.pre-commit-suppressions",
+    "amont.severity.pre-commit-suppressions",
+];
 const SKIP_KEY: &str = "hook.skip";
 
 fn examine(input: &Input) -> Option<Finding> {
@@ -111,7 +117,7 @@ fn environment(word: &str, all: &[String]) -> bool {
             .iter()
             .any(|key| value.contains(key))
             || (value.contains(SKIP_KEY) && names_skip(value))
-            || (value.contains(SEVERITY_KEY) && !value.contains("=block"));
+            || (SEVERITY_KEYS.iter().any(|key| value.contains(key)) && !value.contains("=block"));
     }
     let Some(rest) = word.strip_prefix("git_config_key_") else {
         return false;
@@ -152,7 +158,7 @@ fn git_option(at: usize, lower: &[String]) -> bool {
 /// `--get` in an earlier command does not excuse this one.
 fn config_write(at: usize, lower: &[String]) -> bool {
     let key = lower[at].as_str();
-    if ![OVERRIDE_KEY, STANCE_KEY, SEVERITY_KEY, SKIP_KEY].contains(&key) {
+    if ![OVERRIDE_KEY, STANCE_KEY, SKIP_KEY].contains(&key) && !SEVERITY_KEYS.contains(&key) {
         return false;
     }
     let Some(start) = lower[..at]
@@ -193,7 +199,7 @@ fn protected(key: &str, value: Option<&str>) -> bool {
     match key {
         OVERRIDE_KEY | STANCE_KEY => true,
         SKIP_KEY => value.is_some_and(names_skip),
-        SEVERITY_KEY => value.is_some_and(|v| v != "block"),
+        _ if SEVERITY_KEYS.contains(&key) => value.is_some_and(|v| v != "block"),
         _ => false,
     }
 }
@@ -228,6 +234,9 @@ mod tests {
             "git -c hook.skip=pre-commit,suppressions commit",
             "git -c amont.severity.pre-commit-suppressions=warn commit",
             "git config amont.severity.pre-commit-suppressions warn",
+            "git -c greengate.severity.pre-commit-suppressions=warn commit",
+            "git config greengate.severity.pre-commit-suppressions warn",
+            "GIT_CONFIG_PARAMETERS=\"'greengate.severity.pre-commit-suppressions'='off'\" git commit",
             "git config amont.agent.lint-suppression-added.stance observe",
             "git -c amont.agent.lint-suppression-added.stance=observe commit",
             "GIT_CONFIG_KEY_0=amont.agent.lint-suppression-added.stance git commit",
@@ -249,6 +258,7 @@ mod tests {
             "git commit -m \"explain -c amont.agent.suppressions=allow\"",
             "git log --grep=amont.agent.suppressions",
             "git -c amont.severity.pre-commit-suppressions=block commit",
+            "git -c greengate.severity.pre-commit-suppressions=block commit",
             "bash -c 'git config --get user.name; git config amont.agent.suppressions'",
         ] {
             assert!(!denied(command), "{command}");

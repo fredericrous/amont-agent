@@ -57,6 +57,9 @@ enum ScanError {
     },
     NewlineInPath,
     IndexHint {
+        /// The variable that named it: `GREENGATE_INDEX_FILE` or 3.x's
+        /// `AMONT_INDEX_FILE`.
+        variable: &'static str,
         path: String,
     },
 }
@@ -82,10 +85,10 @@ impl fmt::Display for ScanError {
             ScanError::MissingName { name } => {
                 write!(out, "suppressions: git cat-file failed: {name} missing")
             }
-            ScanError::IndexHint { path } => {
+            ScanError::IndexHint { variable, path } => {
                 write!(
                     out,
-                    "suppressions: AMONT_INDEX_FILE '{path}' is not an absolute path to an existing index file"
+                    "suppressions: {variable} '{path}' is not an absolute path to an existing index file"
                 )
             }
             ScanError::NewlineInPath => {
@@ -113,9 +116,11 @@ anywhere) blocks unless it carries a reason in its tool's own reason form.
 Exit 0: nothing blocking. 1: a blocking hit. 2: usage error or git failure.
 A command-scoped `git -c amont.agent.suppressions=allow commit` passes; the
 same key in repository or global config is ignored.
-`AMONT_INDEX_FILE` is a bound pair with `AMONT_INDEX_GIT_DIR`, the absolute
-per-worktree `git rev-parse --absolute-git-dir` of the owner (amont >= 1.70.0
-supplies both). A non-empty index hint is honoured over `GIT_INDEX_FILE` only
+`GREENGATE_INDEX_FILE` is a bound pair with `GREENGATE_INDEX_GIT_DIR`, the
+absolute per-worktree `git rev-parse --absolute-git-dir` of the owner
+(greengate 4.0 supplies both; greengate 3.x and amont >= 1.70.0 supply the
+same pair as `AMONT_INDEX_FILE` and `AMONT_INDEX_GIT_DIR`, read only when
+`GREENGATE_INDEX_FILE` is unset or empty). A non-empty index hint is honoured over `GIT_INDEX_FILE` only
 when that owner, canonicalized, equals this command's own canonical
 `git rev-parse --absolute-git-dir` (the per-worktree git-dir, never the common
 dir or the index location). A hint whose owner is absent, empty, relative,
@@ -129,8 +134,9 @@ A wrapper that switches repositories must clear and recompute both hints.
 
 /// Entry point. `git_index` is `GIT_INDEX_FILE` as it was before `main`
 /// scrubbed the environment: git hands a hook a temporary index on
-/// `commit -a`, `commit <path>` and `--only`. `amont_index` is
-/// `AMONT_INDEX_FILE` with its owner `AMONT_INDEX_GIT_DIR`: when non-empty and
+/// `commit -a`, `commit <path>` and `--only`. `handoff` is
+/// `GREENGATE_INDEX_FILE` with its owner `GREENGATE_INDEX_GIT_DIR` (or 3.x's
+/// `AMONT_INDEX_*` pair): when non-empty and
 /// owned by this repository's worktree it must name an existing file by an
 /// absolute path, and it takes precedence over `git_index`; otherwise the
 /// direct Git-hook fallback stays.
@@ -180,14 +186,49 @@ pub fn run(args: &[OsString], handoff: IndexHandoff, git_index: Option<OsString>
     }
 }
 
-/// `AMONT_INDEX_FILE` and `AMONT_INDEX_GIT_DIR` as `main` captured them: the
-/// index amont's commit gate selected, and the absolute per-worktree git-dir
-/// of the repository that owns it. The pair is one hint; the index is honoured
-/// only where the owner is this command's own repository.
+/// `GREENGATE_INDEX_FILE` and `GREENGATE_INDEX_GIT_DIR` as `main` captured
+/// them: the index the gate's commit check selected, and the absolute
+/// per-worktree git-dir of the repository that owns it. The pair is one hint;
+/// the index is honoured only where the owner is this command's own
+/// repository. greengate 3.x and amont hand the same pair as `AMONT_INDEX_*`,
+/// read only when the new file name is unset or empty, and always as a pair,
+/// so one name of each never mixes.
 #[derive(Debug, Default)]
 pub struct IndexHandoff {
     pub index_file: Option<OsString>,
     pub owner_git_dir: Option<OsString>,
+    /// The pair's variable names, for what stderr says of a bad hint.
+    pub names: (&'static str, &'static str),
+}
+
+/// The pair names, greengate 4.0's first. The old pair goes at the census of
+/// greengate's hard rename.
+const INDEX_PAIRS: [(&str, &str); 2] = [
+    ("GREENGATE_INDEX_FILE", "GREENGATE_INDEX_GIT_DIR"),
+    ("AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"),
+];
+
+impl IndexHandoff {
+    /// The first pair whose file variable is set and non-empty in this
+    /// process's environment, else none.
+    pub fn from_env() -> Self {
+        Self::from_lookup(|name| std::env::var_os(name))
+    }
+
+    fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Self {
+        INDEX_PAIRS
+            .iter()
+            .find_map(|&(file, dir)| {
+                lookup(file)
+                    .filter(|value| !value.is_empty())
+                    .map(|index_file| Self {
+                        index_file: Some(index_file),
+                        owner_git_dir: lookup(dir),
+                        names: (file, dir),
+                    })
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// The index the scan reads. An absent or empty index hint keeps
@@ -202,18 +243,23 @@ fn select_index(
     let Some(index) = handoff.index_file.filter(|path| !path.is_empty()) else {
         return Ok(git_index);
     };
+    let (variable, dir_variable) = handoff.names;
     let Some(owner) = usable_owner(handoff.owner_git_dir) else {
-        note_ignored_hint("AMONT_INDEX_GIT_DIR is absent, empty, relative or missing");
+        note_ignored_hint(
+            variable,
+            &format!("{dir_variable} is absent, empty, relative or missing"),
+        );
         return Ok(git_index);
     };
     if own_git_dir()? != owner {
-        note_ignored_hint("it belongs to another repository");
+        note_ignored_hint(variable, "it belongs to another repository");
         return Ok(git_index);
     }
     if Path::new(&index).is_absolute() && Path::new(&index).is_file() {
         Ok(Some(index))
     } else {
         Err(ScanError::IndexHint {
+            variable,
             path: index.to_string_lossy().into_owned(),
         })
     }
@@ -228,8 +274,8 @@ fn usable_owner(owner: Option<OsString>) -> Option<PathBuf> {
     owner.canonicalize().ok()
 }
 
-fn note_ignored_hint(reason: &str) {
-    eprintln!("suppressions: AMONT_INDEX_FILE ignored: {reason}; keeping the direct index");
+fn note_ignored_hint(variable: &str, reason: &str) {
+    eprintln!("suppressions: {variable} ignored: {reason}; keeping the direct index");
 }
 
 /// This command's own per-worktree git-dir, canonical, from git's bytes with
@@ -869,6 +915,57 @@ fn read_blobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn handoff_of(vars: &[(&str, &str)]) -> IndexHandoff {
+        IndexHandoff::from_lookup(|name| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| OsString::from(v))
+        })
+    }
+
+    #[test]
+    fn the_new_index_pair_wins_and_the_old_pair_is_read_alone() {
+        let new = handoff_of(&[
+            ("GREENGATE_INDEX_FILE", "/n/index"),
+            ("GREENGATE_INDEX_GIT_DIR", "/n/.git"),
+            ("AMONT_INDEX_FILE", "/o/index"),
+            ("AMONT_INDEX_GIT_DIR", "/o/.git"),
+        ]);
+        assert_eq!(new.index_file.as_deref(), Some("/n/index".as_ref()));
+        assert_eq!(new.owner_git_dir.as_deref(), Some("/n/.git".as_ref()));
+
+        let old = handoff_of(&[
+            ("AMONT_INDEX_FILE", "/o/index"),
+            ("AMONT_INDEX_GIT_DIR", "/o/.git"),
+        ]);
+        assert_eq!(old.index_file.as_deref(), Some("/o/index".as_ref()));
+        assert_eq!(old.owner_git_dir.as_deref(), Some("/o/.git".as_ref()));
+
+        assert_eq!(
+            new.names,
+            ("GREENGATE_INDEX_FILE", "GREENGATE_INDEX_GIT_DIR")
+        );
+        assert_eq!(old.names, ("AMONT_INDEX_FILE", "AMONT_INDEX_GIT_DIR"));
+
+        // Never one name of each: the new file without its git-dir keeps none.
+        let mixed = handoff_of(&[
+            ("GREENGATE_INDEX_FILE", "/n/index"),
+            ("AMONT_INDEX_GIT_DIR", "/o/.git"),
+        ]);
+        assert_eq!(mixed.owner_git_dir, None);
+
+        // An empty new name is unset: the old pair is read.
+        let cleared = handoff_of(&[
+            ("GREENGATE_INDEX_FILE", ""),
+            ("AMONT_INDEX_FILE", "/o/index"),
+            ("AMONT_INDEX_GIT_DIR", "/o/.git"),
+        ]);
+        assert_eq!(cleared.index_file.as_deref(), Some("/o/index".as_ref()));
+        assert_eq!(cleared.names.0, "AMONT_INDEX_FILE");
+
+        assert!(handoff_of(&[]).index_file.is_none());
+    }
 
     fn no_env(_: &str) -> Option<String> {
         None

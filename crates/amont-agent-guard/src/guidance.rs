@@ -48,9 +48,11 @@ use crate::gitconfig as config;
 /// deny, and nothing to measure a rate of.
 pub const KEY_NOTICE: &str = "amont.agent.agentsMdNotice";
 
-/// The opening marker amont writes. A literal, not an import: matching it is
-/// the cheap gate in front of the spawn, and one string is not a dependency.
-const START: &str = "<!-- amont:start -->";
+/// The opening markers the gate writes: greengate 4.0's, then the one
+/// greengate 3.x and amont wrote, read until the fleet sweep renames them.
+/// Literals, not an import: matching one is the cheap gate in front of the
+/// spawn, and two strings are not a dependency.
+const STARTS: [&str; 2] = ["<!-- greengate:start -->", "<!-- amont:start -->"];
 
 /// The sentences amont prints on stderr when a generated file has drifted.
 /// Matched as substrings so the filename in front of them is free to change.
@@ -70,7 +72,8 @@ pub fn notice(cwd: &Path) -> Option<String> {
     let root = Path::new(&root);
 
     // The cheap gate: no generated block anywhere, no process.
-    let has_markers = |p: &Path| std::fs::read_to_string(p).is_ok_and(|s| s.contains(START));
+    let has_markers =
+        |p: &Path| std::fs::read_to_string(p).is_ok_and(|s| STARTS.iter().any(|m| s.contains(m)));
     if !has_markers(&root.join("AGENTS.md")) && !has_markers(&root.join("CLAUDE.md")) {
         return None;
     }

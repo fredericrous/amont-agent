@@ -342,10 +342,7 @@ fn main() -> ExitCode {
     // amont hands a declared pre-commit check the absolute commit index and
     // its owner's per-worktree git-dir; only `suppressions` reads the pair,
     // and the index wins over `GIT_INDEX_FILE` only for a matching owner.
-    let index_handoff = suppressions::IndexHandoff {
-        index_file: std::env::var_os("AMONT_INDEX_FILE"),
-        owner_git_dir: std::env::var_os("AMONT_INDEX_GIT_DIR"),
-    };
+    let index_handoff = suppressions::IndexHandoff::from_env();
     // Claude Code does not spawn us from git, but a session started inside a
     // git hook still carries GIT_DIR / GIT_WORK_TREE, and those beat
     // `current_dir` for every git command we run. `crate::git` builds

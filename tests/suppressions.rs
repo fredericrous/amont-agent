@@ -12,7 +12,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
-const GIT_ENV: [&str; 10] = [
+const GIT_ENV: [&str; 12] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -23,6 +23,8 @@ const GIT_ENV: [&str; 10] = [
     "AMONT_AGENT_OFF",
     "AMONT_INDEX_FILE",
     "AMONT_INDEX_GIT_DIR",
+    "GREENGATE_INDEX_FILE",
+    "GREENGATE_INDEX_GIT_DIR",
 ];
 const BARE: &str = "x = 1  # noqa: E501\n";
 
@@ -667,6 +669,46 @@ fn amont_index_file_selects_the_alternate_index_over_git_index_file() {
 
     assert_eq!(code(&repo.gate()), 0, "ordinary index still clean");
     assert_eq!(repo.head(), head);
+}
+
+#[test]
+fn greengate_index_file_selects_the_alternate_index_and_wins_over_amont() {
+    let (repo, alternate, _) = repo_with_alternate_index();
+    let ordinary = repo.dir.join(".git/index");
+
+    let out = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("GREENGATE_INDEX_FILE", &alternate)
+        .env("GREENGATE_INDEX_GIT_DIR", repo.dir.join(".git"))
+        .env("GIT_INDEX_FILE", &ordinary)
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1, "{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("a.py:1: "),
+        "{}",
+        text(&out.stderr)
+    );
+
+    // The new pair wins: an old pair naming the clean index is not read.
+    let both = repo
+        .command(BIN)
+        .args(["suppressions", "--staged"])
+        .env("GREENGATE_INDEX_FILE", &alternate)
+        .env("GREENGATE_INDEX_GIT_DIR", repo.dir.join(".git"))
+        .env("AMONT_INDEX_FILE", &ordinary)
+        .env("AMONT_INDEX_GIT_DIR", repo.dir.join(".git"))
+        .env("GIT_INDEX_FILE", &ordinary)
+        .output()
+        .unwrap();
+    assert_eq!(
+        code(&both),
+        1,
+        "{}{}",
+        text(&both.stdout),
+        text(&both.stderr)
+    );
 }
 
 #[test]
