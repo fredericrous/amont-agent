@@ -19,8 +19,11 @@ Phase 1 here touched `src/suppressions.rs` and `src/main.rs` (the index pair), `
 - A gate printing `greengate-list-v1` → the adr-lint gate opens → `a_greengate_list_envelope_opens_the_gate` and `the_gate_needs_the_format_and_the_row_id_trusted_or_not` pass; `greengate-list-v2` stays unexpected.
 - The hook tests stub both gate names: on this machine an installed `greengate` 3.0 answered instead of an `amont` stub, and three tests failed at the commit gate before; all `tests/hook.rs` pass now.
 
+- Phase 5 (this repository's slot part): with `GREENHARNESS_HOST_SLOT=held`, a heavy unqueued build is left alone (`a_test_run_that_cannot_queue_is_left_alone` and the `Held` helper); with only `AMONT_HOST_SLOT=held`, it is advised toward `amont slot run` (`the_old_slot_variable_no_longer_silences_the_advice`); `docs/rules.md` and the CHANGELOG say the slot names switch once, with greengate 4.0 and relais, no slot held. The install-window rows (4.0 released and installed, this machine migrated) are the greengate release's, not this change's.
+
 ## Implementation review
 
 - implementation-review: approve-with-changes, then approve on the delta; fixed: `reply` for `r`, files and census list named here (47k+27k).
 - backend: approve-with-changes, then approve; fixed: messages name the pair read, empty new name falls back, the adr-lint gate asks the gate on PATH; deliberate: one shared stub log, `gate.rs`'s `greengate_wins_only_when_an_executable_is_on_path` pins the choice (65k+25k).
 - lang:rust: approve-with-changes, then approve; deliberate: `IndexHandoff`'s public fields and the `=block` substring check (pre-existing) wait for the census (40k+25k).
+- Phase 5 (slot variable): implementation-review, backend and lang:rust approve-with-changes, then approve on the delta; fixed: a test that the old variable is no longer read, `docs/rules.md`, an Unreleased CHANGELOG entry, a shorter comment; the plan title left out of the code (60k+23k, 54k+23k, 88k+21k).
