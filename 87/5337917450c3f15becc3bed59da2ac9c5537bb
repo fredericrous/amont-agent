@@ -1,0 +1,18 @@
+amont-provenance-v1
+commit 875337917450c3f15becc3bed59da2ac9c5537bb
+tree 96f3a52b9fc5961ea9bfd7fe10934805d07e0eef
+canon ace4b509e4f149c3fd35465bccce474d52fa5efd
+patch 70e4167cd1fe61e53790f27144a25ebbb582261e
+plan docs/plans/2026-11-11-greengate-renames-data-names.md 4627fc1484d5a901c98b42d219c5bae368fc0aef3812777538e60e521882bdac
+review reviewed 8190e735280449427e33d11ed2681134f85e7d74e27bdd78b1d1487851b33db2
+code-review backend reviewed 8190e735280449427e33d11ed2681134f85e7d74e27bdd78b1d1487851b33db2
+code-review lang:rust reviewed 8190e735280449427e33d11ed2681134f85e7d74e27bdd78b1d1487851b33db2
+preview not-required
+producer amont-agent 3.28.0
+
+-----BEGIN SSH SIGNATURE-----
+U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg7UOvJ8myo4dhW907VFty7T/bUV
+RFQerK+MWJ4bjChwcAAAAQYW1vbnQtcHJvdmVuYW5jZQAAAAAAAAAGc2hhNTEyAAAAUwAA
+AAtzc2gtZWQyNTUxOQAAAECEP7cEjlnyMp/lLmu0zJh4sUYaVaknsPUPicWtT6M+JVNMNi
+IQqX2WJw7IpgGgwy1+hxcmmdCxAARS7W9DSqcP
+-----END SSH SIGNATURE-----
