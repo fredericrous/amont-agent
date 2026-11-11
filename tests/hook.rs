@@ -94,8 +94,8 @@ enum HostSlot {
 fn send_inner(payload: &str, path: String, slot: HostSlot) -> Reply {
     let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
     match slot {
-        HostSlot::Held => command.env("AMONT_HOST_SLOT", "held"),
-        HostSlot::Free => command.env_remove("AMONT_HOST_SLOT"),
+        HostSlot::Held => command.env("GREENHARNESS_HOST_SLOT", "held"),
+        HostSlot::Free => command.env_remove("GREENHARNESS_HOST_SLOT"),
     };
     let mut child = command
         .arg("hook")
@@ -3275,7 +3275,7 @@ fn send_clocked_with_path(
         .env("GIT_CONFIG_GLOBAL", home().join("no-global-gitconfig"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("AMONT_AGENT_OFF")
-        .env_remove("AMONT_HOST_SLOT")
+        .env_remove("GREENHARNESS_HOST_SLOT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

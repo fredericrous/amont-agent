@@ -35,7 +35,7 @@ fn check_with(flags: &[&str], command: &str) -> String {
         .arg(&dir)
         // Inside a host slot, so `heavy-build-unqueued` stays silent whatever
         // amont this machine has; its shape is asserted with `matches_shape`.
-        .env("AMONT_HOST_SLOT", "held")
+        .env("GREENHARNESS_HOST_SLOT", "held")
         .args(flags)
         .arg(command)
         .output()

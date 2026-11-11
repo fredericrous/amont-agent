@@ -27,7 +27,7 @@ fn pre_bash(command: &str) -> (String, String) {
         .env("GIT_CONFIG_GLOBAL", home.join("no-global-gitconfig"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("AMONT_AGENT_OFF")
-        .env_remove("AMONT_HOST_SLOT")
+        .env_remove("GREENHARNESS_HOST_SLOT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

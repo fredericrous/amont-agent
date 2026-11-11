@@ -132,7 +132,7 @@ fn send(payload: &str) -> Reply {
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", &config)
         .env_remove("AMONT_AGENT_OFF")
-        .env_remove("AMONT_HOST_SLOT")
+        .env_remove("GREENHARNESS_HOST_SLOT")
         .env("GIT_CONFIG_GLOBAL", config.join("no-global-gitconfig"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .stdin(Stdio::piped())
