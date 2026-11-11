@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- `heavy-build-unqueued` reads `GREENHARNESS_HOST_SLOT`, the variable greengate
+  4.0 and relais export to a command that holds a host slot, and no longer
+  reads greengate 3.x's `AMONT_HOST_SLOT`. The slot names switch once: install
+  this with greengate 4.0 and relais, with no slot held. Until then a command
+  under a slot the other side holds is advised to queue (advice only; it never
+  blocks).
+
 ## v3.30.0
 
 ### Changed

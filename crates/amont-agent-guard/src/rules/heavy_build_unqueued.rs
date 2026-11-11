@@ -19,7 +19,7 @@
 //! ## `confirm` is where the fact lives
 //!
 //! The rule speaks only when queueing is possible: the hook's environment has
-//! no `AMONT_HOST_SLOT` (the command already holds a slot otherwise), and
+//! no `GREENHARNESS_HOST_SLOT` (the command already holds a slot otherwise), and
 //! `amont --version` on `PATH` is 1.62.0 or newer (the first with `slot run`).
 //! A version that was read is remembered for the session; the probe has a
 //! short deadline. Amont's slot files are never read: `amont slots` is the query.
@@ -53,7 +53,9 @@ const FIRST_VERSION_WITH_SLOTS: (u64, u64, u64) = (1, 62, 0);
 const PROBE_DEADLINE: Duration = Duration::from_millis(1500);
 
 /// Set by `amont slot run` in the environment of the command it launches.
-const HELD_SLOT_VARIABLE: &str = "AMONT_HOST_SLOT";
+/// The variable a slot holder exports to what it runs (greengate 4.0 and
+/// relais). greengate 3.x's `AMONT_HOST_SLOT` is not read.
+const HELD_SLOT_VARIABLE: &str = "GREENHARNESS_HOST_SLOT";
 
 /// The most words of the command the advice repeats.
 const ECHOED_WORDS: usize = 8;
