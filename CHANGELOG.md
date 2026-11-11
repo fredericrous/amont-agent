@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## v3.30.0
+
+### Changed
+
+- greenpiste reads greengate 4.0's names before the old ones, so either
+  release order works: the `GREENGATE_INDEX_FILE` / `GREENGATE_INDEX_GIT_DIR`
+  pair before `AMONT_INDEX_*` (always read as a pair; an empty new name falls
+  back), the `<!-- greengate:start -->` marker beside `amont:start`, and a
+  `greengate-list-v1` listing beside `amont-list-v1`. A loosened
+  `greengate.severity.pre-commit-suppressions` is refused like the
+  `amont.severity.…` key. A bad index hint names the variable that carried
+  it.
+- The adr-lint gate asks the gate binary on PATH (`greengate` first, else
+  `amont`) for `list --json`, as the other gate calls already do.
+
 ## v3.29.0
 
 ### Added
