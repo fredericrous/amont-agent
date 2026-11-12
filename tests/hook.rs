@@ -4263,3 +4263,116 @@ fn at_deny_only_a_large_whole_dump_is_refused() {
     let pipe = dump_as(&large, "dpipe-01", None, "cat big.rs | grep -n x");
     assert_eq!(pipe.stdout, "", "a pipe is not a dump");
 }
+
+// ---- screenshot-in-main-session -------------------------------------------
+
+const SCREENSHOT_ADVICE: &str = "amont-agent/screenshot-in-main-session: a screenshot here puts \
+     the image (~126 KB) into the main context. Delegate the check: Agent tool with \
+     subagent_type \"browser-check\", giving the URL and what to verify.";
+
+/// A `take_screenshot` PreToolUse. `extra` is spliced into the payload object
+/// (an `agent_id`, say); `input` is the tool input object.
+fn shot(session: &str, extra: &str, input: &str, global: Option<&str>) -> (Reply, String) {
+    let dir = home();
+    let cfg = dir.join("screenshot.gitconfig");
+    std::fs::write(&cfg, global.unwrap_or("")).expect("global config");
+    let payload = format!(
+        r#"{{"hook_event_name":"PreToolUse","tool_name":"mcp__chrome-devtools__take_screenshot","tool_input":{input},"session_id":"{session}","cwd":"/tmp"{extra}}}"#
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        .arg("hook")
+        .env("CLAUDE_CONFIG_DIR", &dir)
+        .env("GIT_CONFIG_GLOBAL", &cfg)
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("AMONT_AGENT_OFF")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write the payload");
+    let out = child.wait_with_output().expect("the hook exits");
+    let reply = Reply {
+        code: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+    };
+    (reply, String::from_utf8_lossy(&out.stderr).into_owned())
+}
+
+fn assert_advises(session: &str, extra: &str, input: &str, global: Option<&str>) {
+    let (r, err) = shot(session, extra, input, global);
+    assert_eq!(r.code, 0);
+    assert_eq!(err, "");
+    assert_eq!(r.reason(), SCREENSHOT_ADVICE, "{}", r.stdout);
+    assert_eq!(r.decision(), None, "advise, not deny: {}", r.stdout);
+}
+
+fn assert_silent(session: &str, extra: &str, input: &str, global: Option<&str>) {
+    let (r, err) = shot(session, extra, input, global);
+    assert_eq!(r.code, 0);
+    assert_eq!(err, "");
+    assert_eq!(r.stdout, "", "expected silence");
+}
+
+#[test]
+fn a_main_screenshot_without_a_file_path_is_advised_once() {
+    let s = "shotonc1";
+    assert_advises(s, "", "{}", None);
+    assert_silent(s, "", "{}", None);
+    let rows = journal_rows(s);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("take_screenshot @main") && r.contains("advised")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn silent_screenshots_leave_the_advice_unspent() {
+    let cases: [(&str, &str, &str); 3] = [
+        ("shot-path", "", r#"{"filePath":"x.png"}"#),
+        ("shot-w1", r#","agent_id":"w1""#, "{}"),
+        ("shot-num", r#","agent_id":5"#, "{}"),
+    ];
+    for (session, extra, input) in cases {
+        assert_silent(session, extra, input, None);
+        assert_advises(session, "", "{}", None);
+    }
+}
+
+#[test]
+fn a_null_agent_id_is_the_main_conversation() {
+    let s = "shot-null";
+    assert_advises(s, r#","agent_id":null"#, "{}", None);
+    assert_silent(s, r#","agent_id":null"#, "{}", None);
+}
+
+#[test]
+fn an_observed_screenshot_is_silent_and_journalled() {
+    let s = "shotobs1";
+    let cfg = "[amont \"agent.screenshot-in-main-session\"]\n\tstance = observe";
+    assert_silent(s, "", "{}", Some(cfg));
+    let rows = journal_rows(s);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("take_screenshot @main") && r.contains("watched")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn a_deny_stance_still_advises() {
+    let cfg = "[amont \"agent.screenshot-in-main-session\"]\n\tstance = deny";
+    assert_advises("shot-deny", "", "{}", Some(cfg));
+}
+
+#[test]
+fn an_empty_session_id_advises_every_time() {
+    assert_advises("", "", "{}", None);
+    assert_advises("", "", "{}", None);
+}

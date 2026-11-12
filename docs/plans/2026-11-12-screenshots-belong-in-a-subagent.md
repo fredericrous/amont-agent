@@ -70,7 +70,7 @@ Install: `amont-agent install --write` adds one PreToolUse block with matcher
 `settings::ensure`).
 
 ## Phases
-- [ ] Phase 1 — rule + payload + dispatch + install target:
+- [x] Phase 1 — rule + payload + dispatch + install target:
   `crates/amont-agent-guard/src/rules/screenshot_in_main_session.rs`,
   `crates/amont-agent-guard/src/rules/mod.rs`, `src/rule_table.rs` (rule added; `the_table_holds_every_rule_in_its_place` 51→52 and its comment),
   `crates/amont-agent-guard/src/payload.rs` (journal excerpt `take_screenshot @main`, no URL or path; new `Event::PreScreenshot` with
@@ -82,7 +82,7 @@ Install: `amont-agent install --write` adds one PreToolUse block with matcher
   `crates/amont-agent-guard/src/corpus.rs` +
   `crates/amont-agent-guard/tests/corpus/screenshot-in-main-session.cases`
   (header + `nomatch` lines, as `code-read-not-lsp.cases`).
-- [ ] Phase 2 — tests: `tests/hook.rs` (main/no filePath → advise once;
+- [x] Phase 2 — tests: `tests/hook.rs` (main/no filePath → advise once;
   second call silent; filePath → silent; `agent_id:"w1"` → silent;
   `agent_id: 5` → silent; each silent case is followed, in the same session,
   by a main no-filePath call asserted to advise, so the test fails if the arm
@@ -94,6 +94,12 @@ Install: `amont-agent install --write` adds one PreToolUse block with matcher
   `tag-release`; the install is the person's.
 
 ## Decision log
+- 2026-11-12 — Implemented by relais run run-660123f2bdd21-b5a7 (attempt 2
+  added a 4th corpus negative after `every_rule_carries_expected_negatives`
+  failed). Its verification and a verify run both waited out the 1800 s lease
+  queue on a loaded host, so the candidate was applied and verified in session.
+- 2026-11-12 — Phases 1 and 2 share a commit: Phase 1's TARGETS entry breaks
+  `settings_merge` counts until Phase 2's update, and the commit gate runs tests.
 - 2026-11-12 — Advise, not deny, because the person chose "build it now" for an
   advisory hook and the written rule is new; a deny waits on a count.
 - 2026-11-12 — Silent when `filePath` is set, because the MCP then saves the
@@ -107,15 +113,20 @@ Install: `amont-agent install --write` adds one PreToolUse block with matcher
   binary fed real PreToolUse JSON on stdin (main, no
   filePath) → stdout `hookSpecificOutput.additionalContext` equals the
   Behaviour-table string byte for byte (the Phase 2 test asserts the same
-  string) → <observed>. Same JSON with `"agent_id":"w1"` → empty
-  stdout, exit 0 → <observed>. With `"filePath":"x.png"` → empty → <observed>. The first JSON again, same
-  session → empty stdout → <observed>.
-  Every case: exit 0 and empty stderr; the advise stdout parses with `jq -e .`
-  → <observed>.
+  string) → equal, 207 bytes (debug build of the same tree). Same JSON with
+  `"agent_id":"w1"` → empty stdout, exit 0. With `"filePath":"x.png"` → empty.
+  Then a main call in that session → advises (silent calls spent nothing).
+  The first JSON again, same session → empty. `agent_id: null` → advises.
+  Every case: exit 0, 0 B stderr; the advise stdout passes `jq -e .`; journal
+  line `screenshot-in-main-session advise advised … take_screenshot @main`.
   Would fail if: the arm is missing (NotOurs → empty for every case).
 - Install: `amont-agent install --write` against a scratch `CLAUDE_CONFIG_DIR`
   copy of the real `settings.json`, run twice → exactly one new block with the
-  matcher, second run no diff → <observed>.
+  matcher, second run no diff → PreToolUse blocks 6 → 7, one new matcher
+  `mcp__chrome-devtools__take_screenshot`; second run "already current —
+  nothing written", `diff -q` equal; the real `settings.json` byte-identical.
+- Suite: `cargo clippy --workspace --all-targets -- -D warnings` clean;
+  `cargo test --workspace --locked` 39 test binaries ok, 0 failed.
 - Live (after the person's install): one main-session screenshot in a real
   Claude Code session shows the advice; one via `browser-check` does not →
   <observed>. This also proves Claude Code honours a literal `mcp__…` matcher.
