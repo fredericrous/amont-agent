@@ -611,7 +611,7 @@ fn a_repeated_staged_flag_behaves_as_one() {
 #[test]
 fn the_pack_declares_the_one_gate() {
     let pack =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("amont.pack")).unwrap();
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("greengate.pack")).unwrap();
     let lines: Vec<&str> = pack
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
