@@ -111,11 +111,11 @@ Install: `amont-agent install --write` adds one PreToolUse block with matcher
 
 ## Verification
 - Phase 1–2 (each run with a scratch `CLAUDE_CONFIG_DIR` and a fresh
-  `session_id`, so the real journal and told-state are untouched): the release
-  binary fed real PreToolUse JSON on stdin (main, no
+  `session_id`, so the real journal and told-state are untouched): the debug
+  binary built from this tree (`target/debug/amont-agent`) fed real PreToolUse JSON on stdin (main, no
   filePath) → stdout `hookSpecificOutput.additionalContext` equals the
   Behaviour-table string byte for byte (the Phase 2 test asserts the same
-  string) → equal, 207 bytes (debug build of the same tree). Same JSON with
+  string) → equal, 207 bytes. Same JSON with
   `"agent_id":"w1"` → empty stdout, exit 0. With `"filePath":"x.png"` → empty.
   Then a main call in that session → advises (silent calls spent nothing).
   The first JSON again, same session → empty. `agent_id: null` → advises.

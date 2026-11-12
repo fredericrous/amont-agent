@@ -1990,11 +1990,17 @@ fn on_screenshot(op: &crate::payload::ScreenshotOp) -> Decision {
         journal_as("told-before");
         return Decision::Silent;
     }
-    journal_as(outcome_of(stance));
+    // The ceiling is advise (`max_stance`): a deny stance still advises, and is
+    // journalled as advised, not through `outcome_of`, which would say denied.
     match stance {
-        Stance::Observe => Decision::Silent,
-        // The ceiling is advise (`max_stance`); a deny stance still advises.
-        Stance::Advise | Stance::Deny => Decision::Advise(sms::phrase()),
+        Stance::Observe => {
+            journal_as(outcome_of(stance));
+            Decision::Silent
+        }
+        Stance::Advise | Stance::Deny => {
+            journal_as("advised");
+            Decision::Advise(sms::phrase())
+        }
     }
 }
 

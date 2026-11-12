@@ -301,7 +301,10 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     ("PostToolUse", Some("ExitPlanMode")),
     // `screenshot-in-main-session`: the chrome-devtools screenshot tool, by
     // its literal MCP name. Its own block, as Grep's.
-    ("PreToolUse", Some("mcp__chrome-devtools__take_screenshot")),
+    (
+        "PreToolUse",
+        Some(crate::rules::screenshot_in_main_session::TOOL),
+    ),
     // The turn ending: the one moment a plan left open can be seen.
     ("Stop", None),
 ];
