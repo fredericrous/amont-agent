@@ -15,3 +15,10 @@ legacy reads at the census.
 
 ## Code review
 - amont-agent: backend, lang:rust (unix, tui, architect left out: two readers and one header)
+
+## Implementation review
+
+- implementation-review: approve-with-changes ×2, then approve (3f1e17c6). Fixed: discards given reasons, `world` names, stronger assertions, patch-id and unreachable-origin tests, the read error surfaced.
+- backend: approve-with-changes ×2. Fixed: only provenance/attest refs fetched (a gate stamp is never overwritten), one bounded fetch, replay test. Deliberate: force-fetch of provenance/attest is unchanged from main.
+- lang:rust: approve-with-changes, then approve. Fixed: refs built from `NAMES`, `find_map`, named wait arm. Deliberate: object order wins in `lookup` (plan: "for the object"); the status stays a string, the JSON contract.
+- The human row prints `verified under <namespace>`; the JSON `status` stays `verified`.
