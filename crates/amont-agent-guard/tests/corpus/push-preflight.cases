@@ -23,6 +23,7 @@ nomatch	git push --dry-run origin main
 nomatch	git push -n origin feat/x
 nomatch	git push --no-verify -u origin feat/selection-bar-followups
 nomatch	git push origin refs/notes/amont-attest:refs/notes/amont-attest
+nomatch	git push origin refs/notes/greengate-attest:refs/notes/greengate-attest
 nomatch	git pull --rebase origin main
 nomatch	git fetch origin -q && git rebase origin/main
 nomatch	git ls-remote --heads origin feat/selection-bar-verbs

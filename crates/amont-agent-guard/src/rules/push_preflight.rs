@@ -96,8 +96,9 @@ pub(crate) fn pushes_only_bare_tags(cmd: &Simple) -> bool {
     refspecs.peek().is_some() && refspecs.all(|w| is_bare_tag_name(&w.text))
 }
 
-/// A refspec this rule leaves alone: amont's own notes push, a tag, the
-/// default branch, or a deletion.
+/// A refspec this rule leaves alone: a notes push (amont's own, under either
+/// the `amont-*` or the `greengate-*` names), a tag, the default branch, or a
+/// deletion.
 fn not_a_branch_push(refspec: &str) -> bool {
     let dst = refspec.rsplit(':').next().unwrap_or(refspec);
     refspec.starts_with("refs/notes/")
@@ -172,18 +173,21 @@ fn list_json(cwd: &std::path::Path, pushed: bool) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Does `HEAD`'s tree (or `HEAD` itself) already carry a push stamp?
+/// Does `HEAD`'s tree (or `HEAD` itself) already carry a push stamp? The
+/// greengate stamp ref is read first; the amont one only when the green ref
+/// has no stamp for the key. A stamp counts under the header of its own ref.
 fn head_is_stamped(cwd: &std::path::Path) -> bool {
     ["HEAD^{tree}", "HEAD"].iter().any(|key| {
-        crate::git::stdout_in(cwd, &["notes", "--ref", "amont-gate", "show", key]).is_some_and(
-            |note| {
-                note.lines()
-                    .next()
-                    .unwrap_or_default()
-                    .split_whitespace()
-                    .any(|t| t.starts_with("pre-push-"))
-            },
-        )
+        crate::notes_names::NAMES
+            .into_iter()
+            .find_map(|names| {
+                let note =
+                    crate::git::stdout_in(cwd, &["notes", "--ref", names.gate_ref, "show", key])?;
+                let mut tokens = note.lines().next()?.split_whitespace();
+                (tokens.next() == Some(names.gate_header))
+                    .then(|| tokens.any(|t| t.starts_with("pre-push-")))
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -260,6 +264,86 @@ mod tests {
         assert!(!fires(
             "git push origin refs/notes/amont-attest:refs/notes/amont-attest"
         ));
+    }
+
+    #[test]
+    fn greengates_own_notes_push_is_not_judged() {
+        assert!(!fires(
+            "git push origin refs/notes/greengate-attest:refs/notes/greengate-attest"
+        ));
+        assert!(!fires("git push origin refs/notes/greengate-provenance"));
+        // Any notes refspec in the push leaves it alone, as for amont's.
+        assert!(!fires("git push origin feat/x refs/notes/greengate-attest"));
+    }
+
+    fn repo_with_stamps(stamps: &[(&str, &str)]) -> std::path::PathBuf {
+        use std::process::Command;
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "amont-stamp-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir); // the scratch dir usually does not exist yet
+        std::fs::create_dir_all(&dir).expect("dir");
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .output()
+                .expect("git")
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "c"]);
+        for (name, body) in stamps {
+            git(&["notes", "--ref", name, "add", "-m", body, "HEAD^{tree}"]);
+        }
+        dir
+    }
+
+    #[test]
+    fn a_stamp_is_found_under_either_name() {
+        let green =
+            repo_with_stamps(&[("greengate-gate", "greengate-gate-v1 pre-push-cargo-test")]);
+        assert!(head_is_stamped(&green));
+        let legacy = repo_with_stamps(&[("amont-gate", "amont-gate-v1 pre-push-cargo-test")]);
+        assert!(head_is_stamped(&legacy));
+        assert!(!head_is_stamped(&repo_with_stamps(&[])));
+    }
+
+    #[test]
+    fn the_green_stamp_wins_when_both_exist() {
+        let dir = repo_with_stamps(&[
+            ("greengate-gate", "greengate-gate-v1 test"),
+            ("amont-gate", "amont-gate-v1 pre-push-cargo-test"),
+        ]);
+        assert!(!head_is_stamped(&dir));
+    }
+
+    #[test]
+    fn a_stamp_under_the_other_names_header_reads_as_absent() {
+        let mixed = repo_with_stamps(&[("greengate-gate", "amont-gate-v1 pre-push-cargo-test")]);
+        assert!(!head_is_stamped(&mixed));
+        let mixed = repo_with_stamps(&[("amont-gate", "greengate-gate-v1 pre-push-cargo-test")]);
+        assert!(!head_is_stamped(&mixed));
+        // Absent under green, so the legacy ref is consulted.
+        let fall = repo_with_stamps(&[
+            ("greengate-gate", "amont-gate-v1 test"),
+            ("amont-gate", "amont-gate-v1 pre-push-cargo-test"),
+        ]);
+        assert!(head_is_stamped(&fall));
     }
 
     #[test]
