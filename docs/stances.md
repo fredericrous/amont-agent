@@ -76,7 +76,7 @@ power to refuse your shell commands.
 
 This is enforced three times, because neither of the first two was enough.
 
-1. `amont.conf`'s parser will not name these rules, so a committed manifest
+1. `greengate.conf`'s parser will not name these rules, so a committed manifest
    cannot reach them.
 2. amont's config reader lets a repository's committed policy `set` lines
    outrank system and global git config — right for a hook manager, wrong for
