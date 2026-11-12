@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.32.0
+
 ### Added
 
 - `screenshot-in-main-session` (advise, ceiling `advise`): the first
