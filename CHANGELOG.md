@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed
+
+- `amont-agent shipped` reads the provenance and attestation notes under the
+  `greengate-*` names first (`refs/notes/greengate-provenance`,
+  `greengate-attest`, headers `greengate-provenance-v1`, `greengate-attest-v2`)
+  and the `amont-*` ones only when the green ref has no note for the object. A
+  note counts only under the header of its own ref, and a provenance record is
+  checked under the namespace of its header. The fetch no longer reports a
+  failure when only one of the two name sets exists on origin.
+- The `push-preflight` rule's push-stamp check reads `refs/notes/greengate-gate`
+  before `refs/notes/amont-gate`, and a stamp counts only under its own ref's
+  header; a notes refspec of either name set is not judged. The writer of the
+  provenance record is unchanged until greengate switches its writers (ADR-0068).
+  The `amont-*` names are marked legacy in `notes_names.rs`, for removal at the
+  census.
+
 ## v3.32.0
 
 ### Added

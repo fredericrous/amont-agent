@@ -63,7 +63,7 @@ impl World {
         w.keygen("other");
         let pubkey = std::fs::read_to_string(w.top.join("key.pub")).unwrap();
         let signers = format!(
-            "signer@example.com namespaces=\"amont-provenance\" {}\n",
+            "signer@example.com namespaces=\"amont-provenance,greengate-provenance\" {}\n",
             pubkey.trim()
         );
         std::fs::create_dir_all(w.repo.join(".github")).unwrap();
@@ -134,13 +134,17 @@ impl World {
     }
 
     fn sign(&self, payload: &str, key: &str) -> String {
+        self.sign_in(payload, key, "amont-provenance")
+    }
+
+    fn sign_in(&self, payload: &str, key: &str, namespace: &str) -> String {
         let f = self.top.join("payload");
         let _ = std::fs::remove_file(self.top.join("payload.sig"));
         std::fs::write(&f, payload).unwrap();
         run(
             &self.top,
             "ssh-keygen",
-            &["-Y", "sign", "-n", "amont-provenance", "-f", key, "payload"],
+            &["-Y", "sign", "-n", namespace, "-f", key, "payload"],
         );
         let sig = std::fs::read_to_string(self.top.join("payload.sig")).unwrap();
         format!("{payload}\n{sig}")
@@ -211,7 +215,7 @@ fn squash_with_pr_number_and_tag_is_verified_by_tree() {
     let sha = w.body_sha(2);
     let signed = w.sign(&w.record(&head, &sha, None), "key");
     w.note(PROV, &tree, &signed);
-    w.note(ATTEST, &tree, "gates cargo-test clippy\n");
+    w.note(ATTEST, &tree, "amont-attest-v2\ngates cargo-test clippy\n");
     let (out, err, code) = w.shipped(&[]);
     let out = out.lines().next().unwrap_or("").to_string();
     assert_eq!(code, 0, "{err}");
@@ -224,6 +228,48 @@ fn squash_with_pr_number_and_tag_is_verified_by_tree() {
     assert!(out.contains(&format!("plan {}", &sha[..12])), "{out}");
     assert!(out.contains("gates cargo-test clippy"), "{out}");
     assert!(out.trim_end().ends_with("verified"), "{out}");
+}
+
+#[test]
+fn a_squash_with_only_green_notes_is_verified_under_the_green_namespace() {
+    let w = World::new("green");
+    let head = w.feature();
+    let merge = w.squash("feat: a (#7)");
+    git(&w.repo, &["tag", "v1.9.0"]);
+    let tree = git(&w.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let sha = w.body_sha(2);
+    let record =
+        w.record(&head, &sha, None)
+            .replacen("amont-provenance-v1", "greengate-provenance-v1", 1);
+    let signed = w.sign_in(&record, "key", "greengate-provenance");
+    w.note("refs/notes/greengate-provenance", &tree, &signed);
+    w.note(
+        "refs/notes/greengate-attest",
+        &tree,
+        "greengate-attest-v2\ngates cargo-test\n",
+    );
+    let (out, err, code) = w.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        !err.contains("fetch"),
+        "an absent legacy ref is not a failure: {err}"
+    );
+    assert!(out.contains("gates cargo-test"), "{out}");
+    assert!(out.trim_end().ends_with("verified"), "{out}");
+}
+
+#[test]
+fn a_green_ref_carrying_the_legacy_header_is_no_provenance() {
+    let w = World::new("mixed");
+    let head = w.feature();
+    let merge = w.squash("feat: a (#7)");
+    let tree = git(&w.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let sha = w.body_sha(2);
+    let signed = w.sign(&w.record(&head, &sha, None), "key");
+    w.note("refs/notes/greengate-provenance", &tree, &signed);
+    let (out, _, _) = w.shipped(&[]);
+    assert!(!out.contains("verified"), "{out}");
 }
 
 #[test]

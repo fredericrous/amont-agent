@@ -10,11 +10,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use amont_agent_guard::git;
+use amont_agent_guard::notes_names::{NoteNames, NAMES};
 
-const PROVENANCE_REF: &str = "refs/notes/amont-provenance";
-const ATTEST_REF: &str = "refs/notes/amont-attest";
-const NAMESPACE: &str = "amont-provenance";
-const MAGIC: &str = "amont-provenance-v1";
 const SIG_END: &str = "-----END SSH SIGNATURE-----";
 const FETCH_BUDGET: Duration = Duration::from_secs(60);
 const STALE_DAYS: u64 = 30;
@@ -25,9 +22,9 @@ usage: amont-agent shipped <plan.md> [--json]
 What shipped under a plan, derived from git (decisions ADR-0036). For each
 repository in the plan's `repos:` list, every merge commit on origin/main
 that touched docs/plans/<the plan's file name>: its PR number, its head
-commit, its first release tag, and the signed amont-provenance record and
-attestation gates found for it. Read-only: the two note refs are fetched
-from origin into local refs of the same name (a failed fetch is said once),
+commit, its first release tag, and the signed provenance record and
+attestation gates found for it. Read-only: the note refs (greengate-* first, then
+the legacy amont-* ones) are fetched from origin into local refs of the same name (a failed fetch is said once),
 and nothing else is written.
 
   --json   one JSON array on stdout: {repo, pr, merge, head, release,
@@ -55,10 +52,12 @@ struct Prov {
     flags: Vec<&'static str>,
 }
 
-/// One payload with its armored signature.
+/// One payload with its armored signature, and the name set of the ref it
+/// was read from (its header must be that set's).
 struct Block {
     payload: String,
     sig: String,
+    names: &'static NoteNames,
 }
 
 impl Block {
@@ -68,11 +67,14 @@ impl Block {
             .find_map(|l| l.strip_prefix(prefix)?.strip_prefix(' '))
     }
     fn is_record(&self) -> bool {
-        self.payload.lines().next() == Some(MAGIC)
+        self.payload.lines().next() == Some(self.names.provenance_header)
+    }
+    fn is_attest(&self) -> bool {
+        self.payload.lines().next() == Some(self.names.attest_header)
     }
 }
 
-fn blocks(text: &str) -> Vec<Block> {
+fn blocks(text: &str, names: &'static NoteNames) -> Vec<Block> {
     let mut out = Vec::new();
     let mut lines = text.lines().peekable();
     loop {
@@ -96,7 +98,11 @@ fn blocks(text: &str) -> Vec<Block> {
                 }
             }
         }
-        out.push(Block { payload, sig });
+        out.push(Block {
+            payload,
+            sig,
+            names,
+        });
     }
 }
 
@@ -175,9 +181,19 @@ fn gh_head(slug: &str, pr: u64) -> Option<String> {
     v.get("headRefOid")?.as_str().map(str::to_string)
 }
 
+/// Fetch both name sets' refs. A set whose refs are absent on origin (the
+/// green one before greengate writes it, the legacy one after the census)
+/// does not fail the fetch: it fails only when no set could be fetched.
 fn fetch_notes(dir: &Path) -> bool {
+    NAMES
+        .iter()
+        .map(|n| fetch_refs(dir, [n.provenance_ref, n.attest_ref]))
+        .fold(false, |any, ok| any | ok)
+}
+
+fn fetch_refs(dir: &Path, refs: [&str; 2]) -> bool {
     let mut ok = true;
-    for r in [PROVENANCE_REF, ATTEST_REF] {
+    for r in refs {
         let spec = format!("+{r}:{r}");
         let child = Command::new("git")
             .arg("-C")
@@ -252,17 +268,33 @@ struct Found {
 fn lookup(dir: &Path, merge: &str, head: Option<&str>, parent: Option<&str>) -> Option<Found> {
     let tree = git::stdout_in(dir, &["rev-parse", &format!("{merge}^{{tree}}")]);
     for object in head.into_iter().map(str::to_string).chain(tree) {
-        let Some(text) = notes_show(dir, PROVENANCE_REF, &object) else {
-            continue;
-        };
-        for block in blocks(&text) {
-            if block.is_record() && reachable(dir, block.field("commit").unwrap_or(""), head) {
-                return Some(Found { block, object });
+        for names in NAMES {
+            let Some(text) = notes_show(dir, names.provenance_ref, &object) else {
+                continue;
+            };
+            for block in blocks(&text, names) {
+                if block.is_record() && reachable(dir, block.field("commit").unwrap_or(""), head) {
+                    return Some(Found { block, object });
+                }
             }
         }
     }
     let want = patch_id(dir, parent?, merge)?;
-    let ref_arg = format!("--ref={PROVENANCE_REF}");
+    for names in NAMES {
+        if let Some(found) = lookup_by_patch(dir, names, &want, head) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn lookup_by_patch(
+    dir: &Path,
+    names: &'static NoteNames,
+    want: &str,
+    head: Option<&str>,
+) -> Option<Found> {
+    let ref_arg = format!("--ref={}", names.provenance_ref);
     let listing = git::stdout_in(dir, &["notes", &ref_arg, "list"])?;
     let pairs: Vec<(String, String)> = listing
         .lines()
@@ -271,13 +303,13 @@ fn lookup(dir: &Path, merge: &str, head: Option<&str>, parent: Option<&str>) -> 
             Some((blob.to_string(), obj.to_string()))
         })
         .collect();
-    let names: Vec<String> = pairs.iter().map(|(b, _)| b.clone()).collect();
-    let found = git::cat_file_batch(dir, &names).ok()??;
+    let blobs: Vec<String> = pairs.iter().map(|(b, _)| b.clone()).collect();
+    let found = git::cat_file_batch(dir, &blobs).ok()??;
     for (blob, bytes) in found {
         let object = pairs.iter().find(|(b, _)| *b == blob).map(|(_, o)| o);
-        for block in blocks(&String::from_utf8_lossy(&bytes)) {
+        for block in blocks(&String::from_utf8_lossy(&bytes), names) {
             if block.is_record()
-                && block.field("patch") == Some(want.as_str())
+                && block.field("patch") == Some(want)
                 && reachable(dir, block.field("commit").unwrap_or(""), head)
             {
                 return Some(Found {
@@ -318,8 +350,8 @@ fn keygen_accepts(args: &[&std::ffi::OsStr], payload: &str) -> Option<bool> {
 }
 
 /// The status of a block's signature: `verified` when a principal of the
-/// committed allowed_signers verifies it under the `amont-provenance`
-/// namespace; `unsigned` without a signature; `bad signature` when the
+/// committed allowed_signers verifies it under the namespace of its
+/// header (`greengate-provenance` or `amont-provenance`); `unsigned` without a signature; `bad signature` when the
 /// signature is not valid for the payload at all; `signed, no
 /// allowed_signers` without the file; `signature not checked` when
 /// `ssh-keygen` or a scratch file is unavailable; else `signed, signer not
@@ -346,7 +378,7 @@ fn signature_status_in(
     if std::fs::write(sig_file, &block.sig).is_err() {
         return NOT_CHECKED;
     }
-    let namespace = std::ffi::OsStr::new(NAMESPACE);
+    let namespace = std::ffi::OsStr::new(block.names.provenance_namespace);
     let check = [
         "-Y".as_ref(),
         "check-novalidate".as_ref(),
@@ -438,14 +470,19 @@ fn describe(dir: &Path, found: &Found, plan_file: &str) -> Prov {
 }
 
 fn gates_of(dir: &Path, object: &str) -> Vec<String> {
-    let Some(text) = notes_show(dir, ATTEST_REF, object) else {
-        return Vec::new();
-    };
-    blocks(&text)
-        .first()
-        .and_then(|b| b.field("gates").map(str::to_string))
-        .map(|g| g.split_whitespace().map(str::to_string).collect())
-        .unwrap_or_default()
+    for names in NAMES {
+        let Some(text) = notes_show(dir, names.attest_ref, object) else {
+            continue;
+        };
+        let gates = blocks(&text, names)
+            .first()
+            .filter(|b| b.is_attest())
+            .and_then(|b| b.field("gates").map(str::to_string));
+        if let Some(g) = gates {
+            return g.split_whitespace().map(str::to_string).collect();
+        }
+    }
+    Vec::new()
 }
 
 fn rows_of(name: &str, dir: &Path, plan_file: &str) -> Vec<Row> {
@@ -701,7 +738,162 @@ pub fn run(args: &[OsString]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::pr_number;
+    use super::{gates_of, lookup, pr_number};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository with one commit; returns it and its sha.
+    fn repo(tag: &str) -> (PathBuf, String) {
+        let dir =
+            std::env::temp_dir().join(format!("amont-shipped-t-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        let sha = git(&dir, &["rev-parse", "HEAD"]);
+        (dir, sha)
+    }
+
+    fn record(header: &str, sha: &str, review: &str) -> String {
+        format!("{header}\ncommit {sha}\ntree t\nreview {review} k\npreview not-required\n")
+    }
+
+    fn note(dir: &Path, name: &str, sha: &str, body: &str) {
+        git(dir, &["notes", "--ref", name, "add", "-f", "-m", body, sha]);
+    }
+
+    fn review_of(dir: &Path, sha: &str) -> Option<String> {
+        let found = lookup(dir, sha, Some(sha), None)?;
+        found
+            .block
+            .field("review")
+            .map(|r| r.split_whitespace().next().unwrap_or("").to_string())
+    }
+
+    #[test]
+    fn a_record_is_found_under_either_name() {
+        let (dir, sha) = repo("either");
+        assert_eq!(review_of(&dir, &sha), None);
+        note(
+            &dir,
+            "amont-provenance",
+            &sha,
+            &record("amont-provenance-v1", &sha, "legacy"),
+        );
+        assert_eq!(review_of(&dir, &sha).as_deref(), Some("legacy"));
+        let (dir, sha) = repo("either-green");
+        note(
+            &dir,
+            "greengate-provenance",
+            &sha,
+            &record("greengate-provenance-v1", &sha, "green"),
+        );
+        let found = lookup(&dir, &sha, Some(&sha), None).expect("found");
+        assert_eq!(
+            found.block.names.provenance_namespace,
+            "greengate-provenance"
+        );
+    }
+
+    #[test]
+    fn the_green_record_wins_when_both_exist() {
+        let (dir, sha) = repo("both");
+        note(
+            &dir,
+            "amont-provenance",
+            &sha,
+            &record("amont-provenance-v1", &sha, "legacy"),
+        );
+        note(
+            &dir,
+            "greengate-provenance",
+            &sha,
+            &record("greengate-provenance-v1", &sha, "green"),
+        );
+        assert_eq!(review_of(&dir, &sha).as_deref(), Some("green"));
+    }
+
+    #[test]
+    fn a_mismatched_header_reads_as_absent() {
+        let (dir, sha) = repo("mixed");
+        note(
+            &dir,
+            "greengate-provenance",
+            &sha,
+            &record("amont-provenance-v1", &sha, "x"),
+        );
+        assert_eq!(review_of(&dir, &sha), None);
+        note(
+            &dir,
+            "amont-provenance",
+            &sha,
+            &record("greengate-provenance-v1", &sha, "x"),
+        );
+        assert_eq!(review_of(&dir, &sha), None);
+        // A mismatched green note leaves the legacy one readable.
+        note(
+            &dir,
+            "amont-provenance",
+            &sha,
+            &record("amont-provenance-v1", &sha, "legacy"),
+        );
+        assert_eq!(review_of(&dir, &sha).as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn gates_are_read_under_either_name_green_first() {
+        let (dir, sha) = repo("gates");
+        assert!(gates_of(&dir, &sha).is_empty());
+        note(
+            &dir,
+            "amont-attest",
+            &sha,
+            "amont-attest-v2\ngates test lint\n",
+        );
+        assert_eq!(gates_of(&dir, &sha), ["test", "lint"]);
+        note(
+            &dir,
+            "greengate-attest",
+            &sha,
+            "greengate-attest-v2\ngates test\n",
+        );
+        assert_eq!(gates_of(&dir, &sha), ["test"]);
+        // A green ref carrying the old header reads as absent: legacy answers.
+        note(
+            &dir,
+            "greengate-attest",
+            &sha,
+            "amont-attest-v2\ngates other\n",
+        );
+        assert_eq!(gates_of(&dir, &sha), ["test", "lint"]);
+        // Mismatched under legacy too: nothing.
+        note(
+            &dir,
+            "amont-attest",
+            &sha,
+            "greengate-attest-v2\ngates other\n",
+        );
+        assert!(gates_of(&dir, &sha).is_empty());
+    }
 
     #[test]
     fn pr_number_is_the_last_marker_anywhere() {
