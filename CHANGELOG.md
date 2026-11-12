@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.33.0
+
 ### Changed
 
 - `amont-agent shipped` reads the provenance and attestation notes under the
