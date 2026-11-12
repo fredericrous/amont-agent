@@ -299,6 +299,12 @@ pub const TARGETS: &[(&str, Option<&str>)] = &[
     // Preview evidence (ADR-0028): a plan the person approved is recorded,
     // so a `## Preview` evidence line in it can stand for the preview.
     ("PostToolUse", Some("ExitPlanMode")),
+    // `screenshot-in-main-session`: the chrome-devtools screenshot tool, by
+    // its literal MCP name. Its own block, as Grep's.
+    (
+        "PreToolUse",
+        Some(crate::rules::screenshot_in_main_session::TOOL),
+    ),
     // The turn ending: the one moment a plan left open can be seen.
     ("Stop", None),
 ];

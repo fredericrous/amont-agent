@@ -1,0 +1,151 @@
+---
+status: done
+branch: feat/screenshot-in-main-session
+repos: [amont-agent]
+adrs: []
+---
+# Screenshots belong in a subagent
+
+## Review panel
+👉 **Decide:** none — approve if a once-per-session advice is enough to move main-session screenshots into `browser-check`.
+📍 amont-agent · plan reviewed, nothing built · next: worktree + Phase 1. Panel: backend, lang:rust, tui, unix (opus), codex (gpt-6-astra).
+**Changed by review:** exact advice text without `filePath`; paired silent→advise tests; TARGETS after ExitPlanMode.
+**Verdicts:** round 1 4× approve-with-changes; round 2 2× approve, 2× approve-with-changes; codex approve-with-changes; 7 carried into implementation.
+📄 Full reviews: [2026-11-12-screenshots-belong-in-a-subagent.reviews.md](2026-11-12-screenshots-belong-in-a-subagent.reviews.md)
+
+## Picture
+```
+Claude Code: PreToolUse(take_screenshot)
+        |
+        v
+payload.rs --> Event::PreScreenshot
+        |
+        v
+hook.rs on_screenshot
+   agent_id present? ------- yes --> silent
+   filePath set? ----------- yes --> silent
+   stance observe? --------- yes --> journal, silent
+   told this session? ------ yes --> silent
+        | no
+        v
+journal + Decision::Advise ("delegate to browser-check")
+```
+The picture shows the four silencers a main-session screenshot passes
+before the one advice is emitted.
+
+## Goal
+When the main conversation calls `mcp__chrome-devtools__take_screenshot`
+without `filePath`, greenpiste advises it once per session to delegate the
+check to the `browser-check` subagent, so the image (≈126 KB each, 368 of them
+in past transcripts) does not land in the main context. Subagents and saved-to-file
+screenshots are left alone.
+
+## Non-goals
+- No deny: advise only (ceiling `advise`). The rule is prose in worktree-task F2
+  and CLAUDE.md; this makes it visible, not enforced.
+- No other chrome-devtools tools (`take_snapshot`, `list_network_requests`):
+  measure after this ships before widening.
+- No change to the ios-simulator screenshot tool (55 calls, ≈60 KB) for now.
+- No change to how `browser-check` itself works.
+- A `filePath` screenshot later opened with Read still enters context; this
+  rule does not catch that, so the advice does not offer `filePath` as a remedy.
+
+## Code review
+- amont-agent: backend, lang:rust, unix (tui left out: no command-line output changes; the advice is hook JSON read by the model)
+
+## Behaviour
+PreToolUse with `tool_name == "mcp__chrome-devtools__take_screenshot"`:
+
+| payload | result |
+|---|---|
+| no `agent_id` (main), no `filePath` | advise, first time this session: additionalContext is exactly `amont-agent/screenshot-in-main-session: a screenshot here puts the image (~126 KB) into the main context. Delegate the check: Agent tool with subagent_type "browser-check", giving the URL and what to verify.` |
+| same, a second time in the session | silent (once per session, `first_telling` keyed `RULE.id`) |
+| no `agent_id`, `filePath` non-empty | silent: the image is saved, not attached |
+| `agent_id` present (any value, invalid included) | silent: already a subagent |
+| stance resolved to `observe` | journalled, silent |
+| stance resolved to `deny` | advises (ceiling `advise`; `Stance::Advise \| Stance::Deny => Decision::Advise`, as `guidance_written`) |
+
+Install: `amont-agent install --write` adds one PreToolUse block with matcher
+`mcp__chrome-devtools__take_screenshot`; re-running it is idempotent (existing
+`settings::ensure`).
+
+## Phases
+- [x] Phase 1 — rule + payload + dispatch + install target:
+  `crates/amont-agent-guard/src/rules/screenshot_in_main_session.rs`,
+  `crates/amont-agent-guard/src/rules/mod.rs`, `src/rule_table.rs` (rule added; `the_table_holds_every_rule_in_its_place` 51→52 and its comment),
+  `crates/amont-agent-guard/src/payload.rs` (journal excerpt `take_screenshot @main`, no URL or path; new `Event::PreScreenshot` with
+  `agent_id`, `file_path`, `session`, `cwd`, `permission_mode`; arm beside the
+  Grep arm at ~546), `src/hook.rs` (arm beside `Event::PreGrep` at ~177; handler
+  modelled on `on_grep` ~1906 but using `stance::resolve(&RULE)`, not
+  `resolve_for`), `crates/amont-agent-guard/src/settings.rs` (TARGETS entry
+  with a comment, as Grep's, placed after `("PreToolUse", Some("ExitPlanMode"))` so existing `pre[i]` index asserts keep their matchers),
+  `crates/amont-agent-guard/src/corpus.rs` +
+  `crates/amont-agent-guard/tests/corpus/screenshot-in-main-session.cases`
+  (header + `nomatch` lines, as `code-read-not-lsp.cases`).
+- [x] Phase 2 — tests: `tests/hook.rs` (main/no filePath → advise once;
+  second call silent; filePath → silent; `agent_id:"w1"` → silent;
+  `agent_id: 5` → silent; each silent case is followed, in the same session,
+  by a main no-filePath call asserted to advise, so the test fails if the arm
+  is missing or the silent call spent the once-per-session advice; stance
+  `observe` via global config → silent), `tests/settings_merge.rs` (block counts 6→7 and 5→6,
+  index asserts re-checked).
+- [x] Phase 3 — docs + release notes: `docs/rules.md` (row: `advise` (ceiling
+  `advise`)), `CHANGELOG.md` (Unreleased → Added). Release 3.32.0 via
+  `tag-release`; the install is the person's.
+
+## Decision log
+- 2026-11-12 — Phase 3 ticked with its docs and CHANGELOG; the 3.32.0 tag is
+  cut after the merge (`tag-release`), not recorded here as pending.
+- 2026-11-12 — Implemented by relais run run-660123f2bdd21-b5a7 (attempt 2
+  added a 4th corpus negative after `every_rule_carries_expected_negatives`
+  failed). Its verification and a verify run both waited out the 1800 s lease
+  queue on a loaded host, so the candidate was applied and verified in session.
+- 2026-11-12 — Phases 1 and 2 share a commit: Phase 1's TARGETS entry breaks
+  `settings_merge` counts until Phase 2's update, and the commit gate runs tests.
+- 2026-11-12 — Advise, not deny, because the person chose "build it now" for an
+  advisory hook and the written rule is new; a deny waits on a count.
+- 2026-11-12 — Silent when `filePath` is set, because the MCP then saves the
+  image instead of attaching it (its tool description), so nothing reaches context.
+- 2026-11-12 — `agent_id` of any value counts as a subagent (payload maps a
+  non-string to `Some("")`), so a malformed id never nags a subagent.
+
+## Verification
+- Phase 1–2 (each run with a scratch `CLAUDE_CONFIG_DIR` and a fresh
+  `session_id`, so the real journal and told-state are untouched): the debug
+  binary built from this tree (`target/debug/amont-agent`) fed real PreToolUse JSON on stdin (main, no
+  filePath) → stdout `hookSpecificOutput.additionalContext` equals the
+  Behaviour-table string byte for byte (the Phase 2 test asserts the same
+  string) → equal, 207 bytes. Same JSON with
+  `"agent_id":"w1"` → empty stdout, exit 0. With `"filePath":"x.png"` → empty.
+  Then a main call in that session → advises (silent calls spent nothing).
+  The first JSON again, same session → empty. `agent_id: null` → advises.
+  Every case: exit 0, 0 B stderr; the advise stdout passes `jq -e .`; journal
+  line `screenshot-in-main-session advise advised … take_screenshot @main`.
+  Would fail if: the arm is missing (NotOurs → empty for every case).
+- Install: `amont-agent install --write` against a scratch `CLAUDE_CONFIG_DIR`
+  copy of the real `settings.json`, run twice → exactly one new block with the
+  matcher, second run no diff → PreToolUse blocks 6 → 7, one new matcher
+  `mcp__chrome-devtools__take_screenshot`; second run "already current —
+  nothing written", `diff -q` equal; the real `settings.json` byte-identical.
+- Suite: `cargo clippy --workspace --all-targets -- -D warnings` clean;
+  `cargo test --workspace --locked` 39 test binaries ok, 0 failed.
+## Outcome
+Shipped in this branch: the `screenshot-in-main-session` rule, its install
+target and tests, docs and CHANGELOG. Two checks can only run after the
+person installs the release, so they are follow-ups, not pending rows:
+- Live check (after the person's install): one main-session screenshot in a real
+  Claude Code session shows the advice; one via `browser-check` does not →
+  run after install. This also proves Claude Code honours a literal `mcp__…` matcher.
+- 7-day count (after install): main-session `take_screenshot` calls per session vs
+  the 368-call baseline, and `Read` of `*.png` within 3 calls of a `filePath`
+  screenshot, counted 7 days after install. This is the count the deny waits on.
+Surprise: the journal keeps a session id's first eight characters, so a
+longer test session id made a journal assertion pass for the wrong reason.
+
+## Implementation review
+- implementation-review: approve-with-changes → approve on Delta; 4 lows fixed (banner, names, binary wording, comment wrap); 44k + 40k tok, 36 s + 40 s.
+- backend: approve-with-changes → approve; deny journalled `advised`, `told-before` asserted; 47k + 26k tok, 35 s + 16 s.
+- lang:rust: approve-with-changes → approve; TOOL const in TARGETS, shared test helper; deliberate: substring journal match, outcome names do not overlap; 48k + 25k tok.
+- unix: approve, carried by ancestry; 51k tok, 27 s.
+
+<!-- panel: repos=amont-agent reviewers=backend,lang:rust,tui,unix,codex body-sha=ee2b41c07011 -->

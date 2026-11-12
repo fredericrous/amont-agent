@@ -62,6 +62,7 @@ pub mod publish_without_skill;
 pub mod push_preflight;
 pub mod read_unbounded_large;
 pub mod release_tag_push;
+pub mod screenshot_in_main_session;
 pub mod sed_in_place;
 pub mod stale_base;
 pub mod stat_bsd_format;

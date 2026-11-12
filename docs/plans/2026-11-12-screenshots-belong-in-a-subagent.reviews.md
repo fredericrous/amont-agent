@@ -1,0 +1,7 @@
+# Screenshots belong in a subagent — full reviews
+
+## Full reviews (reference)
+Round 1 (opus): tui approve-with-changes (28k, 31 s): exact advice text, no filePath remedy, journal excerpt. backend approve-with-changes (37k, 52 s): filePath bypass (high), 7-day count, TARGETS placement, picture observe branch. lang:rust approve-with-changes (43k, 54 s): silent tests pass without code (high), rule count 51→52, placement after ExitPlanMode, deny advises, key RULE.id. unix approve-with-changes (31k, 48 s): scratch CLAUDE_CONFIG_DIR + repeat call, exit 0/empty stderr/jq, observe before told.
+Round 2 (opus, resumed): lang:rust approve-with-changes (47k, 12 s); unix approve (35k, 10 s); backend approve-with-changes (43k, 17 s); tui approve (32k, 16 s).
+Carried into implementation: (1) journal excerpt belongs in the hook.rs handler, not payload.rs (rust#6, backend#2, tui#4); (2) build the expected advice through `decision::phrase` and check the table string against one real binary run (rust#7); (3) add a `deny`-stance test that still advises (backend#1); (4) codex#1 [medium]: `agent_id` absent OR null is main — reuse the payload closure, test null → advise → silent; (5) codex#2 [low]: once-per-session is best-effort (concurrent calls, unrecordable or swept state may repeat) — keep fail-open, test an empty session id advises twice with exit 0.
+Codex (gpt-6-astra, high effort): approve-with-changes, 2 findings above; it changed no file.

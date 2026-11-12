@@ -1558,6 +1558,11 @@ fn a_wholly_unreadable_command_is_still_not_judged() {
 /// The hook, with its stance config pinned to `global` so the developer's own
 /// `~/.gitconfig` cannot decide what the test sees.
 fn send_with_global(payload: &str, global: &str) -> Reply {
+    send_with_global_err(payload, global).0
+}
+
+/// `send_with_global`, also returning what the hook wrote to stderr.
+fn send_with_global_err(payload: &str, global: &str) -> (Reply, String) {
     let dir = home();
     let cfg = dir.join("fanout.gitconfig");
     std::fs::write(&cfg, global).expect("global config");
@@ -1580,10 +1585,11 @@ fn send_with_global(payload: &str, global: &str) -> Reply {
         .write_all(payload.as_bytes())
         .expect("write the payload");
     let out = child.wait_with_output().expect("the hook exits");
-    Reply {
+    let reply = Reply {
         code: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-    }
+    };
+    (reply, String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
 fn journal_rows(session: &str) -> Vec<String> {
@@ -4262,4 +4268,155 @@ fn at_deny_only_a_large_whole_dump_is_refused() {
     );
     let pipe = dump_as(&large, "dpipe-01", None, "cat big.rs | grep -n x");
     assert_eq!(pipe.stdout, "", "a pipe is not a dump");
+}
+
+// screenshot-in-main-session
+
+const SCREENSHOT_ADVICE: &str = "amont-agent/screenshot-in-main-session: a screenshot here puts \
+     the image (~126 KB) into the main context. Delegate the check: Agent tool with \
+     subagent_type \"browser-check\", giving the URL and what to verify.";
+
+/// A `take_screenshot` PreToolUse. `agent_id` is the payload's field as JSON
+/// (`None` leaves it out); `input` is the tool input object.
+fn shot(
+    session: &str,
+    agent_id: Option<serde_json::Value>,
+    input: serde_json::Value,
+    global: Option<&str>,
+) -> (Reply, String) {
+    let mut payload = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "mcp__chrome-devtools__take_screenshot",
+        "tool_input": input,
+        "session_id": session,
+        "cwd": "/tmp",
+    });
+    if let Some(id) = agent_id {
+        payload["agent_id"] = id;
+    }
+    send_with_global_err(&payload.to_string(), global.unwrap_or(""))
+}
+
+fn assert_advises(
+    session: &str,
+    agent_id: Option<serde_json::Value>,
+    input: serde_json::Value,
+    global: Option<&str>,
+) {
+    let (reply, stderr) = shot(session, agent_id, input, global);
+    assert_eq!(reply.code, 0);
+    assert_eq!(stderr, "");
+    assert_eq!(reply.reason(), SCREENSHOT_ADVICE, "{}", reply.stdout);
+    assert_eq!(reply.decision(), None, "advise, not deny: {}", reply.stdout);
+}
+
+fn assert_silent(
+    session: &str,
+    agent_id: Option<serde_json::Value>,
+    input: serde_json::Value,
+    global: Option<&str>,
+) {
+    let (reply, stderr) = shot(session, agent_id, input, global);
+    assert_eq!(reply.code, 0);
+    assert_eq!(stderr, "");
+    assert_eq!(reply.stdout, "", "expected silence");
+}
+
+/// Whether the journal holds a `take_screenshot @main` row with `outcome`.
+fn journalled(session: &str, outcome: &str) -> bool {
+    journal_rows(session)
+        .iter()
+        .any(|row| row.contains("take_screenshot @main") && row.contains(outcome))
+}
+
+const OBSERVE_STANCE: &str = "[amont \"agent.screenshot-in-main-session\"]\n\tstance = observe";
+const DENY_STANCE: &str = "[amont \"agent.screenshot-in-main-session\"]\n\tstance = deny";
+
+#[test]
+fn a_main_screenshot_without_a_file_path_is_advised_once() {
+    let session = "shotonc1";
+    assert_advises(session, None, serde_json::json!({}), None);
+    assert_silent(session, None, serde_json::json!({}), None);
+    assert!(
+        journalled(session, "advised"),
+        "{:?}",
+        journal_rows(session)
+    );
+    assert!(
+        journalled(session, "told-before"),
+        "{:?}",
+        journal_rows(session)
+    );
+}
+
+#[test]
+fn silent_screenshots_leave_the_advice_unspent() {
+    let cases = [
+        ("shot-path", None, serde_json::json!({"filePath": "x.png"})),
+        (
+            "shot-w1",
+            Some(serde_json::json!("w1")),
+            serde_json::json!({}),
+        ),
+        (
+            "shot-num",
+            Some(serde_json::json!(5)),
+            serde_json::json!({}),
+        ),
+    ];
+    for (session, agent_id, input) in cases {
+        assert_silent(session, agent_id, input, None);
+        assert_advises(session, None, serde_json::json!({}), None);
+    }
+}
+
+#[test]
+fn a_null_agent_id_is_the_main_conversation() {
+    let session = "shot-null";
+    assert_advises(
+        session,
+        Some(serde_json::Value::Null),
+        serde_json::json!({}),
+        None,
+    );
+    assert_silent(
+        session,
+        Some(serde_json::Value::Null),
+        serde_json::json!({}),
+        None,
+    );
+}
+
+#[test]
+fn an_observed_screenshot_is_silent_and_journalled() {
+    let session = "shotobs1";
+    assert_silent(session, None, serde_json::json!({}), Some(OBSERVE_STANCE));
+    assert!(
+        journalled(session, "watched"),
+        "{:?}",
+        journal_rows(session)
+    );
+}
+
+#[test]
+fn a_deny_stance_still_advises() {
+    // Eight characters: the journal keeps a session id's first eight.
+    let session = "shotdeny";
+    assert_advises(session, None, serde_json::json!({}), Some(DENY_STANCE));
+    assert!(
+        journalled(session, "advised"),
+        "{:?}",
+        journal_rows(session)
+    );
+    assert!(
+        !journalled(session, "denied"),
+        "{:?}",
+        journal_rows(session)
+    );
+}
+
+#[test]
+fn an_empty_session_id_advises_every_time() {
+    assert_advises("", None, serde_json::json!({}), None);
+    assert_advises("", None, serde_json::json!({}), None);
 }

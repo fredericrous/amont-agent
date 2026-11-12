@@ -185,6 +185,10 @@ const EMBEDDED: &[(&str, &str)] = &[
         include_str!("../tests/corpus/symbol-grep-not-lsp.cases"),
     ),
     (
+        "screenshot-in-main-session",
+        include_str!("../tests/corpus/screenshot-in-main-session.cases"),
+    ),
+    (
         "lint-suppression-added",
         include_str!("../tests/corpus/lint-suppression-added.cases"),
     ),

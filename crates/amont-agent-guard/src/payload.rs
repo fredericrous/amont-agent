@@ -199,6 +199,17 @@ pub struct GrepOp {
     pub agent_id: Option<String>,
 }
 
+/// A `take_screenshot` call about to run.
+pub struct ScreenshotOp {
+    /// `filePath`, when non-empty: the image is saved, not attached.
+    pub file_path: Option<String>,
+    /// The payload's `agent_id`; `None` for the main conversation.
+    pub agent_id: Option<String>,
+    pub cwd: PathBuf,
+    pub session: String,
+    pub permission_mode: String,
+}
+
 /// The text a write tool was handed, before anything is applied.
 pub enum Change {
     /// `Write`: the whole new content.
@@ -300,6 +311,9 @@ pub enum Event {
     /// A Grep tool call about to run: `symbol-grep-not-lsp` judges it. A
     /// Grep that has run is not ours: there is no `PostToolUse` block for it.
     PreGrep(Box<GrepOp>),
+    /// A chrome-devtools `take_screenshot` about to run:
+    /// `screenshot-in-main-session` judges it.
+    PreScreenshot(Box<ScreenshotOp>),
     /// An LSP tool call that has run: recorded, never spoken to.
     PostLsp(Box<LspCall>),
     /// A prompt the person submitted: the one moment a typed approval of a
@@ -550,6 +564,23 @@ pub fn parse(raw: &str) -> Event {
                 session: str_at("session_id"),
                 permission_mode: str_at("permission_mode"),
                 agent_id: agent_id(),
+            }))
+        }
+        Some("PreToolUse")
+            if v.get("tool_name").and_then(|x| x.as_str())
+                == Some(crate::rules::screenshot_in_main_session::TOOL) =>
+        {
+            Event::PreScreenshot(Box::new(ScreenshotOp {
+                file_path: v
+                    .get("tool_input")
+                    .and_then(|i| i.get("filePath"))
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string),
+                agent_id: agent_id(),
+                cwd: cwd.clone(),
+                session: str_at("session_id"),
+                permission_mode: str_at("permission_mode"),
             }))
         }
         Some("PreToolUse") if v.get("tool_name").and_then(|x| x.as_str()) == Some("Grep") => {

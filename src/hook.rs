@@ -175,6 +175,7 @@ fn decide(raw: &str) -> Decision {
         }),
         Event::PreFile(op) => on_pre_file(&op),
         Event::PreGrep(op) => on_grep(&op),
+        Event::PreScreenshot(op) => on_screenshot(&op),
         Event::PostLsp(call) => on_post_lsp(&call),
         Event::PostFile(op) => on_post_file(&op),
         Event::PostWrite(op) => on_post_write(&op),
@@ -1960,6 +1961,46 @@ fn on_grep(op: &crate::payload::GrepOp) -> Decision {
         Stance::Observe => Decision::Silent,
         Stance::Advise => Decision::Advise(text),
         Stance::Deny => Decision::Deny(text),
+    }
+}
+
+/// A `take_screenshot` from the main conversation without a `filePath`:
+/// advised once per session. A subagent and a saved image are not ours.
+fn on_screenshot(op: &crate::payload::ScreenshotOp) -> Decision {
+    use rules::screenshot_in_main_session as sms;
+    if op.agent_id.is_some() || op.file_path.is_some() {
+        return Decision::Silent;
+    }
+    let rule = &sms::RULE;
+    let stance = crate::stance::resolve(rule);
+    let journal_as = |outcome: &str| {
+        journal::record(&journal::Entry {
+            rule: rule.id,
+            stance: stance.as_str(),
+            outcome,
+            session: &op.session,
+            repo: &repo_name(&op.cwd),
+            mode: &op.permission_mode,
+            excerpt: "take_screenshot @main",
+        });
+    };
+    let first = stance == Stance::Observe
+        || first_telling(rule, &op.session, rule.id, &op.cwd, &op.permission_mode);
+    if !first {
+        journal_as("told-before");
+        return Decision::Silent;
+    }
+    // The ceiling is advise (`max_stance`): a deny stance still advises, and is
+    // journalled as advised, not through `outcome_of`, which would say denied.
+    match stance {
+        Stance::Observe => {
+            journal_as(outcome_of(stance));
+            Decision::Silent
+        }
+        Stance::Advise | Stance::Deny => {
+            journal_as("advised");
+            Decision::Advise(sms::phrase())
+        }
     }
 }
 

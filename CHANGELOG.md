@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- `screenshot-in-main-session` (advise, ceiling `advise`): the first
+  chrome-devtools `take_screenshot` from the main conversation without a
+  `filePath` is advised, once per session, to go through the `browser-check`
+  subagent. Subagents and saved screenshots are left alone. `amont-agent
+  install --write` adds one PreToolUse block for the tool.
+
 ## v3.31.0
 
 ### Changed
