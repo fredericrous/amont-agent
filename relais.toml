@@ -45,22 +45,22 @@ amont_agent = "required"
 # One profile command per gate (relais ADR-0013, `acceptance.adapters`): each
 # gate runs through `amont run --stamp <gate>`, so amont records its verdict
 # on the candidate's tree, and the person's commit and push of that tree skip
-# it instead of running it again. `AMONT_ON_BUSY=wait`: relais already holds
+# it instead of running it again. `GREENGATE_ON_BUSY=wait`: relais already holds
 # the host slot. The parts of `make check` that are not gates stay plain.
 [[verification.profiles.default.commands]]
 argv = ["amont", "run", "--stamp", "cargo-fmt"]
 timeout_seconds = 300
-env = { AMONT_ON_BUSY = "wait" }
+env = { GREENGATE_ON_BUSY = "wait" }
 
 [[verification.profiles.default.commands]]
 argv = ["amont", "run", "--stamp", "clippy"]
 timeout_seconds = 1200
-env = { AMONT_ON_BUSY = "wait" }
+env = { GREENGATE_ON_BUSY = "wait" }
 
 [[verification.profiles.default.commands]]
 argv = ["amont", "run", "--stamp", "cargo-test"]
 timeout_seconds = 1200
-env = { AMONT_ON_BUSY = "wait" }
+env = { GREENGATE_ON_BUSY = "wait" }
 
 # `make lint`'s test-hooks clippy and bump-tap, `make test`'s test-hooks
 # test: none is a gate.
