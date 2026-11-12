@@ -178,18 +178,16 @@ fn list_json(cwd: &std::path::Path, pushed: bool) -> Option<String> {
 /// has no stamp for the key. A stamp counts under the header of its own ref.
 fn head_is_stamped(cwd: &std::path::Path) -> bool {
     ["HEAD^{tree}", "HEAD"].iter().any(|key| {
-        for names in crate::notes_names::NAMES {
-            let note = crate::git::stdout_in(cwd, &["notes", "--ref", names.gate_ref, "show", key]);
-            let stamp = note.and_then(|note| {
-                let mut tokens = note.lines().next()?.split_whitespace().map(str::to_owned);
-                (tokens.next().as_deref() == Some(names.gate_header))
+        crate::notes_names::NAMES
+            .into_iter()
+            .find_map(|names| {
+                let note =
+                    crate::git::stdout_in(cwd, &["notes", "--ref", names.gate_ref, "show", key])?;
+                let mut tokens = note.lines().next()?.split_whitespace();
+                (tokens.next() == Some(names.gate_header))
                     .then(|| tokens.any(|t| t.starts_with("pre-push-")))
-            });
-            if let Some(stamped) = stamp {
-                return stamped;
-            }
-        }
-        false
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -286,7 +284,7 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // the scratch dir usually does not exist yet
         std::fs::create_dir_all(&dir).expect("dir");
         let git = |args: &[&str]| {
             let ok = Command::new("git")

@@ -4,7 +4,7 @@
 //! signature check, which it removes.
 
 use std::ffi::OsString;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -46,6 +46,8 @@ struct Row {
 
 struct Prov {
     status: &'static str,
+    /// The namespace the signature was checked under (its header's name set).
+    namespace: &'static str,
     review: String,
     preview: String,
     plan_sha: String,
@@ -181,50 +183,78 @@ fn gh_head(slug: &str, pr: u64) -> Option<String> {
     v.get("headRefOid")?.as_str().map(str::to_string)
 }
 
-/// Fetch both name sets' refs. A set whose refs are absent on origin (the
-/// green one before greengate writes it, the legacy one after the census)
-/// does not fail the fetch: it fails only when no set could be fetched.
-fn fetch_notes(dir: &Path) -> bool {
-    NAMES
-        .iter()
-        .map(|n| fetch_refs(dir, [n.provenance_ref, n.attest_ref]))
-        .fold(false, |any, ok| any | ok)
-}
+/// The notes refs origin may carry, under either name set.
+const NOTES_GLOBS: [&str; 2] = ["refs/notes/greengate-*", "refs/notes/amont-*"];
 
-fn fetch_refs(dir: &Path, refs: [&str; 2]) -> bool {
+/// Fetch the notes refs origin lists under either name set. One bounded
+/// `ls-remote` names them and each listed ref is fetched; a ref the listing
+/// does not carry is absent on origin and skipped without a word (the green
+/// set before greengate writes it, the legacy one after the census). An
+/// `ls-remote` that fails, or a fetch of a listed ref that fails, is warned on
+/// stderr by name. False after any warning.
+fn fetch_notes(dir: &Path) -> bool {
+    let mut args = vec!["ls-remote", "origin"];
+    args.extend(NOTES_GLOBS);
+    let Some(listing) = bounded(dir, &args) else {
+        eprintln!(
+            "amont-agent: cannot list {} on origin; using what is local",
+            NOTES_GLOBS.join(" ")
+        );
+        return false;
+    };
     let mut ok = true;
-    for r in refs {
-        let spec = format!("+{r}:{r}");
-        let child = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["fetch", "--quiet", "origin", &spec])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let Ok(mut child) = child else {
+    for listed in listing.lines().filter_map(|l| l.split('\t').nth(1)) {
+        if bounded(
+            dir,
+            &["fetch", "--quiet", "origin", &format!("+{listed}:{listed}")],
+        )
+        .is_none()
+        {
+            eprintln!("amont-agent: cannot fetch {listed} from origin; using what is local");
             ok = false;
-            continue;
-        };
-        let start = Instant::now();
-        let done = loop {
-            match child.try_wait() {
-                Ok(Some(s)) => break s.success(),
-                Ok(None) if start.elapsed() < FETCH_BUDGET => {
-                    std::thread::sleep(Duration::from_millis(20))
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break false;
-                }
-            }
-        };
-        ok &= done;
+        }
     }
     ok
+}
+
+/// Run `git -C dir args` under the fetch budget. Its stdout when it exits 0
+/// in time; a child still running at the budget is killed and gives `None`.
+fn bounded(dir: &Path, args: &[&str]) -> Option<String> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // Read beside the wait, so a listing larger than a pipe buffer cannot stall the child.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).ok();
+        text
+    });
+    let start = Instant::now();
+    let done = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s.success(),
+            Ok(None) if start.elapsed() < FETCH_BUDGET => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill(); // the child may have exited since the poll
+                let _ = child.wait(); // reap it so it does not linger as a zombie
+                break false;
+            }
+        }
+    };
+    if !done {
+        return None;
+    }
+    reader.join().ok()
 }
 
 fn notes_show(dir: &Path, note_ref: &str, object: &str) -> Option<String> {
@@ -265,6 +295,11 @@ struct Found {
     object: String,
 }
 
+/// The record of a merge. Objects are tried in order (the PR head, then the
+/// tree), and the object order wins: a legacy note on the head beats a green
+/// note on the tree. Per object the green ref comes before the legacy one.
+/// Only when no object carries a record is the patch-id fallback tried, again
+/// green first.
 fn lookup(dir: &Path, merge: &str, head: Option<&str>, parent: Option<&str>) -> Option<Found> {
     let tree = git::stdout_in(dir, &["rev-parse", &format!("{merge}^{{tree}}")]);
     for object in head.into_iter().map(str::to_string).chain(tree) {
@@ -458,6 +493,7 @@ fn describe(dir: &Path, found: &Found, plan_file: &str) -> Prov {
     }
     Prov {
         status,
+        namespace: b.names.provenance_namespace,
         review: b
             .field("review")
             .and_then(|r| r.split_whitespace().next())
@@ -470,19 +506,15 @@ fn describe(dir: &Path, found: &Found, plan_file: &str) -> Prov {
 }
 
 fn gates_of(dir: &Path, object: &str) -> Vec<String> {
-    for names in NAMES {
-        let Some(text) = notes_show(dir, names.attest_ref, object) else {
-            continue;
-        };
-        let gates = blocks(&text, names)
-            .first()
-            .filter(|b| b.is_attest())
-            .and_then(|b| b.field("gates").map(str::to_string));
-        if let Some(g) = gates {
-            return g.split_whitespace().map(str::to_string).collect();
-        }
-    }
-    Vec::new()
+    NAMES
+        .into_iter()
+        .find_map(|names| {
+            let text = notes_show(dir, names.attest_ref, object)?;
+            let blocks = blocks(&text, names);
+            let gates = blocks.first().filter(|b| b.is_attest())?.field("gates")?;
+            Some(gates.split_whitespace().map(str::to_string).collect())
+        })
+        .unwrap_or_default()
 }
 
 fn rows_of(name: &str, dir: &Path, plan_file: &str) -> Vec<Row> {
@@ -573,7 +605,12 @@ fn human(r: &Row) -> String {
             if !r.gates.is_empty() {
                 s.push_str(&format!(" · gates {}", r.gates.join(" ")));
             }
-            s.push_str(&format!(" · {}", p.status));
+            let status = if p.status == "verified" {
+                format!("verified under {}", p.namespace)
+            } else {
+                p.status.to_string()
+            };
+            s.push_str(&format!(" · {status}"));
             for f in &p.flags {
                 s.push_str(&format!(" · {f}"));
             }
@@ -765,7 +802,7 @@ mod tests {
     fn repo(tag: &str) -> (PathBuf, String) {
         let dir =
             std::env::temp_dir().join(format!("amont-shipped-t-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // the scratch dir usually does not exist yet
         std::fs::create_dir_all(&dir).expect("dir");
         git(&dir, &["init", "-q"]);
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "c"]);

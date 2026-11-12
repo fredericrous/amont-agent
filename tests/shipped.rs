@@ -139,6 +139,7 @@ impl World {
 
     fn sign_in(&self, payload: &str, key: &str, namespace: &str) -> String {
         let f = self.top.join("payload");
+        // the first signature of a test has no earlier one to remove
         let _ = std::fs::remove_file(self.top.join("payload.sig"));
         std::fs::write(&f, payload).unwrap();
         run(
@@ -227,49 +228,178 @@ fn squash_with_pr_number_and_tag_is_verified_by_tree() {
     );
     assert!(out.contains(&format!("plan {}", &sha[..12])), "{out}");
     assert!(out.contains("gates cargo-test clippy"), "{out}");
-    assert!(out.trim_end().ends_with("verified"), "{out}");
+    assert!(
+        out.trim_end().ends_with("verified under amont-provenance"),
+        "{out}"
+    );
 }
 
 #[test]
 fn a_squash_with_only_green_notes_is_verified_under_the_green_namespace() {
-    let w = World::new("green");
-    let head = w.feature();
-    let merge = w.squash("feat: a (#7)");
-    git(&w.repo, &["tag", "v1.9.0"]);
-    let tree = git(&w.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
-    let sha = w.body_sha(2);
-    let record =
-        w.record(&head, &sha, None)
-            .replacen("amont-provenance-v1", "greengate-provenance-v1", 1);
-    let signed = w.sign_in(&record, "key", "greengate-provenance");
-    w.note("refs/notes/greengate-provenance", &tree, &signed);
-    w.note(
+    let world = World::new("green");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#7)");
+    git(&world.repo, &["tag", "v1.9.0"]);
+    let tree = git(&world.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let sha = world.body_sha(2);
+    let record = world.record(&head, &sha, None).replacen(
+        "amont-provenance-v1",
+        "greengate-provenance-v1",
+        1,
+    );
+    let signed = world.sign_in(&record, "key", "greengate-provenance");
+    world.note("refs/notes/greengate-provenance", &tree, &signed);
+    world.note(
         "refs/notes/greengate-attest",
         &tree,
         "greengate-attest-v2\ngates cargo-test\n",
     );
-    let (out, err, code) = w.shipped(&[]);
+    let (out, err, code) = world.shipped(&[]);
     let out = out.lines().next().unwrap_or("").to_string();
     assert_eq!(code, 0, "{err}");
     assert!(
         !err.contains("fetch"),
         "an absent legacy ref is not a failure: {err}"
     );
+    assert!(
+        !err.contains("refs/notes/"),
+        "no ref is warned about when every listed ref fetches: {err}"
+    );
     assert!(out.contains("gates cargo-test"), "{out}");
-    assert!(out.trim_end().ends_with("verified"), "{out}");
+    assert!(
+        out.trim_end()
+            .ends_with("verified under greengate-provenance"),
+        "{out}"
+    );
 }
 
 #[test]
 fn a_green_ref_carrying_the_legacy_header_is_no_provenance() {
-    let w = World::new("mixed");
-    let head = w.feature();
-    let merge = w.squash("feat: a (#7)");
-    let tree = git(&w.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
-    let sha = w.body_sha(2);
-    let signed = w.sign(&w.record(&head, &sha, None), "key");
-    w.note("refs/notes/greengate-provenance", &tree, &signed);
-    let (out, _, _) = w.shipped(&[]);
+    let world = World::new("mixed");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#7)");
+    let tree = git(&world.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let sha = world.body_sha(2);
+    let signed = world.sign(&world.record(&head, &sha, None), "key");
+    world.note("refs/notes/greengate-provenance", &tree, &signed);
+    let (out, _, _) = world.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    // The row shows no provenance at all: no status, no review field.
+    assert!(out.trim_end().ends_with("no provenance"), "{out}");
+    assert!(!out.contains("review "), "{out}");
     assert!(!out.contains("verified"), "{out}");
+}
+
+#[test]
+fn a_remote_with_only_legacy_refs_gives_no_fetch_warning() {
+    let world = World::new("legacy-only");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#14)");
+    let tree = git(&world.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let signed = world.sign(&world.record(&head, &world.body_sha(2), None), "key");
+    world.note(PROV, &tree, &signed);
+    let (out, err, code) = world.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("refs/notes/"), "{err}");
+    assert!(
+        out.trim_end().ends_with("verified under amont-provenance"),
+        "{out}"
+    );
+}
+
+#[test]
+fn green_provenance_without_green_attest_gives_no_fetch_warning() {
+    let world = World::new("green-prov-only");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#15)");
+    let tree = git(&world.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let record = world.record(&head, &world.body_sha(2), None).replacen(
+        "amont-provenance-v1",
+        "greengate-provenance-v1",
+        1,
+    );
+    let signed = world.sign_in(&record, "key", "greengate-provenance");
+    world.note("refs/notes/greengate-provenance", &tree, &signed);
+    let (out, err, code) = world.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("refs/notes/"), "{err}");
+    assert!(
+        out.trim_end()
+            .ends_with("verified under greengate-provenance"),
+        "{out}"
+    );
+}
+
+/// The patch-id of the diff from `from` to `to`, plans excluded as the
+/// fallback excludes them.
+fn patch_id_between(world: &World, from: &str, to: &str) -> String {
+    let diff = Command::new("git")
+        .current_dir(&world.repo)
+        .args(["diff", "--binary", from, to, "--", ".", ":!docs/plans"])
+        .output()
+        .unwrap()
+        .stdout;
+    let mut child = Command::new("git")
+        .current_dir(&world.repo)
+        .args(["patch-id", "--verbatim"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(&diff).unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_green_record_with_no_head_or_tree_note_is_found_by_patch() {
+    let world = World::new("green-patch");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#12)");
+    let init = git(&world.repo, &["rev-parse", &format!("{merge}^")]);
+    let pid = patch_id_between(&world, &init, &merge);
+    let record = world
+        .record(&head, &world.body_sha(2), Some(&pid))
+        .replacen("amont-provenance-v1", "greengate-provenance-v1", 1);
+    let signed = world.sign_in(&record, "key", "greengate-provenance");
+    // Attached to the parent: neither the PR head nor the merge tree carries it.
+    world.note("refs/notes/greengate-provenance", &init, &signed);
+    let (out, err, code) = world.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.trim_end()
+            .ends_with("verified under greengate-provenance"),
+        "patch fallback under the green ref: {out}"
+    );
+}
+
+#[test]
+fn a_green_record_signed_under_the_legacy_namespace_is_refused() {
+    let world = World::new("legacy-sign");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#13)");
+    let tree = git(&world.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let record = world.record(&head, &world.body_sha(2), None).replacen(
+        "amont-provenance-v1",
+        "greengate-provenance-v1",
+        1,
+    );
+    // A legacy signature replayed under a green header and ref.
+    let signed = world.sign(&record, "key");
+    world.note("refs/notes/greengate-provenance", &tree, &signed);
+    let (out, err, code) = world.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(!out.contains("verified"), "{out}");
+    assert!(out.trim_end().ends_with("bad signature"), "{out}");
 }
 
 #[test]
@@ -338,7 +468,7 @@ fn squash_onto_a_moved_main_is_found_by_patch() {
     let out = out.lines().next().unwrap_or("").to_string();
     assert_eq!(code, 0, "{err}");
     assert!(
-        out.trim_end().ends_with("verified"),
+        out.trim_end().ends_with("verified under amont-provenance"),
         "patch fallback: {out}"
     );
 }
@@ -422,7 +552,10 @@ fn a_record_on_the_pr_head_survives_the_branch_being_deleted() {
     let (out, err, code) = w.shipped_with_gh(&[], gh.to_str().unwrap());
     let out = out.lines().next().unwrap_or("").to_string();
     assert_eq!(code, 0, "{err}");
-    assert!(out.trim_end().ends_with("verified"), "{out} / {err}");
+    assert!(
+        out.trim_end().ends_with("verified under amont-provenance"),
+        "{out} / {err}"
+    );
 }
 
 #[test]
