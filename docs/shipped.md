@@ -14,11 +14,13 @@ does, working-directory fallback included: see
 name>` on `origin/main` (the plan or a pointer file). A repository without it
 is reported as `no plan file`.
 
-It fetches the notes refs origin lists under `refs/notes/greengate-*` and
-`refs/notes/amont-*` (one `git ls-remote`, then one fetch per listed ref) into
-local refs of the same name. A ref origin does not list is skipped silently;
-an `ls-remote` or fetch that fails is said on stderr, naming the ref, and the
-command goes on with the notes it has. Nothing else is written.
+It fetches the provenance and attest notes refs of both name sets
+(`refs/notes/greengate-{provenance,attest}`, `refs/notes/amont-{provenance,attest}`;
+one `git ls-remote`, then one fetch of those origin lists) into local refs of
+the same name. A ref origin does not list is skipped silently; an
+`ls-remote` or fetch that fails is said on stderr, naming the refs, and the
+command goes on with the notes it has. Gate stamps are never fetched. Nothing
+else is written.
 
 For each first-parent commit on `origin/main` that touched the file:
 

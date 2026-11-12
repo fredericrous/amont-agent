@@ -183,38 +183,52 @@ fn gh_head(slug: &str, pr: u64) -> Option<String> {
     v.get("headRefOid")?.as_str().map(str::to_string)
 }
 
-/// The notes refs origin may carry, under either name set.
-const NOTES_GLOBS: [&str; 2] = ["refs/notes/greengate-*", "refs/notes/amont-*"];
+/// The notes refs `shipped` reads, under either name set: provenance and
+/// attest only. A gate stamp is never fetched, so origin cannot overwrite a
+/// local stamp the push preflight reads.
+fn read_refs() -> Vec<&'static str> {
+    NAMES
+        .iter()
+        .flat_map(|names| [names.provenance_ref, names.attest_ref])
+        .collect()
+}
 
-/// Fetch the notes refs origin lists under either name set. One bounded
-/// `ls-remote` names them and each listed ref is fetched; a ref the listing
-/// does not carry is absent on origin and skipped without a word (the green
-/// set before greengate writes it, the legacy one after the census). An
-/// `ls-remote` that fails, or a fetch of a listed ref that fails, is warned on
-/// stderr by name. False after any warning.
+/// Fetch the notes refs `shipped` reads, under either name set. One bounded
+/// `ls-remote` names those origin carries, and one bounded fetch takes them
+/// all; a ref the listing does not carry is absent on origin and skipped
+/// without a word (the green set before greengate writes it, the legacy one
+/// after the census). An `ls-remote` or a fetch that fails is warned on
+/// stderr, naming the refs. False after any warning.
 fn fetch_notes(dir: &Path) -> bool {
+    let wanted = read_refs();
     let mut args = vec!["ls-remote", "origin"];
-    args.extend(NOTES_GLOBS);
+    args.extend(&wanted);
     let Some(listing) = bounded(dir, &args) else {
         eprintln!(
             "amont-agent: cannot list {} on origin; using what is local",
-            NOTES_GLOBS.join(" ")
+            wanted.join(" ")
         );
         return false;
     };
-    let mut ok = true;
-    for listed in listing.lines().filter_map(|l| l.split('\t').nth(1)) {
-        if bounded(
-            dir,
-            &["fetch", "--quiet", "origin", &format!("+{listed}:{listed}")],
-        )
-        .is_none()
-        {
-            eprintln!("amont-agent: cannot fetch {listed} from origin; using what is local");
-            ok = false;
-        }
+    let listed: Vec<&str> = listing
+        .lines()
+        .filter_map(|l| l.split('\t').nth(1))
+        .filter(|r| wanted.contains(r))
+        .collect();
+    if listed.is_empty() {
+        return true;
     }
-    ok
+    let specs: Vec<String> = listed.iter().map(|r| format!("+{r}:{r}")).collect();
+    let mut fetch = vec!["fetch", "--quiet", "origin"];
+    fetch.extend(specs.iter().map(String::as_str));
+    if bounded(dir, &fetch).is_none() {
+        eprintln!(
+            "amont-agent: cannot fetch {} from origin; using what is local",
+            listed.join(" ")
+        );
+        return false;
+    }
+    true
 }
 
 /// Run `git -C dir args` under the fetch budget. Its stdout when it exits 0
@@ -234,8 +248,11 @@ fn bounded(dir: &Path, args: &[&str]) -> Option<String> {
     let mut stdout = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
         let mut text = String::new();
-        stdout.read_to_string(&mut text).ok();
-        text
+        match stdout.read_to_string(&mut text) {
+            Ok(_) => Some(text),
+            // a listing cut short is not a listing: the caller warns
+            Err(_) => None,
+        }
     });
     let start = Instant::now();
     let done = loop {
@@ -244,7 +261,7 @@ fn bounded(dir: &Path, args: &[&str]) -> Option<String> {
             Ok(None) if start.elapsed() < FETCH_BUDGET => {
                 std::thread::sleep(Duration::from_millis(20))
             }
-            _ => {
+            Ok(None) | Err(_) => {
                 let _ = child.kill(); // the child may have exited since the poll
                 let _ = child.wait(); // reap it so it does not linger as a zombie
                 break false;
@@ -254,7 +271,7 @@ fn bounded(dir: &Path, args: &[&str]) -> Option<String> {
     if !done {
         return None;
     }
-    reader.join().ok()
+    reader.join().ok().flatten()
 }
 
 fn notes_show(dir: &Path, note_ref: &str, object: &str) -> Option<String> {

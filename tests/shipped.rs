@@ -332,6 +332,71 @@ fn green_provenance_without_green_attest_gives_no_fetch_warning() {
     );
 }
 
+#[test]
+fn a_local_gate_stamp_survives_a_shipped_run() {
+    let world = World::new("gate-survives");
+    world.feature();
+    world.squash("feat: a (#16)");
+    // origin carries one gate stamp, the checkout another, unpushed
+    world.note(
+        "refs/notes/greengate-gate",
+        "HEAD",
+        "greengate-gate-v1 origin",
+    );
+    git(
+        &world.repo,
+        &[
+            "notes",
+            "--ref",
+            "refs/notes/greengate-gate",
+            "add",
+            "-f",
+            "-m",
+            "greengate-gate-v1 local",
+            "HEAD",
+        ],
+    );
+    let (_out, err, code) = world.shipped(&[]);
+    assert_eq!(code, 0, "{err}");
+    let kept = git(
+        &world.repo,
+        &[
+            "notes",
+            "--ref",
+            "refs/notes/greengate-gate",
+            "show",
+            "HEAD",
+        ],
+    );
+    assert_eq!(kept, "greengate-gate-v1 local");
+}
+
+#[test]
+fn an_unreachable_origin_is_warned_and_local_notes_answer() {
+    let world = World::new("unreachable");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#17)");
+    let tree = git(&world.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let signed = world.sign(&world.record(&head, &world.body_sha(2), None), "key");
+    world.note(PROV, &tree, &signed);
+    let gone = world.top.join("no-such-origin.git");
+    git(
+        &world.repo,
+        &["remote", "set-url", "origin", gone.to_str().unwrap()],
+    );
+    let (out, err, code) = world.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("cannot list refs/notes/greengate-provenance"),
+        "{err}"
+    );
+    assert!(
+        out.trim_end().ends_with("verified under amont-provenance"),
+        "{out}"
+    );
+}
+
 /// The patch-id of the diff from `from` to `to`, plans excluded as the
 /// fallback excludes them.
 fn patch_id_between(world: &World, from: &str, to: &str) -> String {
