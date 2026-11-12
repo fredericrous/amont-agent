@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/screenshot-in-main-session
 repos: [amont-agent]
 adrs: []
@@ -129,13 +129,23 @@ Install: `amont-agent install --write` adds one PreToolUse block with matcher
   nothing written", `diff -q` equal; the real `settings.json` byte-identical.
 - Suite: `cargo clippy --workspace --all-targets -- -D warnings` clean;
   `cargo test --workspace --locked` 39 test binaries ok, 0 failed.
-- Live (after the person's install): one main-session screenshot in a real
-  Claude Code session shows the advice; one via `browser-check` does not →
-  <observed>. This also proves Claude Code honours a literal `mcp__…` matcher.
-- 7 days after install: main-session `take_screenshot` calls per session vs
-  the 368-call baseline, and `Read` of `*.png` within 3 calls of a `filePath`
-  screenshot → <observed>. This is the count the deny waits on.
-
 ## Outcome
+Shipped in this branch: the `screenshot-in-main-session` rule, its install
+target and tests, docs and CHANGELOG. Two checks can only run after the
+person installs the release, so they are follow-ups, not pending rows:
+- Live check (after the person's install): one main-session screenshot in a real
+  Claude Code session shows the advice; one via `browser-check` does not →
+  run after install. This also proves Claude Code honours a literal `mcp__…` matcher.
+- 7-day count (after install): main-session `take_screenshot` calls per session vs
+  the 368-call baseline, and `Read` of `*.png` within 3 calls of a `filePath`
+  screenshot, counted 7 days after install. This is the count the deny waits on.
+Surprise: the journal keeps a session id's first eight characters, so a
+longer test session id made a journal assertion pass for the wrong reason.
+
+## Implementation review
+- implementation-review: approve-with-changes → approve on Delta; 4 lows fixed (banner, names, binary wording, comment wrap); 44k + 40k tok, 36 s + 40 s.
+- backend: approve-with-changes → approve; deny journalled `advised`, `told-before` asserted; 47k + 26k tok, 35 s + 16 s.
+- lang:rust: approve-with-changes → approve; TOOL const in TARGETS, shared test helper; deliberate: substring journal match, outcome names do not overlap; 48k + 25k tok.
+- unix: approve, carried by ancestry; 51k tok, 27 s.
 
 <!-- panel: repos=amont-agent reviewers=backend,lang:rust,tui,unix,codex body-sha=ee2b41c07011 -->
