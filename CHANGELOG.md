@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.31.0
+
 ### Changed
 
 - `heavy-build-unqueued` reads `GREENHARNESS_HOST_SLOT`, the variable greengate
