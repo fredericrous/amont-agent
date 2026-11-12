@@ -89,11 +89,13 @@ Install: `amont-agent install --write` adds one PreToolUse block with matcher
   is missing or the silent call spent the once-per-session advice; stance
   `observe` via global config → silent), `tests/settings_merge.rs` (block counts 6→7 and 5→6,
   index asserts re-checked).
-- [ ] Phase 3 — docs + release notes: `docs/rules.md` (row: `advise` (ceiling
+- [x] Phase 3 — docs + release notes: `docs/rules.md` (row: `advise` (ceiling
   `advise`)), `CHANGELOG.md` (Unreleased → Added). Release 3.32.0 via
   `tag-release`; the install is the person's.
 
 ## Decision log
+- 2026-11-12 — Phase 3 ticked with its docs and CHANGELOG; the 3.32.0 tag is
+  cut after the merge (`tag-release`), not recorded here as pending.
 - 2026-11-12 — Implemented by relais run run-660123f2bdd21-b5a7 (attempt 2
   added a 4th corpus negative after `every_rule_carries_expected_negatives`
   failed). Its verification and a verify run both waited out the 1800 s lease
