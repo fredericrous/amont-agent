@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v3.34.0
+
 ### Changed
 
 - The provenance record the review hook files now starts with
