@@ -274,6 +274,52 @@ fn a_squash_with_only_green_notes_is_verified_under_the_green_namespace() {
 }
 
 #[test]
+fn a_record_the_writer_builds_is_verified_under_greengate_provenance() {
+    use amont_agent_guard::notes_names::GREEN;
+    use amont_agent_process::provenance::{payload, Record, Review};
+    let world = World::new("written");
+    let head = world.feature();
+    let merge = world.squash("feat: a (#7)");
+    git(&world.repo, &["tag", "v1.9.0"]);
+    let tree = git(&world.repo, &["rev-parse", &format!("{merge}^{{tree}}")]);
+    let sha = world.body_sha(2);
+    let written = payload(&Record {
+        commit: &head,
+        tree: &tree,
+        patch: None,
+        plan_path: "docs/plans/p.md",
+        plan_sha: &sha,
+        review: Review::Reviewed,
+        review_content: "c0ffee",
+        profiles: &[],
+        preview: amont_agent_process::preview::Outcome::NotRequired,
+        version: "0",
+    });
+    assert!(
+        written.starts_with(&format!("{}\n", GREEN.provenance_header)),
+        "{written}"
+    );
+    // The signer is simulated here: it inserts the canon line after the tree
+    // line. The cross-repository evidence (greengate signing this record at
+    // a real push) is the plan's Phase 4 verification push.
+    let record = written.replacen(
+        &format!("tree {tree}\n"),
+        &format!("tree {tree}\ncanon c0ffee\n"),
+        1,
+    );
+    let signed = world.sign_in(&record, "key", GREEN.provenance_namespace);
+    world.note(GREEN.provenance_ref, &tree, &signed);
+    let (out, err, code) = world.shipped(&[]);
+    let out = out.lines().next().unwrap_or("").to_string();
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.trim_end()
+            .ends_with("verified under greengate-provenance"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_green_ref_carrying_the_legacy_header_is_no_provenance() {
     let world = World::new("mixed");
     let head = world.feature();

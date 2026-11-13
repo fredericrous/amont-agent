@@ -49,3 +49,24 @@ pub const LEGACY: NoteNames = NoteNames {
 
 /// Read order: green first, the legacy set only when green has nothing.
 pub const NAMES: [&NoteNames; 2] = [&GREEN, &LEGACY];
+
+#[cfg(test)]
+mod set_tests {
+    use super::NAMES;
+
+    /// Each set's provenance header, ref and namespace go together, so a
+    /// record signed under one set is filed under the same set's ref.
+    #[test]
+    fn each_set_keeps_its_provenance_names_together() {
+        for names in NAMES {
+            assert_eq!(
+                names.provenance_header,
+                format!("{}-v1", names.provenance_namespace)
+            );
+            assert_eq!(
+                names.provenance_ref,
+                format!("refs/notes/{}", names.provenance_namespace)
+            );
+        }
+    }
+}
