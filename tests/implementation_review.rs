@@ -1947,7 +1947,7 @@ fn a_passing_push_with_a_plan_writes_the_provenance_record() {
     let f = w.provenance_dir().join("app").join(&head);
     let l = lines_of(&f);
     assert_eq!(l.len(), 8, "{l:?}");
-    assert_eq!(l[0], "amont-provenance-v1");
+    assert_eq!(l[0], "greengate-provenance-v1");
     assert_eq!(l[1], format!("commit {head}"));
     assert_eq!(l[2], format!("tree {full_tree}"));
     // no `canon` line: the signer computes attest's canonical tree itself

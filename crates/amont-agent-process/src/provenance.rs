@@ -1,4 +1,4 @@
-//! The unsigned provenance record of a pushed commit (`amont-provenance-v1`,
+//! The unsigned provenance record of a pushed commit (`greengate-provenance-v1`,
 //! attest SPEC; decisions ADR-0036). When the implementation-review hook
 //! passes a push that carries a plan, it files what it knew about the push
 //! under `<config dir>/amont-agent/provenance/<repo>/<pushed sha>`. Only the
@@ -13,7 +13,12 @@ use std::path::{Path, PathBuf};
 
 use amont_agent_guard::git;
 
-const MAGIC: &str = "amont-provenance-v1";
+/// The header the record is written under: the green set (ADR-0068), the one
+/// source of the header, the ref and the signing namespace. The signer files
+/// the note under `GREEN.provenance_ref` and signs it under
+/// `GREEN.provenance_namespace`; a record never carries one set's header
+/// with the other's ref.
+const MAGIC: &str = amont_agent_guard::notes_names::GREEN.provenance_header;
 
 /// How the implementation review bound to the pushed tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,7 +296,22 @@ mod tests {
     fn payload_lines_are_in_order() {
         assert_eq!(
             payload(&rec(Some("p0"))),
-            "amont-provenance-v1\ncommit c0\ntree t0\npatch p0\nplan docs/plans/p.md s0\nreview by-patch k1\npreview not-required\nproducer amont-agent 1.2.3\n"
+            "greengate-provenance-v1\ncommit c0\ntree t0\npatch p0\nplan docs/plans/p.md s0\nreview by-patch k1\npreview not-required\nproducer amont-agent 1.2.3\n"
+        );
+    }
+
+    #[test]
+    fn the_header_is_the_green_set_and_never_the_legacy_one() {
+        use amont_agent_guard::notes_names::{GREEN, LEGACY};
+        let first = payload(&rec(None)).lines().next().unwrap().to_string();
+        assert_eq!(first, "greengate-provenance-v1");
+        assert_eq!(first, GREEN.provenance_header);
+        assert_ne!(first, LEGACY.provenance_header);
+        // header, ref and namespace of the set go together
+        assert_eq!(first, format!("{}-v1", GREEN.provenance_namespace));
+        assert_eq!(
+            GREEN.provenance_ref,
+            format!("refs/notes/{}", GREEN.provenance_namespace)
         );
     }
 
@@ -320,7 +340,7 @@ mod tests {
         };
         assert_eq!(
             payload(&record),
-            "amont-provenance-v1\ncommit c0\ntree t0\npatch p0\nplan docs/plans/p.md s0\nreview by-patch k1\ncode-review backend reviewed t0\ncode-review lang:rust carried t9\npreview not-required\nproducer amont-agent 1.2.3\n"
+            "greengate-provenance-v1\ncommit c0\ntree t0\npatch p0\nplan docs/plans/p.md s0\nreview by-patch k1\ncode-review backend reviewed t0\ncode-review lang:rust carried t9\npreview not-required\nproducer amont-agent 1.2.3\n"
         );
     }
 

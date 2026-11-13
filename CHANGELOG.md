@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- The provenance record the review hook files now starts with
+  `greengate-provenance-v1` (it was `amont-provenance-v1`), the header of the
+  `greengate-provenance` ref and signing namespace (ADR-0068). A signer must
+  file and sign it under the green names; the header of a record is never
+  paired with the legacy ref or namespace. `amont-agent shipped` and the push
+  preflight still read both names until the census. The signing key path is
+  not read or changed here: greengate owns it.
+
 ## v3.33.0
 
 ### Changed
