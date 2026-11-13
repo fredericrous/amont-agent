@@ -16,6 +16,7 @@
 | `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers, unless the plan the person approved declares the evidence is enough ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
 | `plan-names-no-paths` | `advise` (max advise) | a plan presented at `ExitPlanMode` whose `## Phases` name no file in backticks, so its panel was seated from every area of its repositories instead of the file types it touches; the advice names each phase that names no file ([the review panel](plan-review.md)) |
+| `clear-at-boundary` | `deny` | a turn ending at a boundary (a worktree removed, a `sweep.py --apply`, a plan commit) with nothing in flight and the main chain's context past 200k tokens; `deny` sends a `Stop` continuation asking for the handoff and one line starting with the marker `safe to /clear`, `advise` sends a note to the person (who says `hand off`), `observe` journals only |
 | `plan-phases-open` | `deny` | a turn ending while the plan this branch carries still has an open phase that is not a `🧑 decision:` — the agent is sent on to it |
 | `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |
 | `ask-unopened-page` | `deny` | an `AskUserQuestion` naming a local page (localhost URL, `file://` URL, `.html` path) that no `amont-agent open` showed the person since the last answered question about it; without a readable transcript it advises |
@@ -94,6 +95,19 @@ prompt resets the count. Anything it cannot establish — no repository, a git
 failure, an unreadable plan, a session id it will not use as a file name —
 lets the turn end. To turn it off without uninstalling:
 `git config --global amont.agent.plan-phases-open.stance observe`.
+
+`clear-at-boundary` fires on the same `Stop`. A turn that reached a boundary
+(`git worktree remove`, `sweep.py --apply`, or a `docs(plan): ` commit that is
+not a closing one) with the transcript's last main-chain context at 200,000
+tokens or more, no relais run still waiting on the session (read from the
+transcript only; greenpiste never runs `relais`), clean repositories and
+nothing unpushed outside `docs/plans/`, is sent on once to write the handoff
+and end with `safe to /clear; next: <the first prompt>`. It stays silent in
+plan mode, with background tasks, when the last message asks a question, has a
+`WAITING:` line or already says `safe to /clear`, and once per boundary. At a
+lone plan commit past 200k it speaks before `plan-phases-open`, which then
+stays silent for the rest of the turn. Rollback:
+`git config --global amont.agent.clear-at-boundary.stance observe`.
 
 `workspace-root-write` is the fourth, and ships at `deny` straight away
 instead of walking the observe, advise ladder. The evidence is on disk, not in a

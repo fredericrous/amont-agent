@@ -45,6 +45,7 @@ use amont_agent_guard::payload;
 use amont_agent_guard::push_target;
 #[cfg(unix)]
 use amont_agent_guard::quiet;
+use amont_agent_process::clear_boundary;
 use amont_agent_process::code_review;
 use amont_agent_process::impl_review_outcomes;
 use amont_agent_process::implementation_review;

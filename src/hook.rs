@@ -101,6 +101,30 @@ fn ask_unopened_page(ask: &payload::Ask) -> Decision {
     }
 }
 
+/// A turn ending. The plan's state is computed once, within one deadline
+/// shared with the repository checks. `Working` is in flight, so only
+/// `plan-phases-open` judges it; at `PlanOnly` past 200k `clear-at-boundary`
+/// judges first, and when it spoke, `plan-phases-open` stays silent for the
+/// rest of the turn.
+fn on_stop(stop: &payload::Stop) -> Decision {
+    use crate::clear_boundary;
+    use crate::plan_phases::PhaseFact;
+    let deadline = std::time::Instant::now() + clear_boundary::DEADLINE;
+    let fact = crate::plan_phases::open_phase(stop, deadline);
+    let clear = clear_boundary::on_stop(stop, fact, deadline, || {
+        crate::stance::resolve(&rules::clear_at_boundary::RULE)
+    });
+    if !matches!(clear, Decision::Silent) {
+        return clear;
+    }
+    if fact == PhaseFact::PlanOnly && clear_boundary::spoke_this_turn(stop) {
+        return Decision::Silent;
+    }
+    crate::plan_phases::on_stop(stop, || {
+        crate::stance::resolve(&rules::plan_phases_open::RULE)
+    })
+}
+
 fn decide(raw: &str) -> Decision {
     // Name the session before any stance is looked up (ADR-0042 shadow arm).
     if let Some(session) = serde_json::from_str::<serde_json::Value>(raw)
@@ -121,6 +145,10 @@ fn decide(raw: &str) -> Decision {
             }
             crate::preview::sweep();
             crate::plan_phases::sweep();
+            crate::clear_boundary::sweep();
+            if session.source == "clear" {
+                crate::clear_boundary::on_session_start_clear(&session.session, &session.cwd);
+            }
             crate::attestations::sweep();
             on_session_start(&session)
         }
@@ -170,9 +198,7 @@ fn decide(raw: &str) -> Decision {
                 Decision::Assert(said.join("\n\n"))
             }
         }
-        Event::Stop(stop) => crate::plan_phases::on_stop(&stop, || {
-            crate::stance::resolve(&rules::plan_phases_open::RULE)
-        }),
+        Event::Stop(stop) => on_stop(&stop),
         Event::PreFile(op) => on_pre_file(&op),
         Event::PreGrep(op) => on_grep(&op),
         Event::PreScreenshot(op) => on_screenshot(&op),

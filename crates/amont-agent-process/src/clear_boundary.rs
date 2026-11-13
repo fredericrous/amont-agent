@@ -12,11 +12,18 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
+use amont_agent_guard::atomic::write_atomic;
+use amont_agent_guard::decision::{self, Decision};
 use amont_agent_guard::git::{bytes_bounded_detail, BoundedFailure};
+use amont_agent_guard::journal;
+use amont_agent_guard::payload::Stop;
+use amont_agent_guard::rules::clear_at_boundary::RULE;
+use amont_agent_guard::rules::Stance;
 use serde_json::Value;
 
-/// What the handoff's last line says; the handoff step prints this constant.
-pub const MARKER: &str = "safe to /clear";
+use crate::plan_phases::PhaseFact;
+
+pub use amont_agent_guard::rules::clear_at_boundary::MARKER;
 
 /// The context size, in tokens, past which a clear pays for itself.
 ///
@@ -654,6 +661,233 @@ pub fn boundary_key(command: &str, heads: &[(PathBuf, String)]) -> String {
         key.push_str(head);
     }
     key
+}
+
+/// The one deadline every git child of a Stop shares.
+pub const DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn state_dir() -> Option<PathBuf> {
+    Some(journal::dir()?.join("clear-at-boundary"))
+}
+
+fn state_file(session: &str) -> Option<PathBuf> {
+    if !amont_agent_guard::session_state::usable_id(session) {
+        return None;
+    }
+    Some(state_dir()?.join(session))
+}
+
+/// The last boundary advised (its key) and the turn it was advised in (the
+/// opening prompt's uuid, empty when the rule only observed).
+fn read_state(session: &str) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(state_file(session)?).ok()?;
+    let (turn, key) = text.split_once('\n')?;
+    Some((turn.to_string(), key.to_string()))
+}
+
+fn write_state(session: &str, turn: &str, key: &str) -> Option<()> {
+    let file = state_file(session)?;
+    let dir = file.parent()?;
+    std::fs::create_dir_all(dir).ok()?;
+    journal::private(dir, 0o700);
+    write_atomic(&file, &format!("{turn}\n{key}")).ok()
+}
+
+/// State files older than a week are nobody's session any more.
+pub fn sweep() {
+    let Some(dir) = state_dir() else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let week = std::time::Duration::from_secs(7 * 24 * 3600);
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > week);
+        if old {
+            let _ = std::fs::remove_file(entry.path()); // a file already gone is swept
+        }
+    }
+}
+
+/// The rule already spoke in the turn this Stop ends: its state file holds
+/// the opening person prompt's uuid, and the transcript still shows the same
+/// prompt as the last one. `plan-phases-open` stays silent then, so the Stop
+/// after the handoff Continue ends the turn.
+pub fn spoke_this_turn(stop: &Stop) -> bool {
+    let Some((turn, _)) = read_state(&stop.session) else {
+        return false;
+    };
+    if turn.is_empty() {
+        return false;
+    }
+    let Some(transcript) = stop.transcript.as_deref() else {
+        return false;
+    };
+    let Ok(tail) = read_tail_until(transcript, TAIL_FIRST_CHUNK, TAIL_CAP, |entries| {
+        turn_window(entries).is_some()
+    }) else {
+        return false;
+    };
+    turn_window(&tail.entries).is_some_and(|window| window.prompt_uuid == turn)
+}
+
+/// A `source=clear` session start: the journal line the plan's Outcome (a)
+/// counts.
+pub fn on_session_start_clear(session: &str, cwd: &Path) {
+    let repo = cwd.file_name().map_or_else(
+        || "-".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    journal::record(&journal::Entry {
+        rule: RULE.id,
+        stance: "-",
+        outcome: "watched",
+        session,
+        repo: &repo,
+        mode: "-",
+        excerpt: "session-start clear",
+    });
+}
+
+fn has_waiting_line(message: &str) -> bool {
+    message
+        .lines()
+        .any(|line| line.trim().starts_with("WAITING:"))
+}
+
+/// Silence without a journal line: what the payload alone shows.
+fn payload_says_silence(stop: &Stop) -> bool {
+    if stop.stop_hook_active
+        || stop.permission_mode.as_deref() == Some("plan")
+        || stop.background_busy
+        || !amont_agent_guard::session_state::usable_id(&stop.session)
+    {
+        return true;
+    }
+    stop.last_message.as_deref().is_some_and(|message| {
+        message.trim_end().ends_with('?') || has_waiting_line(message) || message.contains(MARKER)
+    })
+}
+
+/// What the Stop shows about a boundary past [`SIZE`] tokens, with `fact`
+/// the plan's state from `plan_phases::open_phase`. `Working` is in flight,
+/// so the rule is silent. Every failure is silence. At `deny` the answer is
+/// a Continue, at `advise` a note to the person, at `observe` silence.
+pub fn on_stop(
+    stop: &Stop,
+    fact: PhaseFact,
+    deadline: Instant,
+    stance: impl FnOnce() -> Stance,
+) -> Decision {
+    if fact == PhaseFact::Working || payload_says_silence(stop) {
+        return Decision::Silent;
+    }
+    let Some(transcript) = stop.transcript.as_deref() else {
+        return Decision::Silent;
+    };
+    let Ok(tail) = read_tail(transcript) else {
+        return Decision::Silent;
+    };
+    let Some(size) = context_size(&tail.entries).filter(|size| *size >= SIZE) else {
+        return Decision::Silent;
+    };
+    judge_boundary(stop, &tail, size, deadline, stance()).unwrap_or(Decision::Silent)
+}
+
+/// `None` is silence, journalled or not as each check decides.
+fn judge_boundary(
+    stop: &Stop,
+    tail: &Tail,
+    size: u64,
+    deadline: Instant,
+    stance: Stance,
+) -> Option<Decision> {
+    let cwd = stop.cwd.as_deref();
+    let repo = cwd.and_then(Path::file_name).map_or_else(
+        || "-".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let mode = stop.permission_mode.as_deref().unwrap_or("-");
+    let capped = if tail.capped { " tail-capped" } else { "" };
+    let record = |outcome: &str, what: &str| {
+        journal::record(&journal::Entry {
+            rule: RULE.id,
+            stance: stance.as_str(),
+            outcome,
+            session: &stop.session,
+            repo: &repo,
+            mode,
+            excerpt: &format!("{what}{capped}"),
+        });
+    };
+    let watched = |what: &str| {
+        record("watched", what);
+        None
+    };
+
+    let Some(window) = turn_window(&tail.entries) else {
+        return watched("turn-too-long");
+    };
+    let found = boundaries(&window, cwd.unwrap_or(Path::new("")));
+    let Some(boundary) = found.last() else {
+        return watched("no boundary");
+    };
+    for run in relais_runs(&tail.entries) {
+        if run.in_flight() {
+            let state = run.state.as_deref().unwrap_or("no state");
+            return watched(&format!("relais {} {state}", run.id));
+        }
+    }
+    let mut directories: Vec<PathBuf> = Vec::new();
+    for dir in found.iter().flat_map(|boundary| boundary.dirs.iter()) {
+        if !directories.contains(dir) {
+            directories.push(dir.clone());
+        }
+    }
+    let heads = match check_repositories(cwd, &directories, deadline) {
+        Repositories::Clean { heads } => heads,
+        Repositories::NotClean { reason, .. } => return watched(&reason),
+        Repositories::TimedOut => return watched("timeout"),
+    };
+    let key = boundary_key(&boundary.command, &heads);
+    if read_state(&stop.session).is_some_and(|(_, last)| last == key) {
+        return None;
+    }
+
+    let spoke = stance != Stance::Observe;
+    let turn = if spoke {
+        window.prompt_uuid.as_str()
+    } else {
+        ""
+    };
+    write_state(&stop.session, turn, &key)?;
+    let fact = format!(
+        "this turn reached a boundary ({}) with nothing in flight, and the context is at {}k tokens, past {}k.",
+        boundary.what,
+        size / 1000,
+        SIZE / 1000
+    );
+    match stance {
+        Stance::Observe => watched(&format!("{} (observe)", boundary.what)),
+        Stance::Advise => {
+            record("advised", boundary.what);
+            let remedy = "Say `hand off` to have the agent write the handoff, then /clear.";
+            Some(Decision::UserNote(decision::phrase(RULE.id, &fact, remedy)))
+        }
+        Stance::Deny => {
+            record("denied", boundary.what);
+            let remedy = format!(
+                "The handoff is then complete when the plan or ticket states the next action and the turn ends with one line: \"{MARKER}; next: `<the exact first prompt>`\"."
+            );
+            Some(Decision::Continue(decision::phrase(
+                RULE.id, &fact, &remedy,
+            )))
+        }
+    }
 }
 
 #[cfg(test)]

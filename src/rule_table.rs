@@ -19,6 +19,7 @@ pub const RULES: &[Rule] = &[
     crate::rules::push_preflight::RULE,
     crate::push_preview::RULE,
     crate::rules::plan_review_panel::RULE,
+    crate::rules::clear_at_boundary::RULE,
     crate::rules::plan_phases_open::RULE,
     crate::implementation_review_rule::RULE,
     crate::rules::ask_unopened_page::RULE,
@@ -171,7 +172,7 @@ mod tests {
     #[test]
     fn the_table_holds_every_rule_in_its_place() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
-        assert_eq!(ids.len(), 52, "{ids:?}");
+        assert_eq!(ids.len(), 53, "{ids:?}");
         let at = |id: &str| {
             ids.iter()
                 .position(|x| *x == id)

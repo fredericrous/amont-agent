@@ -598,6 +598,7 @@ mod tests {
                 last_message: None,
                 background_busy: false,
                 stop_hook_active: false,
+                transcript: None,
             }
         }
 
