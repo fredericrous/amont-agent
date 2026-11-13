@@ -45,6 +45,10 @@ amont-agent install --write  # merges it into ~/.claude/settings.json
 amont-agent doctor           # installed, runnable, firing? plan root in use
 ```
 
+`install --write` also places the `clear-relay` Claude Code plugin under
+`<state dir>/amont-agent/claude-marketplace/` and enables it in the same
+`settings.json`; `uninstall --write` removes it again.
+
 ## It measures before it blocks
 
 Each rule has a stance: `observe` records the firing and says nothing,

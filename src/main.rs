@@ -37,6 +37,7 @@ use amont_agent_process::block_registry;
 use amont_agent_process::content_id;
 mod hook;
 mod open;
+mod plugin_install;
 use amont_agent_guard::journal;
 use amont_agent_guard::json;
 use amont_agent_guard::lsp;
@@ -2878,10 +2879,11 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
         }
     };
 
+    let plugin = plugin_install::placement();
     let planned = if adding {
-        settings::plan_install(&path, &bin, f.reformat)
+        settings::plan_install(&path, &bin, f.reformat, plugin.as_ref())
     } else {
-        settings::plan_uninstall(&path, f.reformat)
+        settings::plan_uninstall(&path, f.reformat, plugin.as_ref())
     };
     let plan = match planned {
         Ok(p) => p,
@@ -2900,10 +2902,19 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
                 "{} would be removed: nothing else is left in it.",
                 plan.path.display()
             );
+            if let Some(dir) = &plan.remove_dir {
+                println!("would remove {}", dir.display());
+            }
             println!("Nothing written. Re-run with --write to apply.");
             return ExitCode::SUCCESS;
         }
         println!("{}", plan.change.describe(&plan.path));
+        for (dest, _) in &plan.files {
+            println!("would write {}", dest.display());
+        }
+        if let Some(dir) = &plan.remove_dir {
+            println!("would remove {}", dir.display());
+        }
         println!("Nothing written. Re-run with --write to apply:\n");
         print!("{}", plan.after);
         return ExitCode::SUCCESS;
