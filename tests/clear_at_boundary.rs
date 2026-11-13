@@ -355,32 +355,41 @@ fn a_dirty_tree_or_unpushed_work_is_silent_and_journalled() {
     );
 }
 
+const STARTED: &str = "Started relais run for: /w/.relais/tasks/abc123.json (in /w/repo). Waiting.";
+
+fn plugin_message(text: &str) -> Value {
+    json!({"type": "user", "uuid": "m", "message": {"role": "user",
+        "content": format!("The relais plugin sent a message:\n{text}")}})
+}
+
+fn decide(run: &str) -> Value {
+    json!({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "d1", "name": "mcp__relais__decide", "input": {"run": run}}]}})
+}
+
+fn started() -> Vec<Value> {
+    vec![
+        prompt("p0"),
+        tool_use("r1", "mcp__relais__run"),
+        tool_result("r1", STARTED),
+    ]
+}
+
+fn with_teardown(mut entries: Vec<Value>) -> Vec<Value> {
+    entries.extend(turn(TEARDOWN, 250_000));
+    entries
+}
+
 #[test]
-fn a_relais_run_that_waits_keeps_it_silent() {
-    for (name, extra, state) in [
-        ("noterminal", vec![], "queued"),
-        (
-            "needsdecision",
-            vec![
-                tool_use("s1", "mcp__relais__status"),
-                tool_result("s1", "run-65abc-1f2e needs_decision"),
-            ],
-            "needs_decision",
-        ),
-    ] {
+fn an_unfinished_start_keeps_it_silent_even_from_an_earlier_turn() {
+    for (name, extra) in [("same", vec![]), ("earlier", vec![prompt("p0b")])] {
         let w = World::new(name);
-        let mut entries = vec![
-            prompt("p0"),
-            tool_use("r1", "mcp__relais__run"),
-            tool_result("r1", "{\"run_id\":\"run-65abc-1f2e\",\"state\":\"queued\"}"),
-        ];
+        let mut entries = started();
         entries.extend(extra);
-        entries.extend(turn(TEARDOWN, 250_000));
-        let transcript = w.transcript("t.jsonl", &entries);
-        let reply = w.stop("s1", &transcript, json!({}));
-        assert!(reply.silent(), "{name}: {}", reply.stdout);
+        let transcript = w.transcript("t.jsonl", &with_teardown(entries));
+        assert!(w.stop("s1", &transcript, json!({})).silent(), "{name}");
         assert!(
-            w.journal_has("watched", &format!("relais run-65abc-1f2e {state}")),
+            w.journal_has("watched", "relais pending 1"),
             "{name}: {:?}",
             w.journal()
         );
@@ -388,34 +397,65 @@ fn a_relais_run_that_waits_keeps_it_silent() {
 }
 
 #[test]
-fn a_run_started_in_an_earlier_turn_and_still_running_keeps_it_silent() {
-    let w = World::new("earlier");
-    let mut entries = vec![
-        prompt("p0"),
-        tool_use("r1", "mcp__relais__run"),
-        tool_result("r1", "started run-65abc-1f2e"),
-        prompt("p0b"),
-        tool_use("s1", "mcp__relais__status"),
-        tool_result("s1", "run-65abc-1f2e running"),
-    ];
-    entries.extend(turn(TEARDOWN, 250_000));
-    let transcript = w.transcript("t.jsonl", &entries);
+fn a_run_that_needs_a_decision_keeps_it_silent_until_decided() {
+    let finished = plugin_message("relais run run-65abc-1f2e finished: needs_decision (x)");
+    let w = World::new("needsdecision");
+    let mut entries = started();
+    entries.push(finished.clone());
+    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
     assert!(w.stop("s1", &transcript, json!({})).silent());
-    assert!(w.journal_has("watched", "relais run-65abc-1f2e running"));
+    assert!(w.journal_has("watched", "relais run-65abc-1f2e needs_decision"));
+
+    let w = World::new("decided");
+    let mut entries = started();
+    entries.push(finished);
+    entries.push(decide("run-65abc-1f2e"));
+    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
+    assert!(w.stop("s1", &transcript, json!({})).blocks());
+}
+
+#[test]
+fn a_cancelled_run_with_a_successor_is_in_flight_until_the_exit() {
+    let successor = plugin_message(
+        "relais run run-65abc-1f2e finished: cancelled (scope_widened_for_tests). relais launches successor intent x.",
+    );
+    let w = World::new("successor");
+    let mut entries = started();
+    entries.push(successor.clone());
+    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
+    assert!(w.stop("s1", &transcript, json!({})).silent());
+    assert!(w.journal_has("watched", "relais pending 1"));
+
+    let w = World::new("exited");
+    let mut entries = started();
+    entries.push(successor);
+    entries.push(plugin_message(
+        "relais exited with code 9 without an outcome.",
+    ));
+    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
+    assert!(w.stop("s1", &transcript, json!({})).blocks());
 }
 
 #[test]
 fn a_finished_run_does_not_hold_it_back() {
     let w = World::new("accepted");
-    let mut entries = vec![
+    let mut entries = started();
+    entries.push(plugin_message(
+        "relais run run-65abc-1f2e finished: accepted.",
+    ));
+    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
+    assert!(w.stop("s1", &transcript, json!({})).blocks());
+}
+
+#[test]
+fn a_refused_start_does_not_hold_it_back() {
+    let w = World::new("refused");
+    let entries = vec![
         prompt("p0"),
         tool_use("r1", "mcp__relais__run"),
-        tool_result("r1", "{\"run_id\":\"run-65abc-1f2e\",\"state\":\"queued\"}"),
-        tool_use("s1", "mcp__relais__status"),
-        tool_result("s1", "{\"run\":\"run-65abc-1f2e\",\"state\":\"accepted\"}"),
+        tool_result("r1", "Nothing ran: the scope is empty."),
     ];
-    entries.extend(turn(TEARDOWN, 250_000));
-    let transcript = w.transcript("t.jsonl", &entries);
+    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
     assert!(w.stop("s1", &transcript, json!({})).blocks());
 }
 

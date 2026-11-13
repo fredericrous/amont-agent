@@ -417,49 +417,26 @@ fn is_closing_plan_commit(subject: &str) -> bool {
         .is_some_and(|(_, number)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// A relais run this session started.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelaisRun {
-    pub id: String,
-    /// The latest state a relais tool result in the tail showed.
-    pub state: Option<String>,
+/// What the transcript shows of the relais runs this session started.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelaisFlight {
+    /// Starts not yet followed by a finished or exited message.
+    pub pending: usize,
+    /// `(run id, state)` of runs that finished waiting on this session's
+    /// answer and no `mcp__relais__decide` has answered.
+    pub waiting: Vec<(String, String)>,
 }
 
-/// States after which a run waits on nobody.
-const TERMINAL_STATES: [&str; 6] = [
-    "accepted",
-    "rejected",
-    "failed",
-    "salvaged",
-    "abandoned",
-    "cancelled",
-];
-/// Every state word a result is read for.
-const KNOWN_STATES: [&str; 12] = [
-    "accepted",
-    "rejected",
-    "failed",
-    "salvaged",
-    "abandoned",
-    "cancelled",
-    "needs_review",
-    "needs_decision",
-    "running",
-    "queued",
-    "pending",
-    "started",
-];
-
-impl RelaisRun {
-    /// No terminal state was seen, or the state waits on this session's
-    /// answer (`needs_review`, `needs_decision`).
+impl RelaisFlight {
     pub fn in_flight(&self) -> bool {
-        match self.state.as_deref() {
-            Some(state) => !TERMINAL_STATES.contains(&state),
-            None => true,
-        }
+        self.pending > 0 || !self.waiting.is_empty()
     }
 }
+
+/// States a finished run waits on this session in.
+const WAITING_STATES: [&str; 3] = ["needs_review", "needs_decision", "interrupted"];
+const PLUGIN_MESSAGE_PREFIX: &str = "The relais plugin sent a message:\n";
+const STARTED_PREFIX: &str = "Started relais run";
 
 fn result_text(block: &Value) -> String {
     match &block["content"] {
@@ -473,76 +450,85 @@ fn result_text(block: &Value) -> String {
     }
 }
 
-/// `(offset, id)` of each `run-…` id in the text.
-fn run_ids(text: &str) -> Vec<(usize, String)> {
-    text.match_indices("run-")
-        .filter(|(at, _)| {
-            text[..*at]
-                .chars()
-                .next_back()
-                .is_none_or(|before| !before.is_alphanumeric())
-        })
-        .filter_map(|(at, _)| {
-            let id: String = text[at..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-                .collect();
-            let id = id.trim_end_matches('-').to_string();
-            (id.len() > 4).then_some((at, id))
-        })
-        .collect()
+/// The word after `needle` (`run-65abc-1f2e`, `needs_decision`).
+fn word_after<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+    let rest = &text[text.find(needle)? + needle.len()..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .unwrap_or(rest.len());
+    Some(&rest[..end]).filter(|word| !word.is_empty())
 }
 
-fn state_in(segment: &str) -> Option<String> {
-    segment
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .map(str::to_ascii_lowercase)
-        .find(|word| KNOWN_STATES.contains(&word.as_str()))
-}
-
-/// The runs `mcp__relais__run` returned anywhere in the entries, each with
-/// the latest state a later relais tool result shows.
-pub fn relais_runs(entries: &[Value]) -> Vec<RelaisRun> {
+/// Walks the entries in order and counts the relais runs still pending: a
+/// `mcp__relais__run` result that starts `Started relais run` adds one, a
+/// plugin message that `launches successor` adds one, and a `finished` or
+/// `exited ... without an outcome` plugin message takes one off. A run that
+/// finished in `needs_review`, `needs_decision` or `interrupted` waits until
+/// a later `mcp__relais__decide` names it.
+pub fn relais_flight(entries: &[Value]) -> RelaisFlight {
     let mut tool_names = std::collections::HashMap::new();
-    for entry in entries.iter().filter(|e| entry_type(e) == "assistant") {
-        for block in blocks(entry) {
-            if block["type"].as_str() == Some("tool_use") {
-                if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
-                    tool_names.insert(id.to_string(), name.to_string());
+    let mut flight = RelaisFlight::default();
+    for entry in entries {
+        match entry_type(entry) {
+            "assistant" => {
+                for block in blocks(entry) {
+                    if block["type"].as_str() != Some("tool_use") {
+                        continue;
+                    }
+                    let name = block["name"].as_str().unwrap_or("");
+                    if let Some(id) = block["id"].as_str() {
+                        tool_names.insert(id.to_string(), name.to_string());
+                    }
+                    if name == "mcp__relais__decide" {
+                        if let Some(run) = block["input"]["run"].as_str() {
+                            flight.waiting.retain(|(waiting, _)| waiting != run);
+                        }
+                    }
                 }
             }
-        }
-    }
-    let mut runs: Vec<RelaisRun> = Vec::new();
-    for entry in entries.iter().filter(|e| entry_type(e) == "user") {
-        for block in blocks(entry) {
-            if block["type"].as_str() != Some("tool_result") {
-                continue;
-            }
-            let Some(name) = block["tool_use_id"]
-                .as_str()
-                .and_then(|id| tool_names.get(id))
-                .filter(|name| name.starts_with("mcp__relais__"))
-            else {
-                continue;
-            };
-            let text = result_text(block);
-            let ids = run_ids(&text);
-            for (position, (at, id)) in ids.iter().enumerate() {
-                let end = ids.get(position + 1).map_or(text.len(), |(next, _)| *next);
-                let state = state_in(&text[*at..end]);
-                match runs.iter_mut().find(|run| run.id == *id) {
-                    Some(run) => run.state = state.or(run.state.take()),
-                    None if name == "mcp__relais__run" => runs.push(RelaisRun {
-                        id: id.clone(),
-                        state,
-                    }),
-                    None => {}
+            "user" => {
+                if let Some(message) = entry
+                    .pointer("/message/content")
+                    .and_then(Value::as_str)
+                    .and_then(|text| text.strip_prefix(PLUGIN_MESSAGE_PREFIX))
+                {
+                    apply_plugin_message(&mut flight, message);
+                    continue;
+                }
+                for block in blocks(entry) {
+                    let started = block["type"].as_str() == Some("tool_result")
+                        && block["tool_use_id"]
+                            .as_str()
+                            .and_then(|id| tool_names.get(id))
+                            .is_some_and(|name| name == "mcp__relais__run")
+                        && result_text(block).trim_start().starts_with(STARTED_PREFIX);
+                    if started {
+                        flight.pending += 1;
+                    }
                 }
             }
+            _ => {}
         }
     }
-    runs
+    flight
+}
+
+fn apply_plugin_message(flight: &mut RelaisFlight, message: &str) {
+    if message.contains("launches successor") {
+        flight.pending += 1;
+    }
+    if let Some(id) = word_after(message, "relais run ").filter(|id| id.starts_with("run-")) {
+        if let Some(state) = word_after(message, "finished: ") {
+            flight.pending = flight.pending.saturating_sub(1);
+            flight.waiting.retain(|(waiting, _)| waiting != id);
+            if WAITING_STATES.contains(&state) {
+                flight.waiting.push((id.to_string(), state.to_string()));
+            }
+        }
+    } else if message.contains("relais exited with code") && message.contains("without an outcome")
+    {
+        flight.pending = flight.pending.saturating_sub(1);
+    }
 }
 
 /// How the repositories a boundary touched stand.
@@ -865,11 +851,12 @@ fn judge_boundary(
     let Some(boundary) = found.last() else {
         return watched("no boundary");
     };
-    for run in relais_runs(&tail.entries) {
-        if run.in_flight() {
-            let state = run.state.as_deref().unwrap_or("no state");
-            return watched(&format!("relais {} {state}", run.id));
-        }
+    let flight = relais_flight(&tail.entries);
+    if let Some((id, state)) = flight.waiting.first() {
+        return watched(&format!("relais {id} {state}"));
+    }
+    if flight.pending > 0 {
+        return watched(&format!("relais pending {}", flight.pending));
     }
     let mut directories: Vec<PathBuf> = Vec::new();
     for dir in found.iter().flat_map(|boundary| boundary.dirs.iter()) {
@@ -1193,67 +1180,88 @@ mod tests {
         assert!(none[0].dirs.is_empty());
     }
 
-    fn relais_entries(extra: Vec<Value>) -> Vec<Value> {
+    const STARTED: &str =
+        "Started relais run for: /w/.relais/tasks/abc123.json (in /w/repo). Waiting.";
+
+    fn plugin_message(text: &str) -> Value {
+        json!({"type": "user", "uuid": "m", "message": {"role": "user",
+            "content": format!("The relais plugin sent a message:\n{text}")}})
+    }
+
+    fn decide(run: &str) -> Value {
+        assistant(
+            None,
+            false,
+            json!([{"type": "tool_use", "id": "d", "name": "mcp__relais__decide", "input": {"run": run}}]),
+        )
+    }
+
+    fn flight_after(extra: Vec<Value>) -> RelaisFlight {
         let mut entries = vec![
             prompt("p"),
             tool_use("r1", "mcp__relais__run"),
-            tool_result("r1", "{\"run_id\":\"run-65abc-1f2e\",\"state\":\"queued\"}"),
+            tool_result("r1", STARTED),
         ];
         entries.extend(extra);
-        entries
+        relais_flight(&entries)
     }
 
     #[test]
-    fn a_run_with_no_terminal_state_is_in_flight() {
-        let runs = relais_runs(&relais_entries(vec![]));
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].id, "run-65abc-1f2e");
-        assert!(runs[0].in_flight());
+    fn a_start_with_no_finished_message_is_in_flight() {
+        let flight = flight_after(vec![]);
+        assert_eq!(flight.pending, 1);
+        assert!(flight.in_flight());
     }
 
     #[test]
-    fn needs_decision_and_needs_review_are_in_flight() {
-        for state in ["needs_decision", "needs_review"] {
-            let runs = relais_runs(&relais_entries(vec![
-                tool_use("s", "mcp__relais__status"),
-                tool_result("s", &format!("run-65abc-1f2e is {state}")),
-            ]));
-            assert!(runs[0].in_flight(), "{state}");
-        }
+    fn a_start_in_an_earlier_turn_is_in_flight() {
+        assert!(flight_after(vec![prompt("later turn")]).in_flight());
     }
 
     #[test]
-    fn an_accepted_run_is_not_in_flight() {
-        let runs = relais_runs(&relais_entries(vec![
-            tool_use("s", "mcp__relais__status"),
-            tool_result("s", "{\"run\":\"run-65abc-1f2e\",\"state\":\"accepted\"}"),
-        ]));
-        assert!(!runs[0].in_flight());
+    fn a_finished_accepted_run_is_not_in_flight() {
+        let flight = flight_after(vec![plugin_message(
+            "relais run run-65abc-1f2e finished: accepted.",
+        )]);
+        assert!(!flight.in_flight());
     }
 
     #[test]
-    fn a_run_started_in_an_earlier_turn_and_still_running_is_in_flight() {
+    fn a_run_that_needs_a_decision_is_in_flight_until_decided() {
+        let finished = plugin_message("relais run run-65abc-1f2e finished: needs_decision (x)");
+        let waiting = flight_after(vec![finished.clone()]);
+        assert_eq!(
+            waiting.waiting,
+            vec![("run-65abc-1f2e".to_string(), "needs_decision".to_string())]
+        );
+        assert!(flight_after(vec![finished.clone(), decide("run-other")]).in_flight());
+        assert!(!flight_after(vec![finished, decide("run-65abc-1f2e")]).in_flight());
+    }
+
+    #[test]
+    fn a_cancelled_run_that_launches_a_successor_stays_in_flight() {
+        let successor = plugin_message(
+            "relais run run-65abc-1f2e finished: cancelled (scope_widened_for_tests). relais launches successor intent x.",
+        );
+        assert!(flight_after(vec![successor.clone()]).in_flight());
+        let exited = plugin_message("relais exited with code 9 without an outcome.");
+        assert!(!flight_after(vec![successor, exited]).in_flight());
+    }
+
+    #[test]
+    fn a_refused_start_is_not_in_flight() {
         let entries = vec![
+            prompt("p"),
             tool_use("r1", "mcp__relais__run"),
-            tool_result("r1", "started run-65abc-1f2e"),
-            prompt("later turn"),
-            tool_use("s", "mcp__relais__status"),
-            tool_result("s", "run-65abc-1f2e running"),
+            tool_result("r1", "Nothing ran: the scope is empty."),
         ];
-        let runs = relais_runs(&entries);
-        assert_eq!(runs[0].state.as_deref(), Some("running"));
-        assert!(runs[0].in_flight());
+        assert!(!relais_flight(&entries).in_flight());
     }
 
     #[test]
-    fn a_run_id_in_another_tools_result_does_not_start_a_run() {
-        let entries = vec![
-            tool_use("s", "mcp__relais__status"),
-            tool_result("s", "run-65abc-1f2e running"),
-            tool_use("b", "Bash"),
-            tool_result("b", "run-65abc-9999 running"),
-        ];
-        assert!(relais_runs(&entries).is_empty());
+    fn a_started_text_from_another_tool_does_not_count() {
+        let entries = vec![tool_use("b", "Bash"), tool_result("b", STARTED)];
+        assert!(!relais_flight(&entries).in_flight());
     }
 
     #[test]
