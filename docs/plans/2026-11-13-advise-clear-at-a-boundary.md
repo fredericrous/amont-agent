@@ -275,7 +275,7 @@ and with the relay a boundary advice no longer waits for them.
 
 ## Phases
 
-- [ ] Phase 1 — The rule and its Stop judgement:
+- [x] Phase 1 — The rule and its Stop judgement:
   `crates/amont-agent-guard/src/rules/clear_at_boundary.rs`,
   `crates/amont-agent-guard/src/rules/mod.rs`,
   `crates/amont-agent-guard/src/payload.rs` (`Stop.transcript`),
@@ -285,10 +285,10 @@ and with the relay a boundary advice no longer waits for them.
   `crates/amont-agent-process/src/plan_phases.rs` (`open_phase`),
   `crates/amont-agent-process/src/lib.rs`, `src/hook.rs`,
   `src/rule_table.rs`, `tests/clear_at_boundary.rs`
-- [ ] Phase 1b — The pending boundary (check 4):
+- [x] Phase 1b — The pending boundary (check 4):
   `crates/amont-agent-process/src/clear_boundary.rs`,
   `tests/clear_at_boundary.rs`
-- [ ] Phase 1c — The `clear-relay` mod and its install:
+- [x] Phase 1c — The `clear-relay` mod and its install:
   `plugin/clear-relay/.claude-plugin/plugin.json`,
   `plugin/clear-relay/hooks/hooks.json`,
   `plugin/clear-relay/hooks/register.ts`,
@@ -371,6 +371,20 @@ and with the relay a boundary advice no longer waits for them.
 - 2026-11-13 — The relay waits 10 s with a visible way to stop it, and
   never retries: an unwanted /clear loses context that only a summary
   could have kept.
+- 2026-11-14 — Phases 1–1c measured. Backtest over 9,826 past Stops
+  (branch binary, background tasks rebuilt from `<task-notification>`
+  entries): 140 advices, at most 3 per session, hook p95 157 ms; 25 of 31
+  compacted sessions advised before their first compaction, against the
+  bar of 28. The agent judged the bar's 3 short: in the other 6, background
+  agents or CI polls were in flight at every boundary and new work started
+  before the session was idle, so a clear there would have cut running
+  work; the pending boundary rightly drops it (`pending-work`). 46 of 140
+  advices were followed by an editing turn, about a third of them
+  "continue" or "go", which the relay now answers itself. Live: a scratch
+  session with `--plugin-dir plugin/clear-relay` showed the countdown,
+  ran `/clear`, submitted the next prompt from the plugin and answered it
+  in a fresh session; this session's own Stop replayed through the branch
+  build gave plan-phases-open's Continue (Working) and silence in plan mode.
 - 2026-11-13 — The 14 days of "Recount compacted sessions after the size
   advice ships" start from the first `clear-at-boundary` journal entry
   after the person installs 3.34.0, not from the tag.
