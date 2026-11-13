@@ -17,26 +17,29 @@ adrs: []
 ## Picture
 
 ```
- Stop --> boundary-1 plan commit, nothing after it, past 200k?
-              | no                          | yes
-              v                             v
-       plan-phases-open               (skip plan-phases-open)
-         |          |                       |
-     spoke      no open phase               |
-       |            v                       v
-      done   context >= 200k? --no--> silent (no git, no spawn)
-                    | yes
-                    v
-             boundary this turn? --no--> silent
-                    | yes
-                    v
-             anything in flight? --yes--> silent, journalled
-                    | no
-                    v
-             advised this boundary? --yes--> silent
-                    | no
-                    v
-             one Continue: handoff + "safe to /clear; next: `...`"
+ Stop --> open_phase (one git pass, 2 s deadline)
+            |                 |                      |
+         Working           PlanOnly            None / TimedOut
+            |                 |                      |
+            |                 +----------+-----------+
+            |                            v
+            |          clear-at-boundary checks, cheapest first:
+            |            payload says wait? --yes--> silent
+            |            context >= 200k?   --no---> silent (no clear-at-boundary git)
+            |            boundary this turn? --no--> silent, journalled
+            |            anything in flight? --yes-> silent, journalled
+            |            advised this boundary? -yes> silent
+            |                            |
+            |                spoke ------+------ silent
+            |                  |                   |
+            |                  v                   v
+            |     one Continue: handoff +   PlanOnly: plan-phases-open
+            |     "safe to /clear; next:    None: nothing more
+            |     `...`"; plan-phases-open
+            |     silent for the rest of
+            |     the turn
+            v
+     plan-phases-open as today (clear-at-boundary silent)
 ```
 
 A turn's Stop used to end silently however large the context. After this
@@ -104,7 +107,9 @@ with ≥ 5 assistant messages, 32 compacted; Phase 3 lands the script):
 
 ## Code review
 
-- amont-agent: backend, lang:rust, unix, architect (tui left out)
+- amont-agent: backend, lang:rust, unix, architect (tui left out: no command
+  or flag changes, and the only new output is hook text, whose wording the
+  panel already reviewed)
 - decisions: lang:python (backend and architect left out: a measurement script run by hand, nothing deployed)
 
 ## Behaviour
@@ -300,8 +305,10 @@ is journalled `denied`, `advised` or `watched` with its reason.
   reason for each silence, how many advices each session gets, and p95
   hook time. Pass bar: an advice before the first compaction in at least
   28 of the 31 compacted sessions that passed a teardown, and no session
-  with more than 3 advices. The failure it would show: an advice where
-  the next turn kept implementing the same task.
+  with more than 3 advices, and at most 10% of advices followed by a next
+  turn that kept implementing the same task (the failure the backtest
+  would show). It also counts the turns whose tail read hit the 8 MB cap
+  (`tail-capped`), where relais ids older than the cap go unseen.
 - Phase 1, live: install the branch build with `--hooks-dir` only. Replay
   this session's own Stop payload with its real transcript (past 200k
   after a teardown) → the Continue text; replay it in plan mode → silent.
@@ -316,7 +323,7 @@ is journalled `denied`, `advised` or `watched` with its reason.
 Measured 7 and 14 days after the first `clear-at-boundary` journal entry:
 - (a) the share of `denied` entries followed, within 30 minutes, by a
   SessionStart with `source=clear` in the same repository;
-- (b) the share of advised sessions whose next turn kept implementing the
+- (b) the share of `denied` entries whose next turn kept implementing the
   same task;
 - (c) the compacted share, from count-context.py.
 
