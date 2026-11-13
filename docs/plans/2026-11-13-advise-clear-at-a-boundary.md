@@ -8,43 +8,46 @@ adrs: []
 
 ## Review panel
 
-👉 **Decide:** none — approve if one Continue at a boundary past 200k makes sessions clear instead of compacting.
-📍 amont-agent, decisions · plan reviewed, not started · next: Phase 1 rule and Stop judgement. Panel: architect, backend, lang:python, lang:rust, po, tui, unix (all opus-5-5); codex: not installed.
-**Changed by review:** relais read from the transcript only (ADR-0064); boundary 1 judged before plan-phases-open via a typed `PhaseFact`; stance `deny` sends the Continue, `advise` a note.
-**Verdicts:** round 1: 6 approve-with-changes, 1 rework (rust); round 2: 6 approve-with-changes, 1 approve; backend delta approve-with-changes. 9 carried into implementation.
+👉 **Decide:** none — approve if a session that writes its handoff, clears itself and resubmits its next prompt saves more than the lost context costs. (Backend leaves `adds=screen` to you: the 10 s countdown and auto-clear were judged not to be a screen.)
+📍 amont-agent, decisions · Phase 1 built and backtested · next: Phase 1b pending boundary, then 1c clear-relay mod. Delta panel: backend, lang:rust, lang:typescript, lang:python (all opus-5-5); codex: not installed.
+**Changed by review:** background_busy is judged after the boundary search, so the boundary is kept as pending; the relay uses `$.clock.after` and ignores only its own prompts; split-proof measures and a relay log for the Outcome.
+**Verdicts:** earlier rounds as in the reviews file; person's delta: 4 approve-with-changes, then round 2: rust approve, 3 approve-with-changes, backend approve after the one high edit. 9 earlier + 7 new carried into implementation.
 📄 Full reviews: [2026-11-13-advise-clear-at-a-boundary.reviews.md](2026-11-13-advise-clear-at-a-boundary.reviews.md)
 
 ## Picture
 
 ```
  Stop --> open_phase (one git pass, 2 s deadline)
-            |                 |                      |
-         Working           PlanOnly            None / TimedOut
-            |                 |                      |
-            |                 +----------+-----------+
-            |                            v
-            |          clear-at-boundary checks, cheapest first:
-            |            payload says wait? --yes--> silent
-            |            context >= 200k?   --no---> silent (no clear-at-boundary git)
-            |            boundary this turn? --no--> silent, journalled
-            |            anything in flight? --yes-> silent, journalled
-            |            advised this boundary? -yes> silent
-            |                            |
-            |                spoke ------+------ silent
-            |                  |                   |
-            |                  v                   v
-            |     one Continue: handoff +   PlanOnly: plan-phases-open
-            |     "safe to /clear; next:    None: nothing more
-            |     `...`"; plan-phases-open
-            |     silent for the rest of
-            |     the turn
-            v
-     plan-phases-open as today (clear-at-boundary silent)
+   |            |                    |
+ Working     PlanOnly          None / TimedOut
+   |            +---------+----------+
+   |                      v
+   |    clear-at-boundary, cheapest first:
+   |      payload says wait?        --yes--> silent
+   |      context >= 200k?          --no---> silent, no git
+   |      boundary now or pending?  --no---> silent, journalled
+   |      anything in flight?       --yes--> pending, journalled
+   |      advised it, or 3 already? --yes--> silent
+   |                      |
+   |       spoke ---------+--------- silent
+   |         |                         |
+   |         v                         v
+   |   one Continue: handoff,    PlanOnly: plan-phases-open
+   |   last line "safe to        None: nothing more
+   |   /clear; next: `<p>`"
+   |         |
+   |         v
+   |   clear-relay mod (turn.complete): toast, 10 s,
+   |   no keystroke / prompt / /stay --> /clear, submit <p>
+   v
+ plan-phases-open as today (clear-at-boundary silent)
 ```
 
 A turn's Stop used to end silently however large the context. After this
 plan, a Stop at a boundary past 200k with nothing in flight sends the agent
-on once to write the handoff and say it is safe to /clear.
+on once to write the handoff and end on the line `safe to /clear; next:
+`<prompt>``. The `clear-relay` mod reads that line, runs `/clear` and
+submits the prompt, so a programme goes on with no one at the keyboard.
 
 ## Goal
 
@@ -107,9 +110,7 @@ with ≥ 5 assistant messages, 32 compacted; Phase 3 lands the script):
 
 ## Code review
 
-- amont-agent: backend, lang:rust, unix, architect (tui left out: no command
-  or flag changes, and the only new output is hook text, whose wording the
-  panel already reviewed)
+- amont-agent: backend, lang:rust, lang:typescript, unix, architect, tui (the `/stay` command and the countdown toast and status line)
 - decisions: lang:python (backend and architect left out: a measurement script run by hand, nothing deployed)
 
 ## Behaviour
@@ -141,8 +142,9 @@ which both rules share. `src/hook.rs` handles Stop like this:
 means silence:
 
 1. **Payload alone.** Silence when `stop_hook_active` is set, the
-   permission mode is `plan`, `background_busy` is set, or the session id
-   is unusable. Also silence when `last_assistant_message` ends with `?`,
+   permission mode is `plan`, or the session id is unusable
+   (`background_busy` is judged after check 4, so a boundary under it is
+   recorded as pending). Also silence when `last_assistant_message` ends with `?`,
    has a line starting `WAITING:`, or already contains the marker. The
    marker is `pub const MARKER: &str = "safe to /clear"` in
    `clear_at_boundary.rs`, listed in `docs/rules.md`; the handoff step
@@ -158,8 +160,21 @@ means silence:
    not a `tool_result`) in the same tail. If it is not within 8 MB, the
    result is silence, journalled `watched turn-too-long`. Checks 4 and 6
    read only this window; check 5 reads the whole tail.
-4. **Boundary in this turn.** Look in the window for Bash commands of
-   these shapes:
+4. **Boundary in this turn, or pending.** Look in the window for Bash
+   commands of the shapes below. A boundary found while something is in
+   flight (check 1's `background_busy`, check 5 or 6) is recorded as
+   pending in the state file, and a later Stop with no boundary of its
+   own judges the pending one, as long as no work started since it: no
+   Edit, Write or NotebookEdit tool call, no `git worktree add`, no
+   `mcp__relais__run` in the transcript after the pending boundary's
+   entry. A new person prompt drops the pending boundary. A new
+   `is_injected` predicate tells injected prompts apart: a
+   `<task-notification>` or a prompt the engine framed as `The <name>
+   plugin sent a message:` (relais's, and the relay's own). Today
+   `is_person_prompt` counts both as a person prompt. The backtest showed
+   why: at 6 of the 31 compacted sessions, background work (CI polls,
+   review agents) was in flight at every boundary, and the turn that ended
+   after it finished had no boundary command. The shapes:
    - `git … worktree remove` (boundaries 2 and 3);
    - `sweep.py … --apply`, matched on the script's base name (boundary 4,
      the sweep that ends a release). This shape is data, not a
@@ -167,13 +182,17 @@ means silence:
    - a `git commit` whose message starts `docs(plan): ` and is not a
      `, done` or `, phase N` closing commit (boundary 1).
    No match means silence, journalled `watched no boundary`.
-5. **relais, read from the transcript only.** Take the `run-…` ids that
-   `mcp__relais__run` results returned anywhere in the tail already read
-   (up to 8 MB, earlier turns included: runs are detached). For each, take
-   the latest state that a later relais tool result in that tail shows.
-   Silence, journalled `watched relais <id> <state>`, when a run shows no
-   terminal state, or shows `needs_review` or `needs_decision`: those
-   wait on this session.
+5. **relais, read from the transcript only.** Over the whole tail (up to
+   8 MB, earlier turns included: runs are detached), count each
+   `mcp__relais__run` result that starts `Started relais run` and each
+   plugin message that launches a successor, less each plugin message
+   that says a run finished or relais exited. A run that finished at
+   `needs_review`, `needs_decision` or `interrupted` waits on this session
+   until an `mcp__relais__decide` names it. Silence, journalled `watched
+   relais pending <n>` or `watched relais <id> <state>`. (The backtest
+   found the first version, which looked for run ids in tool results,
+   never fired: Claude Code logs a run's outcome as a plugin message
+   prompt.)
 6. **Repositories.** Check the payload `cwd` (when it still exists inside
    a work tree) and each existing `-C <dir>` of the boundary commands. A
    removed worktree is not a repository; it counts as clean, because
@@ -195,7 +214,10 @@ means silence:
    repository's HEAD. The same key again means silence. The file also
    counts the advices given in the session: from the fourth on, the
    result is silence, journalled `watched cap`. A `/clear` starts a new
-   session id, so the count restarts there. The file is written with
+   session id, so the count restarts there. The file is JSON (turn, advices, key, and an optional pending boundary:
+   its entry uuid, command, label and `-C` dirs); a file in the old text
+   format reads as no pending boundary. A pending entry whose uuid is no
+   longer in the tail is dropped, journalled `watched pending-lost`. The file is written with
    `atomic::write_atomic` and swept after 7 days, as plan-phases-open's
    are.
 
@@ -212,6 +234,45 @@ and stated as facts:
 At `advise`, the same text goes to the person as a `UserNote`. The outcome
 is journalled `denied`, `advised` or `watched` with its reason.
 
+**The `clear-relay` mod: the session clears and goes on by itself.** A
+Claude Code plugin with one hooks module, at `plugin/clear-relay/` in this
+repository, placed by `amont-agent install` as relais places its
+own (each tool keeps its own install path, `harness.extensions`). It
+names no greenpiste command and works without greenpiste: any answer that
+ends with the line does it.
+
+- `turn.complete` with `reason` `answer`, on the main agent (no
+  `agentId`): when the answer's last non-empty line matches
+  `safe to /clear; next: \`<prompt>\``, with a non-empty prompt of at most
+  2,000 characters and no newline, arm a relay. Any other ending disarms.
+- Armed, it shows a toast and a status line, `clearing in 10 s, then:
+  <prompt, cut to 60>; type anything or /stay to keep this session`, and
+  starts `$.clock.after(10_000, fire)` from `turn.complete`, which
+  returns at once. It never uses `$.clock.sleep`: `command.run` rejects
+  inside a hook the turn waits on. On disarm, `Timer.cancel()`. It disarms
+  when the prompt box is no longer
+  empty (`prompt.edit` or `$.prompt.read`), a prompt is submitted
+  (`prompt.submit` from the person or another plugin), a turn starts, or the person runs
+  `/stay` (a command the mod registers once at module load, since no `session.start` follows a `/clear`).
+- Still armed after 10 s: `$.command.run({ command: "clear" })`, awaited, then `session.end` with reason `clear` (5 s, else a toast and stop), then
+  `$.prompt.submit({ text: <prompt> })`. Each step that is refused or
+  throws disarms and shows a toast saying what failed, with the prompt,
+  so the person can paste it. Nothing is retried.
+- State machine: idle, armed, firing. The disarm hooks (`prompt.submit`, `turn.start`, `prompt.edit`) ignore events whose `e.origin` is `{ kind: 'plugin', name }` with this mod's own name, and everything while `firing`; another plugin's prompt disarms; `session.end` with reason `clear` cancels only while armed.
+- `turn.complete` returns `await next(e)` unchanged.
+- At most one relay per 2 minutes (by `$.clock.now()`), so a misbehaving answer cannot loop
+  `/clear`. A reload or a lost worker drops the timer and the state, so
+  the relay disarms, which is the safe outcome, and nothing is retried.
+- Each arm, disarm (with its cause), clear, submit and failure is appended
+  as one JSON line to `<state dir>/amont-agent/clear-relay.jsonl`, with
+  the session id, cwd and time. Outcome (a) and (d) read it.
+- Off switch: the plugin's `userConfig` `enabled` (default true), and
+  greenpiste's stance: at `observe` no Continue asks for the line, so the
+  relay has nothing to read.
+
+Programmes need no exemption: the person wants a programme to keep going,
+and with the relay a boundary advice no longer waits for them.
+
 ## Phases
 
 - [ ] Phase 1 — The rule and its Stop judgement:
@@ -224,6 +285,23 @@ is journalled `denied`, `advised` or `watched` with its reason.
   `crates/amont-agent-process/src/plan_phases.rs` (`open_phase`),
   `crates/amont-agent-process/src/lib.rs`, `src/hook.rs`,
   `src/rule_table.rs`, `tests/clear_at_boundary.rs`
+- [ ] Phase 1b — The pending boundary (check 4):
+  `crates/amont-agent-process/src/clear_boundary.rs`,
+  `tests/clear_at_boundary.rs`
+- [ ] Phase 1c — The `clear-relay` mod and its install:
+  `plugin/clear-relay/.claude-plugin/plugin.json`,
+  `plugin/clear-relay/hooks/hooks.json`,
+  `plugin/clear-relay/hooks/register.ts`,
+  `plugin/clear-relay/hooks/register.test.ts`,
+  `src/plugin_install.rs` (writes the mod, embedded with `include_str!`,
+  to `<state dir>/amont-agent/claude-marketplace/` with its
+  `marketplace.json`, and adds the `extraKnownMarketplaces` and
+  `enabledPlugins` entries inside `settings::plan_install`/`plan_uninstall`,
+  so they share the one Plan, `would_reformat`, the dry run without `--write` and
+  `RemoveFile`; the plugin files are written only with `--write`;
+  `uninstall` removes both, as relais does),
+  `src/main.rs`, `tests/plugin_install.rs` (which also checks the embedded
+  file list against the files in `plugin/clear-relay/`)
 - [ ] Phase 2 — Docs and release: `docs/rules.md`, `README.md`,
   `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, released as greenpiste
   3.34.0 through the tag-release skill (a minor version: a new rule)
@@ -234,7 +312,11 @@ is journalled `denied`, `advised` or `watched` with its reason.
     id and one session filter. It takes `--since`/`--until` on entry
     timestamps. Its first line is the compacted share of all sessions in
     the window (the map's measure); the share among sessions with ≥ 5
-    assistant messages follows, labelled. It also counts the teardowns
+    assistant messages follows, labelled. Because a relay `/clear` splits
+    one piece of work into several sessions and inflates that denominator,
+    it also prints compactions per 1,000 deduped main-chain assistant calls
+    and the mean context per call (input + cache_creation + cache_read),
+    measures the split cannot move. It also counts the teardowns
     whose cwd is the removed path.
   - `docs/programmes/session-boundaries/t06-size-advice.md`: the
     Resolution carries the size, its arithmetic, the script's 2026-11-13
@@ -243,7 +325,8 @@ is journalled `denied`, `advised` or `watched` with its reason.
     `status = "closed"`.
   - `docs/programmes/session-boundaries/map.md`: a Decisions-so-far line,
     including that t03's "waiting on review or CI" signal is not read,
-    and why.
+    and why, and that the `clear-relay` mod now types `/clear`, amending
+    the Destination and the "only the person can type `/clear`" fact.
 
 ## Decision log
 
@@ -277,6 +360,17 @@ is journalled `denied`, `advised` or `watched` with its reason.
   advices, a maximum of 3, and the same coverage (30 of 31 compacted
   sessions advised before their first compaction), because it only
   drops later advices.
+- 2026-11-13 — After the backtest the person chose that a programme keeps
+  going: the session clears and continues by itself, without them. A
+  Claude Code plugin can do it (`$.command.run` of `clear`, then
+  `$.prompt.submit`, and a plugin outlives `/clear`). The 12% of advices
+  followed by "continue" or "go" were the person carrying a programme on;
+  the relay makes that their default. Costs: a fresh session starts at a
+  median 46k tokens, against the 200k–900k the backtest's advised
+  sessions carried.
+- 2026-11-13 — The relay waits 10 s with a visible way to stop it, and
+  never retries: an unwanted /clear loses context that only a summary
+  could have kept.
 - 2026-11-13 — The 14 days of "Recount compacted sessions after the size
   advice ships" start from the first `clear-at-boundary` journal entry
   after the person installs 3.34.0, not from the tag.
@@ -320,6 +414,28 @@ is journalled `denied`, `advised` or `watched` with its reason.
   turn that kept implementing the same task (the failure the backtest
   would show). It also counts the turns whose tail read hit the 8 MB cap
   (`tail-capped`), where relais ids older than the cap go unseen.
+- Phase 1b: `cargo test --test clear_at_boundary`: a boundary under
+  `background_busy` → pending, journalled; the next Stop after a
+  `<task-notification>` → the Continue; an Edit, Write, `git worktree
+  add` or `mcp__relais__run` after it → silent; a person prompt → the
+  pending boundary dropped, and a plugin message → kept; an old-format
+  state file still reads. Phase 1: a fourth advice → `watched cap`.
+- Phase 1b: the backtest again, rebuilding `background_tasks` from later
+  `<task-notification>` entries: at least 28 of 31 compacted sessions
+  advised before their first compaction, still at most 3 per session.
+- Phase 1c: `claude plugin validate` and `claude plugin test
+  plugin/clear-relay` pass, with tests for: the line arms and, after
+  10 s on the mocked clock, runs `clear` then submits the prompt; a
+  keystroke, a submitted prompt, a started turn and `/stay` each disarm;
+  an aborted turn, a subagent's turn, a line that is not last, an empty
+  or multi-line prompt do not arm; a refused `clear` toasts and does not
+  submit; a second line within 2 minutes does not arm; the relay's own
+  submit does not disarm it; another plugin's submit during the countdown does; a refused submit after a clear toasts the
+  prompt; `/stay` works after a clear; the clock is the test kit's mocked
+  one. `tests/plugin_install.rs`: `install` without `--write` prints and writes nothing; `--write` twice gives one entry; other `settings.json` keys survive; `uninstall` removes only its own entries. Live: in a scratch
+  session started with `claude --plugin-dir plugin/clear-relay`, a turn
+  ending with the line clears and runs the next prompt in a new session
+  id.
 - Phase 1, live: install the branch build with `--hooks-dir` only. Replay
   this session's own Stop payload with its real transcript (past 200k
   after a teardown) → the Continue text; replay it in plan mode → silent.
@@ -333,12 +449,15 @@ is journalled `denied`, `advised` or `watched` with its reason.
 
 Measured 7 and 14 days after the first `clear-at-boundary` journal entry:
 - (a) the share of `denied` entries followed, within 30 minutes, by a
-  SessionStart with `source=clear` in the same repository;
-- (b) the share of `denied` entries whose next turn kept implementing the
+  SessionStart with `source=clear` with the same payload `cwd`, split into
+  relay-caused and person-typed clears;
+- (b) the share of `denied` entries whose next turn (in the same session, or
+  the first turn of the session the relay started) kept implementing the
   same task;
+- (d) relay outcomes from the mod's log: cleared, `/stay`, keystroke, failed;
 - (c) the compacted share, from count-context.py.
 
-Rollback (stance to `observe`): (b) above 10%, or any session with more
-than 3 advices. Target: (a) at least 50%, and (c) under 4% (the map).
+Rollback (stance to `observe`): (b) above 10%, (d)'s `/stay`+keystroke
+share above 10%, or any session with more than 3 advices. Target: (a) at least 50%, and (c) under 4% (the map).
 
-<!-- panel: repos=amont-agent,decisions adds=contract reviewers=architect,backend,lang:python,lang:rust,po,tui,unix body-sha=5f3cf2a2d15f -->
+<!-- panel: repos=amont-agent,decisions adds=contract reviewers=backend,lang:python,lang:rust,lang:typescript body-sha=11fe99abc0ea -->
