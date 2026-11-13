@@ -192,9 +192,12 @@ means silence:
 7. **Once per boundary.** A state file
    `<journal dir>/clear-at-boundary/<session>` holds the key of the last
    advised boundary: the boundary command's text plus each checked
-   repository's HEAD. The same key again means silence. The key is
-   written with `atomic::write_atomic`. The file is swept after 7 days,
-   as plan-phases-open's are.
+   repository's HEAD. The same key again means silence. The file also
+   counts the advices given in the session: from the fourth on, the
+   result is silence, journalled `watched cap`. A `/clear` starts a new
+   session id, so the count restarts there. The file is written with
+   `atomic::write_atomic` and swept after 7 days, as plan-phases-open's
+   are.
 
 **The text.** When every check passes, `deny` sends one
 `Decision::Continue`, built with `decision::phrase(RULE.id, fact, remedy)`
@@ -266,6 +269,14 @@ is journalled `denied`, `advised` or `watched` with its reason.
 - 2026-11-13 — The map's 32-of-265 baseline cannot be recounted, because
   those transcripts are pruned. t09 compares against count-context.py's
   pasted 2026-11-13 output, which uses the same script and definitions.
+- 2026-11-13 — The person capped the advice at 3 per session after the
+  first backtest: 789 advices, 44 sessions over 3 (max 54), all in
+  long sessions that never cleared, so every later teardown was a new
+  boundary. Re-advising only after the context grew by 200k since the
+  last advice still left 23 sessions over. A cap of 3 leaves 174
+  advices, a maximum of 3, and the same coverage (30 of 31 compacted
+  sessions advised before their first compaction), because it only
+  drops later advices.
 - 2026-11-13 — The 14 days of "Recount compacted sessions after the size
   advice ships" start from the first `clear-at-boundary` journal entry
   after the person installs 3.34.0, not from the tag.
