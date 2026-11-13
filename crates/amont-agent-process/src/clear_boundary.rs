@@ -36,6 +36,12 @@ pub use amont_agent_guard::rules::clear_at_boundary::MARKER;
 /// every larger S repays it sooner.
 pub const SIZE: u64 = 200_000;
 
+/// The most advices one session gets; from the next boundary on the rule is
+/// silent (`watched cap`). Backtest: 789 advices, 44 sessions over 3, at
+/// most 54 in one; a cap of 3 leaves 174 advices and
+/// keeps 30 of 31 compacted sessions advised before their first compaction.
+pub const MAX_ADVICES_PER_SESSION: u32 = 3;
+
 /// The first chunk of a transcript tail.
 pub const TAIL_FIRST_CHUNK: u64 = 64 * 1024;
 /// The largest tail read.
@@ -677,20 +683,43 @@ fn state_file(session: &str) -> Option<PathBuf> {
     Some(state_dir()?.join(session))
 }
 
-/// The last boundary advised (its key) and the turn it was advised in (the
-/// opening prompt's uuid, empty when the rule only observed).
-fn read_state(session: &str) -> Option<(String, String)> {
-    let text = std::fs::read_to_string(state_file(session)?).ok()?;
-    let (turn, key) = text.split_once('\n')?;
-    Some((turn.to_string(), key.to_string()))
+/// What a session's state file holds.
+struct State {
+    /// The opening prompt's uuid of the turn advised in, empty when the rule
+    /// only observed.
+    turn: String,
+    /// The key of the last boundary judged.
+    key: String,
+    /// The advices given in the session; a file in the old format reads 0.
+    advices: u32,
 }
 
-fn write_state(session: &str, turn: &str, key: &str) -> Option<()> {
+/// The first line is `<turn>` (old format) or `<turn> <advices>`; the rest is
+/// the boundary key.
+fn read_state(session: &str) -> Option<State> {
+    let text = std::fs::read_to_string(state_file(session)?).ok()?;
+    let (head, key) = text.split_once('\n')?;
+    let (turn, advices) = match head.split_once(' ') {
+        Some((turn, count)) => (turn, count.parse().unwrap_or(0)),
+        None => (head, 0),
+    };
+    Some(State {
+        turn: turn.to_string(),
+        key: key.to_string(),
+        advices,
+    })
+}
+
+fn write_state(session: &str, state: &State) -> Option<()> {
     let file = state_file(session)?;
     let dir = file.parent()?;
     std::fs::create_dir_all(dir).ok()?;
     journal::private(dir, 0o700);
-    write_atomic(&file, &format!("{turn}\n{key}")).ok()
+    write_atomic(
+        &file,
+        &format!("{} {}\n{}", state.turn, state.advices, state.key),
+    )
+    .ok()
 }
 
 /// State files older than a week are nobody's session any more.
@@ -718,7 +747,7 @@ pub fn sweep() {
 /// prompt as the last one. `plan-phases-open` stays silent then, so the Stop
 /// after the handoff Continue ends the turn.
 pub fn spoke_this_turn(stop: &Stop) -> bool {
-    let Some((turn, _)) = read_state(&stop.session) else {
+    let Some(State { turn, .. }) = read_state(&stop.session) else {
         return false;
     };
     if turn.is_empty() {
@@ -854,8 +883,13 @@ fn judge_boundary(
         Repositories::TimedOut => return watched("timeout"),
     };
     let key = boundary_key(&boundary.command, &heads);
-    if read_state(&stop.session).is_some_and(|(_, last)| last == key) {
-        return None;
+    let advices = match read_state(&stop.session) {
+        Some(state) if state.key == key => return None,
+        Some(state) => state.advices,
+        None => 0,
+    };
+    if advices >= MAX_ADVICES_PER_SESSION {
+        return watched("cap");
     }
 
     let spoke = stance != Stance::Observe;
@@ -864,7 +898,12 @@ fn judge_boundary(
     } else {
         ""
     };
-    write_state(&stop.session, turn, &key)?;
+    let state = State {
+        turn: turn.to_string(),
+        key,
+        advices: advices + u32::from(spoke),
+    };
+    write_state(&stop.session, &state)?;
     let fact = format!(
         "this turn reached a boundary ({}) with nothing in flight, and the context is at {}k tokens, past {}k.",
         boundary.what,

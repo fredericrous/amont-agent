@@ -625,3 +625,30 @@ fn a_session_start_by_clear_leaves_one_journal_line() {
     assert!(lines[0].contains(" watched "), "{lines:?}");
     assert!(lines[0].contains("session-start clear"), "{lines:?}");
 }
+
+#[test]
+fn when_the_cap_silences_a_plan_only_boundary_plan_phases_open_runs() {
+    let w = boundary_one();
+    for at in 1..=3 {
+        let mut entries = turn(&format!("git commit -m \"docs(plan): x {at}\""), 250_000);
+        entries[0] = prompt(&format!("turn-{at}"));
+        let transcript = w.transcript("t.jsonl", &entries);
+        let reply = w.stop("s1", &transcript, json!({}));
+        assert!(
+            reply.reason().starts_with("amont-agent/clear-at-boundary:"),
+            "boundary {at}: {}",
+            reply.stdout
+        );
+    }
+    let mut entries = turn("git commit -m \"docs(plan): x 4\"", 250_000);
+    entries[0] = prompt("turn-4");
+    let transcript = w.transcript("t.jsonl", &entries);
+    let fourth = w.stop("s1", &transcript, json!({}));
+    assert!(fourth.blocks(), "{}", fourth.stdout);
+    assert!(
+        fourth.reason().starts_with("amont-agent/plan-phases-open:"),
+        "{}",
+        fourth.reason()
+    );
+    assert!(w.journal_has("watched", "cap"), "{:?}", w.journal());
+}
