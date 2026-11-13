@@ -299,7 +299,9 @@ fn a_record_the_writer_builds_is_verified_under_greengate_provenance() {
         written.starts_with(&format!("{}\n", GREEN.provenance_header)),
         "{written}"
     );
-    // the signer inserts the canon line after the tree line
+    // The signer is simulated here: it inserts the canon line after the tree
+    // line. The cross-repository evidence (greengate signing this record at
+    // a real push) is the plan's Phase 4 verification push.
     let record = written.replacen(
         &format!("tree {tree}\n"),
         &format!("tree {tree}\ncanon c0ffee\n"),

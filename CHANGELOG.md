@@ -11,6 +11,11 @@
   paired with the legacy ref or namespace. `amont-agent shipped` and the push
   preflight still read both names until the census. The signing key path is
   not read or changed here: greengate owns it.
+- Install this with greengate's matching release (its Phase 4, which signs
+  `greengate-provenance-v1` records): an older greengate refuses the new
+  header, so a record written in between waits unsigned under
+  `<config dir>/amont-agent/provenance/` and the push says it is not signed;
+  installing the new greengate signs it at the next push.
 
 ## v3.33.0
 

@@ -14,10 +14,10 @@ use std::path::{Path, PathBuf};
 use amont_agent_guard::git;
 
 /// The header the record is written under: the green set (ADR-0068), the one
-/// source of the header, the ref and the signing namespace. The signer files
-/// the note under `GREEN.provenance_ref` and signs it under
-/// `GREEN.provenance_namespace`; a record never carries one set's header
-/// with the other's ref.
+/// source of the header. This module writes only the header; the signer
+/// (greengate, at push) must file the note under `GREEN.provenance_ref` and
+/// sign it under `GREEN.provenance_namespace`, and the readers refuse a note
+/// whose header does not match its ref.
 const MAGIC: &str = amont_agent_guard::notes_names::GREEN.provenance_header;
 
 /// How the implementation review bound to the pushed tree.
@@ -307,12 +307,6 @@ mod tests {
         assert_eq!(first, "greengate-provenance-v1");
         assert_eq!(first, GREEN.provenance_header);
         assert_ne!(first, LEGACY.provenance_header);
-        // header, ref and namespace of the set go together
-        assert_eq!(first, format!("{}-v1", GREEN.provenance_namespace));
-        assert_eq!(
-            GREEN.provenance_ref,
-            format!("refs/notes/{}", GREEN.provenance_namespace)
-        );
     }
 
     #[test]
