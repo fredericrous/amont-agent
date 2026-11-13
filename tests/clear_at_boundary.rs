@@ -323,7 +323,6 @@ fn what_the_payload_shows_is_silent_and_not_journalled() {
         json!({"last_assistant_message": "Shall I go on?"}),
         json!({"last_assistant_message": "Done.\n  WAITING: preview at :5173"}),
         json!({"last_assistant_message": "safe to /clear; next: `x`"}),
-        json!({"background_tasks": [{"id": "b1"}]}),
     ]
     .into_iter()
     .enumerate()
@@ -691,4 +690,131 @@ fn when_the_cap_silences_a_plan_only_boundary_plan_phases_open_runs() {
         fourth.reason()
     );
     assert!(w.journal_has("watched", "cap"), "{:?}", w.journal());
+}
+
+fn with_uuid(mut entry: Value, uuid: &str) -> Value {
+    entry["uuid"] = json!(uuid);
+    entry
+}
+
+fn busy() -> Value {
+    json!({"background_tasks": [{"id": "b1"}]})
+}
+
+fn notification() -> Value {
+    json!({"type": "user", "uuid": "n1", "message": {"role": "user",
+        "content": "<task-notification>\n<task-id>b1</task-id>\n</task-notification>"}})
+}
+
+/// A turn that tears a worktree down under background work, then the Stop
+/// that records it as pending.
+fn pending_world(name: &str) -> (World, Vec<Value>) {
+    let w = World::new(name);
+    let entries = vec![
+        prompt("p1"),
+        with_uuid(bash("b1", TEARDOWN), "boundary-1"),
+        tool_result("b1", "ok"),
+        usage(250_000, false),
+    ];
+    let transcript = w.transcript("t.jsonl", &entries);
+    let reply = w.stop("s1", &transcript, busy());
+    assert!(reply.silent(), "{}", reply.stdout);
+    assert!(
+        w.journal_has("watched", "pending background"),
+        "{:?}",
+        w.journal()
+    );
+    (w, entries)
+}
+
+fn later(w: &World, entries: &[Value], more: Vec<Value>, extra: Value) -> Reply {
+    let mut all = entries.to_vec();
+    all.extend(more);
+    all.push(usage(250_000, false));
+    let transcript = w.transcript("t.jsonl", &all);
+    w.stop("s1", &transcript, extra)
+}
+
+#[test]
+fn a_boundary_under_background_work_is_judged_at_the_first_idle_stop() {
+    let (w, entries) = pending_world("pendingidle");
+    let still_busy = later(&w, &entries, vec![notification()], busy());
+    assert!(still_busy.silent(), "{}", still_busy.stdout);
+    let idle = later(&w, &entries, vec![notification()], json!({}));
+    assert!(idle.blocks(), "{}", idle.stdout);
+    assert!(
+        idle.reason().contains("worktree remove"),
+        "{}",
+        idle.reason()
+    );
+    assert!(
+        w.journal_has("denied", "worktree remove"),
+        "{:?}",
+        w.journal()
+    );
+    let again = later(&w, &entries, vec![notification()], json!({}));
+    assert!(again.silent(), "{}", again.stdout);
+}
+
+#[test]
+fn work_after_the_pending_boundary_leaves_it_pending_and_silent() {
+    for (name, work) in [
+        ("edit", tool_use("w1", "Edit")),
+        ("write", tool_use("w1", "Write")),
+        ("worktreeadd", bash("w1", "git -C r worktree add ../x -b y")),
+        ("relaisrun", tool_use("w1", "mcp__relais__run")),
+    ] {
+        let (w, entries) = pending_world(name);
+        let reply = later(&w, &entries, vec![work, notification()], json!({}));
+        assert!(reply.silent(), "{name}: {}", reply.stdout);
+        assert!(
+            w.journal_has("watched", "pending-work"),
+            "{name}: {:?}",
+            w.journal()
+        );
+    }
+}
+
+#[test]
+fn a_person_prompt_drops_the_pending_boundary_and_a_plugin_message_does_not() {
+    let (w, entries) = pending_world("pendingprompt");
+    let plugin = plugin_message("relais run run-65abc-1f2e finished: accepted.");
+    let kept = later(&w, &entries, vec![plugin], json!({}));
+    assert!(kept.blocks(), "{}", kept.stdout);
+
+    let (w, entries) = pending_world("pendingperson");
+    let dropped = later(&w, &entries, vec![prompt("p2")], json!({}));
+    assert!(dropped.silent(), "{}", dropped.stdout);
+    let after = later(&w, &entries, vec![notification()], json!({}));
+    assert!(after.silent(), "{}", after.stdout);
+}
+
+#[test]
+fn a_pending_boundary_missing_from_the_tail_is_lost() {
+    let (w, _) = pending_world("pendinglost");
+    let transcript = w.transcript(
+        "other.jsonl",
+        &[prompt("p9"), notification(), usage(250_000, false)],
+    );
+    let reply = w.stop("s1", &transcript, json!({}));
+    assert!(reply.silent(), "{}", reply.stdout);
+    assert!(
+        w.journal_has("watched", "pending-lost"),
+        "{:?}",
+        w.journal()
+    );
+}
+
+#[test]
+fn a_state_file_in_the_text_format_still_reads() {
+    let w = World::new("oldstate");
+    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let dir = w.claude.join("amont-agent/clear-at-boundary");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("capped"), "turn-1 3\nsome key").unwrap();
+    let capped = w.stop("capped", &transcript, json!({}));
+    assert!(capped.silent(), "{}", capped.stdout);
+    assert!(w.journal_has("watched", "cap"), "{:?}", w.journal());
+    let fresh = w.stop("fresh", &transcript, json!({}));
+    assert!(fresh.blocks(), "{}", fresh.stdout);
 }

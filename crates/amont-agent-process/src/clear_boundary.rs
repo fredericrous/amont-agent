@@ -159,7 +159,7 @@ pub struct TurnWindow<'a> {
 
 /// A `user` entry that is a person's prompt and not a tool result or a
 /// harness-injected message.
-fn is_person_prompt(entry: &Value) -> bool {
+fn is_prompt(entry: &Value) -> bool {
     if entry_type(entry) != "user" || is_sidechain(entry) || entry["isMeta"].as_bool() == Some(true)
     {
         return false;
@@ -173,10 +173,40 @@ fn is_person_prompt(entry: &Value) -> bool {
     }
 }
 
-/// `None` when no person prompt is within the entries read (the caller
-/// journals `turn-too-long`).
+/// The text of a user entry's prompt: a plain string or the first text block.
+fn prompt_text(entry: &Value) -> Option<&str> {
+    match entry.pointer("/message/content")? {
+        Value::String(text) => Some(text),
+        Value::Array(parts) => parts.iter().find_map(|part| part["text"].as_str()),
+        _ => None,
+    }
+}
+
+/// A prompt the harness injected: a task notification, or a message the
+/// engine framed as `The <name> plugin sent a message:`.
+pub fn is_injected(entry: &Value) -> bool {
+    if entry_type(entry) != "user" {
+        return false;
+    }
+    prompt_text(entry).is_some_and(|text| {
+        text.starts_with("<task-notification>")
+            || text
+                .strip_prefix("The ")
+                .and_then(|rest| rest.split_once(" plugin sent a message:"))
+                .is_some_and(|(name, _)| !name.is_empty() && !name.contains('\n'))
+    })
+}
+
+/// A prompt a person typed: a prompt that is not injected.
+pub fn is_person_prompt(entry: &Value) -> bool {
+    is_prompt(entry) && !is_injected(entry)
+}
+
+/// `None` when no prompt is within the entries read (the caller journals
+/// `turn-too-long`). A turn opens at the last prompt of any kind: relais
+/// plugin messages and task notifications start a turn too.
 pub fn turn_window(entries: &[Value]) -> Option<TurnWindow<'_>> {
-    let at = entries.iter().rposition(is_person_prompt)?;
+    let at = entries.iter().rposition(is_prompt)?;
     Some(TurnWindow {
         prompt_uuid: entries[at]["uuid"].as_str().unwrap_or("").to_string(),
         entries: &entries[at + 1..],
@@ -187,7 +217,10 @@ pub fn turn_window(entries: &[Value]) -> Option<TurnWindow<'_>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Boundary {
     /// What it was, in a few words.
-    pub what: &'static str,
+    pub what: String,
+    /// The `uuid` of the assistant entry whose Bash call it was found in,
+    /// empty when the entry carries none.
+    pub uuid: String,
     /// The Bash command it was found in.
     pub command: String,
     /// The `-C` chain of the git call, resolved against the payload cwd;
@@ -214,7 +247,8 @@ pub fn boundaries(window: &TurnWindow<'_>, cwd: &Path) -> Vec<Boundary> {
             for segment in segments(command) {
                 if let Some((what, dirs)) = classify(&segment, cwd) {
                     found.push(Boundary {
-                        what,
+                        what: what.to_string(),
+                        uuid: entry["uuid"].as_str().unwrap_or("").to_string(),
                         command: command.to_string(),
                         dirs,
                     });
@@ -669,7 +703,18 @@ fn state_file(session: &str) -> Option<PathBuf> {
     Some(state_dir()?.join(session))
 }
 
+/// A boundary reached while something was in flight, kept for a later Stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    /// The `uuid` of the transcript entry the boundary command was found in.
+    pub uuid: String,
+    pub command: String,
+    pub what: String,
+    pub dirs: Vec<PathBuf>,
+}
+
 /// What a session's state file holds.
+#[derive(Debug, Default, PartialEq, Eq)]
 struct State {
     /// The opening prompt's uuid of the turn advised in, empty when the rule
     /// only observed.
@@ -678,12 +723,39 @@ struct State {
     key: String,
     /// The advices given in the session; a file in the old format reads 0.
     advices: u32,
+    pending: Option<Pending>,
 }
 
-/// The first line is `<turn>` (old format) or `<turn> <advices>`; the rest is
-/// the boundary key.
-fn read_state(session: &str) -> Option<State> {
-    let text = std::fs::read_to_string(state_file(session)?).ok()?;
+fn parse_pending(value: &Value) -> Option<Pending> {
+    let text = |name: &str| value[name].as_str().map(str::to_string);
+    Some(Pending {
+        uuid: text("uuid")?,
+        command: text("command")?,
+        what: text("what")?,
+        dirs: value["dirs"]
+            .as_array()?
+            .iter()
+            .filter_map(|dir| dir.as_str().map(PathBuf::from))
+            .collect(),
+    })
+}
+
+/// The file is JSON `{turn, advices, key, pending}`; the previous text
+/// format, `<turn> <advices>\n<key>` or `<turn>\n<key>`, reads with no
+/// pending boundary.
+fn parse_state(text: &str) -> Option<State> {
+    if text.starts_with('{') {
+        let value: Value = serde_json::from_str(text).ok()?;
+        return Some(State {
+            turn: value["turn"].as_str()?.to_string(),
+            key: value["key"].as_str()?.to_string(),
+            advices: value["advices"]
+                .as_u64()
+                .and_then(|count| u32::try_from(count).ok())
+                .unwrap_or(0),
+            pending: parse_pending(&value["pending"]),
+        });
+    }
     let (head, key) = text.split_once('\n')?;
     let (turn, advices) = match head.split_once(' ') {
         Some((turn, count)) => (turn, count.parse().unwrap_or(0)),
@@ -693,7 +765,30 @@ fn read_state(session: &str) -> Option<State> {
         turn: turn.to_string(),
         key: key.to_string(),
         advices,
+        pending: None,
     })
+}
+
+fn read_state(session: &str) -> Option<State> {
+    parse_state(&std::fs::read_to_string(state_file(session)?).ok()?)
+}
+
+fn render_state(state: &State) -> String {
+    let pending = state.pending.as_ref().map_or(Value::Null, |pending| {
+        serde_json::json!({
+            "uuid": pending.uuid,
+            "command": pending.command,
+            "what": pending.what,
+            "dirs": pending.dirs.iter().map(|dir| dir.to_string_lossy()).collect::<Vec<_>>(),
+        })
+    });
+    serde_json::json!({
+        "turn": state.turn,
+        "advices": state.advices,
+        "key": state.key,
+        "pending": pending,
+    })
+    .to_string()
 }
 
 fn write_state(session: &str, state: &State) -> Option<()> {
@@ -701,11 +796,7 @@ fn write_state(session: &str, state: &State) -> Option<()> {
     let dir = file.parent()?;
     std::fs::create_dir_all(dir).ok()?;
     journal::private(dir, 0o700);
-    write_atomic(
-        &file,
-        &format!("{} {}\n{}", state.turn, state.advices, state.key),
-    )
-    .ok()
+    write_atomic(&file, &render_state(state)).ok()
 }
 
 /// State files older than a week are nobody's session any more.
@@ -778,7 +869,6 @@ fn has_waiting_line(message: &str) -> bool {
 fn payload_says_silence(stop: &Stop) -> bool {
     if stop.stop_hook_active
         || stop.permission_mode.as_deref() == Some("plan")
-        || stop.background_busy
         || !amont_agent_guard::session_state::usable_id(&stop.session)
     {
         return true;
@@ -804,13 +894,61 @@ pub fn on_stop(
     let Some(transcript) = stop.transcript.as_deref() else {
         return Decision::Silent;
     };
-    let Ok(tail) = read_tail(transcript) else {
+    let pending_uuid = read_state(&stop.session)
+        .and_then(|state| state.pending)
+        .map(|pending| pending.uuid);
+    let Ok(tail) = read_tail_until(transcript, TAIL_FIRST_CHUNK, TAIL_CAP, |entries| {
+        context_size(entries).is_some()
+            && turn_window(entries).is_some()
+            && pending_uuid
+                .as_deref()
+                .is_none_or(|uuid| position_of(entries, uuid).is_some())
+    }) else {
         return Decision::Silent;
     };
     let Some(size) = context_size(&tail.entries).filter(|size| *size >= SIZE) else {
         return Decision::Silent;
     };
     judge_boundary(stop, &tail, size, deadline, stance()).unwrap_or(Decision::Silent)
+}
+
+fn position_of(entries: &[Value], uuid: &str) -> Option<usize> {
+    if uuid.is_empty() {
+        return None;
+    }
+    entries
+        .iter()
+        .position(|entry| entry["uuid"].as_str() == Some(uuid))
+}
+
+/// Whether the entries show work started: an Edit, Write or NotebookEdit, a
+/// `git worktree add`, or an `mcp__relais__run`.
+fn work_in(entries: &[Value]) -> bool {
+    entries
+        .iter()
+        .filter(|entry| entry_type(entry) == "assistant" && !is_sidechain(entry))
+        .flat_map(blocks)
+        .filter(|block| block["type"].as_str() == Some("tool_use"))
+        .any(|block| match block["name"].as_str().unwrap_or("") {
+            "Edit" | "Write" | "NotebookEdit" | "mcp__relais__run" => true,
+            "Bash" => block
+                .pointer("/input/command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| segments(command).iter().any(|words| adds_worktree(words))),
+            _ => false,
+        })
+}
+
+fn adds_worktree(words: &[String]) -> bool {
+    git_call(words).is_some_and(|call| {
+        call.subcommand == "worktree"
+            && call
+                .rest
+                .iter()
+                .find(|word| !word.starts_with('-'))
+                .map(String::as_str)
+                == Some("add")
+    })
 }
 
 /// `None` is silence, journalled or not as each check decides.
@@ -847,37 +985,85 @@ fn judge_boundary(
     let Some(window) = turn_window(&tail.entries) else {
         return watched("turn-too-long");
     };
+    let mut state = read_state(&stop.session).unwrap_or_default();
     let found = boundaries(&window, cwd.unwrap_or(Path::new("")));
-    let Some(boundary) = found.last() else {
-        return watched("no boundary");
+    let own = found.last().filter(|boundary| {
+        state
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.uuid != boundary.uuid)
+    });
+    let (candidate, from_pending) = match (own, state.pending.clone()) {
+        (Some(boundary), _) => {
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            for dir in found.iter().flat_map(|boundary| boundary.dirs.iter()) {
+                if !dirs.contains(dir) {
+                    dirs.push(dir.clone());
+                }
+            }
+            let candidate = Pending {
+                uuid: boundary.uuid.clone(),
+                command: boundary.command.clone(),
+                what: boundary.what.clone(),
+                dirs,
+            };
+            (candidate, false)
+        }
+        (None, None) => return watched("no boundary"),
+        (None, Some(pending)) => {
+            let Some(at) = position_of(&tail.entries, &pending.uuid) else {
+                state.pending = None;
+                write_state(&stop.session, &state);
+                return watched("pending-lost");
+            };
+            let after = &tail.entries[at + 1..];
+            if after.iter().any(is_person_prompt) {
+                state.pending = None;
+                write_state(&stop.session, &state);
+                return watched("no boundary");
+            }
+            if work_in(after) {
+                return watched("pending-work");
+            }
+            (pending, true)
+        }
     };
+    let hold = |state: &mut State, reason: &str| -> Option<Decision> {
+        if !from_pending {
+            state.pending = Some(candidate.clone());
+            write_state(&stop.session, state);
+        }
+        record("watched", &format!("pending {reason}"));
+        None
+    };
+    if stop.background_busy {
+        return hold(&mut state, "background");
+    }
     let flight = relais_flight(&tail.entries);
-    if let Some((id, state)) = flight.waiting.first() {
-        return watched(&format!("relais {id} {state}"));
+    if let Some((id, relais_state)) = flight.waiting.first() {
+        return hold(&mut state, &format!("relais {id} {relais_state}"));
     }
     if flight.pending > 0 {
-        return watched(&format!("relais pending {}", flight.pending));
+        return hold(&mut state, &format!("relais pending {}", flight.pending));
     }
-    let mut directories: Vec<PathBuf> = Vec::new();
-    for dir in found.iter().flat_map(|boundary| boundary.dirs.iter()) {
-        if !directories.contains(dir) {
-            directories.push(dir.clone());
-        }
-    }
-    let heads = match check_repositories(cwd, &directories, deadline) {
+    let heads = match check_repositories(cwd, &candidate.dirs, deadline) {
         Repositories::Clean { heads } => heads,
-        Repositories::NotClean { reason, .. } => return watched(&reason),
+        Repositories::NotClean { reason, .. } => return hold(&mut state, &reason),
         Repositories::TimedOut => return watched("timeout"),
     };
-    let key = boundary_key(&boundary.command, &heads);
-    let advices = match read_state(&stop.session) {
-        Some(state) if state.key == key => return None,
-        Some(state) => state.advices,
-        None => 0,
-    };
+    let key = boundary_key(&candidate.command, &heads);
+    let advices = state.advices;
+    if state.key == key {
+        if state.pending.is_some() {
+            state.pending = None;
+            write_state(&stop.session, &state);
+        }
+        return None;
+    }
     if advices >= MAX_ADVICES_PER_SESSION {
         return watched("cap");
     }
+    let boundary = &candidate;
 
     let spoke = stance != Stance::Observe;
     let turn = if spoke {
@@ -889,6 +1075,7 @@ fn judge_boundary(
         turn: turn.to_string(),
         key,
         advices: advices + u32::from(spoke),
+        pending: None,
     };
     write_state(&stop.session, &state)?;
     let fact = format!(
@@ -900,12 +1087,12 @@ fn judge_boundary(
     match stance {
         Stance::Observe => watched(&format!("{} (observe)", boundary.what)),
         Stance::Advise => {
-            record("advised", boundary.what);
+            record("advised", &boundary.what);
             let remedy = "Say `hand off` to have the agent write the handoff, then /clear.";
             Some(Decision::UserNote(decision::phrase(RULE.id, &fact, remedy)))
         }
         Stance::Deny => {
-            record("denied", boundary.what);
+            record("denied", &boundary.what);
             let remedy = format!(
                 "The handoff is then complete when the plan or ticket states the next action and the turn ends with one line: \"{MARKER}; next: `<the exact first prompt>`\"."
             );
@@ -1326,5 +1513,42 @@ mod tests {
             boundary_key("cmd", &heads),
             boundary_key("cmd", &[(PathBuf::from("/r"), "def".to_string())])
         );
+    }
+
+    #[test]
+    fn injected_prompts_are_no_person_prompts_but_still_open_a_turn() {
+        let notification = json!({"type": "user", "uuid": "n", "message": {"role": "user",
+            "content": "<task-notification>\nx</task-notification>"}});
+        let framed = json!({"type": "user", "uuid": "m", "message": {"role": "user",
+            "content": [{"type": "text", "text": "The relais plugin sent a message:\nhi"}]}});
+        assert!(is_injected(&notification) && is_injected(&framed));
+        assert!(!is_person_prompt(&notification) && !is_person_prompt(&framed));
+        assert!(is_person_prompt(&prompt("p")) && !is_injected(&prompt("p")));
+        let entries = vec![prompt("p"), notification];
+        assert_eq!(turn_window(&entries).expect("a window").prompt_uuid, "n");
+    }
+
+    #[test]
+    fn the_state_reads_both_formats_and_round_trips_a_pending_boundary() {
+        let old = parse_state("t1 2\nkey\nmore").expect("old format");
+        assert_eq!(
+            (old.turn.as_str(), old.advices, old.pending),
+            ("t1", 2, None)
+        );
+        assert_eq!(old.key, "key\nmore");
+        let older = parse_state("t1\nk").expect("older format");
+        assert_eq!((older.advices, older.key.as_str()), (0, "k"));
+        let state = State {
+            turn: "t".into(),
+            key: "k\nv".into(),
+            advices: 1,
+            pending: Some(Pending {
+                uuid: "u".into(),
+                command: "git worktree remove x".into(),
+                what: "worktree remove".into(),
+                dirs: vec![PathBuf::from("/r")],
+            }),
+        };
+        assert_eq!(parse_state(&render_state(&state)), Some(state));
     }
 }
