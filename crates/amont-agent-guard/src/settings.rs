@@ -46,6 +46,21 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(home).join(".claude"))
 }
 
+/// The directory under which `amont-agent/claude-marketplace` lives: the XDG
+/// state home, else a `state` directory beside a relocated Claude config, else
+/// `~/.local/state`. A relocated config keeps its state with it, so a scratch
+/// `CLAUDE_CONFIG_DIR` never writes into the person's real home.
+pub fn state_root() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(PathBuf::from(dir).join("state"));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".local").join("state"))
+}
+
 /// How we recognise our own handler on the way back out. Matched on the
 /// command's file name, so moving the binary does not orphan the entry.
 pub const BIN: &str = "amont-agent";
@@ -71,6 +86,8 @@ pub enum Change {
     Add,
     Update,
     AlreadyCurrent,
+    /// The settings are current; only the plugin's files are written.
+    PluginFilesOnly,
     Remove,
     /// Removing our hooks left the document as exactly `{}`: the file is
     /// deleted rather than written back empty. Decided from content alone.
@@ -89,6 +106,9 @@ impl Change {
             Change::Add => format!("added our hooks to {p}"),
             Change::Update => format!("updated our hooks in {p}"),
             Change::AlreadyCurrent => format!("{p} is already current — nothing written"),
+            Change::PluginFilesOnly => {
+                format!("{p} is already current; the clear-relay plugin's files were stale")
+            }
             Change::Remove => format!("removed our hooks from {p}"),
             Change::RemoveFile => format!(
                 "removed our hooks from {p} — nothing else was left, so the file was removed"
@@ -133,6 +153,100 @@ pub struct Plan {
     pub path: PathBuf,
     pub after: String,
     pub change: Change,
+    /// Plugin files to write beside the settings change, only those whose
+    /// content on disk differs. Written by [`apply`], never by a dry run.
+    pub files: Vec<(PathBuf, String)>,
+    /// The plugin directory an uninstall removes along with its settings entries.
+    pub remove_dir: Option<PathBuf>,
+}
+
+/// The Claude Code plugin that ships beside the hooks: where its marketplace
+/// directory goes, what the plugin's files hold, and the state directory its
+/// `stateDir` option names. The binary builds it (it embeds the files); this
+/// module only places it, so the one [`Plan`] covers settings and plugin.
+pub struct PluginPlacement {
+    /// Directory holding `.claude-plugin/marketplace.json` and `plugins/`.
+    pub marketplace_dir: PathBuf,
+    /// Marketplace name, the key under `extraKnownMarketplaces`.
+    pub marketplace: &'static str,
+    /// Plugin name, enabled as `<plugin>@<marketplace>`.
+    pub plugin: &'static str,
+    /// Files relative to `marketplace_dir`, with their content.
+    pub files: Vec<(PathBuf, String)>,
+    /// The value of the plugin's `stateDir` option.
+    pub state_dir: PathBuf,
+}
+
+impl PluginPlacement {
+    fn plugin_id(&self) -> String {
+        format!("{}@{}", self.plugin, self.marketplace)
+    }
+
+    /// `root` with our entries added (or replaced).
+    fn with_entries(
+        &self,
+        mut root: Map<String, Value>,
+        path: &Path,
+    ) -> Result<Map<String, Value>, MergeError> {
+        let markets = object_entry(&mut root, "extraKnownMarketplaces", path)?;
+        markets.insert(
+            self.marketplace.to_string(),
+            json!({ "source": { "source": "directory", "path": self.marketplace_dir.display().to_string() } }),
+        );
+        let enabled = object_entry(&mut root, "enabledPlugins", path)?;
+        enabled.insert(self.plugin_id(), Value::Bool(true));
+        let configs = object_entry(&mut root, "pluginConfigs", path)?;
+        configs.insert(
+            self.plugin_id(),
+            json!({ "options": { "stateDir": self.state_dir.display().to_string() } }),
+        );
+        Ok(root)
+    }
+
+    /// `root` without exactly our entries, a parent object dropped only when
+    /// that left it empty, and whether anything was ours.
+    fn without_entries(&self, mut root: Map<String, Value>) -> (Map<String, Value>, bool) {
+        let mut removed = false;
+        for (key, member) in [
+            ("extraKnownMarketplaces", self.marketplace.to_string()),
+            ("enabledPlugins", self.plugin_id()),
+            ("pluginConfigs", self.plugin_id()),
+        ] {
+            let Some(map) = root.get_mut(key).and_then(|v| v.as_object_mut()) else {
+                continue;
+            };
+            if map.remove(&member).is_some() {
+                removed = true;
+                if map.is_empty() {
+                    root.remove(key);
+                }
+            }
+        }
+        (root, removed)
+    }
+
+    /// The files whose content on disk is not already what we would write.
+    fn stale_files(&self) -> Vec<(PathBuf, String)> {
+        self.files
+            .iter()
+            .map(|(rel, body)| (self.marketplace_dir.join(rel), body.clone()))
+            .filter(|(dest, body)| std::fs::read_to_string(dest).ok().as_deref() != Some(body))
+            .collect()
+    }
+}
+
+fn object_entry<'a>(
+    root: &'a mut Map<String, Value>,
+    key: &'static str,
+    path: &Path,
+) -> Result<&'a mut Map<String, Value>, MergeError> {
+    root.entry(key)
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or(MergeError::WrongShape {
+            path: path.into(),
+            key,
+        })
 }
 
 pub enum MergeError {
@@ -350,7 +464,12 @@ fn ensure(
     Ok(())
 }
 
-pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, MergeError> {
+pub fn plan_install(
+    path: &Path,
+    bin: &Path,
+    reformat: bool,
+    plugin: Option<&PluginPlacement>,
+) -> Result<Plan, MergeError> {
     let (mut doc, raw) = read(path)?;
     let (indent, nl) = shape(&raw);
     if !reformat && would_reformat(&raw, &doc, &indent, nl) {
@@ -358,6 +477,8 @@ pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, Mer
             path: path.into(),
             after: raw,
             change: Change::WouldReformat,
+            files: Vec::new(),
+            remove_dir: None,
         });
     }
     let before = raw.clone();
@@ -379,10 +500,19 @@ pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, Mer
     for (event, matcher) in TARGETS {
         ensure(hooks, path, event, *matcher, &want)?;
     }
+    let files = match plugin {
+        Some(placement) => {
+            *root = placement.with_entries(std::mem::take(root), path)?;
+            placement.stale_files()
+        }
+        None => Vec::new(),
+    };
 
     let after = render(&doc, &indent, nl || before.is_empty());
-    let change = if after == before {
+    let change = if after == before && files.is_empty() {
         Change::AlreadyCurrent
+    } else if after == before {
+        Change::PluginFilesOnly
     } else if existed {
         Change::Update
     } else {
@@ -392,17 +522,31 @@ pub fn plan_install(path: &Path, bin: &Path, reformat: bool) -> Result<Plan, Mer
         path: path.into(),
         after,
         change,
+        files,
+        remove_dir: None,
     })
 }
 
-pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
+pub fn plan_uninstall(
+    path: &Path,
+    reformat: bool,
+    plugin: Option<&PluginPlacement>,
+) -> Result<Plan, MergeError> {
     let (mut doc, raw) = read(path)?;
     let (indent, nl) = shape(&raw);
+    // The directory goes whether or not settings still name it, so a run
+    // after an uninstall that failed half-way finishes the job, even one
+    // that had already removed the settings file.
+    let remove_dir = plugin
+        .filter(|placement| placement.marketplace_dir.exists())
+        .map(|placement| placement.marketplace_dir.clone());
     if raw.is_empty() {
         return Ok(Plan {
             path: path.into(),
             after: raw,
             change: Change::NothingToRemove,
+            files: Vec::new(),
+            remove_dir,
         });
     }
     if !reformat && would_reformat(&raw, &doc, &indent, nl) {
@@ -410,6 +554,8 @@ pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
             path: path.into(),
             after: raw,
             change: Change::WouldReformat,
+            files: Vec::new(),
+            remove_dir: None,
         });
     }
 
@@ -461,11 +607,21 @@ pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
         }
     }
 
+    if let Some(root) = doc.as_object_mut() {
+        if let Some(placement) = plugin {
+            let (kept, ours) = placement.without_entries(std::mem::take(root));
+            *root = kept;
+            removed |= ours;
+        }
+    }
+
     if !removed {
         return Ok(Plan {
             path: path.into(),
             after: raw,
             change: Change::NothingToRemove,
+            files: Vec::new(),
+            remove_dir,
         });
     }
     if doc.as_object().is_some_and(|root| root.is_empty()) {
@@ -473,23 +629,52 @@ pub fn plan_uninstall(path: &Path, reformat: bool) -> Result<Plan, MergeError> {
             path: path.into(),
             after: String::new(),
             change: Change::RemoveFile,
+            files: Vec::new(),
+            remove_dir,
         });
     }
     Ok(Plan {
         path: path.into(),
         after: render(&doc, &indent, nl),
         change: Change::Remove,
+        files: Vec::new(),
+        remove_dir,
     })
 }
 
-/// Write the plan, atomically, or delete the file for `RemoveFile`. Staged to
-/// a temp file next to the destination, then renamed — so a symlinked
-/// `settings.json` is replaced rather than written through, and a crash
-/// mid-write cannot leave a half-file.
+/// Write the plan, atomically, or delete the file for `RemoveFile`, with the
+/// plugin in the order that never leaves settings naming a plugin that is not
+/// all there: an install writes the plugin files first and the settings
+/// last, an uninstall writes the settings first and removes the plugin
+/// directory last. Each file is staged to a temp file next to the
+/// destination, then renamed — so a symlinked `settings.json` is replaced
+/// rather than written through, and a crash mid-write cannot leave a
+/// half-file.
 pub fn apply(plan: &Plan) -> std::io::Result<()> {
+    for (dest, body) in &plan.files {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::atomic::write_atomic(dest, body)?;
+    }
+    apply_settings(plan)?;
+    if let Some(dir) = &plan.remove_dir {
+        match std::fs::remove_dir_all(dir) {
+            // Gone already is what was asked for.
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn apply_settings(plan: &Plan) -> std::io::Result<()> {
     if matches!(
         plan.change,
-        Change::AlreadyCurrent | Change::NothingToRemove | Change::WouldReformat
+        Change::AlreadyCurrent
+            | Change::PluginFilesOnly
+            | Change::NothingToRemove
+            | Change::WouldReformat
     ) {
         return Ok(());
     }

@@ -32,6 +32,8 @@ impl Home {
         let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
             .args(args)
             .env("CLAUDE_CONFIG_DIR", &self.0)
+            // The plugin's state goes beside the scratch config, never to a real XDG state home.
+            .env_remove("XDG_STATE_HOME")
             .output()
             .expect("the binary runs");
         (
@@ -274,6 +276,8 @@ fn run_in(root: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
         .args(args)
         .current_dir(root)
+        // The plugin's state directory, never the person's real one.
+        .env("XDG_STATE_HOME", root.join("state"))
         .output()
         .expect("the binary runs");
     (

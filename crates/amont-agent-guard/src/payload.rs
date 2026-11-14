@@ -274,10 +274,13 @@ pub struct Stop {
     pub background_busy: bool,
     /// A previous `Stop` hook already kept this turn going.
     pub stop_hook_active: bool,
+    /// `transcript_path`: this session's transcript, read for the context
+    /// size and the turn. `None` when the payload carried none.
+    pub transcript: Option<PathBuf>,
 }
 
 pub enum Event {
-    /// A turn ending: `plan-phases-open` judges it.
+    /// A turn ending: `plan-phases-open` and `clear-at-boundary` judge it.
     Stop(Stop),
     /// A Bash tool call we can have an opinion about.
     PreBash(Box<Bash>),
@@ -432,6 +435,9 @@ pub fn parse(raw: &str) -> Event {
                     .get("stop_hook_active")
                     .and_then(|b| b.as_bool())
                     .unwrap_or(false),
+                transcript: opt("transcript_path")
+                    .filter(|p| !p.is_empty())
+                    .map(PathBuf::from),
             })
         }
         Some("SessionStart") => Event::SessionStart(Session {

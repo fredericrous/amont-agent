@@ -37,6 +37,7 @@ use amont_agent_process::block_registry;
 use amont_agent_process::content_id;
 mod hook;
 mod open;
+mod plugin_install;
 use amont_agent_guard::journal;
 use amont_agent_guard::json;
 use amont_agent_guard::lsp;
@@ -45,6 +46,7 @@ use amont_agent_guard::payload;
 use amont_agent_guard::push_target;
 #[cfg(unix)]
 use amont_agent_guard::quiet;
+use amont_agent_process::clear_boundary;
 use amont_agent_process::code_review;
 use amont_agent_process::impl_review_outcomes;
 use amont_agent_process::implementation_review;
@@ -81,8 +83,9 @@ const USAGE: &str = "\
 usage: amont-agent <command>
 
   hook                  read a Claude Code payload on stdin, decide
-  install [--write]     add the hook to settings.json (prints it by default)
-  uninstall [--write]   remove exactly what install added
+  install [--write]     add the hook to settings.json (prints it by default), and
+                        place and enable the clear-relay plugin
+  uninstall [--write]   remove exactly what install added, the plugin included
   status                every rule, its stance, and what it has seen
   doctor [--json]       is the guard installed, runnable, and actually firing?
                         --json prints the findings and, apart from health, the
@@ -2877,10 +2880,16 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
         }
     };
 
+    let plugin = plugin_install::placement();
+    if plugin.is_none() {
+        eprintln!(
+            "amont-agent: no state directory resolves (XDG_STATE_HOME, CLAUDE_CONFIG_DIR, HOME), so the clear-relay plugin is left out"
+        );
+    }
     let planned = if adding {
-        settings::plan_install(&path, &bin, f.reformat)
+        settings::plan_install(&path, &bin, f.reformat, plugin.as_ref())
     } else {
-        settings::plan_uninstall(&path, f.reformat)
+        settings::plan_uninstall(&path, f.reformat, plugin.as_ref())
     };
     let plan = match planned {
         Ok(p) => p,
@@ -2899,10 +2908,19 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
                 "{} would be removed: nothing else is left in it.",
                 plan.path.display()
             );
+            if let Some(dir) = &plan.remove_dir {
+                println!("would remove {}", dir.display());
+            }
             println!("Nothing written. Re-run with --write to apply.");
             return ExitCode::SUCCESS;
         }
         println!("{}", plan.change.describe(&plan.path));
+        for (dest, _) in &plan.files {
+            println!("would write {}", dest.display());
+        }
+        if let Some(dir) = &plan.remove_dir {
+            println!("would remove {}", dir.display());
+        }
         println!("Nothing written. Re-run with --write to apply:\n");
         print!("{}", plan.after);
         return ExitCode::SUCCESS;
@@ -2915,10 +2933,30 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     match settings::apply(&plan) {
         Ok(()) => {
             println!("{}", plan.change.describe(&plan.path));
+            for (dest, _) in &plan.files {
+                eprintln!("wrote {}", dest.display());
+            }
+            if adding && !plan.files.is_empty() {
+                if let Some(placement) = &plugin {
+                    eprintln!(
+                        "enabled {}@{}: an answer ending \"safe to /clear; next: `<prompt>`\"",
+                        placement.plugin, placement.marketplace
+                    );
+                    eprintln!(
+                        "  clears the session after 10 s, then submits <prompt> (type or /stay to keep it); remove: amont-agent uninstall --write"
+                    );
+                }
+            }
+            if let Some(dir) = &plan.remove_dir {
+                eprintln!("removed {}", dir.display());
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("amont-agent: could not write {}: {e}", plan.path.display());
+            eprintln!(
+                "amont-agent: could not apply the change to {} and the clear-relay plugin: {e}",
+                plan.path.display()
+            );
             ExitCode::from(2)
         }
     }

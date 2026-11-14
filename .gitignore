@@ -1,3 +1,4 @@
 /target
 /dist
 /tools/shell-oracle/target
+/plugin/clear-relay/tsconfig.json

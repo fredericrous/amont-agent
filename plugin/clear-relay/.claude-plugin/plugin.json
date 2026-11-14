@@ -1,0 +1,20 @@
+{
+  "name": "clear-relay",
+  "version": "0.1.0",
+  "description": "Clears the session and carries on by itself when an answer ends with the line: safe to /clear; next: `<prompt>`. Waits 10 s, stops when you type or run /stay, and never retries.",
+  "author": { "name": "fredericrous" },
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Relay enabled",
+      "description": "When off, the plugin never arms: an answer that ends with the handoff line changes nothing.",
+      "default": true
+    },
+    "stateDir": {
+      "type": "string",
+      "title": "State directory",
+      "description": "Where the relay's log goes, under clear-relay/<session>.jsonl. Empty uses ~/.local/state/amont-agent.",
+      "default": ""
+    }
+  }
+}

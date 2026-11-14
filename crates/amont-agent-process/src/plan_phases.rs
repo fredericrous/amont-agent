@@ -11,6 +11,7 @@
 //! reset when the open phase changes and when the person submits a prompt.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use amont_agent_guard::decision::{self, Decision};
 use amont_agent_guard::journal;
@@ -24,6 +25,188 @@ const LABEL_MAX: usize = 80;
 
 pub fn on_stop(stop: &Stop, stance: impl FnOnce() -> Stance) -> Decision {
     judge(stop, stance).unwrap_or(Decision::Silent)
+}
+
+/// What the branch's plan says about the work, for the rules that share the
+/// Stop hook (`clear-at-boundary` judges before `plan-phases-open`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseFact {
+    /// No open phase, or nothing could be established.
+    NoOpenPhase,
+    /// An open, non-decision phase, and no commit after the plan's own
+    /// `docs(plan): ` commit: the plan is the whole state.
+    PlanOnly,
+    /// An open, non-decision phase, and commits after the plan commit.
+    Working,
+    /// A git child did not answer before the caller's deadline.
+    TimedOut,
+}
+
+/// The commit subject that opens a plan's branch.
+const PLAN_COMMIT_PREFIX: &str = "docs(plan): ";
+
+/// Why the plan's state could not be established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unknown {
+    /// A git child did not answer before the deadline.
+    TimedOut,
+    /// No plan, no repository, or git refused a command.
+    Unestablished,
+}
+
+impl From<amont_agent_guard::git::BoundedFailure> for Unknown {
+    fn from(failure: amont_agent_guard::git::BoundedFailure) -> Self {
+        match failure {
+            amont_agent_guard::git::BoundedFailure::TimedOut => Unknown::TimedOut,
+            amont_agent_guard::git::BoundedFailure::Exited { .. } => Unknown::Unestablished,
+        }
+    }
+}
+
+fn bounded(root: &Path, args: &[&str], deadline: Instant) -> Result<Vec<u8>, Unknown> {
+    Ok(amont_agent_guard::git::bytes_bounded_detail(
+        root,
+        args,
+        None,
+        &[],
+        deadline,
+    )?)
+}
+
+fn bounded_text(root: &Path, args: &[&str], deadline: Instant) -> Result<String, Unknown> {
+    bounded(root, args, deadline).map(|b| String::from_utf8_lossy(&b).trim().to_string())
+}
+
+/// [`PhaseFact`] of the plan the branch of `stop.cwd` carries, every git
+/// child bounded by `deadline`.
+pub fn open_phase(stop: &Stop, deadline: Instant) -> PhaseFact {
+    match phase_fact(stop, deadline) {
+        Ok(fact) => fact,
+        Err(Unknown::TimedOut) => PhaseFact::TimedOut,
+        Err(Unknown::Unestablished) => PhaseFact::NoOpenPhase,
+    }
+}
+
+fn phase_fact(stop: &Stop, deadline: Instant) -> Result<PhaseFact, Unknown> {
+    use Unknown::Unestablished;
+    if !amont_agent_guard::session_state::usable_id(&stop.session) {
+        return Err(Unestablished);
+    }
+    let cwd = stop.cwd.as_deref().ok_or(Unestablished)?;
+    if !cwd.is_dir() {
+        return Err(Unestablished);
+    }
+    let root = repo_root(cwd).ok_or(Unestablished)?;
+    if !root.join("docs/plans").is_dir() {
+        return Err(Unestablished);
+    }
+    let (branch, base) = branch_and_base_bounded(&root, deadline)?;
+    if base.split_once('/').map(|(_, b)| b) == Some(branch.as_str()) {
+        return Err(Unestablished);
+    }
+    let changed = bounded(
+        &root,
+        &[
+            "diff",
+            "-z",
+            "--name-only",
+            "--diff-filter=d",
+            "--merge-base",
+            &base,
+            "--",
+            "docs/plans/",
+        ],
+        deadline,
+    )?;
+    let untracked = bounded(
+        &root,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "docs/plans/",
+        ],
+        deadline,
+    )?;
+    let names = plan_names(&changed, &untracked);
+    let plan = choose(&root, &names, &branch).ok_or(Unestablished)?;
+    let line = next_open(&plan.body).ok_or(Unestablished)?;
+    if line.contains('🧑') {
+        return Err(Unestablished);
+    }
+    let range = format!("{base}..HEAD");
+    let subjects = bounded(&root, &["log", "-z", "--format=%s", &range], deadline)?;
+    let subjects: Vec<&[u8]> = subjects
+        .split(|c| *c == 0)
+        .filter(|s| !s.is_empty())
+        .collect();
+    // Newest first: commits ahead of the newest plan commit are work.
+    let plan_commit = subjects
+        .iter()
+        .position(|s| s.starts_with(PLAN_COMMIT_PREFIX.as_bytes()));
+    let working = match plan_commit {
+        Some(position) => position > 0,
+        None => !subjects.is_empty(),
+    };
+    Ok(if working {
+        PhaseFact::Working
+    } else {
+        PhaseFact::PlanOnly
+    })
+}
+
+/// [`branch_and_base`] with every git child under `deadline`.
+fn branch_and_base_bounded(root: &Path, deadline: Instant) -> Result<(String, String), Unknown> {
+    let out = bounded_text(
+        root,
+        &["rev-parse", "--abbrev-ref", "HEAD", "origin/HEAD"],
+        deadline,
+    );
+    let (branch, base) = match out {
+        Ok(text) => {
+            let mut lines = text.lines();
+            let branch = lines.next().unwrap_or("").to_string();
+            let base = lines
+                .next()
+                .filter(|b| !b.is_empty() && *b != "origin/HEAD")
+                .map(str::to_string);
+            (branch, base)
+        }
+        Err(Unknown::TimedOut) => return Err(Unknown::TimedOut),
+        // rev-parse fails as a whole when `origin/HEAD` is missing.
+        Err(Unknown::Unestablished) => (
+            bounded_text(root, &["symbolic-ref", "-q", "--short", "HEAD"], deadline)?,
+            None,
+        ),
+    };
+    if branch.is_empty() || branch == "HEAD" {
+        return Err(Unknown::Unestablished);
+    }
+    if let Some(base) = base {
+        return Ok((branch, base));
+    }
+    match amont_agent_guard::git::default_ref(root, deadline) {
+        Some((base, _)) => Ok((branch, base)),
+        // `default_ref` folds a deadline into `None`.
+        None if Instant::now() >= deadline => Err(Unknown::TimedOut),
+        None => Err(Unknown::Unestablished),
+    }
+}
+
+/// The plan names in two NUL-separated listings.
+fn plan_names(changed: &[u8], untracked: &[u8]) -> Vec<String> {
+    let mut names: Vec<String> = changed
+        .split(|c| *c == 0)
+        .chain(untracked.split(|c| *c == 0))
+        .filter_map(|p| std::str::from_utf8(p).ok())
+        .filter_map(|p| p.strip_prefix("docs/plans/"))
+        .filter(|n| is_plan_name(n))
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// `None` is silence.
@@ -270,16 +453,7 @@ fn candidates(root: &Path, base: &str) -> Option<Vec<String>> {
         None,
     )
     .ok()??;
-    let mut names: Vec<String> = changed
-        .split(|c| *c == 0)
-        .chain(untracked.split(|c| *c == 0))
-        .filter_map(|p| std::str::from_utf8(p).ok())
-        .filter_map(|p| p.strip_prefix("docs/plans/"))
-        .filter(|n| is_plan_name(n))
-        .map(str::to_string)
-        .collect();
-    names.sort();
-    names.dedup();
+    let names = plan_names(&changed, &untracked);
     Some(names)
 }
 
@@ -426,5 +600,73 @@ mod tests {
         assert!(!is_plan_name("2026-10-07-x.reviews.md"));
         assert!(!is_plan_name("sub/x.md"));
         assert!(!is_plan_name("x.txt"));
+    }
+
+    mod open_phase {
+        use super::super::*;
+        use crate::clear_boundary::testrepo::TestRepo;
+        use std::time::Duration;
+
+        const OPEN_PLAN: &str =
+            "---\nstatus: active\nbranch: feature\n---\n# P\n\n## Phases\n- [ ] Phase 1 — a\n";
+        const DONE_PLAN: &str =
+            "---\nstatus: active\nbranch: feature\n---\n# P\n\n## Phases\n- [x] Phase 1 — a\n";
+
+        fn stop_in(repo: &TestRepo) -> Stop {
+            Stop {
+                session: "s1".to_string(),
+                cwd: Some(repo.path().to_path_buf()),
+                permission_mode: None,
+                last_message: None,
+                background_busy: false,
+                stop_hook_active: false,
+                transcript: None,
+            }
+        }
+
+        fn repo_with_plan(plan: &str) -> TestRepo {
+            let repo = TestRepo::new();
+            repo.commit_file("README.md", "x", "init");
+            repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+            repo.git(&["checkout", "-q", "-b", "feature"]);
+            repo.commit_file("docs/plans/p.md", plan, "docs(plan): p");
+            repo
+        }
+
+        fn fact(repo: &TestRepo) -> PhaseFact {
+            open_phase(&stop_in(repo), Instant::now() + Duration::from_secs(20))
+        }
+
+        #[test]
+        fn a_lone_plan_commit_is_plan_only() {
+            assert_eq!(fact(&repo_with_plan(OPEN_PLAN)), PhaseFact::PlanOnly);
+        }
+
+        #[test]
+        fn a_commit_after_the_plan_commit_is_working() {
+            let repo = repo_with_plan(OPEN_PLAN);
+            repo.commit_file("src.rs", "fn main() {}", "feat: a");
+            assert_eq!(fact(&repo), PhaseFact::Working);
+        }
+
+        #[test]
+        fn no_open_phase_is_none() {
+            assert_eq!(fact(&repo_with_plan(DONE_PLAN)), PhaseFact::NoOpenPhase);
+        }
+
+        #[test]
+        fn a_decision_phase_is_none() {
+            let plan = OPEN_PLAN.replace("Phase 1", "🧑 decision: pick");
+            assert_eq!(fact(&repo_with_plan(&plan)), PhaseFact::NoOpenPhase);
+        }
+
+        #[test]
+        fn a_passed_deadline_is_timed_out() {
+            let repo = repo_with_plan(OPEN_PLAN);
+            assert_eq!(
+                open_phase(&stop_in(&repo), Instant::now()),
+                PhaseFact::TimedOut
+            );
+        }
     }
 }

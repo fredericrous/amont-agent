@@ -16,6 +16,7 @@
 | `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers, unless the plan the person approved declares the evidence is enough ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
 | `plan-names-no-paths` | `advise` (max advise) | a plan presented at `ExitPlanMode` whose `## Phases` name no file in backticks, so its panel was seated from every area of its repositories instead of the file types it touches; the advice names each phase that names no file ([the review panel](plan-review.md)) |
+| `clear-at-boundary` | `advise` (max deny) | a turn ending at a boundary (a worktree removed, a `sweep.py --apply`, a plan commit) with nothing in flight and the main chain's context past 200k tokens; `deny` sends a `Stop` continuation asking for the handoff and one line starting with the marker `safe to /clear`, `advise` sends a note to the person naming the reply that asks for the handoff line, except at a lone plan commit, where `plan-phases-open` carries the plan on, `observe` journals only; a boundary under background work, relais in flight or an unclean repository is kept as pending and advised at the first idle `Stop` after it; at most 3 advices per session, then silence journalled `watched cap` |
 | `plan-phases-open` | `deny` | a turn ending while the plan this branch carries still has an open phase that is not a `🧑 decision:` — the agent is sent on to it |
 | `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |
 | `ask-unopened-page` | `deny` | an `AskUserQuestion` naming a local page (localhost URL, `file://` URL, `.html` path) that no `amont-agent open` showed the person since the last answered question about it; without a readable transcript it advises |
@@ -94,6 +95,40 @@ prompt resets the count. Anything it cannot establish — no repository, a git
 failure, an unreadable plan, a session id it will not use as a file name —
 lets the turn end. To turn it off without uninstalling:
 `git config --global amont.agent.plan-phases-open.stance observe`.
+
+`clear-at-boundary` fires on the same `Stop`. A turn that reached a boundary
+(`git worktree remove`, `sweep.py --apply`, or a `docs(plan): ` commit that is
+not a closing one) with the transcript's last main-chain context at 200,000
+tokens or more, no relais run still waiting on the session (read from the
+transcript only; greenpiste never runs `relais`), clean repositories and
+nothing unpushed outside `docs/plans/`, gets one note to the person with the
+reply to give: write the handoff, then end with that line; at `deny` the agent is sent on once to write the handoff and end
+with `safe to /clear; next: <the first prompt>`. It ships at `advise`: its
+backtest advised 25 of 31 compacted sessions before their first compaction
+(the bar was 28), and 46 of 140 advices were followed by an editing turn (the
+bar was at most 10%). `deny` waits on the Outcome counts. It stays silent in
+plan mode, with background tasks, when the last message asks a question, has a
+`WAITING:` line or already says `safe to /clear`, and once per boundary. At a
+lone plan commit past 200k its Continue comes before `plan-phases-open`, which
+then stays silent for the rest of the turn; at `advise` it is silent there and
+`plan-phases-open` carries the plan on. To send the agent on:
+`git config --global amont.agent.clear-at-boundary.stance deny`. Rollback:
+`git config --global amont.agent.clear-at-boundary.stance observe`.
+
+The `clear-relay` Claude Code plugin, which `install --write` places, acts on
+that line. When the main agent's answer ends with
+``safe to /clear; next: `<prompt>` `` (one line, at most 2,000 characters), it
+shows a toast and a status line and waits 10 seconds. If nothing is typed, no
+prompt is submitted and no turn starts, it runs `/clear` and submits the
+prompt in the new session. Typing anything or running `/stay` keeps the
+session. It relays at most once per 2 minutes and never retries: a refused
+step shows a toast with the prompt, for pasting. Each arm, disarm, clear,
+submit and failure goes as one JSON line to
+`<state dir>/amont-agent/clear-relay/<session>.jsonl`, the plugin's
+`stateDir` setting, which `install` sets. To turn the relay off, set the plugin's
+`enabled` setting to false; at stance `observe` no continuation asks for the
+line, so the relay has nothing to act on; at `advise` it acts only when the
+person asked for the handoff.
 
 `workspace-root-write` is the fourth, and ships at `deny` straight away
 instead of walking the observe, advise ladder. The evidence is on disk, not in a

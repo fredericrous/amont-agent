@@ -37,6 +37,7 @@ pub mod block_reinstate;
 pub mod branch_force_delete;
 pub mod cd_carries_over;
 pub mod chain_with_and;
+pub mod clear_at_boundary;
 pub mod code_read_not_lsp;
 pub mod dump;
 pub mod equals_separator;
