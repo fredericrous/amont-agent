@@ -84,6 +84,7 @@ pub fn run(table: &[rules::Rule], extra: Option<Finding>, found: &Scan) -> Vec<F
     let installs = &found.installs;
     out.push(configured(installs));
     out.push(executable(installs));
+    out.extend(alias_entries(installs));
     out.push(self_test());
     out.push(liveness(installs));
     out.push(stances(table));
@@ -444,6 +445,29 @@ fn configured(installs: &[Install]) -> Finding {
         );
     }
     Finding::good(format!("installed in {}", files[0].display()))
+}
+
+/// A warning when hook entries still run the binary under its old name.
+fn alias_entries(installs: &[Install]) -> Option<Finding> {
+    let count = installs
+        .iter()
+        .filter(|i| crate::names::is_alias_program(&i.command))
+        .count();
+    (count > 0).then(|| {
+        Finding::warn(
+            format!(
+                "{count} hook {} still run the old name `{}`",
+                if count == 1 { "entry" } else { "entries" },
+                crate::names::ALIAS
+            ),
+            concat!(
+                "run `",
+                crate::bin!(),
+                " install --write` to point them at the new name"
+            )
+            .to_string(),
+        )
+    })
 }
 
 /// The exit-127 case: a command that does not resolve is a hook that silently

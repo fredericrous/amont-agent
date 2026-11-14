@@ -89,7 +89,7 @@ resolve_version() {
     # handing you a tarball full of HTML.
     tag=$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
         | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n 1)
-    [ -n "$tag" ] || die "could not determine the latest release (rate limited? set AMONT_VERSION=vX.Y.Z)"
+    [ -n "$tag" ] || die "could not determine the latest release (rate limited? set AMONT_AGENT_VERSION=vX.Y.Z)"
     echo "${tag#v}"
 }
 
@@ -108,7 +108,9 @@ main() {
 
     tmp=$(mktemp -d)
     # Clean up on the way out however we leave, including Ctrl-C.
-    trap 'rm -rf "$tmp"' EXIT INT TERM
+    trap 'rm -rf "$tmp"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     if [ -n "${GREENPISTE_ARCHIVE_DIR:-}" ]; then
         # A local archive (the release's standalone check): the same checks

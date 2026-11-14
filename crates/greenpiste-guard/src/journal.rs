@@ -53,7 +53,7 @@ const MAX_BYTES: u64 = 256 * 1024;
 const GENERATIONS: u32 = 10;
 
 pub fn dir() -> Option<PathBuf> {
-    Some(crate::settings::config_dir()?.join("amont-agent"))
+    Some(crate::settings::config_dir()?.join(crate::names::DATA_DIR))
 }
 
 /// Open an existing journal file for appending; never creates one. Creating

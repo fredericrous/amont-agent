@@ -213,7 +213,9 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then bin="$bin.exe"; alias_bin="$alias_bin.exe"; fi
           # The alias archive holds the same bytes, a regular file.
           cmp "$bin" "$alias_bin"
-          test -f "$alias_bin" && ! test -L "$alias_bin"
+          if [ ! -f "$alias_bin" ] || [ -L "$alias_bin" ]; then
+            echo "::error::the alias archive's binary is not a regular file: $alias_bin"; exit 1
+          fi
 
           # CAPTURE FIRST, then grep the variable — never `"$bin" | grep -q`.
           #
@@ -301,17 +303,56 @@ jobs:
   # with no grh, it answers its own commands, and its old name runs as the
   # same build.
   standalone:
-    name: greenpiste stands alone
+    name: greenpiste stands alone (${{ matrix.os }})
     needs: [guard, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
         with:
           name: x86_64-unknown-linux-gnu
           path: dist
+      - uses: actions/download-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: x86_64-pc-windows-msvc
+          path: dist
+      - name: Install from the built archives and run it with no grh (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Get-Command grh -ErrorAction SilentlyContinue) {
+            Write-Error 'grh is on this runner; the check would prove nothing'
+          }
+          # install.ps1 verifies against SHA256SUMS, so write one for the dir.
+          $dist = Join-Path $PWD 'dist'
+          $lines = Get-ChildItem -Path $dist -File | Where-Object { $_.Name -ne 'SHA256SUMS' } |
+            ForEach-Object { "$((Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
+          Set-Content -Path (Join-Path $dist 'SHA256SUMS') -Value $lines
+          $bin = Join-Path $env:RUNNER_TEMP 'bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          $env:GREENPISTE_ARCHIVE_DIR = $dist
+          $env:AMONT_AGENT_BIN_DIR = $bin
+          $env:AMONT_AGENT_VERSION = "v$env:VERSION"
+          & ./install/install.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:PATH = "$bin;$env:PATH"
+          foreach ($name in 'greenpiste', 'amont-agent') {
+            $reported = (& $name --version | Out-String).Trim()
+            Write-Host $reported
+            if ($reported -ne "greenpiste $env:VERSION") { Write-Error "$name --version said: $reported" }
+          }
       - name: Install from the built archives and run it with no grh
+        if: matrix.os == 'ubuntu-latest'
         run: |
           set -euo pipefail
           version="${{ needs.guard.outputs.version }}"
@@ -325,14 +366,43 @@ jobs:
           GREENPISTE_ARCHIVE_DIR="$PWD/dist" AMONT_AGENT_BIN_DIR="$bin" AMONT_AGENT_VERSION="v$version" \
             sh install/install.sh
           export PATH="$bin:$PATH"
-          greenpiste --version | tee "$RUNNER_TEMP/v"
-          grep -qx "greenpiste $version" "$RUNNER_TEMP/v"
+          reported=$(greenpiste --version)
+          printf '%s\n' "$reported"
+          [ "$reported" = "greenpiste $version" ] || { echo "::error::greenpiste --version said: $reported"; exit 1; }
           rules=$(greenpiste rules --json)
           python3 -I -c 'import json, sys; json.loads(sys.argv[1])' "$rules"
-          amont-agent --version | tee "$RUNNER_TEMP/v-alias"
-          grep -qx "greenpiste $version" "$RUNNER_TEMP/v-alias"
+          reported=$(amont-agent --version)
+          printf '%s\n' "$reported"
+          [ "$reported" = "greenpiste $version" ] || { echo "::error::amont-agent --version said: $reported"; exit 1; }
           cmp "$bin/greenpiste" "$bin/amont-agent"
           echo "greenpiste installs, runs and answers to amont-agent with no grh"
+
+  # What a stranger gets: install.sh with no local archives, from the release
+  # just published.
+  post-publish:
+    name: the published release installs
+    needs: [guard, publish]
+    if: needs.guard.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install from the published release
+        run: |
+          set -euo pipefail
+          version="${{ needs.guard.outputs.version }}"
+          # No checkout: only what a stranger can fetch.
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/v$version/install/install.sh" -o "$RUNNER_TEMP/install.sh"
+          AMONT_AGENT_BIN_DIR="$bin" AMONT_AGENT_VERSION="v$version" sh "$RUNNER_TEMP/install.sh"
+          export PATH="$bin:$PATH"
+          reported=$(greenpiste --version)
+          printf '%s\n' "$reported"
+          [ "$reported" = "greenpiste $version" ] || { echo "::error::greenpiste --version said: $reported"; exit 1; }
+          rules=$(greenpiste rules --json)
+          python3 -I -c 'import json, sys; json.loads(sys.argv[1])' "$rules"
+          reported=$(amont-agent --version)
+          [ "$reported" = "greenpiste $version" ] || { echo "::error::amont-agent --version said: $reported"; exit 1; }
 
   publish:
     name: publish the release
@@ -405,8 +475,7 @@ jobs:
             # `workflow_dispatch` on the tag rebuilds the archives, and tar
             # records file times, so the bytes differ while the release is
             # fine. The jobs after this one read the PUBLISHED assets, never
-            # this run's (publish-npm downloads and checks them; publish-tap
-            # reads SHA256SUMS).
+            # this run's (publish-tap reads SHA256SUMS).
             #
             # A draft, or a release without SHA256SUMS, stopped part-way: it is
             # finished by checking or uploading each asset, then published. An
@@ -673,6 +742,25 @@ jobs:
       # No checkout: this must see only what a stranger sees — the tap and
       # the published release. Anything read out of the repository would be
       # testing the thing we already know.
+      # An existing install upgrades: the previous formula (the tap's parent
+      # commit) installed first, then the tap moved to HEAD and `brew upgrade`.
+      - name: Upgrade from the previous formula
+        run: |
+          set -euo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew tap fredericrous/tap
+          tap_dir=$(brew --repository fredericrous/tap)
+          head_ref=$(git -C "$tap_dir" rev-parse HEAD)
+          git -C "$tap_dir" checkout --quiet "$head_ref~1"
+          brew install fredericrous/tap/amont-agent
+          git -C "$tap_dir" checkout --quiet "$head_ref"
+          brew upgrade
+          for name in greenpiste amont-agent; do
+            reported=$("$name" --version)
+            printf '%s\n' "$reported"
+            [ "$reported" = "greenpiste $VERSION" ] || { echo "::error::$name --version said: $reported"; exit 1; }
+          done
+
       - name: Install from the tap
         run: |
           set -euo pipefail
@@ -682,10 +770,12 @@ jobs:
       - name: The installed binary is the version just published
         run: |
           set -euo pipefail
-          greenpiste --version | tee /tmp/v
-          grep -qx "greenpiste $VERSION" /tmp/v
+          reported=$(greenpiste --version)
+          printf '%s\n' "$reported"
+          [ "$reported" = "greenpiste $VERSION" ] || { echo "::error::greenpiste --version said: $reported"; exit 1; }
           # The old name, a copy of the same build.
-          amont-agent --version | grep -qx "greenpiste $VERSION"
+          reported=$(amont-agent --version)
+          [ "$reported" = "greenpiste $VERSION" ] || { echo "::error::amont-agent --version said: $reported"; exit 1; }
 
       # It still DECIDES, not merely starts. A guard that installs and then
       # refuses nothing is the defect no unit test can see, because tests

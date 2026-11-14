@@ -28,16 +28,23 @@ import json
 import pathlib
 import re
 import sys
+from typing import NoReturn
 
 
 # Where the release assets live. The formula may still name the old owner
 # (`fredericrous/amont-agent`); the patterns accept either and write this one.
 REPO = "greenharness/greenpiste"
 
+def fail(message: str) -> NoReturn:
+    print(f"bump-tap: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
 def refusing_by_default(rules_path: str) -> list[str]:
     """The rules (not assertions) that ship at deny, sorted."""
     entries = json.loads(pathlib.Path(rules_path).read_text())
-    assert isinstance(entries, list), f"{rules_path} is not a JSON array"
+    if not isinstance(entries, list):
+        fail(f"{rules_path} is not a JSON array")
     ids = sorted(
         e["id"]
         for e in entries
@@ -45,7 +52,8 @@ def refusing_by_default(rules_path: str) -> list[str]:
     )
     # A release where nothing refuses is a surprise worth a red run, not a
     # caveat that says "none".
-    assert ids, f"no rule ships at deny in {rules_path} — wrong file?"
+    if not ids:
+        fail(f"no rule ships at deny in {rules_path} — wrong file?")
     return ids
 
 
@@ -57,14 +65,14 @@ def rewrite_refusing(text: str, ids: list[str]) -> str:
     text, n = method.subn(
         lambda m: f"{m.group('head')}%w[{' '.join(ids)}]{m.group('tail')}", text
     )
-    assert n == 1, (
-        f"expected one `def refusing_by_default` holding a %w[...] line, found {n}"
-    )
+    if n != 1:
+        fail(f"expected one `def refusing_by_default` holding a %w[...] line, found {n}")
     return text
 
 
 def main() -> None:
-    assert len(sys.argv) == 5, __doc__.strip().splitlines()[-1]
+    if len(sys.argv) != 5:
+        fail(__doc__.strip().splitlines()[-1])
     version, sums_path, rules_path, formula_path = sys.argv[1:5]
     version = version.lstrip("v")
     refusing = refusing_by_default(rules_path)
@@ -80,24 +88,24 @@ def main() -> None:
         m = re.fullmatch(r"greenpiste-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
         if not m:
             continue
-        assert m.group(1) == version, (
-            f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?"
-        )
+        if m.group(1) != version:
+            fail(f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?")
         sums[m.group(2)] = (sha, name)
-    assert sums, f"no greenpiste checksums parsed from {sums_path}"
+    if not sums:
+        fail(f"no greenpiste checksums parsed from {sums_path}")
 
     formula = pathlib.Path(formula_path)
     text = formula.read_text()
     text, n_version = re.subn(
         r'version "[0-9.]+"', f'version "{version}"', text, count=1
     )
-    assert n_version == 1, "the formula carries no version line"
+    if n_version != 1:
+        fail("the formula carries no version line")
 
     def rewrite(m: "re.Match[str]") -> str:
         target = m.group("target")
-        assert target in sums, (
-            f"the formula wants {target} and this release did not publish it"
-        )
+        if target not in sums:
+            fail(f"the formula wants {target} and this release did not publish it")
         sha, name = sums[target]
         return (
             f'url "https://github.com/{REPO}/releases/'
@@ -111,7 +119,8 @@ def main() -> None:
         r'(?P<mid>\s+)sha256 "[0-9a-f]{64}"'
     )
     text, n = pair.subn(rewrite, text)
-    assert n == 4, f"expected 4 url/sha pairs in the formula, rewrote {n}"
+    if n != 4:
+        fail(f"expected 4 url/sha pairs in the formula, rewrote {n}")
 
     # The repository moved (2026-11-08); a formula still on the old owner's
     # homepage is pointed at the new one, and a current one is left as it is.
@@ -121,10 +130,12 @@ def main() -> None:
         text,
         count=1,
     )
-    assert n_home == 1, "the formula carries no homepage line naming fredericrous/amont-agent or greenharness/greenpiste"
+    if n_home != 1:
+        fail("the formula carries no homepage line naming fredericrous/amont-agent or greenharness/greenpiste")
 
     stale = set(re.findall(r"(?:amont-agent|greenpiste)-([0-9.]+)-", text)) - {version}
-    assert not stale, f"stale release versions survived the rewrite: {stale}"
+    if stale:
+        fail(f"stale release versions survived the rewrite: {stale}")
 
     text = rewrite_refusing(text, refusing)
 

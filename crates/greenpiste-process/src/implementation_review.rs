@@ -61,6 +61,7 @@ use crate::provenance::Review as Bound;
 use crate::provenance::{ProfileHow, ProfileVerdict};
 use greenpiste_guard::git;
 use greenpiste_guard::journal;
+use greenpiste_guard::names::DATA_DIR;
 use greenpiste_guard::rules::{Confirmed, Context, Stance};
 use greenpiste_guard::sha256::{hex, sha256};
 use greenpiste_guard::shell::Simple;
@@ -2599,8 +2600,8 @@ pub fn store_clause(parsed: &greenpiste_guard::shell::Parsed) -> Option<std::ops
 pub fn names_store(word: &str) -> bool {
     let word = word.replace('\\', "/");
     HOOK_ONLY_DIRS.iter().any(|d| {
-        word.contains(&format!("amont-agent/{d}/"))
-            || word.contains(&format!("amont-agent/{d}")) && word.ends_with(d)
+        word.contains(&format!("{DATA_DIR}/{d}/"))
+            || word.contains(&format!("{DATA_DIR}/{d}")) && word.ends_with(d)
     })
 }
 

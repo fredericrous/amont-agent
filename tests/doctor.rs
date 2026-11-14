@@ -340,6 +340,29 @@ fn install_both(h: &Home) {
     .unwrap();
 }
 
+/// Entries that still run the old binary name are named, with the command that
+/// rewrites them.
+#[test]
+fn entries_still_pointing_at_the_old_name_are_told_to_reinstall() {
+    let h = Home::new("alias");
+    h.with_a_session();
+    let alias = h.0.join("amont-agent");
+    std::fs::copy(env!("CARGO_BIN_EXE_greenpiste"), &alias).expect("alias copy");
+    std::fs::write(
+        h.settings(),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+                {"type": "command", "command": alias.display().to_string(), "args": ["hook"]}
+            ]}]}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (_, out) = h.run(&["doctor"]);
+    assert!(out.contains("1 hook entry still run"), "{out}");
+    assert!(out.contains("greenpiste install --write"), "{out}");
+}
+
 /// Backdate a file, since the whole question is about relative ages.
 fn backdate(path: &std::path::Path, stamp: &str) {
     let out = Command::new("touch")

@@ -89,11 +89,23 @@ New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 try {
     $zip = Join-Path $tmp "$name.zip"
-    Write-Host '  downloading...'
-    try {
-        Invoke-WebRequest -Uri "$base/$name.zip" -OutFile $zip -UseBasicParsing
-    } catch {
-        Fail "download failed: $base/$name.zip"
+    $archiveDir = $env:GREENPISTE_ARCHIVE_DIR
+    if ($archiveDir) {
+        # A local archive (the release's standalone check): the same checks
+        # as a download, read from a directory instead of the release.
+        Write-Host "  from:     $archiveDir"
+        try {
+            Copy-Item -Path (Join-Path $archiveDir "$name.zip") -Destination $zip -ErrorAction Stop
+        } catch {
+            Fail "no $name.zip in $archiveDir"
+        }
+    } else {
+        Write-Host '  downloading...'
+        try {
+            Invoke-WebRequest -Uri "$base/$name.zip" -OutFile $zip -UseBasicParsing
+        } catch {
+            Fail "download failed: $base/$name.zip"
+        }
     }
 
     # Checksums are not optional here. This binary runs on every commit with
@@ -102,7 +114,11 @@ try {
     # about its own dependencies, applied to itself.
     $sums = Join-Path $tmp 'SHA256SUMS'
     try {
-        Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $sums -UseBasicParsing
+        if ($archiveDir) {
+            Copy-Item -Path (Join-Path $archiveDir 'SHA256SUMS') -Destination $sums -ErrorAction Stop
+        } else {
+            Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $sums -UseBasicParsing
+        }
     } catch {
         $sums = $null
         Write-Warn 'no SHA256SUMS published for this release - the download was NOT verified'

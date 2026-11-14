@@ -11,19 +11,8 @@ const NAME: &str = "amont-agent";
 /// Exact lines, by file, that carry the `tool` field value of a record other
 /// programs read (plan 3b-2 renames it).
 const KEPT_LINES: &[(&str, &str)] = &[
-    ("crates/greenpiste-guard/src/quiet.rs", "\"amont-agent\","),
-    (
-        "crates/greenpiste-process/src/candidates_block.rs",
-        "const TOOL: &str = \"amont-agent\";",
-    ),
     // The clear-relay plugin's marketplace id, written into settings.json as
     // `clear-relay@amont-agent` (plan 3b-2 renames it with the state dir).
-    (
-        "src/plugin_install.rs",
-        "pub const MARKETPLACE: &str = \"amont-agent\";",
-    ),
-    ("src/plugin_install.rs", "\"name\": \"amont-agent\","),
-    ("src/plugin_install.rs", "\"name\": \"amont-agent\""),
     (
         "tests/plugin_install.rs",
         "const ID: &str = \"clear-relay@amont-agent\";",
@@ -33,6 +22,9 @@ const KEPT_LINES: &[(&str, &str)] = &[
         "markets[\"amont-agent\"][\"source\"],",
     ),
 ];
+
+/// The module that says the names, and this test, which spells them out.
+const NAMES_MODULES: &[&str] = &["crates/greenpiste-guard/src/names.rs", "tests/names.rs"];
 
 /// A string literal: where its text starts in the source, and the text
 /// between the quotes as written (escapes and all).
@@ -87,6 +79,7 @@ fn literals(source: &str) -> Vec<Literal> {
             while end < bytes.len() && bytes[end] != b'"' {
                 end += if bytes[end] == b'\\' { 2 } else { 1 };
             }
+            end = end.min(bytes.len());
             found.push(Literal {
                 text_start: start,
                 text: source[start..end].to_string(),
@@ -95,7 +88,10 @@ fn literals(source: &str) -> Vec<Literal> {
         } else if bytes[at] == b'\'' {
             // A char literal, or a lifetime.
             if bytes.get(at + 1) == Some(&b'\\') {
-                at += source[at + 3..].find('\'').map_or(1, |i| i + 4);
+                at += source
+                    .get(at + 3..)
+                    .and_then(|tail| tail.find('\''))
+                    .map_or(1, |i| i + 4);
             } else if bytes.get(at + 2) == Some(&b'\'') {
                 at += 3;
             } else {
@@ -220,44 +216,45 @@ fn stray_names(source: &str) -> Vec<usize> {
     lines
 }
 
-fn rust_files(dir: &Path, into: &mut Vec<PathBuf>) {
+fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+        return Vec::new();
     };
+    let mut files = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            rust_files(&path, into);
+            files.extend(rust_files(&path));
         } else if path.extension().is_some_and(|e| e == "rs") {
-            into.push(path);
+            files.push(path);
         }
     }
+    files
 }
 
 #[test]
 fn no_source_string_names_the_tool_except_the_names_module_and_kept_data_names() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    rust_files(&root.join("src"), &mut files);
-    rust_files(&root.join("tests"), &mut files);
+    let mut files = rust_files(&root.join("src"));
+    files.extend(rust_files(&root.join("tests")));
     for krate in std::fs::read_dir(root.join("crates"))
         .expect("crates dir")
         .flatten()
     {
-        rust_files(&krate.path().join("src"), &mut files);
+        files.extend(rust_files(&krate.path().join("src")));
     }
     assert!(files.len() > 50, "found only {} sources", files.len());
     let mut strays = Vec::new();
     for file in files {
-        if file.file_name().is_some_and(|n| n == "names.rs") {
-            continue;
-        }
-        let source = std::fs::read_to_string(&file).expect("readable source");
         let shown = file
             .strip_prefix(root)
             .unwrap_or(&file)
             .display()
             .to_string();
+        if NAMES_MODULES.contains(&shown.as_str()) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&file).expect("readable source");
         for line in stray_names(&source) {
             let text = source.lines().nth(line - 1).unwrap_or_default().trim();
             if KEPT_LINES

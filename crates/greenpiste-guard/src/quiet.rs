@@ -298,7 +298,7 @@ impl ActiveEntry {
             };
             amont_quiet::Entry::start(
                 &amont_quiet::dir_from_env()?,
-                "amont-agent",
+                crate::names::RECORD_TOOL,
                 &session,
                 program,
                 repo,

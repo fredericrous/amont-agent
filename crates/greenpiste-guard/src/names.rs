@@ -24,7 +24,7 @@ macro_rules! bin {
 }
 
 /// The product's name, as it introduces itself.
-pub const PRODUCT: &str = "greenpiste";
+pub const PRODUCT: &str = bin!();
 
 /// The binary.
 pub const BIN: &str = bin!();
@@ -32,19 +32,35 @@ pub const BIN: &str = bin!();
 /// The binary's old name, still installed as an alias (a copy).
 pub const ALIAS: &str = "amont-agent";
 
-/// The one-line installer for Linux and macOS.
-pub const INSTALLER_URL: &str =
-    "https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.sh";
+/// The state and config directory segment (`~/.claude/amont-agent/`) and the
+/// plugin marketplace id; plan 3b-2 renames it.
+pub const DATA_DIR: &str = "amont-agent";
 
-/// The Homebrew formula, tap-qualified.
-pub const BREW_FORMULA: &str = "fredericrous/tap/greenpiste";
+/// The `tool` field value of the records other programs read; plan 3b-2
+/// renames it.
+pub const RECORD_TOOL: &str = "amont-agent";
+
+fn strip_exe(name: &str) -> &str {
+    let split = name.len().saturating_sub(4);
+    match name.get(split..) {
+        Some(tail) if tail.eq_ignore_ascii_case(".exe") => &name[..split],
+        _ => name,
+    }
+}
 
 /// Whether `program` (a command word's program, with or without a directory
 /// and a trailing `.exe`) is this tool under its name or its alias.
 pub fn is_ours_program(program: &str) -> bool {
-    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
-    let name = name.strip_suffix(".exe").unwrap_or(name);
-    name == BIN || name == ALIAS
+    program_name(program).eq_ignore_ascii_case(BIN) || is_alias_program(program)
+}
+
+/// Whether `program` is this tool under its old name.
+pub fn is_alias_program(program: &str) -> bool {
+    program_name(program).eq_ignore_ascii_case(ALIAS)
+}
+
+fn program_name(program: &str) -> &str {
+    strip_exe(program.rsplit(['/', '\\']).next().unwrap_or(program))
 }
 
 #[cfg(test)]
@@ -60,9 +76,18 @@ mod tests {
             "/usr/local/bin/amont-agent",
             "greenpiste.exe",
             "C:\\bin\\amont-agent.exe",
+            "GREENPISTE.EXE",
+            "C:\\bin\\Amont-Agent.Exe",
         ] {
             assert!(is_ours_program(program), "{program}");
         }
+    }
+
+    #[test]
+    fn only_the_old_name_is_the_alias() {
+        assert!(is_alias_program("/bin/amont-agent"));
+        assert!(is_alias_program("C:\\bin\\Amont-Agent.Exe"));
+        assert!(!is_alias_program("greenpiste"));
     }
 
     #[test]

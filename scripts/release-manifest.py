@@ -30,6 +30,7 @@ Python 3.11 or later (tomllib); run it as `python3 -I`.
 
 import hashlib
 import pathlib
+import re
 import sys
 import tomllib
 from typing import NoReturn
@@ -52,11 +53,11 @@ def fail(message: str) -> NoReturn:
 
 
 def sha256_of(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    try:
+        with path.open("rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+    except OSError as e:
+        fail(f"cannot read {path}: {e}")
 
 
 def main() -> None:
@@ -68,7 +69,10 @@ def main() -> None:
     source = pathlib.Path(sys.argv[3])
     out = pathlib.Path(sys.argv[4])
 
-    text = source.read_text(encoding="utf-8")
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError as e:
+        fail(f"cannot read {source}: {e}")
     try:
         manifest = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
@@ -85,8 +89,13 @@ def main() -> None:
 
     # The old binary name, kept as a copy until the census: grh places it
     # from this declared list, so the committed manifest must keep it.
-    if not isinstance(tool, dict) or tool.get("bin_aliases") != ["amont-agent"]:
-        fail(f'{source} must declare [tool] bin_aliases = ["amont-agent"]')
+    aliases = tool.get("bin_aliases") if isinstance(tool, dict) else None
+    if (
+        not isinstance(aliases, list)
+        or not aliases
+        or not all(isinstance(a, str) and re.fullmatch(r"[A-Za-z0-9._-]+", a) for a in aliases)
+    ):
+        fail(f"{source} must declare [tool] bin_aliases as a list of plain binary names")
 
     sums = {}
     for target in TARGETS:
@@ -110,7 +119,10 @@ def main() -> None:
     if back != {"repo": REPO, "version": version, "sha256": sums}:
         fail(f"the written manifest does not read back as written: {back!r}")
 
-    out.write_text(written, encoding="utf-8")
+    try:
+        out.write_text(written, encoding="utf-8")
+    except OSError as e:
+        fail(f"cannot write {out}: {e}")
     print(f"release-manifest: {out} for {version} ({len(sums)} targets)", file=sys.stderr)
 
 

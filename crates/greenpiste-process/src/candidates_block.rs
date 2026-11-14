@@ -29,7 +29,7 @@ pub const UNAVAILABLE: &str = "<<<CANDIDATES unavailable>>>";
 pub const BLOCK_END: &str = "<<<END CANDIDATES>>>";
 /// A ruling may name its candidate by a prefix this long or longer.
 const MIN_PREFIX_HEX: usize = 12;
-const TOOL: &str = "amont-agent";
+const TOOL: &str = greenpiste_guard::names::RECORD_TOOL;
 const RULINGS_DIR: &str = "rulings";
 /// A review whose agent id is unknown.
 const UNKNOWN_REVIEW: &str = "unknown";
