@@ -229,7 +229,7 @@ and grh pins greenpiste 4.0.0 by its new name.
   3b-2). Verify separately with `cargo test --locked --manifest-path
   tools/shell-oracle/Cargo.toml` from a clean checkout, without an old
   build artifact or an `AMONT_AGENT_BIN` override.
-- [ ] Phase 3 — packaging and CI: `amont-agent/.github/workflows/release.yaml`
+- [x] Phase 3 — packaging and CI: `amont-agent/.github/workflows/release.yaml`
   (version guard names, build, both archives, publish-crates order,
   `standalone`, `publish-tap` writing the new formula and the rename,
   `verify-brew`), `amont-agent/.github/workflows/ci.yaml`,
@@ -303,6 +303,14 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
 `amont-agent` answers only as an alias until the census.
 
 ## Decision log
+
+- 2026-11-14 (Phase 3) — done. The `workflow_dispatch` dry run on the pushed
+  branch (run 43607830670, bd78b5f4) concluded `success`: all six targets
+  built, `standalone` passed on ubuntu-latest (install.sh) and windows-latest
+  (install.ps1) from the local archives, and the dry publish checksummed 13
+  assets: 6 `greenpiste-*` archives, 6 `amont-agent-*` archives and
+  `greenharness.toml`. Skipped as a dry run: crates.io, the tap, verify-brew
+  and post-publish (they run at the 4.0.0 tag).
 
 - 2026-11-14 — `verify-brew` (including its upgrade from the pre-rename
   formula) and the post-publish `install.sh` run are skipped on a dry run:
