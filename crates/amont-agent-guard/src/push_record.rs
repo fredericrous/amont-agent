@@ -6,6 +6,7 @@
 //! its upkeep. The store keeps its historical place, `previews/pushes` and
 //! `previews/lands` under the journal's directory.
 
+use crate::names::BIN;
 use std::path::{Path, PathBuf};
 
 use crate::journal;
@@ -79,7 +80,10 @@ pub fn record_land(tool_use_id: &str, judged: &str, l: &crate::land::Landing) {
     // No clock, no record: a `since` of 0 would match every older receipt of
     // the branch, and the check would then judge the wrong land.
     let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        eprintln!("amont-agent: land-retry: the clock is before 1970, so this land's judgement is not recorded");
+        eprintln!(concat!(
+            crate::bin!(),
+            ": land-retry: the clock is before 1970, so this land's judgement is not recorded"
+        ));
         return;
     };
     let since = now.as_nanos() as i128;
@@ -90,22 +94,23 @@ pub fn record_land(tool_use_id: &str, judged: &str, l: &crate::land::Landing) {
         clean(&l.branch)
     );
     let Some(d) = dir().map(|d| d.join("lands")) else {
-        eprintln!(
-            "amont-agent: land-retry: no state directory, so this land's judgement is not recorded"
-        );
+        eprintln!(concat!(
+            crate::bin!(),
+            ": land-retry: no state directory, so this land's judgement is not recorded"
+        ));
         return;
     };
     if ensure(&d).is_none() {
-        eprintln!("amont-agent: land-retry: could not create {}", d.display());
+        eprintln!(
+            concat!(crate::bin!(), ": land-retry: could not create {}"),
+            d.display()
+        );
         return;
     }
     prune_land_records(&d);
     let path = d.join(tool_use_id);
     if let Err(e) = crate::atomic::write_atomic(&path, &body) {
-        eprintln!(
-            "amont-agent: land-retry: could not write {}: {e}",
-            path.display()
-        );
+        eprintln!("{BIN}: land-retry: could not write {}: {e}", path.display());
     }
 }
 
@@ -114,10 +119,7 @@ fn prune_land_records(dir: &Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!(
-                "amont-agent: land-retry: could not list {}: {e}",
-                dir.display()
-            );
+            eprintln!("{BIN}: land-retry: could not list {}: {e}", dir.display());
             return;
         }
     };
@@ -131,7 +133,7 @@ fn prune_land_records(dir: &Path) {
         if old {
             if let Err(err) = std::fs::remove_file(e.path()) {
                 eprintln!(
-                    "amont-agent: land-retry: could not delete the old record {}: {err}",
+                    "{BIN}: land-retry: could not delete the old record {}: {err}",
                     e.path().display()
                 );
             }

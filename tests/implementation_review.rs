@@ -29,7 +29,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-const RULE: &str = "amont-agent/implementation-review";
+const RULE: &str = "greenpiste/implementation-review";
 const AGENT: &str = "implementation-review";
 
 /// One AskUserQuestion hook call the tests make.
@@ -4369,7 +4369,7 @@ fn a_copy_without_a_pin_record_is_a_miss() {
     let (w, _, copy) = registered_pilot("copy-no-pin");
     denied_with(
         push_copy(&w, &copy, "s2"),
-        "no passed pin check; run amont-agent review-brief -C",
+        "no passed pin check; run greenpiste review-brief -C",
     );
     assert!(w
         .journal()

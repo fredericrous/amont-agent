@@ -10,6 +10,7 @@
 //! the plan, the phase label and the number of continuations so far. It is
 //! reset when the open phase changes and when the person submits a prompt.
 
+use amont_agent_guard::names::BIN;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -282,7 +283,7 @@ fn judge(stop: &Stop, stance: impl FnOnce() -> Stance) -> Option<Decision> {
         Stance::Advise => {
             record(stance_name, "advised", "open phase");
             Some(Decision::UserNote(format!(
-                "amont-agent/{}: the agent stopped with \"{label}\" open in {}; say \"continue\" to run it.",
+                "{BIN}/{}: the agent stopped with \"{label}\" open in {}; say \"continue\" to run it.",
                 RULE.id, plan.name
             )))
         }
@@ -303,7 +304,7 @@ fn judge(stop: &Stop, stance: impl FnOnce() -> Stance) -> Option<Decision> {
                 bump(&file, &plan.name, &label, done + 1)?;
                 record(stance_name, "released", "cap reached");
                 Some(Decision::UserNote(format!(
-                    "amont-agent/{}: stopped with \"{label}\" still open in {} after {CAP} continuations; say \"continue\", or tick it.",
+                    "{BIN}/{}: stopped with \"{label}\" still open in {} after {CAP} continuations; say \"continue\", or tick it.",
                     RULE.id, plan.name
                 )))
             } else {

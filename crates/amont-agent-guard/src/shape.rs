@@ -81,7 +81,8 @@ fn is_verb_program(name: &str) -> bool {
 /// habits, `grep alpha` and `grep beta` are one. Every entry here was in the
 /// measured corpus; a program nobody runs does not need to be in a table.
 const VERB_PROGRAMS: &[&str] = &[
-    "amont-agent",
+    crate::names::BIN,
+    crate::names::ALIAS,
     "argocd",
     "aws",
     "az",

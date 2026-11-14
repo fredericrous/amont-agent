@@ -65,7 +65,7 @@ mod tests {
     fn both_names_are_the_gate() {
         assert!(is_gate_program("amont"));
         assert!(is_gate_program("greengate"));
-        assert!(!is_gate_program("amont-agent"));
+        assert!(!is_gate_program("greenpiste"));
         assert!(is_gate_fleet_program("amont-fleet"));
         assert!(is_gate_fleet_program("greengate-fleet"));
         assert!(!is_gate_fleet_program("amont"));

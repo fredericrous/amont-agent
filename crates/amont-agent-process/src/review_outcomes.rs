@@ -7,6 +7,7 @@
 //! reviewed is kept once under `plan-review/bodies/<sha>.md`, because the
 //! plan file keeps changing and the ledger holds only the sha.
 
+use amont_agent_guard::names::BIN;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{BufReader, Read, Write};
@@ -15,9 +16,14 @@ use std::process::ExitCode;
 
 use crate::plan_review::{self, Completed, AGENT_PREFIX};
 
-pub const USAGE: &str = "\
-usage: amont-agent plan-review record <plan.md> [--transcript <path>]
-       amont-agent plan-review stats [--json] [--model <id>]
+pub const USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " plan-review record <plan.md> [--transcript <path>]
+       ",
+    amont_agent_guard::bin!(),
+    " plan-review stats [--json] [--model <id>]
 
 Append one row per completed plan-review reviewer of the plan to
 ~/.claude/amont-agent/plan-review/outcomes.jsonl, skipping agents already
@@ -51,7 +57,8 @@ finding, and plans whose hook record was skipped. --json prints one array;
 Exit 0 when the ledger is up to date, 1 when a reviewer has no agent id, no
 transcript names the plan or the ledger cannot be written, 2 on a usage error
 (including malformed findings).
-";
+"
+);
 
 const SCHEMA: &str = "amont-agent-review-outcome-v1";
 const MERGE_SCHEMA: &str = "amont-agent-review-merge-v1";
@@ -73,7 +80,7 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
         return (USAGE.to_string(), ExitCode::SUCCESS);
     }
     let usage = |why: &str| {
-        eprint!("amont-agent: {why}\n\n{USAGE}");
+        eprint!("{BIN}: {why}\n\n{USAGE}");
         (String::new(), ExitCode::from(2))
     };
     let mut it = args.iter();
@@ -120,7 +127,7 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
             (String::new(), ExitCode::from(code))
         }
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             (String::new(), ExitCode::from(1))
         }
     }
@@ -223,7 +230,7 @@ pub(crate) fn discover(
     let dirs = match std::fs::read_dir(&projects) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("amont-agent: cannot read {}: {e}", projects.display());
+            eprintln!("{BIN}: cannot read {}: {e}", projects.display());
             return None;
         }
     };
@@ -231,7 +238,7 @@ pub(crate) fn discover(
         let files = match std::fs::read_dir(dir.path()) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("amont-agent: skipped {}: {e}", dir.path().display());
+                eprintln!("{BIN}: skipped {}: {e}", dir.path().display());
                 continue;
             }
         };
@@ -256,7 +263,7 @@ pub(crate) fn discover(
             let found = match load(&path, plan) {
                 Ok(f) => Ok(f),
                 Err(e) => {
-                    eprintln!("amont-agent: skipped {}: {e}", path.display());
+                    eprintln!("{BIN}: skipped {}: {e}", path.display());
                     Err(e)
                 }
             };
@@ -651,7 +658,7 @@ fn record_locked(
                 std::fs::read_to_string(&file)
                     .map_err(|e| {
                         if e.kind() != std::io::ErrorKind::NotFound {
-                            eprintln!("amont-agent: cannot read {}: {e}", file.display());
+                            eprintln!("{BIN}: cannot read {}: {e}", file.display());
                         }
                     })
                     .ok()
@@ -670,9 +677,7 @@ fn record_locked(
         // ExitPlanMode, so there is no panel to describe.
         let seated = meta.as_ref().ok().and_then(|m| {
             plan_review::seating(m, body)
-                .map_err(|why| {
-                    eprintln!("amont-agent: the panel's seats cannot be recorded: {why}")
-                })
+                .map_err(|why| eprintln!("{BIN}: the panel's seats cannot be recorded: {why}"))
                 .ok()
         });
         serde_json::json!({
@@ -826,7 +831,7 @@ fn record_locked(
     let mut missing = false;
     for l in found.iter().filter(|l| l.done.agent_id.is_none()) {
         eprintln!(
-            "amont-agent: no agent id for {} in {}",
+            concat!(amont_agent_guard::bin!(), ": no agent id for {} in {}"),
             l.role,
             transcript.display()
         );
@@ -860,7 +865,7 @@ fn prune(dir: &Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("amont-agent: bodies in {} not pruned: {e}", dir.display());
+            eprintln!("{BIN}: bodies in {} not pruned: {e}", dir.display());
             return;
         }
     };
@@ -874,7 +879,7 @@ fn prune(dir: &Path) {
             .is_some_and(|d| d.as_secs() > BODY_TTL);
         if old {
             if let Err(why) = std::fs::remove_file(e.path()) {
-                eprintln!("amont-agent: body {} not pruned: {why}", e.path().display());
+                eprintln!("{BIN}: body {} not pruned: {why}", e.path().display());
             }
         }
     }
@@ -1324,7 +1329,11 @@ pub fn stats_report_with(
     }
     for s in &missed {
         out.push_str(&format!(
-            "record-skipped\t{}\tbody={}\tcatch up: amont-agent plan-review record {}\n",
+            concat!(
+                "record-skipped\t{}\tbody={}\tcatch up: ",
+                amont_agent_guard::bin!(),
+                " plan-review record {}\n"
+            ),
             s.plan, s.sha, s.plan
         ));
     }
@@ -1341,7 +1350,7 @@ fn ledger_path(store: &str) -> Result<PathBuf, String> {
 
 fn run_stats(args: &[String]) -> (String, ExitCode) {
     let usage = |why: &str| {
-        eprint!("amont-agent: {why}\n\n{USAGE}");
+        eprint!("{BIN}: {why}\n\n{USAGE}");
         (String::new(), ExitCode::from(2))
     };
     let (mut json, mut model) = (false, None::<String>);
@@ -1367,7 +1376,7 @@ fn run_stats(args: &[String]) -> (String, ExitCode) {
         match read {
             Ok(mut r) => rows.append(&mut r),
             Err(why) => {
-                eprintln!("amont-agent: {why}");
+                eprintln!("{BIN}: {why}");
                 return (String::new(), ExitCode::from(1));
             }
         }

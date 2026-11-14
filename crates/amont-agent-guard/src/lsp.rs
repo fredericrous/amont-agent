@@ -567,14 +567,14 @@ mod tests {
         let files = asked_files(&ds);
         assert_eq!(
             files,
-            [PathBuf::from("/home/user/Developer/amont-agent/src/lsp.rs")]
+            [PathBuf::from("/home/user/Developer/greenpiste/src/lsp.rs")]
         );
         let fr = fixture("findreferences");
         let names: Vec<String> = asked_files(&fr)
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-        let root = "/home/user/Developer/amont-agent";
+        let root = "/home/user/Developer/greenpiste";
         assert_eq!(
             names,
             [

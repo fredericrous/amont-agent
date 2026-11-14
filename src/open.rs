@@ -7,6 +7,7 @@
 //! inside each word afterwards, so the page is always exactly one argv entry
 //! and no shell runs.
 
+use amont_agent_guard::names::BIN;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -18,13 +19,13 @@ use amont_agent_guard::shell::{self, Opaque, Parsed};
 use amont_agent_process::guide;
 
 const SETTING: &str = "amont.agent.opener";
-const USAGE: &str = "usage: amont-agent open <url|path>";
+const USAGE: &str = concat!("usage: ", amont_agent_guard::bin!(), " open <url|path>");
 const LAUNCH_WAIT: Duration = Duration::from_secs(2);
 const CAPTURE_ATTEMPTS: u32 = 16;
 const POLL_EVERY: Duration = Duration::from_millis(20);
 
-const HELP: &str = "\
-usage: amont-agent open <url|path>
+const HELP: &str = concat!("\
+usage: ", amont_agent_guard::bin!(), " open <url|path>
 
 Open a page for the person, in a browser window they see. A path is made
 absolute, must exist, and is opened as a file:// URL.
@@ -33,7 +34,7 @@ The opener is the command template in `git config --global amont.agent.opener`,
 where `{}` stands for the page (the page is appended when there is no `{}`).
 Unset, it is `open` (macOS), `xdg-open` (Linux) or `rundll32 url.dll,FileProtocolHandler {}` (Windows).
 Silent on success. Exit 0 launched, 1 the page could not be opened, 2 usage.
-";
+");
 
 /// Why a page could not be opened.
 #[derive(Debug)]
@@ -295,7 +296,10 @@ fn launch(
 }
 
 fn unknown_option(word: &OsStr) -> ExitCode {
-    eprintln!("amont-agent: unknown option {}", word.to_string_lossy());
+    eprintln!(
+        concat!(amont_agent_guard::bin!(), ": unknown option {}"),
+        word.to_string_lossy()
+    );
     eprintln!("{USAGE}");
     ExitCode::from(2)
 }
@@ -319,7 +323,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
     match page_for(target).and_then(|page| open_url(&page)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             ExitCode::from(1)
         }
     }
@@ -365,7 +369,7 @@ pub fn opener_finding() -> doctor::Finding {
     } else {
         doctor::Finding::warn(
             format!("opener: {} not found ({})", words[0], source.label()),
-            format!("`amont-agent open` cannot show a page; {remedy}"),
+            format!("`{BIN} open` cannot show a page; {remedy}"),
         )
     }
 }

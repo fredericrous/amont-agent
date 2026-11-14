@@ -578,7 +578,10 @@ pub fn evaluate(rules: &'static [Rule], input: &Input) -> Vec<(&'static Rule, Fi
         match found {
             Ok(Some(f)) => out.push((rule, f)),
             Ok(None) => {}
-            Err(_) => eprintln!("amont-agent: rule `{}` panicked; ignoring it", rule.id),
+            Err(_) => eprintln!(
+                concat!(crate::bin!(), ": rule `{}` panicked; ignoring it"),
+                rule.id
+            ),
         }
     }
     out

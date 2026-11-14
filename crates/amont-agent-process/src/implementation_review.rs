@@ -1887,7 +1887,11 @@ impl ProfileGate<'_> {
     fn pin_passed(&self, base: &Path, fingerprint: &str) -> Result<(), String> {
         let missing = || {
             format!(
-                "no passed pin check; run amont-agent review-brief -C {}",
+                concat!(
+                    "no passed pin check; run ",
+                    amont_agent_guard::bin!(),
+                    " review-brief -C {}"
+                ),
                 self.repo.display()
             )
         };
@@ -2336,7 +2340,11 @@ pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
             .filter(|pass| pass.tree == older.sha)
             .map(|pass| {
                 format!(
-                    " A delta reads only what changed: `amont-agent review-brief --interdiff {}` (a profile seat adds `--profile <role>`).",
+                    concat!(
+                        " A delta reads only what changed: `",
+                        amont_agent_guard::bin!(),
+                        " review-brief --interdiff {}` (a profile seat adds `--profile <role>`)."
+                    ),
                     short(&pass.head)
                 )
             })
@@ -2600,7 +2608,7 @@ pub fn names_store(word: &str) -> bool {
 const HOOK_ONLY_DIRS: &[&str] = &[RULE_ID, "provenance"];
 
 pub const GUARD_REASON: &str =
-    "files under amont-agent/implementation-review/ and amont-agent/provenance/ are written by the hook alone: the pass files from a completed review in this session's transcript or the person's Overrule, the provenance records from a push the hook passed.";
+    "files under ~/.claude/amont-agent/implementation-review/ and ~/.claude/amont-agent/provenance/ are written by the hook alone: the pass files from a completed review in this session's transcript or the person's Overrule, the provenance records from a push the hook passed.";
 pub const GUARD_REMEDY: &str =
     "Run the review (worktree-task F4b) or ask the person; never write the record by hand.";
 
@@ -2966,11 +2974,11 @@ mod tests {
     #[test]
     fn a_block_round_trips_and_a_short_sha_does_not_bind() {
         let sha = "a".repeat(64);
-        let b = block("amont-agent", &sha);
-        assert_eq!(b, format!("<<<TREE repo=amont-agent sha={sha}>>>"));
+        let b = block("greenpiste", &sha);
+        assert_eq!(b, format!("<<<TREE repo=greenpiste sha={sha}>>>"));
         assert_eq!(
             parse_blocks(&format!("Round 1.\n{b}\nbrief")),
-            vec![("amont-agent".to_string(), sha.clone())]
+            vec![("greenpiste".to_string(), sha.clone())]
         );
         assert!(parse_blocks("<<<TREE repo=x sha=abc123>>>").is_empty());
         assert!(parse_blocks("<<<TREE sha=abc>>>").is_empty());

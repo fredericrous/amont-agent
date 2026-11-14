@@ -107,7 +107,7 @@ pub fn payload(r: &Record) -> String {
         ));
     }
     out.push_str(&format!(
-        "preview {}\nproducer amont-agent {}\n",
+        concat!("preview {}\nproducer amont-agent {}\n"),
         r.preview.word(),
         r.version
     ));

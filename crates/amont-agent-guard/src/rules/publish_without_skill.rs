@@ -270,7 +270,7 @@ mod tests {
         // `amont-agent/publish-without-skill: ` then the reason: the skill
         // and the next step fit in the first 80 columns.
         let head = format!(
-            "amont-agent/{}: {}",
+            "greenpiste/{}: {}",
             RULE.id,
             missing(Kind::PrMerge, "gh pr merge")
         );

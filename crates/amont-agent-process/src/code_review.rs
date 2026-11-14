@@ -4,6 +4,7 @@
 //! repository's areas when they name none), and the judge rules each profile
 //! reviews.
 
+use amont_agent_guard::names::BIN;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -307,7 +308,7 @@ pub fn branch_proposal(
     let deadline = std::time::Instant::now() + BRANCH_GIT_BUDGET;
     let unproven = |mut proposal: BranchProposal, cause: String| {
         proposal.notices.push(format!(
-            "amont-agent: plan-panel: {cause}; the profiles are proposed"
+            "{BIN}: plan-panel: {cause}; the profiles are proposed"
         ));
         Ok(proposal)
     };
@@ -359,7 +360,7 @@ pub fn branch_proposal(
         Stance::Deny => {}
         Stance::Observe | Stance::Advise => {
             proposal.notices.push(
-                "amont-agent: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
+                concat!(amont_agent_guard::bin!(), ": plan-panel: the implementation-review hook does not enforce; the profiles are proposed")
                     .to_string(),
             );
             return Ok(proposal);
@@ -369,7 +370,7 @@ pub fn branch_proposal(
     match pin {
         crate::pin_check::Outcome::Passed { .. } => proposal.copy_of = Some(id),
         crate::pin_check::Outcome::Failed { why } => proposal.notices.push(format!(
-            "amont-agent: plan-panel: {id} is a registered copy but the pin check failed: {why}; the profiles are proposed"
+            "{BIN}: plan-panel: {id} is a registered copy but the pin check failed: {why}; the profiles are proposed"
         )),
     }
     Ok(proposal)
@@ -743,11 +744,11 @@ mod tests {
     #[test]
     fn a_list_parses_with_its_left_out_reason() {
         let text = plan(
-            "- amont-agent: backend, lang:rust, unix (tui: no screens)\n- decisions: none — prose only",
+            "- greenpiste: backend, lang:rust, unix (tui: no screens)\n- decisions: none — prose only",
         );
         let map = parse(&text).unwrap().unwrap();
         assert_eq!(
-            map["amont-agent"],
+            map["greenpiste"],
             Declared::Profiles {
                 profiles: vec!["backend".into(), "lang:rust".into(), "unix".into()],
                 left_out: Some("tui: no screens".into()),

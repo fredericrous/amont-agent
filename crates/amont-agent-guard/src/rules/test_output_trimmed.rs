@@ -16,6 +16,7 @@
 //! `true || set -o pipefail`, and zsh `setopt pipefail` are all read as the
 //! shell would. Only a definite yes exempts.
 
+use crate::names::BIN;
 use std::ops::Range;
 
 use crate::rules::pipe_to_tail::{pipefail_is_on, pipeline_sink};
@@ -103,7 +104,7 @@ pub(crate) fn is_check_run(cmd: &Simple) -> bool {
                 .filter(|a| !a.starts_with('-'));
             it.next() == Some("run") && it.next().is_some()
         }
-        Some("amont-agent") => {
+        Some(program) if crate::names::is_ours_program(program) => {
             let words = cmd.args();
             let Some(sep) = words.iter().position(|w| !w.quoted && w.text == "--") else {
                 return false;
@@ -184,7 +185,7 @@ fn examine(input: &Input) -> Option<Finding> {
             ),
             remedy: format!(
                 "Run a declared check as `amont run <check>`, or any other command as \
-                 `amont-agent quiet -- {verb}`: one line on a pass, only the failure \
+                 `{BIN} quiet -- {verb}`: one line on a pass, only the failure \
                  on a fail, the real exit code. Minimal fix: `set -o pipefail; {verb} \
                  | {sink_program}`."
             ),
@@ -210,14 +211,14 @@ mod check_run_tests {
     fn a_check_run_is_a_runner_or_amont_run_or_quiet_wrapped() {
         assert!(is_check("cargo test"));
         assert!(is_check("amont run cargo-test"));
-        assert!(is_check("amont-agent quiet -- cargo test"));
+        assert!(is_check("greenpiste quiet -- cargo test"));
     }
 
     #[test]
     fn a_command_that_only_names_a_check_is_not_one() {
         assert!(!is_check("amont run"));
-        assert!(!is_check("amont-agent -- cargo test"));
-        assert!(!is_check("amont-agent quiet -- 'cargo test'"));
+        assert!(!is_check("greenpiste -- cargo test"));
+        assert!(!is_check("greenpiste quiet -- 'cargo test'"));
         assert!(!is_check("grep -n error src/main.rs"));
     }
 

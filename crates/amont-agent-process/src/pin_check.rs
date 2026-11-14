@@ -10,6 +10,7 @@
 //! that release lists the asset. `plan-panel` and `review-brief` call the same
 //! function; only `review-brief` writes the record the hook reads.
 
+use amont_agent_guard::names::BIN;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -193,7 +194,7 @@ pub fn check(repo: &Path, merge_base: &str) -> Outcome {
         Err(why) => return Outcome::failed(why),
     };
     eprintln!(
-        "amont-agent: pin check: gh release view {tag} --repo {} (asset {asset})",
+        "{BIN}: pin check: gh release view {tag} --repo {} (asset {asset})",
         marker.repo
     );
     let args = [

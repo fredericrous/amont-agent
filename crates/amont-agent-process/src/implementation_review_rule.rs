@@ -47,11 +47,11 @@ pub const RULE: Rule = Rule {
     confirm: Some(confirm),
 };
 
-const REMEDY: &str = "worktree-task F4b: `amont-agent tree-sha --block`, then launch the \
+const REMEDY: &str = concat!("worktree-task F4b: `", amont_agent_guard::bin!(), " tree-sha --block`, then launch the \
                       implementation-review agent with the plan, the diff and the active rules; \
                       a stale or rework review gets ONE delta with the round-1 findings, and a \
                       rework that survives it goes to the person on a marked question \
-                      (`[implementation-review <repo>@<sha>]`, options exactly Overrule / Fix / Hold).";
+                      (`[implementation-review <repo>@<sha>]`, options exactly Overrule / Fix / Hold).");
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
     if let Some(cmd) = amont_agent_guard::push_target::find(parsed) {

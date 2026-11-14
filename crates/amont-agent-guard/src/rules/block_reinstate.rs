@@ -25,7 +25,7 @@ pub const RULE: Rule = Rule {
 
 fn examine(parsed: &Parsed) -> Option<Finding> {
     for cmd in parsed.judgeable() {
-        if cmd.program() != Some("amont-agent") {
+        if !cmd.program().is_some_and(crate::names::is_ours_program) {
             continue;
         }
         // Quoted words are operands too, so `echo "amont-agent block reinstate"`
@@ -36,14 +36,24 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
             continue;
         }
         return Some(Finding {
-            reason: "`amont-agent block reinstate` lifts the revocation of a reviewed \
+            reason: concat!(
+                "`",
+                crate::bin!(),
+                " block reinstate` lifts the revocation of a reviewed \
                      block, so every copy of a block with a known defect is recognised \
                      again without a full review. That decision is the person's."
-                .to_string(),
-            remedy: "Leave the block revoked. Tell the person which fingerprint to \
-                     reinstate (`amont-agent block list`); they run \
-                     `amont-agent block reinstate <fp>` in their own shell."
-                .to_string(),
+            )
+            .to_string(),
+            remedy: concat!(
+                "Leave the block revoked. Tell the person which fingerprint to \
+                     reinstate (`",
+                crate::bin!(),
+                " block list`); they run \
+                     `",
+                crate::bin!(),
+                " block reinstate <fp>` in their own shell."
+            )
+            .to_string(),
             span: cmd.at..cmd.end,
         });
     }

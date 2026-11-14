@@ -3,6 +3,7 @@
 //! judge rules and an id-and-title index of the rest). One function hashes the `aval` output
 //! ([`rules_sha`]); the brief, the CLI and the push check all call it.
 
+use amont_agent_guard::names::BIN;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -87,7 +88,11 @@ pub enum DeltaRefusal {
 
 impl std::fmt::Display for DeltaRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let full = "run `amont-agent review-brief` without --interdiff for the full brief";
+        let full = concat!(
+            "run `",
+            amont_agent_guard::bin!(),
+            " review-brief` without --interdiff for the full brief"
+        );
         match self {
             DeltaRefusal::UnreadableHead(head) => write!(
                 f,
@@ -104,7 +109,7 @@ impl std::fmt::Display for DeltaRefusal {
                     .unwrap_or_default();
                 write!(
                     f,
-                    "this branch's last passed review read `{short}`: run `amont-agent review-brief --interdiff {short}{role}`, or {full}"
+                    "this branch's last passed review read `{short}`: run `{BIN} review-brief --interdiff {short}{role}`, or {full}"
                 )
             }
             DeltaRefusal::TooLarge => write!(f, "what changed is 60 KB or more: {full}"),

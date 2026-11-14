@@ -89,7 +89,7 @@ fn denied_ask(id: &str, question: &str) -> Vec<String> {
 }
 
 const REGISTER_OPEN: &str =
-    "amont-agent preview register --url http://localhost:5173 --guide g.md --open";
+    "greenpiste preview register --url http://localhost:5173 --guide g.md --open";
 
 fn register_command(id: &str, command: &str, page: &str, opened: bool) -> Vec<String> {
     let registration = json!({"id":"aa7ad80ae8ea6b","page":page,"opened":opened}).to_string();
@@ -168,7 +168,7 @@ fn a_question_naming_an_unopened_mockup_is_denied() {
     assert!(reply.denied(), "{}", reply.stdout);
     let why = reply.reason();
     assert!(why.contains(MOCKUP), "{why}");
-    assert!(why.contains("amont-agent open 'docs/mockups/part-toggles/options.html'"));
+    assert!(why.contains("greenpiste open 'docs/mockups/part-toggles/options.html'"));
     assert!(why.contains("ask the question again"));
     assert!(why.contains("work.page-shown-before-asked"));
 }
@@ -181,7 +181,7 @@ fn a_question_with_no_page_is_allowed() {
 
 #[test]
 fn an_opened_page_may_be_asked_about() {
-    let calls = [bash("b1", &format!("amont-agent open {MOCKUP}"))];
+    let calls = [bash("b1", &format!("greenpiste open {MOCKUP}"))];
     assert_eq!(ask("opened", &calls, &abc()).stdout, "");
 }
 
@@ -201,7 +201,7 @@ fn a_preview_question_after_register_and_open_is_allowed() {
         "[preview aa7ad80ae8ea6b] Approve http://localhost:5173/app ? Guide: /work/repo/g.html";
     let calls = [
         register("r1", "/work/repo/g.html", true),
-        bash("b2", "amont-agent open 'http://localhost:5173/app'"),
+        bash("b2", "greenpiste open 'http://localhost:5173/app'"),
     ];
     assert_eq!(ask("preview-ok", &calls, question).stdout, "");
 }
@@ -215,11 +215,11 @@ fn a_preview_question_after_register_only_is_denied_naming_the_url() {
     assert!(reply.denied(), "{}", reply.stdout);
     let why = reply.reason();
     assert!(
-        why.contains("amont-agent open 'http://localhost:5173/app'"),
+        why.contains("greenpiste open 'http://localhost:5173/app'"),
         "{why}"
     );
     assert!(
-        !why.contains("amont-agent open '/work/repo/g.html'"),
+        !why.contains("greenpiste open '/work/repo/g.html'"),
         "{why}"
     );
 }
@@ -227,7 +227,7 @@ fn a_preview_question_after_register_only_is_denied_naming_the_url() {
 #[test]
 fn open_ask_ask_again_is_denied() {
     let calls = [
-        bash("b1", &format!("amont-agent open {MOCKUP}")),
+        bash("b1", &format!("greenpiste open {MOCKUP}")),
         answered("a1", &abc()),
     ];
     assert!(ask("window", &calls, &abc()).denied());
@@ -236,7 +236,7 @@ fn open_ask_ask_again_is_denied() {
 #[test]
 fn a_denied_ask_is_not_a_boundary() {
     let calls = [
-        bash("b1", &format!("amont-agent open {MOCKUP}")),
+        bash("b1", &format!("greenpiste open {MOCKUP}")),
         denied_ask("a1", &abc()),
     ];
     assert_eq!(ask("denied-ask", &calls, &abc()).stdout, "");
@@ -244,9 +244,9 @@ fn a_denied_ask_is_not_a_boundary() {
 
 #[test]
 fn another_fragment_or_route_is_another_page() {
-    let calls = [bash("b1", "amont-agent open 'http://localhost:3000/#/A'")];
+    let calls = [bash("b1", "greenpiste open 'http://localhost:3000/#/A'")];
     assert!(ask("frag", &calls, "Pick http://localhost:3000/#/B").denied());
-    let calls = [bash("b1", "amont-agent open http://localhost:3000/options")];
+    let calls = [bash("b1", "greenpiste open http://localhost:3000/options")];
     assert!(ask("slash", &calls, "Pick http://localhost:3000/options/").denied());
     assert!(ask(
         "index",
@@ -263,11 +263,11 @@ fn another_fragment_or_route_is_another_page() {
 #[test]
 fn an_open_that_may_not_have_run_does_not_count() {
     let page = format!("Pick {MOCKUP}");
-    let skipped = [bash("b1", &format!("true || amont-agent open {MOCKUP}"))];
+    let skipped = [bash("b1", &format!("true || greenpiste open {MOCKUP}"))];
     assert!(ask("skipped", &skipped, &page).denied());
-    let masked = [bash("b1", &format!("amont-agent open {MOCKUP}; true"))];
+    let masked = [bash("b1", &format!("greenpiste open {MOCKUP}; true"))];
     assert!(ask("masked", &masked, &page).denied());
-    let failed = [failed_bash("b1", &format!("amont-agent open {MOCKUP}"))];
+    let failed = [failed_bash("b1", &format!("greenpiste open {MOCKUP}"))];
     assert!(ask("failed", &failed, &page).denied());
     let not_opened = [register("r1", &format!("{CWD}/{MOCKUP}"), false)];
     assert!(ask("not-opened", &not_opened, &page).denied());
@@ -292,7 +292,7 @@ fn a_register_open_in_a_compound_command_does_not_count() {
 
 #[test]
 fn a_cd_prefixed_open_counts_for_the_page_under_that_directory() {
-    let calls = [bash("b1", "cd dir && amont-agent open x.html")];
+    let calls = [bash("b1", "cd dir && greenpiste open x.html")];
     assert_eq!(ask("cd", &calls, "Pick /work/repo/dir/x.html").stdout, "");
     assert!(ask("cd-wrong", &calls, "Pick /work/repo/x.html").denied());
 }
@@ -312,7 +312,7 @@ fn no_transcript_advises() {
     let reply = send(&payload(&abc(), None));
     assert!(!reply.denied(), "{}", reply.stdout);
     assert!(
-        reply.reason().contains("amont-agent open"),
+        reply.reason().contains("greenpiste open"),
         "{}",
         reply.stdout
     );

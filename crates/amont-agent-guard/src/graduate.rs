@@ -99,7 +99,11 @@ pub fn assess_score(rule: &Rule, to: Stance, score: &corpus::Score) -> Verdict {
             "the rule agrees with every judgement".to_string()
         } else {
             format!(
-                "{} judgement(s) the rule now disagrees with — run `amont-agent corpus check`",
+                concat!(
+                    "{} judgement(s) the rule now disagrees with — run `",
+                    crate::bin!(),
+                    " corpus check`"
+                ),
                 score.disagreements.len()
             )
         },

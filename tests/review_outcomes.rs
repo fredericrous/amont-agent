@@ -426,7 +426,7 @@ fn a_launch_without_an_agent_id_is_reported_after_the_rest_are_written() {
     let o = w.record("[]");
     assert_eq!(o.status.code(), Some(1));
     assert!(
-        err(&o).contains("amont-agent: no agent id for architect in "),
+        err(&o).contains("greenpiste: no agent id for architect in "),
         "{}",
         err(&o)
     );
@@ -492,7 +492,7 @@ fn help_and_usage() {
         .output()
         .unwrap();
     assert_eq!(o.status.code(), Some(0));
-    assert!(out(&o).contains("usage: amont-agent plan-review record"));
+    assert!(out(&o).contains("usage: greenpiste plan-review record"));
     let o = w.bin().args(["plan-review", "--help"]).output().unwrap();
     assert_eq!(o.status.code(), Some(0));
     let o = w

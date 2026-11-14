@@ -36,6 +36,7 @@
 //! whether the call arrived pre-answered; a pre-answered marked question never
 //! approves, and under `deny` it is refused before it runs.
 
+use amont_agent_guard::names::BIN;
 use std::path::{Path, PathBuf};
 
 use amont_agent_guard::journal;
@@ -1114,7 +1115,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
             dir()
                 .and_then(|d| d.parent().map(|p| p.join("attestations")))
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "the amont-agent state directory".to_string())
+                .unwrap_or_else(|| concat!("the ", amont_agent_guard::bin!(), " state directory").to_string())
         ));
     }
     let text = std::fs::read_to_string(&record)
@@ -1160,7 +1161,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
     }
     if !screens.is_empty() {
         for w in crate::guide::width_warnings(&text, &folder) {
-            eprintln!("amont-agent: warning: {w}");
+            eprintln!("{BIN}: warning: {w}");
         }
     }
     let names = checkout_names(&repo);
@@ -1184,7 +1185,7 @@ pub fn register(repo_dir: &Path, url: &str, guide: &Path) -> Result<Registered, 
     );
     for img in crate::guide::missing_images(&text, &folder) {
         eprintln!(
-            "amont-agent: warning: the guide references {img}, which is not beside it in {}",
+            "{BIN}: warning: the guide references {img}, which is not beside it in {}",
             folder.display()
         );
     }
@@ -1570,7 +1571,7 @@ fn register_is_last(clauses: &[amont_agent_guard::shell::Simple], at: usize) -> 
 fn is_register(cmd: &amont_agent_guard::shell::Simple) -> bool {
     let is_us = cmd
         .program()
-        .is_some_and(|p| p == "amont-agent" || p.ends_with("/amont-agent"));
+        .is_some_and(amont_agent_guard::names::is_ours_program);
     let ops: Vec<&str> = cmd.operands().iter().map(|w| w.text.as_str()).collect();
     // `--help` prints usage and registers nothing: telling the session it
     // "did not bind" was a false alarm (seen 2026-09-29, the first session

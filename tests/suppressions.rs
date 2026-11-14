@@ -618,7 +618,10 @@ fn the_pack_declares_the_one_gate() {
         .collect();
     assert_eq!(
         lines,
-        ["pre-commit  suppressions  *  block  amont-agent suppressions --staged"]
+        [format!(
+            "pre-commit  suppressions  *  block  {} suppressions --staged",
+            amont_agent_guard::names::ALIAS
+        )]
     );
 }
 

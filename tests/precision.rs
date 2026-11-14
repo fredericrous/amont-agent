@@ -265,11 +265,18 @@ fn the_smaller_rules_catch_their_own_shapes() {
         "gh-pr-merge-auto"
     ));
     assert!(fires_rule(
-        "amont-agent block reinstate fp:0123456789ab",
+        "greenpiste block reinstate fp:0123456789ab",
+        "block-reinstate"
+    ));
+    assert!(fires_rule(
+        &format!(
+            "{} block reinstate fp:0123456789ab",
+            amont_agent_guard::names::ALIAS
+        ),
         "block-reinstate"
     ));
     assert!(!fires_rule(
-        "amont-agent block revoke fp:0123456789ab --because x",
+        "greenpiste block revoke fp:0123456789ab --because x",
         "block-reinstate"
     ));
     assert!(fires_rule("git commit --no-verify -m x", "no-verify"));

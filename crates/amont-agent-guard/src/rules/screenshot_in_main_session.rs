@@ -56,7 +56,7 @@ mod tests {
     fn the_advice_is_the_plans_string() {
         assert_eq!(
             phrase(),
-            "amont-agent/screenshot-in-main-session: a screenshot here puts the image (~126 KB) \
+            "greenpiste/screenshot-in-main-session: a screenshot here puts the image (~126 KB) \
              into the main context. Delegate the check: Agent tool with subagent_type \
              \"browser-check\", giving the URL and what to verify."
         );

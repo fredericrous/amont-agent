@@ -78,14 +78,14 @@ fn examine(parsed: &Parsed) -> Option<Finding> {
     Some(Finding {
         reason: "This push would publish interface changes that no approved preview covers."
             .to_string(),
-        remedy: "Verify the final commit in a real browser, serve the clean worktree, then run \
-                 `amont-agent preview register --url <url> --guide <guide.md outside the worktree>` \
-                 in the foreground as the last command of its line (see `amont-agent preview --help` for the guide's \
+        remedy: concat!("Verify the final commit in a real browser, serve the clean worktree, then run \
+                 `", amont_agent_guard::bin!(), " preview register --url <url> --guide <guide.md outside the worktree>` \
+                 in the foreground as the last command of its line (see `", amont_agent_guard::bin!(), " preview --help` for the guide's \
                  sections), open the app at the first step's state and the rendered page, and, in the same turn, ask \
                  the marked question starting with its `question_prefix` (`[preview <id>] <label>`, options exactly \
                  Approve / Request changes / Hold). \
                  Push after the person approves. A push shape this guard cannot read is held under deny: \
-                 push the branch explicitly (`git push <remote> <branch>`)."
+                 push the branch explicitly (`git push <remote> <branch>`).")
             .to_string(),
         span: cmd.at..cmd.end,
     })

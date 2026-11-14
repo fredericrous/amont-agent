@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- Every message, usage text, `--version` line, command hint and the hook
+  decision prefix now says `greenpiste` (`greenpiste/<rule>: …`), built from
+  one `names` module. Every rule that matches a command's program accepts
+  `greenpiste` and `amont-agent`, so a Deny rule is not skipped through the
+  alias, and `install --write` / `uninstall --write` recognise hook entries
+  under either basename. The names the tool reads and writes are unchanged
+  (plan 3b-2).
+
 ## v3.35.0
 
 ### Added

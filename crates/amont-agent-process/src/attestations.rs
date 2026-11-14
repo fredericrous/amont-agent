@@ -29,6 +29,7 @@
 //! an hour old, it puts it back and backs off.
 
 use amont_agent_guard::journal::{self, Entry};
+use amont_agent_guard::names::BIN;
 use amont_agent_guard::ui;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -717,15 +718,19 @@ pub fn sweep() {
 
 // ------------------------------------------------------------ the subcommand
 
-const USAGE: &str = "\
-usage: amont-agent attestations [--apply]
+const USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " attestations [--apply]
 
   lists each directory under ~/.claude/amont-agent/attestations, why it is
   kept or would be removed; --apply moves the removable ones to
   .trash-<secs>-<name>, deleted after 7 days
 
   --daily   internal: the once-a-day run SessionStart starts in the background
-";
+"
+);
 
 fn mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1e6)
@@ -799,7 +804,12 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
             }
             other => {
                 eprintln!(
-                    "amont-agent: unknown argument `{}`; try `amont-agent attestations --help`",
+                    concat!(
+                        amont_agent_guard::bin!(),
+                        ": unknown argument `{}`; try `",
+                        amont_agent_guard::bin!(),
+                        " attestations --help`"
+                    ),
                     ui::sanitize(other)
                 );
                 return ExitCode::from(2);
@@ -807,7 +817,7 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
         }
     }
     let Some(env) = Env::live() else {
-        eprintln!("amont-agent: no home directory");
+        eprintln!(concat!(amont_agent_guard::bin!(), ": no home directory"));
         return ExitCode::FAILURE;
     };
     let now = now();
@@ -815,7 +825,7 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
         match acquire(&env.lock(), now) {
             Some(l) => Some(l),
             None => {
-                eprintln!("amont-agent: a sweep is running");
+                eprintln!(concat!(amont_agent_guard::bin!(), ": a sweep is running"));
                 return ExitCode::FAILURE;
             }
         }
@@ -833,7 +843,7 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
     let mut code = ExitCode::SUCCESS;
     if let Some(f) = &report.failure {
         eprintln!(
-            "amont-agent: {}: {}; no directory removed",
+            concat!(amont_agent_guard::bin!(), ": {}: {}; no directory removed"),
             ui::sanitize(&f.path),
             ui::sanitize(&f.err)
         );
@@ -865,7 +875,7 @@ pub fn run_cli(args: &[OsString]) -> ExitCode {
         eprintln!("removed {n} ({}) to .trash-<secs>-<name>", mb(bytes));
     } else {
         eprintln!(
-            "nothing removed; amont-agent attestations --apply removes {n} ({})",
+            "nothing removed; {BIN} attestations --apply removes {n} ({})",
             mb(bytes)
         );
     }
@@ -953,16 +963,20 @@ pub fn doctor_finding() -> Option<amont_agent_guard::doctor::Finding> {
             line,
             format!(
                 "the last sweep could not read {path} and removed nothing; \
-                 run `amont-agent attestations` to see why"
+                 run `{BIN} attestations` to see why"
             ),
         ));
     }
     if s.swept_ago.is_some_and(|a| a > 2 * DAY) {
         return Some(Finding::warn(
             line,
-            "no SessionStart has swept for over 2 days; \
-             run `amont-agent attestations` to see what it would do"
-                .to_string(),
+            concat!(
+                "no SessionStart has swept for over 2 days; \
+             run `",
+                amont_agent_guard::bin!(),
+                " attestations` to see what it would do"
+            )
+            .to_string(),
         ));
     }
     Some(Finding::good(line))

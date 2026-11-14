@@ -284,7 +284,7 @@ fn the_subcommand_lists_and_removes_nothing_by_default() {
         .any(|l| l[1] == "deep" && l[4].starts_with("recent")));
     assert!(lines.iter().any(|l| l[1] == "pinned" && l[4] == ".keep"));
     assert!(
-        err.contains("nothing removed; amont-agent attestations --apply removes 1 ("),
+        err.contains("nothing removed; greenpiste attestations --apply removes 1 ("),
         "{err}"
     );
     assert!(!out.contains('\u{1b}'));
@@ -324,7 +324,7 @@ fn a_scan_failure_exits_1_and_removes_nothing() {
         .unwrap();
     assert_eq!(code, 1);
     assert!(
-        err.contains(&format!("amont-agent: {}:", gone.display())),
+        err.contains(&format!("greenpiste: {}:", gone.display())),
         "{err}"
     );
     assert!(err.contains("; no directory removed"), "{err}");
@@ -493,7 +493,7 @@ fn doctor_warns_on_a_failed_scan_and_on_a_stale_stamp() {
         .unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains(&gone.display().to_string()), "{out}");
-    assert!(out.contains("`amont-agent attestations`"), "{out}");
+    assert!(out.contains("`greenpiste attestations`"), "{out}");
 }
 
 #[test]

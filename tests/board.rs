@@ -241,7 +241,7 @@ fn help_exits_zero_and_a_bad_flag_exits_two() {
     assert_eq!(both.status.code(), Some(0));
     let help = world.board(&world.top, &["--help"]);
     assert_eq!(help.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&help.stdout).contains("amont-agent board"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("greenpiste board"));
     assert_eq!(world.board(&world.top, &["--bogus"]).status.code(), Some(2));
     assert_eq!(
         world.board(&world.top, &["--since", "soon"]).status.code(),

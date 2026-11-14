@@ -3,6 +3,7 @@
 //! is the two local note refs it fetches, and temporary files for the
 //! signature check, which it removes.
 
+use amont_agent_guard::names::BIN;
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -16,8 +17,8 @@ const SIG_END: &str = "-----END SSH SIGNATURE-----";
 const FETCH_BUDGET: Duration = Duration::from_secs(60);
 const STALE_DAYS: u64 = 30;
 
-pub const USAGE: &str = "\
-usage: amont-agent shipped <plan.md> [--json]
+pub const USAGE: &str = concat!("\
+usage: ", amont_agent_guard::bin!(), " shipped <plan.md> [--json]
 
 What shipped under a plan, derived from git (decisions ADR-0036). For each
 repository in the plan's `repos:` list, every merge commit on origin/main
@@ -32,7 +33,7 @@ and nothing else is written.
            gates}
 
 Exit 0, 1 when no repository could be read, 2 on a usage error.
-";
+");
 
 struct Row {
     repo: String,
@@ -205,7 +206,10 @@ fn fetch_notes(dir: &Path) -> bool {
     args.extend(&wanted);
     let Some(listing) = bounded(dir, &args) else {
         eprintln!(
-            "amont-agent: cannot list {} on origin; using what is local",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": cannot list {} on origin; using what is local"
+            ),
             wanted.join(" ")
         );
         return false;
@@ -223,7 +227,10 @@ fn fetch_notes(dir: &Path) -> bool {
     fetch.extend(specs.iter().map(String::as_str));
     if bounded(dir, &fetch).is_none() {
         eprintln!(
-            "amont-agent: cannot fetch {} from origin; using what is local",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": cannot fetch {} from origin; using what is local"
+            ),
             listed.join(" ")
         );
         return false;
@@ -691,28 +698,28 @@ pub fn run(args: &[OsString]) -> ExitCode {
         if a == "--json" {
             json = true;
         } else if a.starts_with('-') {
-            eprintln!("amont-agent: unknown flag `{a}`; try `amont-agent shipped --help`");
+            eprintln!("{BIN}: unknown flag `{a}`; try `{BIN} shipped --help`");
             return ExitCode::from(2);
         } else if file.replace(a).is_some() {
-            eprint!("amont-agent: shipped takes one plan file\n\n{USAGE}");
+            eprint!("{BIN}: shipped takes one plan file\n\n{USAGE}");
             return ExitCode::from(2);
         }
     }
     let Some(file) = file else {
-        eprint!("amont-agent: shipped needs a plan file\n\n{USAGE}");
+        eprint!("{BIN}: shipped needs a plan file\n\n{USAGE}");
         return ExitCode::from(2);
     };
     let text = match std::fs::read_to_string(file) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("amont-agent: cannot read {file}: {e}");
+            eprintln!("{BIN}: cannot read {file}: {e}");
             return ExitCode::from(2);
         }
     };
     let repos = match plan_repos(&text) {
         Ok(r) => r,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
@@ -720,12 +727,15 @@ pub fn run(args: &[OsString]) -> ExitCode {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
     else {
-        eprintln!("amont-agent: {file} has no file name");
+        eprintln!("{BIN}: {file} has no file name");
         return ExitCode::from(2);
     };
     let Some(root) = crate::plan_review::root() else {
         eprintln!(
-            "amont-agent: no plan root to resolve repositories under; {}",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": no plan root to resolve repositories under; {}"
+            ),
             crate::plan_review::ROOT_REMEDY
         );
         return ExitCode::from(1);
@@ -735,7 +745,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let dir = crate::plan_review::locate(&root, name);
         if git::stdout_in(&dir, &["rev-parse", "--verify", "origin/main^{commit}"]).is_none() {
             eprintln!(
-                "amont-agent: {name}: cannot read origin/main in {}",
+                "{BIN}: {name}: cannot read origin/main in {}",
                 dir.display()
             );
             continue;
@@ -745,7 +755,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let n = leftovers(name);
         if n > 0 {
             eprintln!(
-                "amont-agent: {n} payload file(s) older than {STALE_DAYS} days under provenance/{name}/ (kept)"
+                "{BIN}: {n} payload file(s) older than {STALE_DAYS} days under provenance/{name}/ (kept)"
             );
         }
         let has_plan = git::succeeds_in(
@@ -765,10 +775,16 @@ pub fn run(args: &[OsString]) -> ExitCode {
         rows.extend(found);
     }
     if fetch_failed {
-        eprintln!("amont-agent: the provenance notes could not be fetched from origin; using what is local");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": the provenance notes could not be fetched from origin; using what is local"
+        ));
     }
     if read == 0 {
-        eprintln!("amont-agent: no repository could be read");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": no repository could be read"
+        ));
         return ExitCode::from(1);
     }
     let mut out = std::io::stdout().lock();
@@ -784,7 +800,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         // Cut-off output must not pass for a complete answer.
         Err(e) => {
-            eprintln!("amont-agent: could not write the answer: {e}");
+            eprintln!("{BIN}: could not write the answer: {e}");
             ExitCode::from(1)
         }
     }

@@ -34,10 +34,13 @@ pub fn run() -> ExitCode {
     // A person typing `amont-agent hook` with no payload would otherwise block
     // on stdin forever with no indication why.
     if std::io::stdin().is_terminal() {
-        eprintln!(
-            "amont-agent: `hook` reads a Claude Code payload on stdin.\n\
-             Try `amont-agent check '<command>'` to test a command by hand."
-        );
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": `hook` reads a Claude Code payload on stdin.\n\
+             Try `",
+            amont_agent_guard::bin!(),
+            " check '<command>'` to test a command by hand."
+        ));
         return ExitCode::from(2);
     }
 
@@ -52,7 +55,10 @@ pub fn run() -> ExitCode {
     match decided {
         Ok(d) => d.emit(),
         Err(_) => {
-            eprintln!("amont-agent: internal error; allowing the command through");
+            eprintln!(concat!(
+                amont_agent_guard::bin!(),
+                ": internal error; allowing the command through"
+            ));
             Decision::Silent.emit()
         }
     }
@@ -408,7 +414,7 @@ fn stale_checkout_notice(session: &Session) -> Option<String> {
     match stance {
         Stance::Observe => None,
         Stance::Advise | Stance::Deny => Some(format!(
-            "amont-agent/{}: {}",
+            concat!(amont_agent_guard::bin!(), "/{}: {}"),
             rule.id,
             crate::stale::notice(&drift)
         )),

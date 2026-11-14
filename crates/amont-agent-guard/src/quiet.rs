@@ -22,6 +22,7 @@
 //! is a four-line `extern "C"` wrapper, the way `main` already restores
 //! SIGPIPE: std links libc and none of this is worth a dependency.
 
+use crate::names::BIN;
 use std::ffi::{c_int, OsString};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -36,7 +37,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::excerpt::{Accumulator, DEFAULT_BOUND, MAX_BOUND};
 
-const USAGE: &str = "usage: amont-agent quiet [--max-bytes N[k]] -- <cmd…>\n";
+const USAGE: &str = concat!(
+    "usage: ",
+    crate::bin!(),
+    " quiet [--max-bytes N[k]] -- <cmd…>\n"
+);
 
 /// Logs kept; the newest by name. A `*.tmp` is never counted or deleted.
 const KEEP: usize = 50;
@@ -141,7 +146,7 @@ fn parse(args: &[OsString]) -> Result<Parsed, String> {
 }
 
 fn usage_error(why: &str) -> ExitCode {
-    eprintln!("amont-agent quiet: {why}");
+    eprintln!("{BIN} quiet: {why}");
     eprint!("{USAGE}");
     ExitCode::from(2)
 }
@@ -481,7 +486,7 @@ fn execute(parsed: Parsed) -> ExitCode {
     let (read_end, write_end) = match make_pipe() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("amont-agent quiet: cannot create a pipe: {e}");
+            eprintln!("{BIN} quiet: cannot create a pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
             active.exit = Some(1);
             return ExitCode::from(1);
@@ -490,7 +495,7 @@ fn execute(parsed: Parsed) -> ExitCode {
     let write_clone = match write_end.try_clone() {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("amont-agent quiet: cannot duplicate the pipe: {e}");
+            eprintln!("{BIN} quiet: cannot duplicate the pipe: {e}");
             let _ = fs::remove_file(&log.tmp);
             active.exit = Some(1);
             return ExitCode::from(1);
@@ -514,11 +519,11 @@ fn execute(parsed: Parsed) -> ExitCode {
             let _ = fs::remove_file(&log.tmp);
             let name = parsed.cmd[0].to_string_lossy();
             if e.kind() == std::io::ErrorKind::NotFound {
-                eprintln!("amont-agent quiet: {name}: command not found");
+                eprintln!("{BIN} quiet: {name}: command not found");
                 active.exit = Some(127);
                 return ExitCode::from(127);
             }
-            eprintln!("amont-agent quiet: {name}: {e}");
+            eprintln!("{BIN} quiet: {name}: {e}");
             active.exit = Some(126);
             return ExitCode::from(126);
         }
@@ -584,7 +589,7 @@ fn execute(parsed: Parsed) -> ExitCode {
     let status = match status {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("amont-agent quiet: waiting for the command failed: {e}");
+            eprintln!("{BIN} quiet: waiting for the command failed: {e}");
             active.exit = Some(1);
             return ExitCode::from(1);
         }
@@ -616,7 +621,7 @@ fn execute(parsed: Parsed) -> ExitCode {
                 Stored::Saved(log.done.clone())
             }
             Err(e) => {
-                eprintln!("amont-agent quiet: cannot rename the log: {e}");
+                eprintln!("{BIN} quiet: cannot rename the log: {e}");
                 Stored::RenameFailed(log.tmp.clone())
             }
         }

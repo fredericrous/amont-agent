@@ -423,7 +423,7 @@ fn a_plan_with_no_review_is_refused_with_its_panel() {
     };
     assert!(
         why.starts_with(
-            "amont-agent/plan-review-panel: missing for repos=tool: backend, lang:rust, tui, unix"
+            "greenpiste/plan-review-panel: missing for repos=tool: backend, lang:rust, tui, unix"
         ),
         "{why}"
     );
@@ -1159,7 +1159,7 @@ fn a_review_bound_before_2_25_still_passes_and_is_journalled() {
         assert!(out.status.success());
         assert_eq!(
             String::from_utf8_lossy(&out.stderr).trim(),
-            "amont-agent: --legacy is removed after the transition"
+            "greenpiste: --legacy is removed after the transition"
         );
         let s = String::from_utf8(out.stdout).unwrap();
         assert_eq!(s.lines().count(), 1, "one line on stdout");
@@ -1368,7 +1368,7 @@ fn a_plan_without_a_code_review_section_warns_and_keeps_its_stdout() {
     assert!(!stdout.contains("Code review"), "{stdout}");
     assert_eq!(
         String::from_utf8_lossy(&out.stderr).trim(),
-        "amont-agent: plan-panel: no ## Code review section; run plan-panel --code-review and add it after ## Non-goals"
+        "greenpiste: plan-panel: no ## Code review section; run plan-panel --code-review and add it after ## Non-goals"
     );
 
     let declared = format!("{BODY}\n## Code review\n\n- tool: backend, unix\n");
@@ -1496,7 +1496,7 @@ fn a_plan_is_seated_from_the_files_its_phases_name_not_every_area() {
     }
     assert!(!out.contains("name the files"), "{out}");
     assert!(
-        err.lines().any(|l| l == "amont-agent: plan-panel: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"),
+        err.lines().any(|l| l == "greenpiste: plan-panel: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"),
         "{err}"
     );
 
@@ -1512,7 +1512,7 @@ fn a_plan_is_seated_from_the_files_its_phases_name_not_every_area() {
     );
     assert!(out.lines().any(|l| l == "plan-review-ux-research"), "{out}");
     assert!(
-        err.lines().any(|l| l == "amont-agent: plan-panel: Phase 2 names no file; name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"),
+        err.lines().any(|l| l == "greenpiste: plan-panel: Phase 2 names no file; name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"),
         "{err}"
     );
 }
@@ -1539,11 +1539,11 @@ fn a_plan_naming_no_file_is_advised_and_still_allowed() {
     };
     assert!(
         why.starts_with(
-            "amont-agent/plan-review-panel: missing for repos=tool: backend, lang:rust, tui, unix"
+            "greenpiste/plan-review-panel: missing for repos=tool: backend, lang:rust, tui, unix"
         ),
         "{why}"
     );
-    assert!(why.ends_with("amont-agent/plan-names-no-paths: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"), "{why}");
+    assert!(why.ends_with("greenpiste/plan-names-no-paths: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas"), "{why}");
 
     // Reviewed: ExitPlanMode goes through, with the advice as context.
     let mut t = Transcript::default();
@@ -1551,7 +1551,7 @@ fn a_plan_naming_no_file_is_advised_and_still_allowed() {
     let said = w.present(&plan, &t);
     assert_eq!(
         said,
-        Said::Advise("amont-agent/plan-names-no-paths: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas".into())
+        Said::Advise("greenpiste/plan-names-no-paths: name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas".into())
     );
     let line = journal()
         .lines()
@@ -1574,7 +1574,7 @@ fn a_plan_naming_no_file_is_advised_and_still_allowed() {
     full_panel(&w, &mut t, &plan);
     assert_eq!(
         w.present(&plan, &t),
-        Said::Advise("amont-agent/plan-names-no-paths: Phase 2 names no file; name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas".into())
+        Said::Advise("greenpiste/plan-names-no-paths: Phase 2 names no file; name the files each phase touches in backticks under ## Phases; this panel was seated from the repositories' areas".into())
     );
 
     // Its stance is the person's: observed, it is journalled and silent.
@@ -1757,7 +1757,7 @@ fn a_delta_to_one_language_phase_re_requires_that_seat_alone() {
     let Said::Deny(why) = &said else {
         panic!("{said:?}")
     };
-    assert!(why.contains("stale (its slice changed: Phase 2) for repos=tool: lang:typescript; re-run: `amont-agent plan-sha --block --lang typescript --slice lang:typescript"), "{why}");
+    assert!(why.contains("stale (its slice changed: Phase 2) for repos=tool: lang:typescript; re-run: `greenpiste plan-sha --block --lang typescript --slice lang:typescript"), "{why}");
     assert!(
         !why.contains("lang:rust"),
         "the Rust seat stays current: {why}"
@@ -1825,7 +1825,7 @@ fn plan_sha_takes_the_equals_forms_and_help_wins() {
         .unwrap();
     assert!(
         help.status.success()
-            && String::from_utf8_lossy(&help.stdout).starts_with("usage: amont-agent plan-sha")
+            && String::from_utf8_lossy(&help.stdout).starts_with("usage: greenpiste plan-sha")
     );
 }
 
@@ -2100,7 +2100,7 @@ fn plan_panel_prints_no_copy_line_while_the_hook_does_not_enforce() {
     assert_eq!(stdout_of(&out), PROFILES_LINE);
     assert_eq!(
         stderr_of(&out).trim(),
-        "amont-agent: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
+        "greenpiste: plan-panel: the implementation-review hook does not enforce; the profiles are proposed"
     );
 }
 
@@ -2133,7 +2133,7 @@ fn plan_panel_proposes_the_profiles_when_the_pin_check_fails() {
             .lines()
             .find(|l| l.contains("is a registered copy but the pin check failed"))
             .unwrap_or_else(|| panic!("{why}: {err}"));
-        assert!(line.starts_with("amont-agent: plan-panel: fp:"), "{line}");
+        assert!(line.starts_with("greenpiste: plan-panel: fp:"), "{line}");
         assert!(line.contains(why), "{line}");
         assert!(line.ends_with("; the profiles are proposed"), "{line}");
     }

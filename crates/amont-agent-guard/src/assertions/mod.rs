@@ -144,7 +144,10 @@ pub fn examine_all(parsed: &Parsed) -> Vec<(&'static Assertion, Claim)> {
         match found {
             Ok(Some(claim)) => out.push((assertion, claim)),
             Ok(None) => {}
-            Err(_) => eprintln!("amont-agent: assertion {} panicked", assertion.id),
+            Err(_) => eprintln!(
+                concat!(crate::bin!(), ": assertion {} panicked"),
+                assertion.id
+            ),
         }
     }
     out

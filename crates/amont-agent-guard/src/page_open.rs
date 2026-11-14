@@ -294,7 +294,12 @@ pub fn judge(ask: &Ask) -> Verdict {
 pub fn commands(pages: &[String]) -> String {
     pages
         .iter()
-        .map(|p| format!("  amont-agent open '{}'", p.replace('\'', "'\\''")))
+        .map(|p| {
+            format!(
+                concat!("  ", crate::bin!(), " open '{}'"),
+                p.replace('\'', "'\\''")
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -455,7 +460,7 @@ fn asked_keys(input: &serde_json::Value, cwd: &Path) -> Vec<String> {
 
 /// The keys a successful Bash call showed the person.
 fn opened_keys(command: &str, cwd: &Path, tool_output: &str) -> Vec<String> {
-    if !command.contains("amont-agent") {
+    if !command.contains(crate::names::BIN) && !command.contains(crate::names::ALIAS) {
         return Vec::new();
     }
     let Parsed::Clear(clauses) = shell::lex(command) else {
@@ -499,7 +504,7 @@ fn is_amont_agent(clause: &Simple) -> bool {
     clause
         .words
         .first()
-        .is_some_and(|w| w.text.rsplit('/').next() == Some("amont-agent"))
+        .is_some_and(|w| crate::names::is_ours_program(&w.text))
 }
 
 fn plain(clause: &Simple) -> bool {

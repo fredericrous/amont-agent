@@ -328,7 +328,7 @@ fn a_mixed_run_writes_the_matched_and_ends_stdout_with_the_apply_block() {
         )
     );
     assert!(
-        said.contains("\nnext: apply the unmatched edits, then run amont-agent plan-apply --check")
+        said.contains("\nnext: apply the unmatched edits, then run greenpiste plan-apply --check")
     );
     // The `next:` line is copied and the APPLY block is machine-read: both
     // carry the path unclipped. Every other line fits 80 columns.

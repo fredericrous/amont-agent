@@ -5,6 +5,7 @@
 //! reads it through [`crate::review_outcomes::read_rows`]. The ledger is
 //! kept outside `implementation-review/`, which only the hook may write.
 
+use amont_agent_guard::names::BIN;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -14,12 +15,17 @@ use crate::review_outcomes::{
     lock, now, open_ledger, read_rows, IMPL_SCHEMA as SCHEMA, SEVERITIES,
 };
 
-pub const USAGE: &str = "\
-usage: amont-agent implementation-review record <plan.md> --verdict <v>
+pub const USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " implementation-review record <plan.md> --verdict <v>
 
 Append one row to ~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl
 (schema amont-agent-impl-review-outcome-v1): recorded_at, tree (the content id
-of HEAD, as `amont-agent tree-sha`), round (one more than the rows already
+of HEAD, as `",
+    amont_agent_guard::bin!(),
+    " tree-sha`), round (one more than the rows already
 kept for this plan; a per-plan count), copy (true when the hook journalled
 profiles-copy-matched for the tree), plan_path, model (the
 resolvedModel of the completed implementation-review agent in the newest
@@ -35,7 +41,8 @@ stdin: a JSON array of findings (empty stdin is `[]`):
 
 Exit 0 when the row is appended, 1 when stdin, the tree or the ledger cannot
 be read or written, 2 on a usage error (including malformed findings).
-";
+"
+);
 
 /// The directory under the journal dir that holds the ledger. It is not
 /// `implementation-review/`: the hook alone writes there.
@@ -53,7 +60,7 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
         return (USAGE.to_string(), ExitCode::SUCCESS);
     }
     let usage = |why: &str| {
-        eprint!("amont-agent: {why}\n\n{USAGE}");
+        eprint!("{BIN}: {why}\n\n{USAGE}");
         (String::new(), ExitCode::from(2))
     };
     let mut it = args.iter();
@@ -91,7 +98,7 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
     };
     let mut stdin = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut stdin) {
-        eprintln!("amont-agent: stdin cannot be read: {e}");
+        eprintln!("{BIN}: stdin cannot be read: {e}");
         return (String::new(), ExitCode::from(1));
     }
     let findings = match parse_findings(&stdin) {
@@ -104,7 +111,7 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
             (String::new(), ExitCode::SUCCESS)
         }
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             (String::new(), ExitCode::from(1))
         }
     }
@@ -228,7 +235,7 @@ fn warn_on_disagreement(repo: &Path, tree: &str, verdict: &str) {
     let same = remembered == verdict || (remembered == "overruled" && verdict == "rework");
     if !same {
         eprintln!(
-            "amont-agent: the pass remembered for tree {} says {remembered}, not {verdict}",
+            "{BIN}: the pass remembered for tree {} says {remembered}, not {verdict}",
             &tree[..12]
         );
     }
@@ -252,7 +259,7 @@ fn session_model(cwd: &Path) -> Option<String> {
         .join(name);
     let said = |what: &Path, e: std::io::Error| {
         if e.kind() != std::io::ErrorKind::NotFound {
-            eprintln!("amont-agent: cannot read {}: {e}", what.display());
+            eprintln!("{BIN}: cannot read {}: {e}", what.display());
         }
     };
     let entries = match std::fs::read_dir(&dir) {

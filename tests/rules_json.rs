@@ -182,7 +182,7 @@ fn rules_takes_only_json() {
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(
             String::from_utf8(out.stdout).unwrap(),
-            "usage: amont-agent rules [--json]\n"
+            "usage: greenpiste rules [--json]\n"
         );
     }
 }

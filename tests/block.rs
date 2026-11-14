@@ -358,13 +358,13 @@ fn usage_errors_exit_2_and_help_exits_0() {
         assert!(out.stdout.is_empty(), "{args:?}");
     }
     let no_verb = block(&[]);
-    assert!(String::from_utf8_lossy(&no_verb.stderr).contains("usage: amont-agent block sha"));
+    assert!(String::from_utf8_lossy(&no_verb.stderr).contains("usage: greenpiste block sha"));
 
     for args in [&["--help"][..], &["sha", "--help"][..], &["-h"][..]] {
         let out = block(args);
         assert_eq!(out.status.code(), Some(0), "{args:?}");
         let said = String::from_utf8_lossy(&out.stdout);
-        assert!(said.contains("usage: amont-agent block sha"), "{said}");
+        assert!(said.contains("usage: greenpiste block sha"), "{said}");
         for line in said.lines() {
             assert!(line.chars().count() <= 80, "{line}");
         }
@@ -583,9 +583,9 @@ fn an_unknown_or_ambiguous_fingerprint_exits_1_naming_it() {
         let said = err_text(&out);
         let id = args[1].strip_prefix("fp:").unwrap();
         let expected = if id == "aaa" {
-            "amont-agent: block: fp:aaa matches 2 blocks; give more hex".to_string()
+            "greenpiste: block: fp:aaa matches 2 blocks; give more hex".to_string()
         } else {
-            format!("amont-agent: block: no entry fp:{id}; see amont-agent block list")
+            format!("greenpiste: block: no entry fp:{id}; see greenpiste block list")
         };
         assert!(said.contains(&expected), "{args:?}: {said}");
     }
@@ -602,7 +602,7 @@ fn reinstate_a_revoked_block_prints_a_success_line() {
     assert_eq!(out.status.code(), Some(0), "{}", err_text(&out));
     assert!(out.stdout.is_empty(), "{}", out_text(&out));
     assert!(
-        err_text(&out).contains("amont-agent: block: fp:aaaaaaaaaaaa reinstated"),
+        err_text(&out).contains("greenpiste: block: fp:aaaaaaaaaaaa reinstated"),
         "{}",
         err_text(&out)
     );
@@ -620,7 +620,7 @@ fn reinstate_a_block_that_was_not_revoked_says_so_on_stderr_and_exits_0() {
     assert_eq!(out.status.code(), Some(0));
     assert!(out.stdout.is_empty());
     assert!(
-        err_text(&out).contains("amont-agent: block: fp:aaaaaaaaaaaa was not revoked"),
+        err_text(&out).contains("greenpiste: block: fp:aaaaaaaaaaaa was not revoked"),
         "{}",
         err_text(&out)
     );

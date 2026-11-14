@@ -22,6 +22,7 @@
 //! has switched off the permission system it was installed next to. Silence is
 //! the correct way to have no objection.
 
+use crate::names::BIN;
 use std::process::ExitCode;
 
 use crate::{json, ui};
@@ -195,15 +196,21 @@ fn clamp(text: &str) -> String {
 /// is text it may surface to the user instead of acting on.
 pub fn phrase(rule_id: &str, reason: &str, remedy: &str) -> String {
     if remedy.is_empty() {
-        format!("amont-agent/{rule_id}: {reason}")
+        format!("{BIN}/{rule_id}: {reason}")
     } else {
-        format!("amont-agent/{rule_id}: {reason} {remedy}")
+        format!("{BIN}/{rule_id}: {reason} {remedy}")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decision_message_starts_with_the_product_name() {
+        assert!(phrase("some-rule", "why", "").starts_with("greenpiste/some-rule: "));
+        assert!(phrase("some-rule", "why", "do this").starts_with("greenpiste/some-rule: "));
+    }
 
     #[test]
     fn a_long_reason_is_capped_on_a_character_boundary() {

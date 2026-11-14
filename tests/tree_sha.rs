@@ -188,7 +188,7 @@ fn the_exit_codes_tell_the_failures_apart() {
 
     let (code, out, _) = w.run(&repo, &["--help"]);
     assert_eq!(code, 0);
-    assert!(out.starts_with("usage: amont-agent tree-sha"));
+    assert!(out.starts_with("usage: greenpiste tree-sha"));
 
     // `--` ends the flags: a rev that starts with a dash is still a rev.
     let (code, _, err) = w.run(&repo, &["--", "-bad"]);

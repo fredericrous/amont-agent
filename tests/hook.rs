@@ -523,7 +523,7 @@ fn a_session_opening_in_a_stale_checkout_is_told_how_far_behind_it_is() {
     let text = out["additionalContext"].as_str().unwrap_or_default();
     assert!(text.contains("1 commit behind origin/main"), "{text}");
     assert!(text.contains("the thing that already exists"), "{text}");
-    assert!(text.starts_with("amont-agent/stale-base:"), "{text}");
+    assert!(text.starts_with("greenpiste/stale-base:"), "{text}");
     // Informed, not moved: HEAD is where it was.
     let head = Command::new("git")
         .args(["-C", clone.to_str().unwrap(), "log", "-1", "--format=%s"])
@@ -570,7 +570,7 @@ fn a_branch_started_from_a_stale_head_is_advised() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.starts_with("amont-agent/stale-base:"), "{doc}");
+    assert!(text.starts_with("greenpiste/stale-base:"), "{doc}");
     assert!(
         doc["hookSpecificOutput"]["permissionDecision"].is_null(),
         "advice refuses nothing: {doc}"
@@ -639,7 +639,7 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.contains("amont-agent/agents-md: AGENTS.md"), "{text}");
+    assert!(text.contains("greenpiste/agents-md: AGENTS.md"), "{text}");
     assert!(text.contains("amont agents-md"), "{text}");
 
     // greengate 4.0's markers open the same gate.
@@ -655,7 +655,7 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.contains("amont-agent/agents-md: AGENTS.md"), "{text}");
+    assert!(text.contains("greenpiste/agents-md: AGENTS.md"), "{text}");
     std::fs::write(
         work.join("AGENTS.md"),
         "# Project\n\n<!-- amont:start -->\nSTALE\n<!-- amont:end -->\n",
@@ -738,7 +738,7 @@ fn a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.starts_with("amont-agent/push-preflight:"), "{doc}");
+    assert!(text.starts_with("greenpiste/push-preflight:"), "{doc}");
     assert!(text.contains("amont rehearse --wait"), "{text}");
     assert!(
         doc["hookSpecificOutput"]["permissionDecision"].is_null(),
@@ -3114,7 +3114,7 @@ fn unloaded_transcript(name: &str) -> PathBuf {
 
 /// How many times the reply's reason text carries the bug-nudge advisory.
 fn advisory_count(r: &Reply) -> usize {
-    r.reason().matches("amont-agent/bug-nudge").count()
+    r.reason().matches("greenpiste/bug-nudge").count()
 }
 
 #[test]
@@ -3538,7 +3538,7 @@ fn work_overlap_tells_a_session_once_about_a_live_peer_in_its_repository() {
         &scene.second_repo.display().to_string(),
         "main",
         "1m",
-        "amont-agent board --repo second",
+        "greenpiste board --repo second",
         "SendMessage",
     ] {
         assert!(reason.contains(part), "{part}: {}", told.stdout);
@@ -4272,7 +4272,7 @@ fn at_deny_only_a_large_whole_dump_is_refused() {
 
 // screenshot-in-main-session
 
-const SCREENSHOT_ADVICE: &str = "amont-agent/screenshot-in-main-session: a screenshot here puts \
+const SCREENSHOT_ADVICE: &str = "greenpiste/screenshot-in-main-session: a screenshot here puts \
      the image (~126 KB) into the main context. Delegate the check: Agent tool with \
      subagent_type \"browser-check\", giving the URL and what to verify.";
 

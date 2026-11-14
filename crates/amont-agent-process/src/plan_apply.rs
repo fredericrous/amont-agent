@@ -8,6 +8,7 @@
 //! and one `amont-agent-review-merge-v1` row per call goes to the plan-review
 //! ledger. `--check` verifies the remainder afterwards.
 
+use amont_agent_guard::names::BIN;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{BufReader, IsTerminal, Read, Write};
@@ -17,10 +18,17 @@ use std::process::ExitCode;
 use crate::plan_review::{self, AGENT_PREFIX};
 use crate::review_outcomes::{self, Launch};
 
-pub const USAGE: &str = "\
-usage: amont-agent plan-apply [--dry-run] [--transcript <path>] <plan.md>
-       amont-agent plan-apply --check [--before <sha>] [--transcript <path>] <plan.md>
-       amont-agent plan-apply --record-fallback [--transcript <path>] <plan.md>
+pub const USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " plan-apply [--dry-run] [--transcript <path>] <plan.md>
+       ",
+    amont_agent_guard::bin!(),
+    " plan-apply --check [--before <sha>] [--transcript <path>] <plan.md>
+       ",
+    amont_agent_guard::bin!(),
+    " plan-apply --record-fallback [--transcript <path>] <plan.md>
 
 Apply the Patches that plan-review reviewers returned to the plan, with no
 model, and append one `amont-agent-review-merge-v1` row to
@@ -62,7 +70,8 @@ Exit codes: 0 every patch applied (or verified); 3 some patch unmatched or not
 verified (matched ones are still written); 1 file I/O, a concurrent change to
 the plan (nothing written), or no transcript holds the reviewer's result;
 2 usage error (including an empty old_string).
-";
+"
+);
 
 const MERGE_SCHEMA: &str = "amont-agent-review-merge-v1";
 const FALLBACK_AGENT: &str = "general-purpose";
@@ -130,11 +139,11 @@ pub fn run(args: &[OsString]) -> (String, ExitCode) {
     match result {
         Ok((said, code)) => (said, ExitCode::from(code)),
         Err(Fail::Usage(why)) => {
-            eprint!("amont-agent: {why}\n\n{USAGE}");
+            eprint!("{BIN}: {why}\n\n{USAGE}");
             (String::new(), ExitCode::from(2))
         }
         Err(Fail::Io(why)) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             (String::new(), ExitCode::from(1))
         }
     }
@@ -397,7 +406,7 @@ fn gather(
             let parsed = patches_in(&done.done.result);
             if let Err(why) = parsed {
                 eprintln!(
-                    "amont-agent: plan-apply: {} result has {}; apply its Edit lines by hand, then run plan-apply --check",
+                    concat!(amont_agent_guard::bin!(), ": plan-apply: {} result has {}; apply its Edit lines by hand, then run plan-apply --check"),
                     f.role,
                     why.replace("no patches block", "no Patches block")
                         .replace("patches block is not JSON", "a Patches block that is not JSON")
@@ -615,10 +624,7 @@ fn rows(ledger: &Path) -> std::io::Result<Vec<serde_json::Value>> {
                 .filter_map(|l| serde_json::from_str(l).inspect_err(|_| torn += 1).ok())
                 .collect();
             if torn > 0 {
-                eprintln!(
-                    "amont-agent: {torn} torn line(s) skipped in {}",
-                    ledger.display()
-                );
+                eprintln!("{BIN}: {torn} torn line(s) skipped in {}", ledger.display());
             }
             Ok(rows)
         }
@@ -707,7 +713,10 @@ fn apply(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
         let new = splice(&text, &judged);
         after = crate::plan_text::shas(&new).ok().map(|s| s.sha);
         if after.is_none() {
-            eprintln!("amont-agent: sha unavailable (the Markdown parser panicked)");
+            eprintln!(concat!(
+                amont_agent_guard::bin!(),
+                ": sha unavailable (the Markdown parser panicked)"
+            ));
         }
         if !dry {
             // Another writer between our read and our rename would be lost.
@@ -755,7 +764,11 @@ fn apply(opts: &Opts, real: &Path, findings: &[Finding]) -> Done {
     // A command the person copies: the path is never clipped, so this line,
     // like the APPLY block, may exceed LINE columns.
     said.push_str(&format!(
-        "next: apply the unmatched edits, then run amont-agent plan-apply --check {}",
+        concat!(
+            "next: apply the unmatched edits, then run ",
+            amont_agent_guard::bin!(),
+            " plan-apply --check {}"
+        ),
         opts.plan
     ));
     said.push_str(&format!(

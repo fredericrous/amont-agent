@@ -38,6 +38,7 @@
 //! baseline, so a change the person asks for needs only its delta: the
 //! backend reviewer plus the reviewers of any area that is new.
 
+use amont_agent_guard::names::BIN;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -1994,7 +1995,7 @@ fn judged(ev: &PlanExit) -> Result<Judged, Early> {
                     path
                 };
                 parts.push(format!(
-                    "stale ({}) for repos={repos}: {role}; re-run: `amont-agent plan-sha --block{lang}{slice} {path}`",
+                    "stale ({}) for repos={repos}: {role}; re-run: `{BIN} plan-sha --block{lang}{slice} {path}`",
                     how.describe()
                 ));
             }
@@ -2397,7 +2398,7 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    const PLAN: &str = "# Title\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nBody.  \n\n```md\n## Review panel\nkept\n```\n\n## Full reviews (reference)\n\n- rust: ok\n\n<!-- panel: repos=amont-agent adds=cli body-sha=abc -->\n";
+    const PLAN: &str = "# Title\n\n## Review panel\n\n👉 Decide: none\n\n## Context\n\nBody.  \n\n```md\n## Review panel\nkept\n```\n\n## Full reviews (reference)\n\n- rust: ok\n\n<!-- panel: repos=greenpiste adds=cli body-sha=abc -->\n";
 
     #[test]
     fn the_canonical_body_drops_review_metadata_and_nothing_else() {
@@ -2426,7 +2427,7 @@ mod tests {
             .split("\n## Full reviews")
             .next()
             .unwrap()
-        ) + "\n<!-- panel: repos=amont-agent -->\n";
+        ) + "\n<!-- panel: repos=greenpiste -->\n";
         assert_eq!(body_sha(&landed), body_sha(PLAN));
         assert_eq!(canonical(&canonical(&landed)), canonical(&landed));
         // Not front matter: no closing fence, or not on the first line.
@@ -2441,7 +2442,7 @@ mod tests {
     #[test]
     fn writing_review_metadata_keeps_the_sha() {
         let edited = PLAN
-            .replace("👉 Decide: none", "👉 Decide: none left\n📍 amont-agent")
+            .replace("👉 Decide: none", "👉 Decide: none left\n📍 greenpiste")
             .replace("- rust: ok", "- rust: ok\n- backend: ok")
             .replace("body-sha=abc", "body-sha=def reviewers=backend");
         assert_eq!(body_sha(&edited), body_sha(PLAN));
@@ -2514,7 +2515,7 @@ mod tests {
     #[test]
     fn the_machine_comment_is_read_and_checked() {
         let m = meta(PLAN).unwrap();
-        assert_eq!(m.repos, vec!["amont-agent"]);
+        assert_eq!(m.repos, vec!["greenpiste"]);
         assert_eq!(m.adds, vec!["cli"]);
         assert!(meta("# t\n").is_err());
         assert!(meta("<!-- panel: adds=ui -->").is_err());

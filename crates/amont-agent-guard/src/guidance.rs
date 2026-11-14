@@ -83,10 +83,13 @@ pub fn notice(cwd: &Path) -> Option<String> {
 
     let stale = drifted(root)?;
     Some(format!(
-        "amont-agent/agents-md: {} in this repository {} behind the block amont \
+        concat!(
+            crate::bin!(),
+            "/agents-md: {} in this repository {} behind the block amont \
          generates — the hook list, budgets and conventions it states may be last \
          release's. `amont agents-md` regenerates it (commit the result); until \
-         then, `amont list --json` is the current answer.",
+         then, `amont list --json` is the current answer."
+        ),
         stale.join(" and "),
         if stale.len() == 1 { "is" } else { "are" },
     ))

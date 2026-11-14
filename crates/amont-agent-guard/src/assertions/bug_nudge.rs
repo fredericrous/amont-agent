@@ -214,7 +214,7 @@ mod tests {
             let v = run("cargo test", true, None, Some(&t), "s1");
             match &v {
                 Verdict::Broken { reason, remedy } => {
-                    let head: String = format!("amont-agent/bug-nudge: {reason}")
+                    let head: String = format!("greenpiste/bug-nudge: {reason}")
                         .chars()
                         .take(80)
                         .collect();

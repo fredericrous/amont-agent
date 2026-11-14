@@ -27,13 +27,14 @@ pub fn notice() -> Option<String> {
     if !defines_ugrep_grep(&dir) {
         return None;
     }
-    Some(String::from(
-        "amont-agent/grep-shim: `grep` in this shell is Claude Code's function over ugrep with \
+    Some(String::from(concat!(
+        crate::bin!(),
+        "/grep-shim: `grep` in this shell is Claude Code's function over ugrep with \
          `--ignore-files`, so a recursive grep skips every .gitignored path (dist/, \
          node_modules/, build output) silently — exit 0, no message. Name the directory \
          explicitly (`grep -rn X node_modules/pkg` does search it), pass `--no-ignore-files`, \
-         or use `command grep`. `find` is bfs, a GNU superset, and needs nothing.",
-    ))
+         or use `command grep`. `find` is bfs, a GNU superset, and needs nothing."
+    )))
 }
 
 fn defines_ugrep_grep(dir: &Path) -> bool {

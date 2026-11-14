@@ -99,7 +99,7 @@ fn a_relative_command_is_reported_as_fragile() {
         h.settings(),
         serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-                {"type": "command", "command": "amont-agent", "args": ["hook"]}
+                {"type": "command", "command": "greenpiste", "args": ["hook"]}
             ]}]}
         }))
         .unwrap(),
@@ -612,7 +612,7 @@ fn doctor_help_prints_usage_on_stdout_and_exits_zero() {
         assert_eq!(out.status.code(), Some(0), "{flag}");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
-            stdout.contains("usage: amont-agent doctor [--json]"),
+            stdout.contains("usage: greenpiste doctor [--json]"),
             "{stdout}"
         );
     }

@@ -50,6 +50,7 @@
 //! `# noqa` or `eslint-disable` does not fire. Markdown and every other file
 //! type are never examined.
 
+use crate::names::BIN;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -1619,12 +1620,12 @@ pub fn phrase(shown: &str, hits: &[Hit], mode: &Mode) -> String {
     let n = hits.len();
     let mut text = if config {
         format!(
-            "amont-agent/{}: this edit changes the lint configuration in {shown}:",
+            "{BIN}/{}: this edit changes the lint configuration in {shown}:",
             RULE.id
         )
     } else {
         format!(
-            "amont-agent/{}: this edit adds {n} lint suppression{} to {shown}:",
+            "{BIN}/{}: this edit adds {n} lint suppression{} to {shown}:",
             RULE.id,
             if n == 1 { "" } else { "s" }
         )
@@ -1663,7 +1664,7 @@ pub fn bash_phrase(repo: &str, hits: &[(PathBuf, Hit)]) -> String {
         .first()
         .is_some_and(|(_, h)| matches!(h.origin, Origin::Setting { .. }));
     let mut text = format!(
-        "amont-agent/{}: the working tree of {repo} now holds {} lint suppression(s) its last commit does not:",
+        "{BIN}/{}: the working tree of {repo} now holds {} lint suppression(s) its last commit does not:",
         RULE.id,
         hits.len()
     );
@@ -2568,7 +2569,7 @@ mod tests {
         let hits = examine_change(Path::new("/abs/src/x.py"), "", &text);
         assert_eq!(
             phrase("/abs/src/x.py", &hits, &Mode::Exact),
-            "amont-agent/lint-suppression-added: this edit adds 2 lint suppressions to /abs/src/x.py:\n  \
+            "greenpiste/lint-suppression-added: this edit adds 2 lint suppressions to /abs/src/x.py:\n  \
              line 42: # type: ignore[arg-type]\n  \
              line 57: # noqa: E501\n\
              Fix the finding in the code that raised it (general.no-disabled-safety). A suppression is allowed only for a cause outside the repository, named on the same line, in the tool's narrowest form. If you cannot fix it, stop and tell the person."
@@ -2580,7 +2581,7 @@ mod tests {
         let hits = examine_change(Path::new("/abs/x.py"), "", "a  # noqa: E501\n");
         assert_eq!(
             phrase("/abs/x.py", &hits, &Mode::Fragment(Reason::Missing)),
-            "amont-agent/lint-suppression-added: this edit adds 1 lint suppression to /abs/x.py:\n  \
+            "greenpiste/lint-suppression-added: this edit adds 1 lint suppression to /abs/x.py:\n  \
              (line unknown): # noqa: E501\n\
              Fix the finding in the code that raised it (general.no-disabled-safety). A suppression is allowed only for a cause outside the repository, named on the same line, in the tool's narrowest form. If you cannot fix it, stop and tell the person."
         );
@@ -2612,7 +2613,7 @@ mod tests {
         );
         assert_eq!(
             phrase("/r/pyproject.toml", &hits, &Mode::Exact),
-            "amont-agent/lint-suppression-added: this edit changes the lint configuration in /r/pyproject.toml:\n  \
+            "greenpiste/lint-suppression-added: this edit changes the lint configuration in /r/pyproject.toml:\n  \
              line 2: loosens pyproject.toml [tool.pyright] typeCheckingMode = off\n\
              Fix the finding in the code that raised it (general.no-disabled-safety). Loosening a lint configuration needs its own commit and the person's agreement. If you cannot fix it, stop and tell the person."
         );

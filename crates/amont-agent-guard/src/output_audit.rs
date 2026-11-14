@@ -206,7 +206,7 @@ impl Kind {
         if gh_run || has("gh run list") || has("gh run watch") || has("gh pr checks") {
             return Kind::CiStatus;
         }
-        if has("amont-agent quiet") {
+        if has(concat!(crate::bin!(), " quiet")) {
             return Kind::CheckQuiet;
         }
         const CHECKS: [&str; 18] = [
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(kind("Bash", "gh run view 1 --json conclusion"), "ci-status");
         assert_eq!(kind("Bash", "gh pr checks 3"), "ci-status");
         assert_eq!(
-            kind("Bash", "amont-agent quiet -- cargo test"),
+            kind("Bash", "greenpiste quiet -- cargo test"),
             "check-quiet"
         );
         assert_eq!(kind("Bash", "cargo test -p x"), "check");

@@ -1,7 +1,7 @@
 {
   "session_id": "00000000-0000-4000-8000-000000000011",
   "transcript_path": "/home/user/.claude/projects/-home-user-Developer-amont-agent/00000000-0000-4000-8000-000000000011.jsonl",
-  "cwd": "/home/user/Developer/amont-agent",
+  "cwd": "/home/user/Developer/greenpiste",
   "prompt_id": "00000000-0000-4000-9000-000000000011",
   "permission_mode": "default",
   "effort": {

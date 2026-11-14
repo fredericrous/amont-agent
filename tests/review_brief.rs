@@ -30,7 +30,7 @@ fn run(args: &[&str], bin: &std::path::Path) -> Output {
     cmd.env("PATH", std::env::join_paths(dirs).unwrap());
     // No test reaches the machine's own `adr-lint`: a fake in `bin`, or none.
     cmd.env("AMONT_AGENT_ADR_LINT", bin.join("adr-lint"));
-    cmd.output().expect("amont-agent runs")
+    cmd.output().expect("greenpiste runs")
 }
 
 /// The fake is a `#!/bin/sh` script: Windows resolves `Command::new("aval")`
@@ -521,7 +521,7 @@ fn run_without_aval(args: &[&str], dir: &std::path::Path, aval: Option<&str>) ->
     if let Some(program) = aval {
         cmd.env("AMONT_AGENT_AVAL", program);
     }
-    cmd.output().expect("amont-agent runs")
+    cmd.output().expect("greenpiste runs")
 }
 
 #[cfg(unix)]
@@ -949,7 +949,7 @@ fn interdiff_with(
     cmd.env("PATH", std::env::join_paths(dirs).unwrap());
     cmd.env("AMONT_AGENT_ADR_LINT", bin.join("adr-lint"));
     cmd.env("CLAUDE_CONFIG_DIR", bin.join("config"));
-    cmd.output().expect("amont-agent runs")
+    cmd.output().expect("greenpiste runs")
 }
 
 #[cfg(unix)]

@@ -31,6 +31,7 @@ use amont_agent_guard::git;
 use amont_agent_guard::graduate;
 use amont_agent_guard::guidance;
 use amont_agent_guard::harness_review;
+use amont_agent_guard::names::BIN;
 use amont_agent_process::attestations;
 use amont_agent_process::block_fingerprint;
 use amont_agent_process::block_registry;
@@ -79,8 +80,11 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "\
-usage: amont-agent <command>
+const USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " <command>
 
   hook                  read a Claude Code payload on stdin, decide
   install [--write]     add the hook to settings.json (prints it by default), and
@@ -196,7 +200,8 @@ explain flags:
 backtest flags:
   --compliance          per model, per week: what the model did NEXT after a
                         rule fired — did the advice change anything?
-";
+"
+);
 
 enum Sub {
     Hook,
@@ -399,11 +404,14 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Invocation::Version => {
-            println!("amont-agent {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                concat!(amont_agent_guard::bin!(), " {}"),
+                env!("CARGO_PKG_VERSION")
+            );
             ExitCode::SUCCESS
         }
         Invocation::Usage(why) => {
-            eprintln!("amont-agent: {why}\n");
+            eprintln!("{BIN}: {why}\n");
             eprint!("{USAGE}");
             ExitCode::from(2)
         }
@@ -424,7 +432,11 @@ fn main() -> ExitCode {
                 // usable from a cron job or a SessionStart check without
                 // anybody having to read the text.
                 if args.iter().any(|a| a == "--help" || a == "-h") {
-                    println!("usage: amont-agent doctor [--json]");
+                    println!(concat!(
+                        "usage: ",
+                        amont_agent_guard::bin!(),
+                        " doctor [--json]"
+                    ));
                     println!();
                     println!("Check that the guard is installed and alive; exit 0 when it is.");
                     println!("  --json  print one JSON document: healthy, findings, integration");
@@ -432,7 +444,10 @@ fn main() -> ExitCode {
                 }
                 if let Some(bad) = args.iter().find(|a| *a != "--json") {
                     eprintln!(
-                        "amont-agent: doctor takes only --json, not {}",
+                        concat!(
+                            amont_agent_guard::bin!(),
+                            ": doctor takes only --json, not {}"
+                        ),
                         bad.to_string_lossy()
                     );
                     return ExitCode::from(2);
@@ -502,7 +517,10 @@ fn main() -> ExitCode {
             Sub::Quiet => quiet::run(&args),
             #[cfg(not(unix))]
             Sub::Quiet => {
-                eprintln!("amont-agent: quiet is not supported on this platform");
+                eprintln!(concat!(
+                    amont_agent_guard::bin!(),
+                    ": quiet is not supported on this platform"
+                ));
                 ExitCode::from(2)
             }
         },
@@ -653,7 +671,7 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
     let mut f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
@@ -661,7 +679,10 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
         match f.rest.len() {
             1 => f.only.push(f.rest[0].clone()),
             _ => {
-                eprintln!("amont-agent: explain needs exactly one rule");
+                eprintln!(concat!(
+                    amont_agent_guard::bin!(),
+                    ": explain needs exactly one rule"
+                ));
                 return ExitCode::from(2);
             }
         }
@@ -669,14 +690,14 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
     let chosen = match selected(&f.only) {
         Ok(c) => c,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
     let roots = match transcript::roots(&f.transcripts) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             return ExitCode::from(2);
         }
     };
@@ -688,7 +709,7 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
     let as_cases = explain && f.format.as_deref() == Some("cases");
     if let Some(other) = f.format.as_deref() {
         if other != "cases" {
-            eprintln!("amont-agent: --format takes `cases`, not `{other}`");
+            eprintln!("{BIN}: --format takes `cases`, not `{other}`");
             return ExitCode::from(2);
         }
     }
@@ -696,11 +717,14 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
         None => false,
         Some("novelty") if explain => true,
         Some("novelty") => {
-            eprintln!("amont-agent: --rank novelty is for `explain`, which prints the matches");
+            eprintln!(concat!(
+                amont_agent_guard::bin!(),
+                ": --rank novelty is for `explain`, which prints the matches"
+            ));
             return ExitCode::from(2);
         }
         Some(other) => {
-            eprintln!("amont-agent: --rank takes `novelty`, not `{other}`");
+            eprintln!("{BIN}: --rank takes `novelty`, not `{other}`");
             return ExitCode::from(2);
         }
     };
@@ -751,7 +775,7 @@ fn run_backtest(args: &[OsString], explain: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             ExitCode::from(2)
         }
     }
@@ -791,28 +815,31 @@ fn rank_by_novelty(report: &mut backtest::Report, n: usize) {
 /// that says a model has not been reviewed yet.
 fn run_harness_review(args: &[OsString]) -> ExitCode {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage: amont-agent harness-review [--json] [--check] [--model <id>] [--transcripts <dir>] [--since <date>] [--out <dir>]");
+        println!(concat!("usage: ", amont_agent_guard::bin!(), " harness-review [--json] [--check] [--model <id>] [--transcripts <dir>] [--since <date>] [--out <dir>]"));
         return ExitCode::SUCCESS;
     }
     let f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
     if let Some(operand) = f.rest.first() {
-        eprintln!("amont-agent: harness-review takes no operand, got `{operand}`");
+        eprintln!("{BIN}: harness-review takes no operand, got `{operand}`");
         return ExitCode::from(2);
     }
     let Some(journal_dir) = journal::dir() else {
-        eprintln!("amont-agent: no home directory, so no journal directory");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": no home directory, so no journal directory"
+        ));
         return ExitCode::from(2);
     };
     let roots = match transcript::roots(&f.transcripts) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             return ExitCode::from(2);
         }
     };
@@ -833,7 +860,7 @@ fn run_harness_review(args: &[OsString]) -> ExitCode {
                 ExitCode::FAILURE
             }
             Err(e) => {
-                eprintln!("amont-agent: {}", e.explain());
+                eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
                 ExitCode::from(2)
             }
         };
@@ -841,7 +868,7 @@ fn run_harness_review(args: &[OsString]) -> ExitCode {
     let today = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => (d.as_secs() / 86_400) as civil::Day,
         Err(e) => {
-            eprintln!("amont-agent: cannot read the clock: {e}");
+            eprintln!("{BIN}: cannot read the clock: {e}");
             return ExitCode::from(2);
         }
     };
@@ -856,12 +883,12 @@ fn run_harness_review(args: &[OsString]) -> ExitCode {
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             return ExitCode::from(2);
         }
     };
     if let Err(e) = harness_review::write(&out, &review) {
-        eprintln!("amont-agent: could not write the review file: {e}");
+        eprintln!("{BIN}: could not write the review file: {e}");
         return ExitCode::from(2);
     }
     if f.json {
@@ -896,7 +923,10 @@ fn run_compliance(
         })
         .collect();
     if rules.is_empty() {
-        eprintln!("amont-agent: --compliance is about rules, and none were selected");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": --compliance is about rules, and none were selected"
+        ));
         return ExitCode::from(2);
     }
     let options = compliance::Options {
@@ -912,14 +942,17 @@ fn run_compliance(
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             ExitCode::from(2)
         }
     }
 }
 
-const OUTPUT_AUDIT_USAGE: &str = "\
-usage: amont-agent output-audit --since <UTC> --until <UTC>
+const OUTPUT_AUDIT_USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " output-audit --since <UTC> --until <UTC>
                                 [--transcripts <dir>]... [--json]
 
 Where tool output went: the bytes tool results put into session context in
@@ -943,7 +976,8 @@ result text.
 Exit 0, also when some files could not be read (the coverage line and the
 JSON `coverage.complete` say so); 1 when the transcripts cannot be found;
 2 on a usage error.
-";
+"
+);
 
 fn run_output_audit(args: &[OsString]) -> ExitCode {
     use amont_agent_guard::output_audit::{self, Instant, Window};
@@ -956,7 +990,7 @@ fn run_output_audit(args: &[OsString]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let usage = |why: &str| {
-        eprintln!("amont-agent: output-audit: {why}; try `amont-agent output-audit --help`");
+        eprintln!("{BIN}: output-audit: {why}; try `{BIN} output-audit --help`");
         ExitCode::from(2)
     };
     let (mut since, mut until, mut roots, mut as_json) = (None, None, Vec::new(), false);
@@ -1010,7 +1044,7 @@ fn run_output_audit(args: &[OsString]) -> ExitCode {
     let roots = match transcript::roots(&roots) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             return ExitCode::from(1);
         }
     };
@@ -1154,25 +1188,28 @@ fn run_mine(args: &[OsString]) -> ExitCode {
     let f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
     if !f.only.is_empty() {
-        eprintln!("amont-agent: mine looks for what no rule names yet, so --rule means nothing");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": mine looks for what no rule names yet, so --rule means nothing"
+        ));
         return ExitCode::from(2);
     }
     let as_cases = f.format.as_deref() == Some("cases");
     if let Some(other) = f.format.as_deref() {
         if other != "cases" {
-            eprintln!("amont-agent: --format takes `cases`, not `{other}`");
+            eprintln!("{BIN}: --format takes `cases`, not `{other}`");
             return ExitCode::from(2);
         }
     }
     let roots = match transcript::roots(&f.transcripts) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             return ExitCode::from(2);
         }
     };
@@ -1210,7 +1247,7 @@ fn run_mine(args: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             ExitCode::from(2)
         }
     }
@@ -1223,12 +1260,15 @@ fn run_analyze(args: &[OsString]) -> ExitCode {
     let f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
     if f.rest.len() != 1 {
-        eprintln!("amont-agent: analyze needs exactly one command, quoted");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": analyze needs exactly one command, quoted"
+        ));
         return ExitCode::from(2);
     }
     let src = &f.rest[0];
@@ -1268,8 +1308,11 @@ fn run_analyze(args: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const PLAN_SHA_USAGE: &str = "\
-usage: amont-agent plan-sha [--short] [--block [--lang <language>] [--slice <role>]] [--legacy] [--] <file|->
+const PLAN_SHA_USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " plan-sha [--short] [--block [--lang <language>] [--slice <role>]] [--legacy] [--] <file|->
 
 The sha256 of what a plan says, which its review binds to (ADR-0022,
 work.plan-review-panel). The plan is read without its YAML front matter,
@@ -1309,7 +1352,8 @@ So a formatter such as prettier keeps the sha, unless it rewrites code.
 Prints one line on stdout, or two with --slice. Exit 0, 1 when the file
 cannot be read or its sha cannot be computed (the reason on stderr), 2 on a
 usage error.
-";
+"
+);
 
 /// The `--slice <role>` checks that need no plan: a known role whose file
 /// types the table knows, agreeing with `--lang`. Returns the `--lang` the
@@ -1360,7 +1404,7 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
             .filter(|(f, _)| !operands_only && (*f == "--lang" || *f == "--slice"))
         {
             if value.is_empty() {
-                eprintln!("amont-agent: {flag} needs a value");
+                eprintln!("{BIN}: {flag} needs a value");
                 return ExitCode::from(2);
             }
             if flag == "--lang" {
@@ -1374,9 +1418,12 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         match a {
             _ if operands_only || a == "-" || !a.starts_with('-') => {
                 if file.is_some() {
-                    eprintln!(
-                        "amont-agent: plan-sha takes one file; try `amont-agent plan-sha --help`"
-                    );
+                    eprintln!(concat!(
+                        amont_agent_guard::bin!(),
+                        ": plan-sha takes one file; try `",
+                        amont_agent_guard::bin!(),
+                        " plan-sha --help`"
+                    ));
                     return ExitCode::from(2);
                 }
                 file = Some(a.to_string());
@@ -1394,7 +1441,7 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
                 match args.get(i) {
                     Some(v) => lang = Some(v.clone()),
                     None => {
-                        eprintln!("amont-agent: --lang needs a value");
+                        eprintln!(concat!(amont_agent_guard::bin!(), ": --lang needs a value"));
                         return ExitCode::from(2);
                     }
                 }
@@ -1404,20 +1451,23 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
                 match args.get(i) {
                     Some(v) if !v.starts_with('-') => slice = Some(v.clone()),
                     _ => {
-                        eprintln!("amont-agent: --slice needs a value");
+                        eprintln!(concat!(
+                            amont_agent_guard::bin!(),
+                            ": --slice needs a value"
+                        ));
                         return ExitCode::from(2);
                     }
                 }
             }
             other => {
-                eprintln!("amont-agent: unknown flag `{other}`; try `amont-agent plan-sha --help`");
+                eprintln!("{BIN}: unknown flag `{other}`; try `{BIN} plan-sha --help`");
                 return ExitCode::from(2);
             }
         }
         i += 1;
     }
     let Some(file) = file else {
-        eprint!("amont-agent: plan-sha needs a file, or - for stdin\n\n{PLAN_SHA_USAGE}");
+        eprint!("{BIN}: plan-sha needs a file, or - for stdin\n\n{PLAN_SHA_USAGE}");
         return ExitCode::from(2);
     };
     let conflict = if short && block {
@@ -1429,19 +1479,23 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
     } else if block && legacy {
         Some("--legacy only prints a sha; drop --block")
     } else if slice.is_some() && !block {
-        Some("--slice needs --block: amont-agent plan-sha --block --slice <role> <plan.md>")
+        Some(concat!(
+            "--slice needs --block: ",
+            amont_agent_guard::bin!(),
+            " plan-sha --block --slice <role> <plan.md>"
+        ))
     } else {
         None
     };
     if let Some(why) = conflict {
-        eprintln!("amont-agent: {why}; try `amont-agent plan-sha --help`");
+        eprintln!("{BIN}: {why}; try `{BIN} plan-sha --help`");
         return ExitCode::from(2);
     }
     if let Some(role) = slice.as_deref() {
         match slice_lang(role, lang.as_deref()) {
             Ok(l) => lang = l,
             Err(why) => {
-                eprintln!("amont-agent: {why}; try `amont-agent plan-sha --help`");
+                eprintln!("{BIN}: {why}; try `{BIN} plan-sha --help`");
                 return ExitCode::from(2);
             }
         }
@@ -1450,7 +1504,7 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         use std::io::Read;
         let mut t = String::new();
         if let Err(e) = std::io::stdin().read_to_string(&mut t) {
-            eprintln!("amont-agent: cannot read stdin: {e}");
+            eprintln!("{BIN}: cannot read stdin: {e}");
             return ExitCode::from(1);
         }
         t
@@ -1458,19 +1512,22 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
         match std::fs::read_to_string(&file) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("amont-agent: cannot read {file}: {e}");
+                eprintln!("{BIN}: cannot read {file}: {e}");
                 return ExitCode::from(1);
             }
         }
     };
     let sha = if legacy {
-        eprintln!("amont-agent: --legacy is removed after the transition");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": --legacy is removed after the transition"
+        ));
         plan_text::legacy_sha(&text)
     } else {
         match plan_text::shas(&text) {
             Ok(s) => s.sha,
             Err(why) => {
-                eprintln!("amont-agent: {why}");
+                eprintln!("{BIN}: {why}");
                 return ExitCode::from(1);
             }
         }
@@ -1482,7 +1539,7 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
             Some(role) => match plan_review::slice_for(&text, role) {
                 Ok(s) => Some((role, s)),
                 Err(why) => {
-                    eprintln!("amont-agent: {why}");
+                    eprintln!("{BIN}: {why}");
                     return ExitCode::from(1);
                 }
             },
@@ -1501,7 +1558,7 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
                 s.kept.join(", ")
             ),
             Some((role, plan_review::SliceFor::WholeBody(why))) => {
-                eprintln!("amont-agent: {role} binds the whole body ({})", why.as_str());
+                eprintln!("{BIN}: {role} binds the whole body ({})", why.as_str());
             }
             None => {}
         }
@@ -1513,11 +1570,20 @@ fn run_plan_sha(args: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const BLOCK_USAGE: &str = "\
-usage: amont-agent block sha [-C <dir>] [--base <ref>]
-       amont-agent block list [--json]
-       amont-agent block revoke <fp> --because <text>
-       amont-agent block reinstate <fp>
+const BLOCK_USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " block sha [-C <dir>] [--base <ref>]
+       ",
+    amont_agent_guard::bin!(),
+    " block list [--json]
+       ",
+    amont_agent_guard::bin!(),
+    " block revoke <fp> --because <text>
+       ",
+    amont_agent_guard::bin!(),
+    " block reinstate <fp>
 
 The fingerprint of a branch's change, which a copy of a reviewed block
 shares with its source: the sha256 of the `+` and `-` lines of `git diff`
@@ -1548,7 +1614,8 @@ a usage error.
 Exit codes of `list`, `revoke` and `reinstate`: 0; 1 when the fingerprint
 names no block or several (`give more hex`), the registry cannot be found or
 written; 2 on a usage error.
-";
+"
+);
 
 /// How long finding the default branch, and then the diff, may each take.
 const BLOCK_GIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
@@ -1566,12 +1633,17 @@ fn run_block(args: &[OsString]) -> ExitCode {
         Some("reinstate") => run_block_reinstate(&args[1..]),
         Some(_) if args.iter().any(|word| is_help(word)) => block_help(),
         Some(other) => {
-            eprintln!("amont-agent: block: unknown verb `{other}`; try `amont-agent block --help`");
+            eprintln!("{BIN}: block: unknown verb `{other}`; try `{BIN} block --help`");
             eprint!("{BLOCK_USAGE}");
             ExitCode::from(2)
         }
         None => {
-            eprintln!("amont-agent: block: needs a verb; try `amont-agent block --help`");
+            eprintln!(concat!(
+                amont_agent_guard::bin!(),
+                ": block: needs a verb; try `",
+                amont_agent_guard::bin!(),
+                " block --help`"
+            ));
             eprint!("{BLOCK_USAGE}");
             ExitCode::from(2)
         }
@@ -1591,7 +1663,10 @@ fn block_help() -> ExitCode {
 fn block_base() -> Option<std::path::PathBuf> {
     let base = journal::dir();
     if base.is_none() {
-        eprintln!("amont-agent: block: no home or CLAUDE_CONFIG_DIR to find the registry in");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": block: no home or CLAUDE_CONFIG_DIR to find the registry in"
+        ));
     }
     base
 }
@@ -1612,20 +1687,20 @@ fn resolve_block_fp(base: &std::path::Path, given: &str) -> Result<String, ExitC
         Some(only) if hits.is_empty() => Ok(only),
         Some(_) => {
             eprintln!(
-                "amont-agent: block: fp:{id} matches {} blocks; give more hex",
+                "{BIN}: block: fp:{id} matches {} blocks; give more hex",
                 hits.len() + 1
             );
             Err(ExitCode::from(1))
         }
         None => {
-            eprintln!("amont-agent: block: no entry fp:{id}; see amont-agent block list");
+            eprintln!("{BIN}: block: no entry fp:{id}; see {BIN} block list");
             Err(ExitCode::from(1))
         }
     }
 }
 
 fn block_usage_error(why: &str) -> ExitCode {
-    eprintln!("amont-agent: block: {why}; try `amont-agent block --help`");
+    eprintln!("{BIN}: block: {why}; try `{BIN} block --help`");
     ExitCode::from(2)
 }
 
@@ -1732,12 +1807,15 @@ fn run_block_revoke(args: &[String]) -> ExitCode {
     };
     if let Err(why) = block_registry::revoke(&base, &fingerprint, &because) {
         eprintln!(
-            "amont-agent: block: could not revoke fp:{}: {why}",
+            "{BIN}: block: could not revoke fp:{}: {why}",
             &fingerprint[..12]
         );
         return ExitCode::from(1);
     }
-    eprintln!("amont-agent: block: fp:{} is revoked", &fingerprint[..12]);
+    eprintln!(
+        concat!(amont_agent_guard::bin!(), ": block: fp:{} is revoked"),
+        &fingerprint[..12]
+    );
     if let Some(pilot) = block_registry::source_entry(&base, &fingerprint).or_else(|| {
         block_registry::entries(&base, &fingerprint)
             .into_iter()
@@ -1771,14 +1849,14 @@ fn run_block_reinstate(args: &[String]) -> ExitCode {
     };
     let short = &fingerprint[..12];
     if block_registry::revoked(&base, &fingerprint).is_none() {
-        eprintln!("amont-agent: block: fp:{short} was not revoked");
+        eprintln!("{BIN}: block: fp:{short} was not revoked");
         return ExitCode::SUCCESS;
     }
     if let Err(why) = block_registry::reinstate(&base, &fingerprint) {
-        eprintln!("amont-agent: block: could not reinstate fp:{short}: {why}");
+        eprintln!("{BIN}: block: could not reinstate fp:{short}: {why}");
         return ExitCode::from(1);
     }
-    eprintln!("amont-agent: block: fp:{short} reinstated");
+    eprintln!("{BIN}: block: fp:{short} reinstated");
     ExitCode::SUCCESS
 }
 
@@ -1805,16 +1883,14 @@ fn run_block_sha(args: &[String]) -> ExitCode {
             },
         };
         if flag != "-C" && flag != "--base" {
-            eprintln!(
-                "amont-agent: block: unknown argument `{word}`; try `amont-agent block --help`"
-            );
+            eprintln!("{BIN}: block: unknown argument `{word}`; try `{BIN} block --help`");
             return ExitCode::from(2);
         }
         let value = match attached {
             Some(value) => value,
             None => {
                 let Some(value) = args.get(i) else {
-                    eprintln!("amont-agent: block: {flag} needs a value");
+                    eprintln!("{BIN}: block: {flag} needs a value");
                     return ExitCode::from(2);
                 };
                 i += 1;
@@ -1832,7 +1908,10 @@ fn run_block_sha(args: &[String]) -> ExitCode {
     }
     let Some(repo) = push_target::toplevel(&dir) else {
         eprintln!(
-            "amont-agent: block: {} is not inside a git repository",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": block: {} is not inside a git repository"
+            ),
             dir.display()
         );
         return ExitCode::from(1);
@@ -1841,20 +1920,23 @@ fn run_block_sha(args: &[String]) -> ExitCode {
         git::default_ref(&repo, std::time::Instant::now() + BLOCK_GIT_BUDGET)
             .map(|(reference, _)| reference)
     }) else {
-        eprintln!("amont-agent: block: no default branch of `origin` is known; pass --base <ref>");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": block: no default branch of `origin` is known; pass --base <ref>"
+        ));
         return ExitCode::from(1);
     };
     let deadline = std::time::Instant::now() + BLOCK_GIT_BUDGET;
     let Some(merge_base) =
         git::stdout_bounded(&repo, &["merge-base", base.as_str(), "HEAD"], deadline)
     else {
-        eprintln!("amont-agent: block: `git merge-base {base} HEAD` failed");
+        eprintln!("{BIN}: block: `git merge-base {base} HEAD` failed");
         return ExitCode::from(1);
     };
     let diff = match block_fingerprint::diff_of(&repo, &merge_base, "HEAD", deadline) {
         Ok(diff) => diff,
         Err(why) => {
-            eprintln!("amont-agent: block: {why}");
+            eprintln!("{BIN}: block: {why}");
             return ExitCode::from(1);
         }
     };
@@ -1866,15 +1948,18 @@ fn run_block_sha(args: &[String]) -> ExitCode {
         None => {
             let path = block_fingerprint::binary_path(&diff).unwrap_or_default();
             eprintln!(
-                "amont-agent: block: the diff has a binary file ({path}); a binary change is never a copy"
+                "{BIN}: block: the diff has a binary file ({path}); a binary change is never a copy"
             );
             ExitCode::from(1)
         }
     }
 }
 
-const TREE_SHA_USAGE: &str = "\
-usage: amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]
+const TREE_SHA_USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " tree-sha [--block] [-C <dir>] [--] [<rev>]
 
 The content id an implementation review and a preview approval bind to
 (not attest's canonical tree): the sha256 of `git ls-tree -r -z` of <rev>
@@ -1890,7 +1975,8 @@ plan, or adding a plan, therefore never changes it; a code change does
 
 Prints one line on stdout. Exit 0; 1 outside a repository or for a rev
 that names no tree (the reason on stderr); 2 on a usage error.
-";
+"
+);
 
 fn run_tree_sha(args: &[OsString]) -> ExitCode {
     let args: Vec<String> = args
@@ -1905,9 +1991,12 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
         match a {
             _ if operands_only || !a.starts_with('-') => {
                 if rev.is_some() {
-                    eprintln!(
-                        "amont-agent: tree-sha takes one rev; try `amont-agent tree-sha --help`"
-                    );
+                    eprintln!(concat!(
+                        amont_agent_guard::bin!(),
+                        ": tree-sha takes one rev; try `",
+                        amont_agent_guard::bin!(),
+                        " tree-sha --help`"
+                    ));
                     return ExitCode::from(2);
                 }
                 rev = Some(a.to_string());
@@ -1923,13 +2012,13 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
                 match args.get(i) {
                     Some(v) => dir = Some(std::path::PathBuf::from(v)),
                     None => {
-                        eprintln!("amont-agent: -C needs a directory");
+                        eprintln!(concat!(amont_agent_guard::bin!(), ": -C needs a directory"));
                         return ExitCode::from(2);
                     }
                 }
             }
             other => {
-                eprintln!("amont-agent: unknown flag `{other}`; try `amont-agent tree-sha --help`");
+                eprintln!("{BIN}: unknown flag `{other}`; try `{BIN} tree-sha --help`");
                 return ExitCode::from(2);
             }
         }
@@ -1940,7 +2029,10 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
     });
     let Some(repo) = push_target::toplevel(&dir) else {
         eprintln!(
-            "amont-agent: {} is not inside a git repository",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": {} is not inside a git repository"
+            ),
             dir.display()
         );
         return ExitCode::from(1);
@@ -1949,14 +2041,17 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
     let sha = match content_id::content_id(&repo, rev) {
         Ok(s) => s,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(1);
         }
     };
     if block {
         let Some(name) = implementation_review::repo_name(&repo) else {
             eprintln!(
-                "amont-agent: the repository at {} has no name (git rev-parse --git-common-dir failed)",
+                concat!(
+                    amont_agent_guard::bin!(),
+                    ": the repository at {} has no name (git rev-parse --git-common-dir failed)"
+                ),
                 repo.display()
             );
             return ExitCode::from(1);
@@ -1968,8 +2063,11 @@ fn run_tree_sha(args: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-const RULES_SHA_USAGE: &str = "\
-usage: amont-agent rules-sha [-C <dir>]
+const RULES_SHA_USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " rules-sha [-C <dir>]
 
 The lowercase sha256 hex of the stdout of
 `aval --json rules --level constraint --governs code --full`, run in <dir>
@@ -1978,10 +2076,11 @@ as <<<RULES sha=<64 hex>>>>; the push check compares it.
 
 Prints one line on stdout. Exit 0; 3 when aval is missing or fails (the
 command on stderr, nothing on stdout); 2 on a usage error.
-";
+"
+);
 
-const REVIEW_BRIEF_USAGE: &str = "\
-usage: amont-agent review-brief [-C <dir>] [--plan <path>] [--base <ref>] [--profile <role>]
+const REVIEW_BRIEF_USAGE: &str = concat!("\
+usage: ", amont_agent_guard::bin!(), " review-brief [-C <dir>] [--plan <path>] [--base <ref>] [--profile <role>]
                                 [--interdiff <head>]
 
 The markdown brief an implementation reviewer is launched with: the
@@ -2024,7 +2123,7 @@ answer, the block is <<<CANDIDATES unavailable>>> and the brief goes on.
 
 Exit 0; 1 when the repository or its base cannot be read; 3 when aval is missing or fails (nothing on
 stdout); 2 on a usage error.
-";
+");
 
 /// The flags of `rules-sha` and `review-brief`.
 struct BriefFlags {
@@ -2083,9 +2182,7 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
         // Neither command takes an operand, so `--` only ends the flags.
         if word == "--" {
             if let Some(operand) = args.get(i) {
-                eprintln!(
-                    "amont-agent: {name}: unknown argument `{operand}`; try `amont-agent {name} --help`"
-                );
+                eprintln!("{BIN}: {name}: unknown argument `{operand}`; try `{BIN} {name} --help`");
                 return Err(ExitCode::from(2));
             }
             break;
@@ -2104,16 +2201,14 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
             },
         };
         if !accepted.contains(&flag) {
-            eprintln!(
-                "amont-agent: {name}: unknown argument `{word}`; try `amont-agent {name} --help`"
-            );
+            eprintln!("{BIN}: {name}: unknown argument `{word}`; try `{BIN} {name} --help`");
             return Err(ExitCode::from(2));
         }
         let value = match attached {
             Some(value) => value,
             None => {
                 let Some(value) = args.get(i) else {
-                    eprintln!("amont-agent: {name}: {flag} needs a value");
+                    eprintln!("{BIN}: {name}: {flag} needs a value");
                     return Err(ExitCode::from(2));
                 };
                 i += 1;
@@ -2128,7 +2223,7 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
                 let hex = value.bytes().all(|b| b.is_ascii_hexdigit());
                 if !hex || !(7..=64).contains(&value.len()) {
                     eprintln!(
-                        "amont-agent: {name}: --interdiff takes a commit id (7 to 64 hex digits), not `{value}`"
+                        "{BIN}: {name}: --interdiff takes a commit id (7 to 64 hex digits), not `{value}`"
                     );
                     return Err(ExitCode::from(2));
                 }
@@ -2137,7 +2232,7 @@ fn brief_flags(command: &BriefCommand, args: &[OsString]) -> Result<BriefFlags, 
             "--profile" => {
                 if !code_review::valid_profile(&value) {
                     eprintln!(
-                        "amont-agent: {name}: unknown profile `{value}`; try `amont-agent {name} --help`"
+                        "{BIN}: {name}: unknown profile `{value}`; try `{BIN} {name} --help`"
                     );
                     return Err(ExitCode::from(2));
                 }
@@ -2162,7 +2257,7 @@ fn run_rules_sha(args: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             ExitCode::from(3)
         }
     }
@@ -2183,28 +2278,31 @@ fn run_review_brief(args: &[OsString]) -> ExitCode {
     match review_brief::build(&request) {
         Ok(brief) => {
             for notice in &brief.notices {
-                eprintln!("amont-agent: review-brief: {notice}");
+                eprintln!("{BIN}: review-brief: {notice}");
             }
             print!("{}", brief.text);
             ExitCode::SUCCESS
         }
         Err(review_brief::BriefError::Aval(why)) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             ExitCode::from(3)
         }
         Err(review_brief::BriefError::Repository(why)) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             ExitCode::from(1)
         }
         Err(review_brief::BriefError::DeltaRefused(why)) => {
-            eprintln!("amont-agent: review-brief: {why}");
+            eprintln!("{BIN}: review-brief: {why}");
             ExitCode::from(1)
         }
     }
 }
 
-const PLAN_PANEL_USAGE: &str = "\
-usage: amont-agent plan-panel [--code-review [-C <dir>] [--base <ref>]]
+const PLAN_PANEL_USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " plan-panel [--code-review [-C <dir>] [--base <ref>]]
                               <plan.md>
 
 The review agents a plan still needs, computed as the plan-review-panel
@@ -2245,7 +2343,8 @@ about on stderr and the output above is unchanged.
 
 Exit 0, 1 when the plan cannot be read, its comment is wrong or its Code
 review section does not parse (the reason on stderr), 2 on a usage error.
-";
+"
+);
 
 /// The proposal `lines`, with the branch's own repository proposed as a copy
 /// when `-C` or `--base` named a branch that is a verified registered block.
@@ -2311,7 +2410,7 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
             Some(value) => value,
             None => {
                 let Some(value) = args.get(i) else {
-                    eprintln!("amont-agent: plan-panel: {flag} needs a value");
+                    eprintln!("{BIN}: plan-panel: {flag} needs a value");
                     return ExitCode::from(2);
                 };
                 i += 1;
@@ -2325,27 +2424,27 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
         }
     }
     if !proposing && (branch_dir.is_some() || branch_base.is_some()) {
-        eprint!("amont-agent: plan-panel: -C and --base need --code-review\n\n{PLAN_PANEL_USAGE}");
+        eprint!("{BIN}: plan-panel: -C and --base need --code-review\n\n{PLAN_PANEL_USAGE}");
         return ExitCode::from(2);
     }
     let [file] = operands.as_slice() else {
-        eprint!("amont-agent: plan-panel takes one plan file\n\n{PLAN_PANEL_USAGE}");
+        eprint!("{BIN}: plan-panel takes one plan file\n\n{PLAN_PANEL_USAGE}");
         return ExitCode::from(2);
     };
     let text = match code_review::read_plan(std::path::Path::new(file)) {
         Ok(text) => text,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(1);
         }
     };
     match code_review::parse(&text) {
         Err(why) => {
-            eprintln!("amont-agent: plan-panel: ## Code review: {why}");
+            eprintln!("{BIN}: plan-panel: ## Code review: {why}");
             return ExitCode::from(1);
         }
         Ok(None) if !proposing => eprintln!(
-            "amont-agent: plan-panel: no ## Code review section; run plan-panel --code-review and add it after ## Non-goals"
+            concat!(amont_agent_guard::bin!(), ": plan-panel: no ## Code review section; run plan-panel --code-review and add it after ## Non-goals")
         ),
         Ok(_) => {}
     }
@@ -2359,7 +2458,7 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
                 ) {
                     Ok(lines) => lines,
                     Err(why) => {
-                        eprintln!("amont-agent: plan-panel: {why}");
+                        eprintln!("{BIN}: plan-panel: {why}");
                         return ExitCode::from(1);
                     }
                 };
@@ -2367,7 +2466,7 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(why) => {
-                eprintln!("amont-agent: {why}");
+                eprintln!("{BIN}: {why}");
                 ExitCode::from(1)
             }
         };
@@ -2384,7 +2483,7 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
                 p.source.as_str()
             );
             if let Some(advice) = &p.advice {
-                eprintln!("amont-agent: plan-panel: {advice}");
+                eprintln!("{BIN}: plan-panel: {advice}");
             }
             for role in &p.needed {
                 let cut = if p.sliced.contains(role) {
@@ -2400,19 +2499,24 @@ fn run_plan_panel(args: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             ExitCode::from(1)
         }
     }
 }
 
-const PREVIEW_USAGE: &str = "\
-usage: amont-agent preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
+const PREVIEW_USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " preview register --url <url> --guide <file.md> [--repo <dir>] [--open]
 
 Validate a localhost preview of the repository's HEAD, for the person to
 approve before a UI-changing push (ADR-0023), and render its guide to a
 page (work.preview-is-guided). Run it in the foreground as the last
-command of its line (`cd <wt> && npm run build && amont-agent preview
+command of its line (`cd <wt> && npm run build && ",
+    amont_agent_guard::bin!(),
+    " preview
 register …` is fine; nothing piped, redirected or after it): the Claude
 Code hook binds its output to the session.
 
@@ -2465,9 +2569,12 @@ aliases, question_prefix. Start the marked question with `question_prefix`
 valid, 1 when refused (the reason on stderr), 2 on a usage error.
 
 example:
-  amont-agent preview register --url http://localhost:5173/settings \\
+  ",
+    amont_agent_guard::bin!(),
+    " preview register --url http://localhost:5173/settings \\
     --guide ~/.claude/amont-agent/attestations/abc1234/guide.md
-";
+"
+);
 
 fn run_preview(args: &[OsString]) -> ExitCode {
     let args: Vec<String> = args
@@ -2484,7 +2591,12 @@ fn run_preview(args: &[OsString]) -> ExitCode {
     }
     if args[0] != "register" {
         eprintln!(
-            "amont-agent: unknown preview command `{}`; try `amont-agent preview --help`",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": unknown preview command `{}`; try `",
+                amont_agent_guard::bin!(),
+                " preview --help`"
+            ),
             args[0]
         );
         return ExitCode::from(2);
@@ -2509,7 +2621,7 @@ fn run_preview(args: &[OsString]) -> ExitCode {
                 match args.get(i) {
                     Some(v) => v.clone(),
                     None => {
-                        eprintln!("amont-agent: {flag} needs a value");
+                        eprintln!("{BIN}: {flag} needs a value");
                         return ExitCode::from(2);
                     }
                 }
@@ -2521,7 +2633,7 @@ fn run_preview(args: &[OsString]) -> ExitCode {
             "--attestation" => attestation = Some(value),
             "--repo" => repo = Some(value),
             other => {
-                eprintln!("amont-agent: unknown flag `{other}`; try `amont-agent preview --help`");
+                eprintln!("{BIN}: unknown flag `{other}`; try `{BIN} preview --help`");
                 return ExitCode::from(2);
             }
         }
@@ -2530,24 +2642,30 @@ fn run_preview(args: &[OsString]) -> ExitCode {
     let guide = match (guide, attestation) {
         (Some(g), None) => g,
         (Some(g), Some(_)) => {
-            eprintln!("amont-agent: --attestation is deprecated and ignored beside --guide");
+            eprintln!(concat!(
+                amont_agent_guard::bin!(),
+                ": --attestation is deprecated and ignored beside --guide"
+            ));
             g
         }
         (None, Some(a)) => {
             eprintln!(
-                "amont-agent: --attestation is deprecated; use --guide. It is read as the guide, and refused unless it is one (see `amont-agent preview --help`)"
+                concat!(amont_agent_guard::bin!(), ": --attestation is deprecated; use --guide. It is read as the guide, and refused unless it is one (see `", amont_agent_guard::bin!(), " preview --help`)")
             );
             a
         }
         (None, None) => {
             eprintln!(
-                "amont-agent: preview register needs --guide <file.md>: the person is guided, not quizzed (see `amont-agent preview --help`)"
+                concat!(amont_agent_guard::bin!(), ": preview register needs --guide <file.md>: the person is guided, not quizzed (see `", amont_agent_guard::bin!(), " preview --help`)")
             );
             return ExitCode::from(2);
         }
     };
     let Some(url) = url else {
-        eprintln!("amont-agent: preview register needs --url");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": preview register needs --url"
+        ));
         return ExitCode::from(2);
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -2560,7 +2678,7 @@ fn run_preview(args: &[OsString]) -> ExitCode {
     match preview::register(&dir, &url, std::path::Path::new(&guide)) {
         Ok(mut r) => {
             if r.unchanged {
-                eprintln!("amont-agent: before and after are byte-identical; the hook approves this preview as unchanged when it binds it, if they still are");
+                eprintln!(concat!(amont_agent_guard::bin!(), ": before and after are byte-identical; the hook approves this preview as unchanged when it binds it, if they still are"));
             }
             if open {
                 r.opened = Some(open_page(std::path::Path::new(&r.page)));
@@ -2569,7 +2687,7 @@ fn run_preview(args: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(why) => {
-            eprintln!("amont-agent: preview not registered: {why}");
+            eprintln!("{BIN}: preview not registered: {why}");
             ExitCode::from(1)
         }
     }
@@ -2581,7 +2699,7 @@ fn open_page(page: &std::path::Path) -> bool {
     match open::open_url(&amont_agent_process::guide::file_url(page)) {
         Ok(()) => true,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             false
         }
     }
@@ -2591,12 +2709,15 @@ fn run_check(args: &[OsString]) -> ExitCode {
     let f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
     if f.rest.len() != 1 {
-        eprintln!("amont-agent: check needs exactly one command, quoted");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": check needs exactly one command, quoted"
+        ));
         return ExitCode::from(2);
     }
     let src = &f.rest[0];
@@ -2616,7 +2737,7 @@ fn run_check(args: &[OsString]) -> ExitCode {
     let cwd = match f.cwd.clone().map(Ok).unwrap_or_else(std::env::current_dir) {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("amont-agent: check: the working directory cannot be read: {e}");
+            eprintln!("{BIN}: check: the working directory cannot be read: {e}");
             return ExitCode::from(2);
         }
     };
@@ -2714,7 +2835,7 @@ fn stance_shown(now: rules::Stance, ships: rules::Stance) -> String {
     }
 }
 
-const RULES_USAGE: &str = "usage: amont-agent rules [--json]\n";
+const RULES_USAGE: &str = concat!("usage: ", amont_agent_guard::bin!(), " rules [--json]\n");
 
 /// `rules` takes `--json` and nothing else. It matches its arguments itself:
 /// `flags()` accepts every flag any subcommand knows and keeps bare words,
@@ -2736,13 +2857,16 @@ fn run_rules(args: &[OsString]) -> ExitCode {
         [a] if a == "--json" => print_rules_json(),
         [a, rest @ ..] if a == "--json" => {
             eprintln!(
-                "amont-agent: unexpected argument `{}`; `rules` takes only --json",
+                concat!(
+                    amont_agent_guard::bin!(),
+                    ": unexpected argument `{}`; `rules` takes only --json"
+                ),
                 rest[0]
             );
             ExitCode::from(2)
         }
         [a, ..] => {
-            eprintln!("amont-agent: unknown argument `{a}`; `rules` takes only --json");
+            eprintln!("{BIN}: unknown argument `{a}`; `rules` takes only --json");
             ExitCode::from(2)
         }
     }
@@ -2853,7 +2977,7 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     let f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
@@ -2866,7 +2990,10 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     };
     let project = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let Some(path) = scope.path(&project) else {
-        eprintln!("amont-agent: cannot find your Claude Code settings directory");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": cannot find your Claude Code settings directory"
+        ));
         return ExitCode::from(2);
     };
     // The absolute path of THIS binary. A `PATH`-resolved command exits 127
@@ -2875,7 +3002,7 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     let bin = match std::env::current_exe() {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("amont-agent: cannot resolve my own path: {e}");
+            eprintln!("{BIN}: cannot resolve my own path: {e}");
             return ExitCode::from(2);
         }
     };
@@ -2894,7 +3021,7 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     let plan = match planned {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("amont-agent: {}", e.explain());
+            eprintln!(concat!(amont_agent_guard::bin!(), ": {}"), e.explain());
             if adding {
                 eprintln!("\n{}", settings::snippet(&bin));
             }
@@ -2954,7 +3081,7 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
         }
         Err(e) => {
             eprintln!(
-                "amont-agent: could not apply the change to {} and the clear-relay plugin: {e}",
+                "{BIN}: could not apply the change to {} and the clear-relay plugin: {e}",
                 plan.path.display()
             );
             ExitCode::from(2)
@@ -3053,14 +3180,14 @@ fn run_corpus(args: &[OsString]) -> ExitCode {
     let f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
     match f.rest.first().map(String::as_str) {
         Some("check") | None => {}
         Some(other) => {
-            eprintln!("amont-agent: corpus takes `check`, not `{other}`");
+            eprintln!("{BIN}: corpus takes `check`, not `{other}`");
             return ExitCode::from(2);
         }
     }
@@ -3110,22 +3237,25 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
     let f = match flags(args) {
         Ok(f) => f,
         Err(why) => {
-            eprintln!("amont-agent: {why}");
+            eprintln!("{BIN}: {why}");
             return ExitCode::from(2);
         }
     };
     let Some(id) = f.rest.first() else {
-        eprintln!("amont-agent: name a rule");
+        eprintln!(concat!(amont_agent_guard::bin!(), ": name a rule"));
         return ExitCode::from(2);
     };
     let Some(rule) = rules::by_id(rule_table::RULES, id) else {
         let known: Vec<&str> = rule_table::RULES.iter().map(|r| r.id).collect();
-        eprintln!("amont-agent: no rule `{id}` — known: {}", known.join(", "));
+        eprintln!("{BIN}: no rule `{id}` — known: {}", known.join(", "));
         return ExitCode::from(2);
     };
     let to = if promoting {
         let Some(to) = f.to.as_deref().and_then(rules::Stance::parse) else {
-            eprintln!("amont-agent: graduate needs --to advise|deny");
+            eprintln!(concat!(
+                amont_agent_guard::bin!(),
+                ": graduate needs --to advise|deny"
+            ));
             return ExitCode::from(2);
         };
         to
@@ -3152,15 +3282,22 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
             corpus::path_for(rule.id).display().to_string()
         } else {
             format!(
-                "crates/amont-agent-guard/tests/corpus/{}.cases   # in a checkout of amont-agent",
+                concat!(
+                    "crates/amont-agent-guard/tests/corpus/{}.cases   # in a checkout of ",
+                    amont_agent_guard::bin!()
+                ),
                 rule.id
             )
         };
         eprintln!(
-            "\nrefusing to move {} to {}: not enough evidence.\n\
+            concat!(
+                "\nrefusing to move {} to {}: not enough evidence.\n\
              Review its matches first:\n  \
-             amont-agent explain {} --format cases >> {}\n\
-             then label each line and re-run. `--force` overrides and is recorded as forced.",
+             ",
+                amont_agent_guard::bin!(),
+                " explain {} --format cases >> {}\n\
+             then label each line and re-run. `--force` overrides and is recorded as forced."
+            ),
             rule.id,
             to.as_str(),
             rule.id,
@@ -3179,7 +3316,7 @@ fn run_graduate(args: &[OsString], promoting: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(why) => {
-            eprintln!("amont-agent: could not record the stance: {why}");
+            eprintln!("{BIN}: could not record the stance: {why}");
             ExitCode::from(2)
         }
     }

@@ -626,7 +626,13 @@ pub fn append_rulings(repo: &str, tree: &str, reviewed: &Reviewed) -> std::io::R
         ));
     }
     let dir = journal::dir()
-        .ok_or_else(|| std::io::Error::other("no amont-agent config directory"))?
+        .ok_or_else(|| {
+            std::io::Error::other(concat!(
+                "no ",
+                amont_agent_guard::bin!(),
+                " config directory"
+            ))
+        })?
         .join(RULINGS_DIR);
     std::fs::create_dir_all(&dir)?;
     journal::private(&dir, 0o700);

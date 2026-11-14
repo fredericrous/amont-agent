@@ -108,8 +108,8 @@ fn git_failed(command: &str, detail: impl Into<String>) -> ScanError {
     }
 }
 
-pub const HELP: &str = "\
-usage: amont-agent suppressions --staged
+pub const HELP: &str = concat!("\
+usage: ", amont_agent_guard::bin!(), " suppressions --staged
 
 Judge the staged change: a lint suppression it adds (net of those it removes
 anywhere) blocks unless it carries a reason in its tool's own reason form.
@@ -130,7 +130,7 @@ index exits 2 unless the override applies; so does a failed identity query.
 The selected index, an external alternate one included, is only read.
 A wrapper that switches repositories must clear and recompute both hints.
 `--staged` may be repeated.
-";
+");
 
 /// Entry point. `git_index` is `GIT_INDEX_FILE` as it was before `main`
 /// scrubbed the environment: git hands a hook a temporary index on
@@ -147,14 +147,20 @@ pub fn run(args: &[OsString], handoff: IndexHandoff, git_index: Option<OsString>
     }
     if let Some(unknown) = args.iter().find(|a| *a != "--staged") {
         eprintln!(
-            "amont-agent: suppressions: unknown argument '{}'\n",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": suppressions: unknown argument '{}'\n"
+            ),
             unknown.to_string_lossy()
         );
         eprint!("{HELP}");
         return ExitCode::from(2);
     }
     if args.is_empty() {
-        eprintln!("amont-agent: suppressions needs --staged\n");
+        eprintln!(concat!(
+            amont_agent_guard::bin!(),
+            ": suppressions needs --staged\n"
+        ));
         eprint!("{HELP}");
         return ExitCode::from(2);
     }

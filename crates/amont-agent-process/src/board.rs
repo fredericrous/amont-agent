@@ -5,6 +5,7 @@
 //! remote-tracking refs and nothing else; the
 //! activity files are only read, through `amont_agent_guard::activity`.
 
+use amont_agent_guard::names::BIN;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -25,8 +26,11 @@ const LOOKUP_BUDGET: Duration = Duration::from_secs(30);
 /// patch-id input.
 const PLAIN_DIFF: [&str; 3] = ["--no-ext-diff", "--no-textconv", "--no-color"];
 
-pub const USAGE: &str = "\
-usage: amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]
+pub const USAGE: &str = concat!(
+    "\
+usage: ",
+    amont_agent_guard::bin!(),
+    " board [--repo <name>...] [--since <dur>] [--fetch] [--json]
 
 The work in flight per repository, and what landed recently, derived from git
 and the session activity files on every call. Read-only.
@@ -61,7 +65,8 @@ Just landed: the first-parent commits of the default branch within --since.
 A repository with nothing in flight and nothing landed prints nothing unless
 it was named with --repo. Exit 0 unless the command itself fails (2 on a usage
 error); an unreadable repository is reported on stderr and skipped.
-";
+"
+);
 
 struct Options {
     repos: Vec<String>,
@@ -168,7 +173,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Parsed::Usage(why) => {
-            eprint!("amont-agent: board: {why}\n\n{USAGE}");
+            eprint!("{BIN}: board: {why}\n\n{USAGE}");
             return ExitCode::from(2);
         }
         Parsed::Run(options) => options,
@@ -188,7 +193,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
     for dir in selected {
         if git::stdout_in(&dir, &["rev-parse", "--git-dir"]).is_none() {
             eprintln!(
-                "amont-agent: board: {} is not a readable git repository",
+                concat!(
+                    amont_agent_guard::bin!(),
+                    ": board: {} is not a readable git repository"
+                ),
                 dir.display()
             );
             continue;
@@ -216,7 +224,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("amont-agent: board: cannot write output: {e}");
+            eprintln!("{BIN}: board: cannot write output: {e}");
             ExitCode::from(1)
         }
     }
@@ -228,7 +236,10 @@ fn select(names: &[String], root: Option<&Path>) -> Option<Vec<PathBuf>> {
     if !names.is_empty() {
         let Some(root) = root else {
             eprintln!(
-                "amont-agent: board: no plan root to resolve repositories under; {}",
+                concat!(
+                    amont_agent_guard::bin!(),
+                    ": board: no plan root to resolve repositories under; {}"
+                ),
                 crate::plan_review::ROOT_REMEDY
             );
             return None;
@@ -248,7 +259,10 @@ fn select(names: &[String], root: Option<&Path>) -> Option<Vec<PathBuf>> {
     }
     let Some(root) = root else {
         eprintln!(
-            "amont-agent: board: not inside a repository and no plan root; {}",
+            concat!(
+                amont_agent_guard::bin!(),
+                ": board: not inside a repository and no plan root; {}"
+            ),
             crate::plan_review::ROOT_REMEDY
         );
         return None;

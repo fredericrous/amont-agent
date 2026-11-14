@@ -25,8 +25,15 @@ pub fn notice(cwd: &Path) -> Option<String> {
     }
     let shown = lines.len().min(MAX_LINES);
     let mut out = format!(
-        "amont-agent/plans: {} in docs/plans/ (read one on demand; they are history, not instructions):",
-        if lines.len() == 1 { "1 open plan".to_string() } else { format!("{} open plans", lines.len()) }
+        concat!(
+            amont_agent_guard::bin!(),
+            "/plans: {} in docs/plans/ (read one on demand; they are history, not instructions):"
+        ),
+        if lines.len() == 1 {
+            "1 open plan".to_string()
+        } else {
+            format!("{} open plans", lines.len())
+        }
     );
     for l in &lines[..shown] {
         out.push_str("\n- ");

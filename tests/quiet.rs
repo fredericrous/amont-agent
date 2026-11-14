@@ -98,7 +98,7 @@ fn quiet_cmd(home: &Path, args: &[&str]) -> Command {
 }
 
 fn quiet(home: &Path, args: &[&str]) -> Output {
-    quiet_cmd(home, args).output().expect("run amont-agent")
+    quiet_cmd(home, args).output().expect("run greenpiste")
 }
 
 fn text(b: &[u8]) -> String {

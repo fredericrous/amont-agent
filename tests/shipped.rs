@@ -720,7 +720,7 @@ fn usage_errors_and_help() {
         .output()
         .unwrap();
     assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("usage: amont-agent shipped"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("usage: greenpiste shipped"));
     let main_help = Command::new(BIN).arg("--help").output().unwrap();
     assert!(String::from_utf8_lossy(&main_help.stdout).contains("shipped <plan.md>"));
     let missing = Command::new(BIN)

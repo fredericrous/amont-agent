@@ -33,6 +33,7 @@
 //! Bash calls, ties broken by last seen and then by name; empty ids and
 //! synthetic turns (`<synthetic>`) are not models.
 
+use crate::names::BIN;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -536,13 +537,13 @@ pub fn check(dir: &Path, scan: &Scan) -> Result<Option<String>, ScanError> {
     Ok(match reviewed_model(dir) {
         Ok(Some(Some(m))) if m == default_model => None,
         Ok(Some(_)) => Some(format!(
-            "harness-review: the default model {default_model} differs from the one last reviewed; run `amont-agent harness-review`"
+            "harness-review: the default model {default_model} differs from the one last reviewed; run `{BIN} harness-review`"
         )),
         Ok(None) => Some(format!(
-            "harness-review: the default model {default_model} has no review on record; run `amont-agent harness-review`"
+            "harness-review: the default model {default_model} has no review on record; run `{BIN} harness-review`"
         )),
         Err(why) => Some(format!(
-            "harness-review: {why}; run `amont-agent harness-review`"
+            "harness-review: {why}; run `{BIN} harness-review`"
         )),
     })
 }

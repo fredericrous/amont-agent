@@ -388,7 +388,12 @@ fn configured(installs: &[Install]) -> Finding {
     if installs.is_empty() {
         return Finding::bad(
             "not installed in any settings file",
-            "run `amont-agent install --write` (it prints the block first)".to_string(),
+            concat!(
+                "run `",
+                crate::bin!(),
+                " install --write` (it prints the block first)"
+            )
+            .to_string(),
         );
     }
     let files: Vec<&PathBuf> = {
@@ -424,12 +429,16 @@ fn configured(installs: &[Install]) -> Finding {
                 want - missing.len()
             ),
             format!(
-                "missing: {}. Re-run `amont-agent install --write`: the SessionStart entry is \
+                concat!(
+                    "missing: {}. Re-run `",
+                    crate::bin!(),
+                    " install --write`: the SessionStart entry is \
                  what proves the guard is alive, the Read|Edit|Write and PostToolUse Read \
                  entries let `file-reread` see a file opened twice, the Grep entry lets \
                  `symbol-grep-not-lsp` see the Grep tool, and the PostToolUse LSP entry lets \
                  `code-read-not-lsp` see what LSP was asked, and the PostToolUse \
-                 Edit|Write|MultiEdit entry lets `adr-lint-written` check a file just written",
+                 Edit|Write|MultiEdit entry lets `adr-lint-written` check a file just written"
+                ),
                 missing.join(", ")
             ),
         );
@@ -462,7 +471,7 @@ fn executable(installs: &[Install]) -> Finding {
     match Command::new(path).arg("--version").output() {
         Ok(o) if o.status.success() => {
             let reported = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let mine = format!("amont-agent {}", env!("CARGO_PKG_VERSION"));
+            let mine = format!(concat!(crate::bin!(), " {}"), env!("CARGO_PKG_VERSION"));
             if reported != mine {
                 return Finding::warn(
                     format!("the installed binary is {reported}"),
@@ -493,9 +502,13 @@ fn self_test() -> Finding {
     if stdout.trim().is_empty() {
         return Finding::bad(
             "a command that should be refused produced no decision",
-            "every rule may be demoted, or the guard is switched off — check \
-             `amont-agent status` and $AMONT_AGENT_OFF"
-                .to_string(),
+            concat!(
+                "every rule may be demoted, or the guard is switched off — check \
+             `",
+                crate::bin!(),
+                " status` and $AMONT_AGENT_OFF"
+            )
+            .to_string(),
         );
     }
     match serde_json::from_str::<serde_json::Value>(&stdout) {
@@ -594,15 +607,23 @@ fn liveness(installs: &[Install]) -> Finding {
                     "no heartbeat, but a rule fired {} ago",
                     ago(now().saturating_sub(f))
                 ),
-                "liveness cannot be judged properly without the SessionStart entry — \
-                 re-run `amont-agent install --write`"
-                    .to_string(),
+                concat!(
+                    "liveness cannot be judged properly without the SessionStart entry — \
+                 re-run `",
+                    crate::bin!(),
+                    " install --write`"
+                )
+                .to_string(),
             ),
             None => Finding::warn(
                 "liveness cannot be judged",
-                "no SessionStart entry is installed, so no heartbeat is ever written — \
-                 re-run `amont-agent install --write`"
-                    .to_string(),
+                concat!(
+                    "no SessionStart entry is installed, so no heartbeat is ever written — \
+                 re-run `",
+                    crate::bin!(),
+                    " install --write`"
+                )
+                .to_string(),
             ),
         };
     }
@@ -721,8 +742,12 @@ fn stances(table: &[rules::Rule]) -> Finding {
     if armed.is_empty() {
         return Finding::warn(
             "every rule is observing — nothing will be refused",
-            "the journal still records what fires; `amont-agent status` shows each stance"
-                .to_string(),
+            concat!(
+                "the journal still records what fires; `",
+                crate::bin!(),
+                " status` shows each stance"
+            )
+            .to_string(),
         );
     }
     // Both halves, because "installed" was being mistaken for "armed" in the

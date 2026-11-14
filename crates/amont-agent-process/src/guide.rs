@@ -14,6 +14,7 @@
 //! markdown crate would be a new dependency on a trust path (ADR-0020,
 //! `change.dependency-bar`) for a page nobody but the person reads.
 
+use amont_agent_guard::names::BIN;
 use std::path::{Path, PathBuf};
 
 /// The sections a guide must carry, as H2 headings, in the order the page
@@ -1037,7 +1038,7 @@ pub fn render(text: &str, page: &Page) -> String {
 <p><a class=\"open\" href=\"{url}\" target=\"_blank\" rel=\"noopener\">Open the app</a></p>
 <p class=\"url\"><code>{url_text}</code></p>
 </header>
-{body}<footer>Guide for commit <code>{commit}</code> · rendered by <code>amont-agent preview register</code></footer>
+{body}<footer>Guide for commit <code>{commit}</code> · rendered by <code>{BIN} preview register</code></footer>
 </main>
 </body>
 </html>

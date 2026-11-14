@@ -7,6 +7,7 @@
 //! per session and repository.
 
 use crate::activity::Peer;
+use crate::names::BIN;
 use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
 
@@ -131,7 +132,7 @@ pub fn phrase(repo_name: &str, peers: &[Peer], now: std::time::SystemTime) -> St
             named.join("; ")
         ),
         &format!(
-            "Run `amont-agent board --repo {repo_name}`, then message that session (SendMessage) or ask the person."
+            "Run `{BIN} board --repo {repo_name}`, then message that session (SendMessage) or ask the person."
         ),
     )
 }
@@ -159,7 +160,7 @@ mod tests {
             "/w/feat",
             "feat/x",
             "25m",
-            "amont-agent board --repo amont",
+            "greenpiste board --repo amont",
             "SendMessage",
         ] {
             assert!(text.contains(part), "{part}: {text}");

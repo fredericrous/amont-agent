@@ -685,10 +685,7 @@ mod tests {
 
     #[test]
     fn repo_names_come_from_the_common_dir() {
-        assert_eq!(
-            repo_name_of(Path::new("/r/amont-agent/.git")),
-            "amont-agent"
-        );
+        assert_eq!(repo_name_of(Path::new("/r/greenpiste/.git")), "greenpiste");
         assert_eq!(repo_name_of(Path::new("/srv/x.git")), "x");
     }
 

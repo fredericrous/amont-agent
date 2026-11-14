@@ -61,9 +61,8 @@ pub fn state_root() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local").join("state"))
 }
 
-/// How we recognise our own handler on the way back out. Matched on the
-/// command's file name, so moving the binary does not orphan the entry.
-pub const BIN: &str = "amont-agent";
+/// The name the hook entries are written under.
+pub use crate::names::BIN;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -113,7 +112,7 @@ impl Change {
             Change::RemoveFile => format!(
                 "removed our hooks from {p} — nothing else was left, so the file was removed"
             ),
-            Change::NothingToRemove => format!("no amont-agent hook in {p} — nothing written"),
+            Change::NothingToRemove => format!("no {BIN} hook in {p} — nothing written"),
             Change::WouldReformat => format!(
                 "{p} uses formatting this program cannot reproduce — writing it back would \
                  reformat parts of the file nobody asked to change.\n\
@@ -298,12 +297,7 @@ fn handler(bin: &Path) -> Value {
 pub fn is_ours(h: &Value) -> bool {
     h.get("command")
         .and_then(|c| c.as_str())
-        .map(|c| {
-            Path::new(c)
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().trim_end_matches(".exe") == BIN)
-        })
-        .unwrap_or(false)
+        .is_some_and(crate::names::is_ours_program)
 }
 
 /// Two spaces unless the file says otherwise, and whether it ended in a
@@ -707,4 +701,40 @@ pub fn snippet(bin: &Path) -> String {
         hooks.insert((*event).to_string(), Value::Array(vec![block]));
     }
     render(&json!({ "hooks": hooks }), "  ", true)
+}
+
+#[cfg(test)]
+mod is_ours_tests {
+    use super::*;
+
+    fn entry(command: &str) -> Value {
+        json!({ "type": "command", "command": command, "args": ["hook"] })
+    }
+
+    #[test]
+    fn both_basenames_are_ours_with_or_without_exe() {
+        for command in [
+            "/usr/local/bin/greenpiste",
+            "/usr/local/bin/greenpiste.exe",
+            "C:\\bin\\greenpiste.exe",
+            "greenpiste",
+        ] {
+            assert!(is_ours(&entry(command)), "{command}");
+        }
+        let alias = crate::names::ALIAS;
+        for command in [
+            format!("/usr/local/bin/{alias}"),
+            format!("C:\\bin\\{alias}.exe"),
+        ] {
+            assert!(is_ours(&entry(&command)), "{command}");
+        }
+    }
+
+    #[test]
+    fn other_commands_are_not_ours() {
+        for command in ["/usr/bin/git", "/x/greenpiste-fleet", "/x/amont", ""] {
+            assert!(!is_ours(&entry(command)), "{command}");
+        }
+        assert!(!is_ours(&json!({ "type": "command" })));
+    }
 }

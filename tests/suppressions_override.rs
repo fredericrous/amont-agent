@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const DENY_TEXT: &str = "amont-agent/suppressions-override: this override is the person's \
+const DENY_TEXT: &str = "greenpiste/suppressions-override: this override is the person's \
 (general.no-disabled-safety). Fix the finding, or stop and tell the person which hits the \
 gate printed.";
 
