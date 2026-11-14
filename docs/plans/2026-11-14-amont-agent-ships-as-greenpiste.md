@@ -304,6 +304,11 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
 
 ## Decision log
 
+- 2026-11-14 — `verify-brew` (including its upgrade from the pre-rename
+  formula) and the post-publish `install.sh` run are skipped on a dry run:
+  they first run at the 4.0.0 tag, and their result is recorded with
+  Phase 4b.
+
 - 2026-11-14 (Phase 3 open at push) — the release workflow, scripts, formula
   and manifest are on the branch (8666d057, review fixes 38e6766a); observed
   so far: `test_bump_tap.py` (both prefixes) and `test_release_manifest.py`
@@ -333,3 +338,10 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
   greengate's did at 3.0.0.
 
 <!-- panel: repos=amont-agent,grh,greenharness-skills,decisions adds=contract reviewers=backend,lang:python,lang:rust,platform body-sha=f9f1ecc7545a -->
+
+## Implementation review
+
+- implementation-review: approve-with-changes ×2, then approve-with-changes (bada9ca9…, 5dd5e997…). Fixed: the `&mut` output parameter in `tests/names.rs`, the Phase 4 split, the `greengate.conf` decision. Deliberate: Phase 3's dry run runs on the pushed branch, before the merge.
+- backend: approve-with-changes ×2, then approve. Fixed: `brew upgrade` through the rename tested after the fresh install, `doctor` naming entries on the old name, Windows and post-publish install checks. Deliberate: `bin_aliases` not hard-coded (the committed-manifest test pins it).
+- lang:rust, lang:python, architect: approve-with-changes, then approve. Fixed: `names::{DATA_DIR,RECORD_TOOL}`, case-insensitive `.exe`, exact names-test skips, refusals instead of asserts, OSError handled.
+- platform, tui, unix: approve-with-changes, then approve. Fixed: regular-file check that can fail, scoped `brew upgrade`, the tap left on its branch, Ctrl-C exits, the singular wording. Deliberate: the `AMONT_AGENT_*` variables and installer inputs (plan 3b-2), and two installer behaviours that predate this change.
