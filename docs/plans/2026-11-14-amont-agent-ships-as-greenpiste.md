@@ -238,9 +238,10 @@ and grh pins greenpiste 4.0.0 by its new name.
   `amont-agent/scripts/test_release_manifest.py`,
   `amont-agent/greenharness.toml`,
   `amont-agent/packaging/homebrew/greenpiste.rb` (class `Greenpiste`, `bin.install "greenpiste"`, the alias as a copy, `def refusing_by_default`, a `test do` running both names).
-- [ ] Phase 4 — docs and release 4.0.0: `amont-agent/README.md`,
-  `amont-agent/docs/`, `amont-agent/CHANGELOG.md`; the tag only after the
-  crates.io token scope is checked; the tap files are written by
+- [x] Phase 4a — docs: `amont-agent/README.md`, `amont-agent/docs/`,
+  `amont-agent/CHANGELOG.md`.
+- [ ] Phase 4b — release 4.0.0, after this branch merges: the tag only after
+  the crates.io token scope is checked; the tap files are written by
   `publish-tap`.
 - [ ] Phase 5 — grh and the skills: `grh/catalog.toml`, `grh/src/install.rs`, `grh/src/fetch.rs`, `grh/src/uninstall.rs`, `grh/src/manifest.rs`, `grh/docs/extension-manifest.md`, `grh/tests/cli.rs`,
   `grh/scripts/e2e.sh`, `grh/README.md`, `grh/CHANGELOG.md`, released;
@@ -302,6 +303,24 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
 `amont-agent` answers only as an alias until the census.
 
 ## Decision log
+
+- 2026-11-14 (Phase 3 open at push) — the release workflow, scripts, formula
+  and manifest are on the branch (8666d057, review fixes 38e6766a); observed
+  so far: `test_bump_tap.py` (both prefixes) and `test_release_manifest.py`
+  pass, both workflows parse as YAML. Its Verification is a
+  `workflow_dispatch` dry run, which runs only on a ref GitHub has, so the
+  branch is pushed with Phase 3 unticked and the dry run is dispatched on it
+  before the merge; Phase 3 is ticked with that run's result.
+- 2026-11-14 (Phase 4a) — done (3fa57f4d): README, `docs/` and the book name
+  greenpiste; `docs/install.md` gains "Upgrading from amont-agent" (the
+  alias copy, `brew upgrade` through the rename, `greenpiste install
+  --write`). Phase 4 split into 4a (docs, on this branch) and 4b (the release,
+  after the merge).
+- 2026-11-14 — `greengate.conf` is unchanged though Phase 2 names it: its
+  `amont:pack` block vendors `greengate.pack` (now `greenpiste suppressions`),
+  and editing the vendored copy changes the manifest and turns this
+  repository's declared checks off until a `greengate trust`. The alias keeps
+  the old line running; the block is re-vendored at the fleet sweep.
 
 - 2026-11-14 (Phase 2) — done (3799489a). Observed: `cargo build` produces `target/debug/greenpiste` (`--version` prints `greenpiste 3.35.0`, the crate version is unchanged until Phase 4); `install --write` with 16 entries baked to an old `amont-agent` path rewrote all 16 to the greenpiste binary, and `uninstall --write` removed them; `install.sh` run twice from a local archive (`GREENPISTE_ARCHIVE_DIR`) left `greenpiste` and an `amont-agent` copy that `cmp` reports identical, and `--version` answers on both; `tools/shell-oracle`'s own tests pass from its manifest. Not run: `install.ps1` (no PowerShell here; Phase 3's standalone check must cover Windows); `make install`. The worktree-hold condition was met: amont-agent 3.35.0 was released from `a5ef8693` before the rename commit was made.
 
