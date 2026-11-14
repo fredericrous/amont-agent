@@ -308,7 +308,7 @@ and with the relay a boundary advice no longer waits for them.
   `uninstall` removes both, as relais does),
   `src/main.rs`, `tests/plugin_install.rs` (which also checks the embedded
   file list against the files in `plugin/clear-relay/`)
-- [ ] Phase 2 — Docs and release: `docs/rules.md`, `README.md`,
+- [x] Phase 2 — Docs and release: `docs/rules.md`, `README.md`,
   `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, released as greenpiste
   3.35.0 through the tag-release skill (a minor version: a new rule)
 - [ ] Phase 3 — Close the ticket in decisions:
@@ -424,6 +424,14 @@ and with the relay a boundary advice no longer waits for them.
   shape, and it is shared by every registration. Recorded against
   `values.immutable-by-default`.
 
+## Implementation review
+
+- implementation-review: approve-with-changes, then Delta approve-with-changes, then approve (850bace); 7 blocking fixed, stance taken to the person (advise); 118k+90k+55k tokens, 368 s.
+- backend approve, lang:rust approve, architect approve at the Delta (all round-1 findings fixed; typed transcript entry and public surface deliberate: shared with other modules, used by tests); 69k/64k/54k tokens.
+- lang:typescript approve (relay state per registration, typed log); deliberate: helpers mutate a `Relayer` argument (hooks compiler, Decision log), `as never` test casts; 21k tokens.
+- unix approve-with-changes: fixed install order and orphaned plugin dir (both paths); deliberate: exit 2 on I/O failure predates this branch (follow-up), `describe` on stdout predates it; 26k tokens.
+- tui approve-with-changes: fixed countdown width, prompt in failure log, note wording; deliberate: two stderr install lines over 80 columns, note assumes the plugin `install --write` always places; 27k tokens.
+
 ## Verification
 
 - Phase 1: `cargo test --test clear_at_boundary` feeds Stop payloads with a
@@ -489,7 +497,11 @@ and with the relay a boundary advice no longer waits for them.
   this session's own Stop payload with its real transcript (past 200k
   after a teardown) → the Continue text; replay it in plan mode → silent.
 - Phase 2: the released binary reports 3.35.0, and `amont-agent rules
-  --json` lists `clear-at-boundary` at `advise`, max `deny`.
+  --json` lists `clear-at-boundary` at `advise`, max `deny`. Observed
+  2026-11-14 on the branch build of 21421774: `amont-agent 3.35.0`, and
+  `('clear-at-boundary', 'advise', 'deny')`; the published binary is the
+  tag's check. `claude plugin validate` passes, `claude plugin test` 17 pass,
+  the gate's 28 checks pass.
 - Phase 3: `relais programme check docs/programmes/session-boundaries`
   exits 0. `python3 -I count-context.py --until 2026-11-13` matches the
   block pasted into the Resolution when run on the same day.
@@ -497,10 +509,10 @@ and with the relay a boundary advice no longer waits for them.
 ## Outcome
 
 Measured 7 and 14 days after the first `clear-at-boundary` journal entry:
-- (a) the share of `denied` entries followed, within 30 minutes, by a
+- (a) the share of `denied` or `advised` entries followed, within 30 minutes, by a
   SessionStart with `source=clear` with the same payload `cwd`, split into
   relay-caused and person-typed clears;
-- (b) the share of `denied` entries whose next turn (in the same session, or
+- (b) the share of `denied` or `advised` entries whose next turn (in the same session, or
   the first turn of the session the relay started) kept implementing the
   same task;
 - (d) relay outcomes from the mod's log: cleared, `/stay`, keystroke, failed;
