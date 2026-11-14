@@ -246,11 +246,14 @@ fn no_source_string_names_the_tool_except_the_names_module_and_kept_data_names()
     assert!(files.len() > 50, "found only {} sources", files.len());
     let mut strays = Vec::new();
     for file in files {
+        // Forward slashes on every platform: NAMES_MODULES and KEPT_LINES
+        // name paths that way, and Windows would display `crates\...`.
         let shown = file
             .strip_prefix(root)
             .unwrap_or(&file)
             .display()
-            .to_string();
+            .to_string()
+            .replace('\\', "/");
         if NAMES_MODULES.contains(&shown.as_str()) {
             continue;
         }
