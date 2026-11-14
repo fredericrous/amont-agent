@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 branch: feat/clear-at-boundary
 repos: [amont-agent, decisions]
 adrs: []
@@ -311,7 +311,7 @@ and with the relay a boundary advice no longer waits for them.
 - [x] Phase 2 — Docs and release: `docs/rules.md`, `README.md`,
   `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, released as greenpiste
   3.35.0 through the tag-release skill (a minor version: a new rule)
-- [ ] Phase 3 — Close the ticket in decisions:
+- [x] Phase 3 — Close the ticket in decisions:
   - `docs/programmes/session-boundaries/count-context.py`, which follows
     `t11-measure.py`'s shape: a shebang, a docstring, argparse, and
     `with open(..., encoding="utf-8")`. It applies one dedupe by message
@@ -502,10 +502,17 @@ and with the relay a boundary advice no longer waits for them.
   2026-11-14 on the branch build of 21421774: `amont-agent 3.35.0`, and
   `('clear-at-boundary', 'advise', 'deny')`; the published binary is the
   tag's check. `claude plugin validate` passes, `claude plugin test` 17 pass,
-  the gate's 28 checks pass.
+  the gate's 28 checks pass. Tag `v3.35.0` at a5ef8693 (2026-11-14): the
+  release run concluded success (crates.io, Homebrew tap, brew install
+  check), and the downloaded x86_64-apple-darwin binary reports
+  `amont-agent 3.35.0` and `('clear-at-boundary', 'advise', 'deny')`.
 - Phase 3: `relais programme check docs/programmes/session-boundaries`
   exits 0. `python3 -I count-context.py --until 2026-11-13` matches the
-  block pasted into the Resolution when run on the same day.
+  block pasted into the Resolution when run on the same day. Observed
+  2026-11-14 (fredericrous/decisions#199): exit 0, and the run gave the
+  pasted block (30 of 117 sessions compacted, 1.23 per 1,000 calls, mean
+  465k tokens per call). The first `clear-at-boundary` journal entry, from
+  which t09 counts, waits on the person installing 3.35.0.
 
 ## Outcome
 
