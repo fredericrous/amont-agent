@@ -213,7 +213,7 @@ and grh pins greenpiste 4.0.0 by its new name.
   `amont-agent/src/main.rs`, `amont-agent/tests/names.rs`, and every crate
   source printing the name (`rg -l '"amont-agent[ :/]' crates/*/src src`:
   `candidates_block.rs`, `shape.rs`, `page_open.rs`, `attestations.rs`, …).
-- [ ] Phase 2 — crate and binary renames and the alias, started only once
+- [x] Phase 2 — crate and binary renames and the alias, started only once
   `amont-agent board --repo amont-agent` lists no worktree with unmerged
   work under `crates/` (or its owner is told to rebase):
   `amont-agent/Cargo.toml`, `amont-agent/Cargo.lock`,
@@ -302,6 +302,8 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
 `amont-agent` answers only as an alias until the census.
 
 ## Decision log
+
+- 2026-11-14 (Phase 2) — done (3799489a). Observed: `cargo build` produces `target/debug/greenpiste` (`--version` prints `greenpiste 3.35.0`, the crate version is unchanged until Phase 4); `install --write` with 16 entries baked to an old `amont-agent` path rewrote all 16 to the greenpiste binary, and `uninstall --write` removed them; `install.sh` run twice from a local archive (`GREENPISTE_ARCHIVE_DIR`) left `greenpiste` and an `amont-agent` copy that `cmp` reports identical, and `--version` answers on both; `tools/shell-oracle`'s own tests pass from its manifest. Not run: `install.ps1` (no PowerShell here; Phase 3's standalone check must cover Windows); `make install`. The worktree-hold condition was met: amont-agent 3.35.0 was released from `a5ef8693` before the rename commit was made.
 
 - 2026-11-14 (Phase 1) — done (169892be). Observed: `target/debug/amont-agent --version` prints `greenpiste 3.34.0`; `check 'git push origin main 2>&1 | tail -5'` denies `pipe-to-tail`; `check 'amont-agent block reinstate x'` and `check 'greenpiste block reinstate x'` both deny `block-reinstate`; `tests/names.rs` passes (and failed on a stray Windows-style `.claude\\amont-agent\\` path until the kept list learnt the escaped separator); `cargo test --workspace --locked` passes at the commit gate. The relais worker over-renamed two data names in tests (LSP fixture paths, renamed with their fixtures; one state-store path, restored to `amont-agent`). Phase 2 waits for amont-agent 3.35.0 (perso-0b, feat/clear-at-boundary), at that session's request.
 
