@@ -115,10 +115,13 @@ with ≥ 5 assistant messages, 32 compacted; Phase 3 lands the script):
 
 ## Behaviour
 
-New rule `clear-at-boundary`. Default stance `deny`, max `deny`. A Stop
-`Continue` is the deny shape, as in `plan-phases-open`: the handoff is the
-model's to write, so only `deny` reaches it. `advise` sends a `UserNote` to
-the person, and `observe` journals only. `docs/rules.md` says so.
+New rule `clear-at-boundary`. Default stance `advise`, max `deny` (the
+person's choice of 2026-11-14, in the Decision log). A Stop `Continue` is the
+deny shape, as in `plan-phases-open`: the handoff is the model's to write, so
+only `deny` reaches it. `advise` sends a `UserNote` to the person, except at
+a lone plan commit (`PlanOnly`), where it is silent, journalled, and
+`plan-phases-open` carries the plan on; `observe` journals only.
+`docs/rules.md` says so.
 
 **Order with `plan-phases-open`.** `plan_phases` gains a pure fact,
 `open_phase(&Stop) -> PhaseFact`, which is `None`, `PlanOnly` (open
@@ -231,8 +234,11 @@ and stated as facts:
   next action and the turn ends with one line: "safe to /clear; next:
   `<the exact first prompt>`".`
 
-At `advise`, the same text goes to the person as a `UserNote`. The outcome
-is journalled `denied`, `advised` or `watched` with its reason.
+At `advise`, the person gets the same fact as a `UserNote`, with a remedy
+that works without the handoff skill (t04): reply "write the handoff, then end
+with the line `safe to /clear; next: `<the exact first prompt>``", which the
+clear-relay plugin then acts on, or `/clear` by hand. The outcome is
+journalled `denied`, `advised` or `watched` with its reason.
 
 **The `clear-relay` mod: the session clears and goes on by itself.** A
 Claude Code plugin with one hooks module, at `plugin/clear-relay/` in this
@@ -388,7 +394,7 @@ and with the relay a boundary advice no longer waits for them.
 - 2026-11-13 — The 14 days of "Recount compacted sessions after the size
   advice ships" start from the first `clear-at-boundary` journal entry
   after the person installs 3.35.0, not from the tag.
-- 2026-11-14 — Released as 3.35.0, not 3.34.0: main shipped 3.34.0 (the
+- 2026-11-14 — Releases as 3.35.0, not 3.34.0: main shipped 3.34.0 (the
   green-name provenance header, #250) while this branch was open. The relay
   logs one file per session, `clear-relay/<session>.jsonl`, under its
   `stateDir` setting or `~/.local/state/amont-agent`; Outcome (a) and (d)
@@ -410,6 +416,13 @@ and with the relay a boundary advice no longer waits for them.
   in flight (silence); a start it does not recognise is the one miss that
   advises during a run. Recheck the phrases at each relais release; they
   live in `clear_boundary::relais_messages`.
+- 2026-11-14 — The relay's helpers take its state as an explicit `Relayer`
+  argument and change it. The hooks compiler accepts `$` only as an argument
+  of a function declared at the top of the file: it refuses a closure inside
+  `register` and a class method alike (both tried, `claude plugin validate`:
+  "$ itself is passed as an argument"). Module-level state was the other
+  shape, and it is shared by every registration. Recorded against
+  `values.immutable-by-default`.
 
 ## Verification
 

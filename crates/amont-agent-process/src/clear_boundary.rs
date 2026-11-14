@@ -1205,8 +1205,14 @@ fn judge_boundary(
         Stance::Observe => watched(&format!("{} (observe)", boundary.what)),
         Stance::Advise => {
             record("advised", &boundary.what);
-            let remedy = "Say `hand off` to have the agent write the handoff, then /clear.";
-            Some(Decision::UserNote(decision::phrase(RULE.id, &fact, remedy)))
+            // Words that work with no handoff skill installed: the agent is
+            // asked for the exact line the clear-relay plugin reads.
+            let remedy = format!(
+                "To clear and carry on, reply: write the handoff, then end with the line \"{MARKER}; next: `<the exact first prompt>`\"; the clear-relay plugin then clears and submits it. Or /clear yourself."
+            );
+            Some(Decision::UserNote(decision::phrase(
+                RULE.id, &fact, &remedy,
+            )))
         }
         Stance::Deny => {
             record("denied", &boundary.what);

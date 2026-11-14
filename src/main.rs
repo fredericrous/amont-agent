@@ -2934,18 +2934,21 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
         Ok(()) => {
             println!("{}", plan.change.describe(&plan.path));
             for (dest, _) in &plan.files {
-                println!("wrote {}", dest.display());
+                eprintln!("wrote {}", dest.display());
             }
             if adding && !plan.files.is_empty() {
                 if let Some(placement) = &plugin {
-                    println!(
-                        "enabled {}@{}: after an answer ending \"safe to /clear; next: `<prompt>`\" it clears the session and submits the prompt within 10 s (type or /stay to keep the session); `uninstall --write` removes it",
+                    eprintln!(
+                        "enabled {}@{}: an answer ending \"safe to /clear; next: `<prompt>`\"",
                         placement.plugin, placement.marketplace
+                    );
+                    eprintln!(
+                        "  clears the session after 10 s, then submits <prompt> (type or /stay to keep it); remove: amont-agent uninstall --write"
                     );
                 }
             }
             if let Some(dir) = &plan.remove_dir {
-                println!("removed {}", dir.display());
+                eprintln!("removed {}", dir.display());
             }
             ExitCode::SUCCESS
         }

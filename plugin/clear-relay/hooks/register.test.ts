@@ -251,8 +251,8 @@ test('enabled false never arms', { options: { enabled: false, stateDir: STATE_DI
 
 test('a turn complete returns the answer unchanged', OPTIONS, async ($, on) => {
   stage($, on)
-  const result = await answer($, `text\n${LINE}`)
-  expect(result.text).toBe(`text\n${LINE}`)
+  const reply = await answer($, `text\n${LINE}`)
+  expect(reply.text).toBe(`text\n${LINE}`)
 })
 
 test('two sessions each keep all their log lines', OPTIONS, async ($, on) => {

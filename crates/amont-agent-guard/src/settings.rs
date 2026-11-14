@@ -534,13 +534,19 @@ pub fn plan_uninstall(
 ) -> Result<Plan, MergeError> {
     let (mut doc, raw) = read(path)?;
     let (indent, nl) = shape(&raw);
+    // The directory goes whether or not settings still name it, so a run
+    // after an uninstall that failed half-way finishes the job, even one
+    // that had already removed the settings file.
+    let remove_dir = plugin
+        .filter(|placement| placement.marketplace_dir.exists())
+        .map(|placement| placement.marketplace_dir.clone());
     if raw.is_empty() {
         return Ok(Plan {
             path: path.into(),
             after: raw,
             change: Change::NothingToRemove,
             files: Vec::new(),
-            remove_dir: None,
+            remove_dir,
         });
     }
     if !reformat && would_reformat(&raw, &doc, &indent, nl) {
@@ -608,11 +614,6 @@ pub fn plan_uninstall(
             removed |= ours;
         }
     }
-    // The directory goes whether or not settings still named it, so a run
-    // after an uninstall that failed half-way finishes the job.
-    let remove_dir = plugin
-        .filter(|placement| placement.marketplace_dir.exists())
-        .map(|placement| placement.marketplace_dir.clone());
 
     if !removed {
         return Ok(Plan {

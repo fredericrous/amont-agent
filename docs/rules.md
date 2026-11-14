@@ -16,7 +16,7 @@
 | `push-preview` | `advise` | a push that would publish interface changes no approved localhost preview covers, unless the plan the person approved declares the evidence is enough ([preview approval](preview.md)) |
 | `plan-review-panel` | `deny` | a plan presented at `ExitPlanMode` before its expert review panel ran ([the review panel](plan-review.md)) |
 | `plan-names-no-paths` | `advise` (max advise) | a plan presented at `ExitPlanMode` whose `## Phases` name no file in backticks, so its panel was seated from every area of its repositories instead of the file types it touches; the advice names each phase that names no file ([the review panel](plan-review.md)) |
-| `clear-at-boundary` | `advise` (max deny) | a turn ending at a boundary (a worktree removed, a `sweep.py --apply`, a plan commit) with nothing in flight and the main chain's context past 200k tokens; `deny` sends a `Stop` continuation asking for the handoff and one line starting with the marker `safe to /clear`, `advise` sends a note to the person (who says `hand off`), except at a lone plan commit, where `plan-phases-open` carries the plan on, `observe` journals only; a boundary under background work, relais in flight or an unclean repository is kept as pending and advised at the first idle `Stop` after it; at most 3 advices per session, then silence journalled `watched cap` |
+| `clear-at-boundary` | `advise` (max deny) | a turn ending at a boundary (a worktree removed, a `sweep.py --apply`, a plan commit) with nothing in flight and the main chain's context past 200k tokens; `deny` sends a `Stop` continuation asking for the handoff and one line starting with the marker `safe to /clear`, `advise` sends a note to the person naming the reply that asks for the handoff line, except at a lone plan commit, where `plan-phases-open` carries the plan on, `observe` journals only; a boundary under background work, relais in flight or an unclean repository is kept as pending and advised at the first idle `Stop` after it; at most 3 advices per session, then silence journalled `watched cap` |
 | `plan-phases-open` | `deny` | a turn ending while the plan this branch carries still has an open phase that is not a `🧑 decision:` — the agent is sent on to it |
 | `implementation-review` | `advise` | a push of a branch that carries a plan, whose diff no independent reviewer has read for the tree being pushed ([the implementation review](implementation-review.md)) |
 | `ask-unopened-page` | `deny` | an `AskUserQuestion` naming a local page (localhost URL, `file://` URL, `.html` path) that no `amont-agent open` showed the person since the last answered question about it; without a readable transcript it advises |
@@ -101,8 +101,8 @@ lets the turn end. To turn it off without uninstalling:
 not a closing one) with the transcript's last main-chain context at 200,000
 tokens or more, no relais run still waiting on the session (read from the
 transcript only; greenpiste never runs `relais`), clean repositories and
-nothing unpushed outside `docs/plans/`, gets one note to the person, who can
-say `hand off`; at `deny` the agent is sent on once to write the handoff and end
+nothing unpushed outside `docs/plans/`, gets one note to the person with the
+reply to give: write the handoff, then end with that line; at `deny` the agent is sent on once to write the handoff and end
 with `safe to /clear; next: <the first prompt>`. It ships at `advise`: its
 backtest advised 25 of 31 compacted sessions before their first compaction
 (the bar was 28), and 46 of 140 advices were followed by an editing turn (the

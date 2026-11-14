@@ -185,6 +185,21 @@ fn uninstall_removes_the_file_and_the_directory_only_with_write() {
     assert!(!home.marketplace().exists());
 }
 
+/// An uninstall that removed the settings file and then failed to remove the
+/// plugin directory is finished by the next run.
+#[test]
+fn uninstall_with_no_settings_left_still_removes_the_directory() {
+    let home = Home::new("orphan");
+    let (code, _, err) = home.run(&["install", "--write"]);
+    assert_eq!(code, 0, "{err}");
+    std::fs::remove_file(home.settings()).expect("settings written by install");
+    assert!(home.marketplace().exists());
+    let (code, out, err) = home.run(&["uninstall", "--write"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!home.marketplace().exists(), "{out}");
+    assert!(err.contains("removed"), "{err}");
+}
+
 #[test]
 fn the_embedded_files_are_the_files_under_the_plugin_directory() {
     let home = Home::new("list");

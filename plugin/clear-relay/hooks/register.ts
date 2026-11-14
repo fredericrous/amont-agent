@@ -258,8 +258,8 @@ export const register: Register = (on, options) => {
   }
 
   on('turn.complete', async ($, e, next) => {
-    const result = await next(e)
-    if (e.agentId !== undefined || relayer.state.kind === 'firing') return result
+    const completion = await next(e)
+    if (e.agentId !== undefined || relayer.state.kind === 'firing') return completion
 
     try {
       const prompt = e.reason === 'answer' ? handoffPrompt(e.answer) : undefined
@@ -272,7 +272,7 @@ export const register: Register = (on, options) => {
       $.ui.log(`clear-relay: ${String(error)}`) // the answer stands whatever the relay does
     }
 
-    return result
+    return completion
   })
 
   on('prompt.edit', async ($, e, next) => {
