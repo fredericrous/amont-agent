@@ -431,6 +431,7 @@ and with the relay a boundary advice no longer waits for them.
 - lang:typescript approve (relay state per registration, typed log); deliberate: helpers mutate a `Relayer` argument (hooks compiler, Decision log), `as never` test casts; 21k tokens.
 - unix approve-with-changes: fixed install order and orphaned plugin dir (both paths); deliberate: exit 2 on I/O failure predates this branch (follow-up), `describe` on stdout predates it; 26k tokens.
 - tui approve-with-changes: fixed countdown width, prompt in failure log, note wording; deliberate: two stderr install lines over 80 columns, note assumes the plugin `install --write` always places; 27k tokens.
+- CI `tests (windows-latest)` failed on `\` paths in a test walk (f57a6fb8 fixes it); implementation-review, unix, tui approve that tree; 40k/21k/22k tokens.
 
 ## Verification
 
