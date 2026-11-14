@@ -109,6 +109,20 @@ lone plan commit past 200k it speaks before `plan-phases-open`, which then
 stays silent for the rest of the turn. Rollback:
 `git config --global amont.agent.clear-at-boundary.stance observe`.
 
+The `clear-relay` Claude Code plugin, which `install --write` places, acts on
+that line. When the main agent's answer ends with
+``safe to /clear; next: `<prompt>` `` (one line, at most 2,000 characters), it
+shows a toast and a status line and waits 10 seconds. If nothing is typed, no
+prompt is submitted and no turn starts, it runs `/clear` and submits the
+prompt in the new session. Typing anything or running `/stay` keeps the
+session. It relays at most once per 2 minutes and never retries: a refused
+step shows a toast with the prompt, for pasting. Each arm, disarm, clear,
+submit and failure goes as one JSON line to
+`~/.local/state/amont-agent/clear-relay/<session>.jsonl` (the plugin's
+`stateDir` setting moves it). To turn the relay off, set the plugin's
+`enabled` setting to false; at stance `observe` no continuation asks for the
+line, so the relay has nothing to act on.
+
 `workspace-root-write` is the fourth, and ships at `deny` straight away
 instead of walking the observe, advise ladder. The evidence is on disk, not in a
 rate: 86 `*.log` and `*.err` files in `~/Developer/Perso`, none of them in a

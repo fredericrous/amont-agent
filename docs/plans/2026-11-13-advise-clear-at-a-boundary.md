@@ -264,7 +264,7 @@ ends with the line does it.
   `/clear`. A reload or a lost worker drops the timer and the state, so
   the relay disarms, which is the safe outcome, and nothing is retried.
 - Each arm, disarm (with its cause), clear, submit and failure is appended
-  as one JSON line to `<state dir>/amont-agent/clear-relay.jsonl`, with
+  as one JSON line to `<state dir>/amont-agent/clear-relay/<session>.jsonl`, with
   the session id, cwd and time. Outcome (a) and (d) read it.
 - Off switch: the plugin's `userConfig` `enabled` (default true), and
   greenpiste's stance: at `observe` no Continue asks for the line, so the
@@ -304,7 +304,7 @@ and with the relay a boundary advice no longer waits for them.
   file list against the files in `plugin/clear-relay/`)
 - [ ] Phase 2 — Docs and release: `docs/rules.md`, `README.md`,
   `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, released as greenpiste
-  3.34.0 through the tag-release skill (a minor version: a new rule)
+  3.35.0 through the tag-release skill (a minor version: a new rule)
 - [ ] Phase 3 — Close the ticket in decisions:
   - `docs/programmes/session-boundaries/count-context.py`, which follows
     `t11-measure.py`'s shape: a shebang, a docstring, argparse, and
@@ -387,7 +387,14 @@ and with the relay a boundary advice no longer waits for them.
   build gave plan-phases-open's Continue (Working) and silence in plan mode.
 - 2026-11-13 — The 14 days of "Recount compacted sessions after the size
   advice ships" start from the first `clear-at-boundary` journal entry
-  after the person installs 3.34.0, not from the tag.
+  after the person installs 3.35.0, not from the tag.
+- 2026-11-14 — Released as 3.35.0, not 3.34.0: main shipped 3.34.0 (the
+  green-name provenance header, #250) while this branch was open. The relay
+  logs one file per session, `clear-relay/<session>.jsonl`, under its
+  `stateDir` setting or `~/.local/state/amont-agent`; Outcome (a) and (d)
+  read those files. The plugin-install test now compares against the files
+  git tracks, since `claude plugin test` leaves its scaffolding in the
+  source directory.
 
 ## Verification
 
@@ -453,7 +460,7 @@ and with the relay a boundary advice no longer waits for them.
 - Phase 1, live: install the branch build with `--hooks-dir` only. Replay
   this session's own Stop payload with its real transcript (past 200k
   after a teardown) → the Continue text; replay it in plan mode → silent.
-- Phase 2: the released binary reports 3.34.0, and `amont-agent rules
+- Phase 2: the released binary reports 3.35.0, and `amont-agent rules
   --json` lists `clear-at-boundary` at `deny`.
 - Phase 3: `relais programme check docs/programmes/session-boundaries`
   exits 0. `python3 -I count-context.py --until 2026-11-13` matches the
