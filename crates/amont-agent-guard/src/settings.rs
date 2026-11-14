@@ -658,7 +658,11 @@ pub fn apply(plan: &Plan) -> std::io::Result<()> {
     }
     apply_settings(plan)?;
     if let Some(dir) = &plan.remove_dir {
-        std::fs::remove_dir_all(dir)?;
+        match std::fs::remove_dir_all(dir) {
+            // Gone already is what was asked for.
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
     }
     Ok(())
 }

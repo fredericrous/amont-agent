@@ -268,16 +268,16 @@ fn each_boundary_shape_at_250k_continues_once() {
             "plan commit",
         ),
     ] {
-        let w = World::new(name);
+        let world = World::new(name);
         if what == "plan commit" {
-            w.commit_file(
+            world.commit_file(
                 "docs/plans/2026-11-13-y.md",
                 DONE_PLAN,
                 "docs(plan): the plan",
             );
         }
-        let transcript = w.transcript("t.jsonl", &turn(command, 250_000));
-        let first = w.stop("s1", &transcript, json!({}));
+        let transcript = world.transcript("t.jsonl", &turn(command, 250_000));
+        let first = world.stop("s1", &transcript, json!({}));
         assert!(first.blocks(), "{name}: {}", first.stdout);
         let reason = first.reason();
         assert!(
@@ -287,8 +287,8 @@ fn each_boundary_shape_at_250k_continues_once() {
         assert!(reason.contains(what), "{reason}");
         assert!(reason.contains("250k tokens"), "{reason}");
         assert!(reason.contains("safe to /clear"), "{reason}");
-        assert!(w.journal_has("denied", what), "{:?}", w.journal());
-        let again = w.stop("s1", &transcript, json!({}));
+        assert!(world.journal_has("denied", what), "{:?}", world.journal());
+        let again = world.stop("s1", &transcript, json!({}));
         assert!(again.silent(), "{name} again: {}", again.stdout);
     }
 }
@@ -296,10 +296,10 @@ fn each_boundary_shape_at_250k_continues_once() {
 #[cfg(unix)] // the stub git is a #!/bin/sh script
 #[test]
 fn below_the_size_nothing_is_spawned_or_journalled() {
-    let w = World::new("small");
-    let bin = w.root.join("bin");
+    let world = World::new("small");
+    let bin = world.root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let log = w.root.join("git.log");
+    let log = world.root.join("git.log");
     let real = git_path();
     common::write_fake(
         &bin.join("git"),
@@ -308,20 +308,20 @@ fn below_the_size_nothing_is_spawned_or_journalled() {
             log.display()
         ),
     );
-    let outside = w.root.join("outside");
+    let outside = world.root.join("outside");
     std::fs::create_dir_all(&outside).unwrap();
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 150_000));
-    let reply = w.stop_in(&outside, "s1", &transcript, json!({}), Some(&bin));
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 150_000));
+    let reply = world.stop_in(&outside, "s1", &transcript, json!({}), Some(&bin));
     assert!(reply.silent(), "{}", reply.stdout);
     let spawned = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(spawned.is_empty(), "git was spawned: {spawned}");
-    assert!(w.journal().is_empty(), "{:?}", w.journal());
+    assert!(world.journal().is_empty(), "{:?}", world.journal());
 }
 
 #[test]
 fn what_the_payload_shows_is_silent_and_not_journalled() {
-    let w = World::new("payload");
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let world = World::new("payload");
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
     for (at, extra) in [
         json!({"stop_hook_active": true}),
         json!({"permission_mode": "plan"}),
@@ -332,34 +332,35 @@ fn what_the_payload_shows_is_silent_and_not_journalled() {
     .into_iter()
     .enumerate()
     {
-        let reply = w.stop(&format!("s{at}"), &transcript, extra.clone());
+        let reply = world.stop(&format!("s{at}"), &transcript, extra.clone());
         assert!(reply.silent(), "{extra}: {}", reply.stdout);
     }
-    assert!(w.journal().is_empty(), "{:?}", w.journal());
+    assert!(world.journal().is_empty(), "{:?}", world.journal());
 }
 
 #[test]
 fn a_dirty_tree_or_unpushed_work_is_silent_and_journalled() {
-    let w = World::new("dirty");
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
-    std::fs::write(w.repo.join("scratch.txt"), "x").unwrap();
-    assert!(w.stop("s1", &transcript, json!({})).silent());
+    let world = World::new("dirty");
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    std::fs::write(world.repo.join("scratch.txt"), "x").unwrap();
+    assert!(world.stop("s1", &transcript, json!({})).silent());
     assert!(
-        w.journal_has("watched", "uncommitted changes"),
+        world.journal_has("watched", "uncommitted changes"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
-    std::fs::remove_file(w.repo.join("scratch.txt")).unwrap();
-    w.commit_file("src/lib.rs", "fn f() {}", "feat: f");
-    assert!(w.stop("s2", &transcript, json!({})).silent());
+    std::fs::remove_file(world.repo.join("scratch.txt")).unwrap();
+    world.commit_file("src/lib.rs", "fn f() {}", "feat: f");
+    assert!(world.stop("s2", &transcript, json!({})).silent());
     assert!(
-        w.journal_has("watched", "unpushed commits outside docs/plans/"),
+        world.journal_has("watched", "unpushed commits outside docs/plans/"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
 }
 
-const STARTED: &str = "Started relais run for: /w/.relais/tasks/abc123.json (in /w/repo). Waiting.";
+const STARTED: &str =
+    "Started relais run for: /world/.relais/tasks/abc123.json (in /world/repo). Waiting.";
 
 fn plugin_message(text: &str) -> Value {
     json!({"type": "user", "uuid": "m", "message": {"role": "user",
@@ -387,15 +388,15 @@ fn with_teardown(mut entries: Vec<Value>) -> Vec<Value> {
 #[test]
 fn an_unfinished_start_keeps_it_silent_even_from_an_earlier_turn() {
     for (name, extra) in [("same", vec![]), ("earlier", vec![prompt("p0b")])] {
-        let w = World::new(name);
+        let world = World::new(name);
         let mut entries = started();
         entries.extend(extra);
-        let transcript = w.transcript("t.jsonl", &with_teardown(entries));
-        assert!(w.stop("s1", &transcript, json!({})).silent(), "{name}");
+        let transcript = world.transcript("t.jsonl", &with_teardown(entries));
+        assert!(world.stop("s1", &transcript, json!({})).silent(), "{name}");
         assert!(
-            w.journal_has("watched", "relais pending 1"),
+            world.journal_has("watched", "relais pending 1"),
             "{name}: {:?}",
-            w.journal()
+            world.journal()
         );
     }
 }
@@ -403,19 +404,19 @@ fn an_unfinished_start_keeps_it_silent_even_from_an_earlier_turn() {
 #[test]
 fn a_run_that_needs_a_decision_keeps_it_silent_until_decided() {
     let finished = plugin_message("relais run run-65abc-1f2e finished: needs_decision (x)");
-    let w = World::new("needsdecision");
+    let world = World::new("needsdecision");
     let mut entries = started();
     entries.push(finished.clone());
-    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
-    assert!(w.stop("s1", &transcript, json!({})).silent());
-    assert!(w.journal_has("watched", "relais run-65abc-1f2e needs_decision"));
+    let transcript = world.transcript("t.jsonl", &with_teardown(entries));
+    assert!(world.stop("s1", &transcript, json!({})).silent());
+    assert!(world.journal_has("watched", "relais run-65abc-1f2e needs_decision"));
 
-    let w = World::new("decided");
+    let world = World::new("decided");
     let mut entries = started();
     entries.push(finished);
     entries.push(decide("run-65abc-1f2e"));
-    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
-    assert!(w.stop("s1", &transcript, json!({})).blocks());
+    let transcript = world.transcript("t.jsonl", &with_teardown(entries));
+    assert!(world.stop("s1", &transcript, json!({})).blocks());
 }
 
 #[test]
@@ -423,51 +424,51 @@ fn a_cancelled_run_with_a_successor_is_in_flight_until_the_exit() {
     let successor = plugin_message(
         "relais run run-65abc-1f2e finished: cancelled (scope_widened_for_tests). relais launches successor intent x.",
     );
-    let w = World::new("successor");
+    let world = World::new("successor");
     let mut entries = started();
     entries.push(successor.clone());
-    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
-    assert!(w.stop("s1", &transcript, json!({})).silent());
-    assert!(w.journal_has("watched", "relais pending 1"));
+    let transcript = world.transcript("t.jsonl", &with_teardown(entries));
+    assert!(world.stop("s1", &transcript, json!({})).silent());
+    assert!(world.journal_has("watched", "relais pending 1"));
 
-    let w = World::new("exited");
+    let world = World::new("exited");
     let mut entries = started();
     entries.push(successor);
     entries.push(plugin_message(
         "relais exited with code 9 without an outcome.",
     ));
-    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
-    assert!(w.stop("s1", &transcript, json!({})).blocks());
+    let transcript = world.transcript("t.jsonl", &with_teardown(entries));
+    assert!(world.stop("s1", &transcript, json!({})).blocks());
 }
 
 #[test]
 fn a_finished_run_does_not_hold_it_back() {
-    let w = World::new("accepted");
+    let world = World::new("accepted");
     let mut entries = started();
     entries.push(plugin_message(
         "relais run run-65abc-1f2e finished: accepted.",
     ));
-    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
-    assert!(w.stop("s1", &transcript, json!({})).blocks());
+    let transcript = world.transcript("t.jsonl", &with_teardown(entries));
+    assert!(world.stop("s1", &transcript, json!({})).blocks());
 }
 
 #[test]
 fn a_refused_start_does_not_hold_it_back() {
-    let w = World::new("refused");
+    let world = World::new("refused");
     let entries = vec![
         prompt("p0"),
         tool_use("r1", "mcp__relais__run"),
         tool_result("r1", "Nothing ran: the scope is empty."),
     ];
-    let transcript = w.transcript("t.jsonl", &with_teardown(entries));
-    assert!(w.stop("s1", &transcript, json!({})).blocks());
+    let transcript = world.transcript("t.jsonl", &with_teardown(entries));
+    assert!(world.stop("s1", &transcript, json!({})).blocks());
 }
 
 #[cfg(unix)] // the stub git is a #!/bin/sh script
 #[test]
 fn a_git_that_outlasts_the_deadline_is_a_timeout() {
-    let w = World::new("timeout");
-    let bin = w.root.join("bin");
+    let world = World::new("timeout");
+    let bin = world.root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let real = git_path();
     common::write_fake(
@@ -476,22 +477,26 @@ fn a_git_that_outlasts_the_deadline_is_a_timeout() {
             "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = status ] && sleep 10; done\nexec {real} \"$@\"\n"
         ),
     );
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
     let started = std::time::Instant::now();
-    let reply = w.stop_in(&w.repo, "s1", &transcript, json!({}), Some(&bin));
+    let reply = world.stop_in(&world.repo, "s1", &transcript, json!({}), Some(&bin));
     assert!(reply.silent(), "{}", reply.stdout);
     assert!(started.elapsed() < std::time::Duration::from_secs(8));
-    assert!(w.journal_has("watched", "timeout"), "{:?}", w.journal());
+    assert!(
+        world.journal_has("watched", "timeout"),
+        "{:?}",
+        world.journal()
+    );
 }
 
 #[test]
 fn working_is_in_flight_whatever_the_stance() {
-    let w = World::new("working");
-    w.commit_file("docs/plans/2026-11-13-x.md", OPEN_PLAN, "docs(plan): x");
-    w.commit_file("docs/plans/notes.md", "n", "feat: work after the plan");
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let world = World::new("working");
+    world.commit_file("docs/plans/2026-11-13-x.md", OPEN_PLAN, "docs(plan): x");
+    world.commit_file("docs/plans/notes.md", "n", "feat: work after the plan");
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
     for attempt in 1..=3 {
-        let reply = w.stop("s1", &transcript, json!({}));
+        let reply = world.stop("s1", &transcript, json!({}));
         assert!(reply.blocks(), "{attempt}: {}", reply.stdout);
         assert!(
             reply.reason().starts_with("amont-agent/plan-phases-open:"),
@@ -500,34 +505,34 @@ fn working_is_in_flight_whatever_the_stance() {
         );
     }
     assert!(
-        w.stop("s1", &transcript, json!({})).note().is_some(),
+        world.stop("s1", &transcript, json!({})).note().is_some(),
         "the cap's note"
     );
     assert!(
-        w.stop("s1", &transcript, json!({})).silent(),
+        world.stop("s1", &transcript, json!({})).silent(),
         "past the cap"
     );
-    assert!(w.journal().is_empty(), "{:?}", w.journal());
+    assert!(world.journal().is_empty(), "{:?}", world.journal());
 
-    w.stance("plan-phases-open", "observe");
-    assert!(w.stop("s2", &transcript, json!({})).silent());
-    assert!(w.journal().is_empty(), "{:?}", w.journal());
+    world.stance("plan-phases-open", "observe");
+    assert!(world.stop("s2", &transcript, json!({})).silent());
+    assert!(world.journal().is_empty(), "{:?}", world.journal());
 }
 
 fn boundary_one() -> World {
-    let w = World::new("one");
-    w.commit_file("docs/plans/2026-11-13-x.md", OPEN_PLAN, "docs(plan): x");
-    w
+    let world = World::new("one");
+    world.commit_file("docs/plans/2026-11-13-x.md", OPEN_PLAN, "docs(plan): x");
+    world
 }
 
 #[test]
 fn boundary_one_is_judged_before_plan_phases_open() {
-    let w = boundary_one();
-    let big = w.transcript(
+    let world = boundary_one();
+    let big = world.transcript(
         "big.jsonl",
         &turn("git commit -m \"docs(plan): x\"", 250_000),
     );
-    let first = w.stop("s1", &big, json!({}));
+    let first = world.stop("s1", &big, json!({}));
     assert!(first.blocks(), "{}", first.stdout);
     assert!(
         first.reason().starts_with("amont-agent/clear-at-boundary:"),
@@ -535,20 +540,20 @@ fn boundary_one_is_judged_before_plan_phases_open() {
         first.reason()
     );
     // The Stop after the handoff Continue: plan-phases-open stays silent.
-    let after = w.stop(
+    let after = world.stop(
         "s1",
         &big,
         json!({"stop_hook_active": true, "last_assistant_message": "safe to /clear; next: `go`"}),
     );
     assert!(after.silent(), "{}", after.stdout);
-    let still = w.stop("s1", &big, json!({"stop_hook_active": true}));
+    let still = world.stop("s1", &big, json!({"stop_hook_active": true}));
     assert!(still.silent(), "{}", still.stdout);
 
-    let small = w.transcript(
+    let small = world.transcript(
         "small.jsonl",
         &turn("git commit -m \"docs(plan): x\"", 150_000),
     );
-    let carried = w.stop("s2", &small, json!({}));
+    let carried = world.stop("s2", &small, json!({}));
     assert!(carried.blocks(), "{}", carried.stdout);
     assert!(carried
         .reason()
@@ -557,31 +562,31 @@ fn boundary_one_is_judged_before_plan_phases_open() {
 
 #[test]
 fn at_observe_boundary_one_falls_through_to_plan_phases_open() {
-    let w = boundary_one();
-    w.stance("clear-at-boundary", "observe");
-    let big = w.transcript(
+    let world = boundary_one();
+    world.stance("clear-at-boundary", "observe");
+    let big = world.transcript(
         "big.jsonl",
         &turn("git commit -m \"docs(plan): x\"", 250_000),
     );
-    let reply = w.stop("s1", &big, json!({}));
+    let reply = world.stop("s1", &big, json!({}));
     assert!(reply.blocks(), "{}", reply.stdout);
     assert!(reply.reason().starts_with("amont-agent/plan-phases-open:"));
     assert!(
-        w.journal_has("watched", "plan commit (observe)"),
+        world.journal_has("watched", "plan commit (observe)"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
 }
 
 #[test]
 fn at_advise_boundary_one_lets_plan_phases_open_carry_the_plan() {
-    let w = boundary_one();
-    w.stance("clear-at-boundary", "advise");
-    let big = w.transcript(
+    let world = boundary_one();
+    world.stance("clear-at-boundary", "advise");
+    let big = world.transcript(
         "big.jsonl",
         &turn("git commit -m \"docs(plan): x\"", 250_000),
     );
-    let reply = w.stop("s1", &big, json!({}));
+    let reply = world.stop("s1", &big, json!({}));
     assert!(reply.blocks(), "{}", reply.stdout);
     assert!(
         reply.reason().starts_with("amont-agent/plan-phases-open:"),
@@ -589,21 +594,21 @@ fn at_advise_boundary_one_lets_plan_phases_open_carry_the_plan() {
         reply.reason()
     );
     assert!(
-        w.journal_has("watched", "plan-phases-open carries the plan"),
+        world.journal_has("watched", "plan-phases-open carries the plan"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
     // The next Stop of the same turn is plan-phases-open's to judge too.
-    let next = w.stop("s1", &big, json!({"stop_hook_active": true}));
+    let next = world.stop("s1", &big, json!({"stop_hook_active": true}));
     assert!(
         next.silent() || next.reason().starts_with("amont-agent/plan-phases-open:"),
         "{}",
         next.stdout
     );
     assert!(
-        !w.journal_has("advised", "plan commit"),
+        !world.journal_has("advised", "plan commit"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
 }
 
@@ -622,9 +627,9 @@ fn the_continue_asks_for_the_line_the_relay_reads() {
         .split_once("(.+)")
         .expect("HANDOFF captures the prompt with (.+)");
 
-    let w = World::new("contract");
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
-    let reason = w.stop("s1", &transcript, json!({})).reason();
+    let world = World::new("contract");
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let reason = world.stop("s1", &transcript, json!({})).reason();
     let asked = reason
         .split('"')
         .find(|quoted| quoted.starts_with("safe to /clear"))
@@ -638,10 +643,10 @@ fn the_continue_asks_for_the_line_the_relay_reads() {
 
 #[test]
 fn the_rule_ships_at_advise() {
-    let w = World::new("default");
-    std::fs::write(&w.global, "").unwrap();
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
-    let reply = w.stop("s1", &transcript, json!({}));
+    let world = World::new("default");
+    std::fs::write(&world.global, "").unwrap();
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let reply = world.stop("s1", &transcript, json!({}));
     assert!(reply.json().get("decision").is_none(), "{}", reply.stdout);
     assert!(
         reply.note().is_some_and(|note| note.contains("hand off")),
@@ -652,58 +657,62 @@ fn the_rule_ships_at_advise() {
 
 #[test]
 fn a_plan_commit_with_a_non_ascii_path_is_advised_with_a_note() {
-    let w = World::new("accent");
-    w.stance("clear-at-boundary", "advise");
-    w.commit_file("docs/plans/é.md", DONE_PLAN, "docs(plan): é");
-    let transcript = w.transcript("t.jsonl", &turn("git commit -m \"docs(plan): é\"", 250_000));
-    let reply = w.stop("s1", &transcript, json!({}));
+    let world = World::new("accent");
+    world.stance("clear-at-boundary", "advise");
+    world.commit_file("docs/plans/é.md", DONE_PLAN, "docs(plan): é");
+    let transcript = world.transcript("t.jsonl", &turn("git commit -m \"docs(plan): é\"", 250_000));
+    let reply = world.stop("s1", &transcript, json!({}));
     assert!(reply.json().get("decision").is_none(), "{}", reply.stdout);
     let note = reply.note().expect("a systemMessage");
     assert!(note.contains("hand off"), "{note}");
     assert!(note.contains("plan commit"), "{note}");
-    assert!(w.journal_has("advised", "plan commit"), "{:?}", w.journal());
+    assert!(
+        world.journal_has("advised", "plan commit"),
+        "{:?}",
+        world.journal()
+    );
 }
 
 #[test]
 fn a_removed_cwd_with_a_teardown_is_advised() {
-    let w = World::new("removed");
-    let gone = w.root.join("removed-worktree");
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
-    let reply = w.stop_in(&gone, "s1", &transcript, json!({}), None);
+    let world = World::new("removed");
+    let gone = world.root.join("removed-worktree");
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let reply = world.stop_in(&gone, "s1", &transcript, json!({}), None);
     assert!(reply.blocks(), "{}", reply.stdout);
     assert!(reply.reason().contains("worktree remove"));
 }
 
 #[test]
 fn a_sidechain_usage_after_the_main_chain_one_is_ignored() {
-    let w = World::new("sidechain");
+    let world = World::new("sidechain");
     let mut entries = turn(TEARDOWN, 250_000);
     entries.push(usage(20_000, true));
-    let transcript = w.transcript("t.jsonl", &entries);
-    assert!(w.stop("s1", &transcript, json!({})).blocks());
+    let transcript = world.transcript("t.jsonl", &entries);
+    assert!(world.stop("s1", &transcript, json!({})).blocks());
 
-    let w = World::new("sidechain-big");
+    let world = World::new("sidechain-big");
     let mut entries = turn(TEARDOWN, 150_000);
     entries.push(usage(400_000, true));
-    let transcript = w.transcript("t.jsonl", &entries);
-    assert!(w.stop("s1", &transcript, json!({})).silent());
+    let transcript = world.transcript("t.jsonl", &entries);
+    assert!(world.stop("s1", &transcript, json!({})).silent());
 }
 
 #[test]
 fn a_first_line_cut_by_the_chunk_is_tolerated() {
-    let w = World::new("cut");
+    let world = World::new("cut");
     let filler = json!({"type": "assistant", "message": {"role": "assistant",
         "content": [{"type": "text", "text": "x".repeat(150_000)}]}});
     let mut entries = vec![filler];
     entries.extend(turn(TEARDOWN, 250_000));
-    let transcript = w.transcript("t.jsonl", &entries);
-    assert!(w.stop("s1", &transcript, json!({})).blocks());
+    let transcript = world.transcript("t.jsonl", &entries);
+    assert!(world.stop("s1", &transcript, json!({})).blocks());
 }
 
 #[test]
 fn no_person_prompt_in_the_tail_is_silent_and_journalled() {
-    let w = World::new("noprompt");
-    let transcript = w.transcript(
+    let world = World::new("noprompt");
+    let transcript = world.transcript(
         "t.jsonl",
         &[
             bash("b1", TEARDOWN),
@@ -711,37 +720,41 @@ fn no_person_prompt_in_the_tail_is_silent_and_journalled() {
             usage(250_000, false),
         ],
     );
-    assert!(w.stop("s1", &transcript, json!({})).silent());
+    assert!(world.stop("s1", &transcript, json!({})).silent());
     assert!(
-        w.journal_has("watched", "turn-too-long"),
+        world.journal_has("watched", "turn-too-long"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
 }
 
 #[test]
 fn no_boundary_is_silent_and_journalled() {
-    let w = World::new("noboundary");
-    let transcript = w.transcript("t.jsonl", &turn("ls", 250_000));
-    assert!(w.stop("s1", &transcript, json!({})).silent());
-    assert!(w.journal_has("watched", "no boundary"), "{:?}", w.journal());
+    let world = World::new("noboundary");
+    let transcript = world.transcript("t.jsonl", &turn("ls", 250_000));
+    assert!(world.stop("s1", &transcript, json!({})).silent());
+    assert!(
+        world.journal_has("watched", "no boundary"),
+        "{:?}",
+        world.journal()
+    );
 }
 
 #[test]
 fn a_session_start_by_clear_leaves_one_journal_line() {
-    let w = World::new("sessionstart");
+    let world = World::new("sessionstart");
     let start = |source: &str| {
-        w.run_with_path(
+        world.run_with_path(
             &json!({"hook_event_name": "SessionStart", "session_id": "s1",
-                    "cwd": w.repo, "source": source}),
+                    "cwd": world.repo, "source": source}),
             None,
         )
     };
     start("startup");
     start("resume");
-    assert!(w.journal().is_empty(), "{:?}", w.journal());
+    assert!(world.journal().is_empty(), "{:?}", world.journal());
     start("clear");
-    let lines = w.journal();
+    let lines = world.journal();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains(" watched "), "{lines:?}");
     assert!(lines[0].contains("session-start clear"), "{lines:?}");
@@ -749,12 +762,12 @@ fn a_session_start_by_clear_leaves_one_journal_line() {
 
 #[test]
 fn when_the_cap_silences_a_plan_only_boundary_plan_phases_open_runs() {
-    let w = boundary_one();
+    let world = boundary_one();
     for at in 1..=3 {
         let mut entries = turn(&format!("git commit -m \"docs(plan): x {at}\""), 250_000);
         entries[0] = prompt(&format!("turn-{at}"));
-        let transcript = w.transcript("t.jsonl", &entries);
-        let reply = w.stop("s1", &transcript, json!({}));
+        let transcript = world.transcript("t.jsonl", &entries);
+        let reply = world.stop("s1", &transcript, json!({}));
         assert!(
             reply.reason().starts_with("amont-agent/clear-at-boundary:"),
             "boundary {at}: {}",
@@ -763,15 +776,15 @@ fn when_the_cap_silences_a_plan_only_boundary_plan_phases_open_runs() {
     }
     let mut entries = turn("git commit -m \"docs(plan): x 4\"", 250_000);
     entries[0] = prompt("turn-4");
-    let transcript = w.transcript("t.jsonl", &entries);
-    let fourth = w.stop("s1", &transcript, json!({}));
+    let transcript = world.transcript("t.jsonl", &entries);
+    let fourth = world.stop("s1", &transcript, json!({}));
     assert!(fourth.blocks(), "{}", fourth.stdout);
     assert!(
         fourth.reason().starts_with("amont-agent/plan-phases-open:"),
         "{}",
         fourth.reason()
     );
-    assert!(w.journal_has("watched", "cap"), "{:?}", w.journal());
+    assert!(world.journal_has("watched", "cap"), "{:?}", world.journal());
 }
 
 fn with_uuid(mut entry: Value, uuid: &str) -> Value {
@@ -791,38 +804,38 @@ fn notification() -> Value {
 /// A turn that tears a worktree down under background work, then the Stop
 /// that records it as pending.
 fn pending_world(name: &str) -> (World, Vec<Value>) {
-    let w = World::new(name);
+    let world = World::new(name);
     let entries = vec![
         prompt("p1"),
         with_uuid(bash("b1", TEARDOWN), "boundary-1"),
         tool_result("b1", "ok"),
         usage(250_000, false),
     ];
-    let transcript = w.transcript("t.jsonl", &entries);
-    let reply = w.stop("s1", &transcript, busy());
+    let transcript = world.transcript("t.jsonl", &entries);
+    let reply = world.stop("s1", &transcript, busy());
     assert!(reply.silent(), "{}", reply.stdout);
     assert!(
-        w.journal_has("watched", "pending background"),
+        world.journal_has("watched", "pending background"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
-    (w, entries)
+    (world, entries)
 }
 
-fn later(w: &World, entries: &[Value], more: Vec<Value>, extra: Value) -> Reply {
+fn later(world: &World, entries: &[Value], more: Vec<Value>, extra: Value) -> Reply {
     let mut all = entries.to_vec();
     all.extend(more);
     all.push(usage(250_000, false));
-    let transcript = w.transcript("t.jsonl", &all);
-    w.stop("s1", &transcript, extra)
+    let transcript = world.transcript("t.jsonl", &all);
+    world.stop("s1", &transcript, extra)
 }
 
 #[test]
 fn a_boundary_under_background_work_is_judged_at_the_first_idle_stop() {
-    let (w, entries) = pending_world("pendingidle");
-    let still_busy = later(&w, &entries, vec![notification()], busy());
+    let (world, entries) = pending_world("pendingidle");
+    let still_busy = later(&world, &entries, vec![notification()], busy());
     assert!(still_busy.silent(), "{}", still_busy.stdout);
-    let idle = later(&w, &entries, vec![notification()], json!({}));
+    let idle = later(&world, &entries, vec![notification()], json!({}));
     assert!(idle.blocks(), "{}", idle.stdout);
     assert!(
         idle.reason().contains("worktree remove"),
@@ -830,11 +843,11 @@ fn a_boundary_under_background_work_is_judged_at_the_first_idle_stop() {
         idle.reason()
     );
     assert!(
-        w.journal_has("denied", "worktree remove"),
+        world.journal_has("denied", "worktree remove"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
-    let again = later(&w, &entries, vec![notification()], json!({}));
+    let again = later(&world, &entries, vec![notification()], json!({}));
     assert!(again.silent(), "{}", again.stdout);
 }
 
@@ -846,57 +859,57 @@ fn work_after_the_pending_boundary_leaves_it_pending_and_silent() {
         ("worktreeadd", bash("w1", "git -C r worktree add ../x -b y")),
         ("relaisrun", tool_use("w1", "mcp__relais__run")),
     ] {
-        let (w, entries) = pending_world(name);
-        let reply = later(&w, &entries, vec![work, notification()], json!({}));
+        let (world, entries) = pending_world(name);
+        let reply = later(&world, &entries, vec![work, notification()], json!({}));
         assert!(reply.silent(), "{name}: {}", reply.stdout);
         assert!(
-            w.journal_has("watched", "pending-work"),
+            world.journal_has("watched", "pending-work"),
             "{name}: {:?}",
-            w.journal()
+            world.journal()
         );
     }
 }
 
 #[test]
 fn a_person_prompt_drops_the_pending_boundary_and_a_plugin_message_does_not() {
-    let (w, entries) = pending_world("pendingprompt");
+    let (world, entries) = pending_world("pendingprompt");
     let plugin = plugin_message("relais run run-65abc-1f2e finished: accepted.");
-    let kept = later(&w, &entries, vec![plugin], json!({}));
+    let kept = later(&world, &entries, vec![plugin], json!({}));
     assert!(kept.blocks(), "{}", kept.stdout);
 
-    let (w, entries) = pending_world("pendingperson");
-    let dropped = later(&w, &entries, vec![prompt("p2")], json!({}));
+    let (world, entries) = pending_world("pendingperson");
+    let dropped = later(&world, &entries, vec![prompt("p2")], json!({}));
     assert!(dropped.silent(), "{}", dropped.stdout);
-    let after = later(&w, &entries, vec![notification()], json!({}));
+    let after = later(&world, &entries, vec![notification()], json!({}));
     assert!(after.silent(), "{}", after.stdout);
 }
 
 #[test]
 fn a_pending_boundary_missing_from_the_tail_is_lost() {
-    let (w, _) = pending_world("pendinglost");
-    let transcript = w.transcript(
+    let (world, _) = pending_world("pendinglost");
+    let transcript = world.transcript(
         "other.jsonl",
         &[prompt("p9"), notification(), usage(250_000, false)],
     );
-    let reply = w.stop("s1", &transcript, json!({}));
+    let reply = world.stop("s1", &transcript, json!({}));
     assert!(reply.silent(), "{}", reply.stdout);
     assert!(
-        w.journal_has("watched", "pending-lost"),
+        world.journal_has("watched", "pending-lost"),
         "{:?}",
-        w.journal()
+        world.journal()
     );
 }
 
 #[test]
 fn a_state_file_in_the_text_format_still_reads() {
-    let w = World::new("oldstate");
-    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
-    let dir = w.claude.join("amont-agent/clear-at-boundary");
+    let world = World::new("oldstate");
+    let transcript = world.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let dir = world.claude.join("amont-agent/clear-at-boundary");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("capped"), "turn-1 3\nsome key").unwrap();
-    let capped = w.stop("capped", &transcript, json!({}));
+    let capped = world.stop("capped", &transcript, json!({}));
     assert!(capped.silent(), "{}", capped.stdout);
-    assert!(w.journal_has("watched", "cap"), "{:?}", w.journal());
-    let fresh = w.stop("fresh", &transcript, json!({}));
+    assert!(world.journal_has("watched", "cap"), "{:?}", world.journal());
+    let fresh = world.stop("fresh", &transcript, json!({}));
     assert!(fresh.blocks(), "{}", fresh.stdout);
 }

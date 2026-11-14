@@ -34,6 +34,8 @@ impl Home {
             .args(args)
             .current_dir(&self.0)
             .env("CLAUDE_CONFIG_DIR", &self.0)
+            // The plugin's state goes beside the scratch config, never to a real XDG state home.
+            .env_remove("XDG_STATE_HOME")
             .env_remove("AMONT_AGENT_OFF")
             .output()
             .expect("the binary runs");

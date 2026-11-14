@@ -2950,7 +2950,10 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("amont-agent: could not write {}: {e}", plan.path.display());
+            eprintln!(
+                "amont-agent: could not apply the change to {} and the clear-relay plugin: {e}",
+                plan.path.display()
+            );
             ExitCode::from(2)
         }
     }
