@@ -16,6 +16,22 @@ const KEPT_LINES: &[(&str, &str)] = &[
         "crates/amont-agent-process/src/candidates_block.rs",
         "const TOOL: &str = \"amont-agent\";",
     ),
+    // The clear-relay plugin's marketplace id, written into settings.json as
+    // `clear-relay@amont-agent` (plan 3b-2 renames it with the state dir).
+    (
+        "src/plugin_install.rs",
+        "pub const MARKETPLACE: &str = \"amont-agent\";",
+    ),
+    ("src/plugin_install.rs", "\"name\": \"amont-agent\","),
+    ("src/plugin_install.rs", "\"name\": \"amont-agent\""),
+    (
+        "tests/plugin_install.rs",
+        "const ID: &str = \"clear-relay@amont-agent\";",
+    ),
+    (
+        "tests/plugin_install.rs",
+        "markets[\"amont-agent\"][\"source\"],",
+    ),
 ];
 
 /// A string literal: where its text starts in the source, and the text

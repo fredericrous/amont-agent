@@ -3010,7 +3010,7 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     let plugin = plugin_install::placement();
     if plugin.is_none() {
         eprintln!(
-            "amont-agent: no state directory resolves (XDG_STATE_HOME, CLAUDE_CONFIG_DIR, HOME), so the clear-relay plugin is left out"
+            "{BIN}: no state directory resolves (XDG_STATE_HOME, CLAUDE_CONFIG_DIR, HOME), so the clear-relay plugin is left out"
         );
     }
     let planned = if adding {
@@ -3070,7 +3070,7 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
                         placement.plugin, placement.marketplace
                     );
                     eprintln!(
-                        "  clears the session after 10 s, then submits <prompt> (type or /stay to keep it); remove: amont-agent uninstall --write"
+                        "  clears the session after 10 s, then submits <prompt> (type or /stay to keep it); remove: {BIN} uninstall --write"
                     );
                 }
             }

@@ -281,7 +281,7 @@ fn each_boundary_shape_at_250k_continues_once() {
         assert!(first.blocks(), "{name}: {}", first.stdout);
         let reason = first.reason();
         assert!(
-            reason.starts_with("amont-agent/clear-at-boundary:"),
+            reason.starts_with("greenpiste/clear-at-boundary:"),
             "{reason}"
         );
         assert!(reason.contains(what), "{reason}");
@@ -499,7 +499,7 @@ fn working_is_in_flight_whatever_the_stance() {
         let reply = world.stop("s1", &transcript, json!({}));
         assert!(reply.blocks(), "{attempt}: {}", reply.stdout);
         assert!(
-            reply.reason().starts_with("amont-agent/plan-phases-open:"),
+            reply.reason().starts_with("greenpiste/plan-phases-open:"),
             "{}",
             reply.reason()
         );
@@ -535,7 +535,7 @@ fn boundary_one_is_judged_before_plan_phases_open() {
     let first = world.stop("s1", &big, json!({}));
     assert!(first.blocks(), "{}", first.stdout);
     assert!(
-        first.reason().starts_with("amont-agent/clear-at-boundary:"),
+        first.reason().starts_with("greenpiste/clear-at-boundary:"),
         "{}",
         first.reason()
     );
@@ -555,9 +555,7 @@ fn boundary_one_is_judged_before_plan_phases_open() {
     );
     let carried = world.stop("s2", &small, json!({}));
     assert!(carried.blocks(), "{}", carried.stdout);
-    assert!(carried
-        .reason()
-        .starts_with("amont-agent/plan-phases-open:"));
+    assert!(carried.reason().starts_with("greenpiste/plan-phases-open:"));
 }
 
 #[test]
@@ -570,7 +568,7 @@ fn at_observe_boundary_one_falls_through_to_plan_phases_open() {
     );
     let reply = world.stop("s1", &big, json!({}));
     assert!(reply.blocks(), "{}", reply.stdout);
-    assert!(reply.reason().starts_with("amont-agent/plan-phases-open:"));
+    assert!(reply.reason().starts_with("greenpiste/plan-phases-open:"));
     assert!(
         world.journal_has("watched", "plan commit (observe)"),
         "{:?}",
@@ -589,7 +587,7 @@ fn at_advise_boundary_one_lets_plan_phases_open_carry_the_plan() {
     let reply = world.stop("s1", &big, json!({}));
     assert!(reply.blocks(), "{}", reply.stdout);
     assert!(
-        reply.reason().starts_with("amont-agent/plan-phases-open:"),
+        reply.reason().starts_with("greenpiste/plan-phases-open:"),
         "{}",
         reply.reason()
     );
@@ -601,7 +599,7 @@ fn at_advise_boundary_one_lets_plan_phases_open_carry_the_plan() {
     // The next Stop of the same turn is plan-phases-open's to judge too.
     let next = world.stop("s1", &big, json!({"stop_hook_active": true}));
     assert!(
-        next.silent() || next.reason().starts_with("amont-agent/plan-phases-open:"),
+        next.silent() || next.reason().starts_with("greenpiste/plan-phases-open:"),
         "{}",
         next.stdout
     );
@@ -771,7 +769,7 @@ fn when_the_cap_silences_a_plan_only_boundary_plan_phases_open_runs() {
         let transcript = world.transcript("t.jsonl", &entries);
         let reply = world.stop("s1", &transcript, json!({}));
         assert!(
-            reply.reason().starts_with("amont-agent/clear-at-boundary:"),
+            reply.reason().starts_with("greenpiste/clear-at-boundary:"),
             "boundary {at}: {}",
             reply.stdout
         );
@@ -782,7 +780,7 @@ fn when_the_cap_silences_a_plan_only_boundary_plan_phases_open_runs() {
     let fourth = world.stop("s1", &transcript, json!({}));
     assert!(fourth.blocks(), "{}", fourth.stdout);
     assert!(
-        fourth.reason().starts_with("amont-agent/plan-phases-open:"),
+        fourth.reason().starts_with("greenpiste/plan-phases-open:"),
         "{}",
         fourth.reason()
     );
