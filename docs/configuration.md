@@ -50,12 +50,12 @@ git config --global --fixed-value --unset-all amont.agent.symbol-grep-not-lsp.de
 |---|---|---|
 | `amont.agent.fetch` | `true` | may a session opening touch the network at all |
 | `amont.agent.agentsMdNotice` | `true` | may it mention a stale amont guidance block |
-| `amont.agent.opener` | platform opener | the command `amont-agent open` and `preview register --open` use to show a page: a template, split like shell words, `{}` replaced by the page inside each word (appended when absent), run with no shell. Unset: `open`, `xdg-open` or `rundll32 url.dll,FileProtocolHandler {}` |
+| `amont.agent.opener` | platform opener | the command `greenpiste open` and `preview register --open` use to show a page: a template, split like shell words, `{}` replaced by the page inside each word (appended when absent), run with no shell. Unset: `open`, `xdg-open` or `rundll32 url.dll,FileProtocolHandler {}` |
 | `checkout.defaultRemote` | — | git's own key; which remote is *the* remote |
 
-### Showing a page: `amont-agent open`
+### Showing a page: `greenpiste open`
 
-`amont-agent open <url|path>` opens a page in a window the person sees
+`greenpiste open <url|path>` opens a page in a window the person sees
 (`work.page-shown-before-asked`). A path must exist and is opened as a
 percent-encoded `file://` URL. The opener is spawned in its own process group
 with no stdin or stdout and its error output kept in a temporary file; it is
@@ -73,7 +73,7 @@ git config --global amont.agent.opener '"/Applications/Google Chrome.app/Content
 
 `preview register --open` uses the same opener and prints its JSON after the
 attempt, with `"opened": true` or `"opened": false`; an opener failure leaves
-the registration standing and the exit status 0. `amont-agent doctor` reports
+the registration standing and the exit status 0. `greenpiste doctor` reports
 the opener (and warns, with this command, when its program is not found).
 
 ## What is deliberately not configurable

@@ -13,9 +13,9 @@ step before that: it groups the transcripts by command *shape* and ranks the
 shapes that went wrong.
 
 ```sh
-amont-agent mine --since 2026-08-15
-amont-agent mine --min-support 10 --min-rate 0.4
-amont-agent mine --format cases >> crates/greenpiste-guard/tests/corpus/<new-rule>.cases
+greenpiste mine --since 2026-08-15
+greenpiste mine --min-support 10 --min-rate 0.4
+greenpiste mine --format cases >> crates/greenpiste-guard/tests/corpus/<new-rule>.cases
 ```
 
 A **shape** is the parsed command with its literals masked — the branch, the
@@ -63,9 +63,9 @@ firings per 1,000 tool calls per week, so a rule's cost is a number rather
 than an impression.
 
 ```sh
-amont-agent backtest --since 2026-07-06
-amont-agent backtest --rule pipe-to-tail --json
-amont-agent backtest --transcripts ~/.claude/projects   # where they live
+greenpiste backtest --since 2026-07-06
+greenpiste backtest --rule pipe-to-tail --json
+greenpiste backtest --transcripts ~/.claude/projects   # where they live
 ```
 
 A weekly series is the thing to read, not a total. A habit that is halving on
@@ -79,9 +79,9 @@ A rate is only trustworthy if the matches behind it are real. `explain` prints
 every match for one rule so you can read them.
 
 ```sh
-amont-agent explain pipe-to-tail
-amont-agent explain pipe-to-tail --sample 20
-amont-agent explain pipe-to-tail --sample 20 --rank novelty
+greenpiste explain pipe-to-tail
+greenpiste explain pipe-to-tail --sample 20
+greenpiste explain pipe-to-tail --sample 20 --rank novelty
 ```
 
 `--rank novelty` changes WHICH twenty. The default is the first twenty the
@@ -99,9 +99,9 @@ Precision is kept as a **corpus of judgements**, not as a metric, because a
 metric charts a regression and a test prevents one.
 
 ```sh
-amont-agent explain pipe-to-tail --format cases >> crates/greenpiste-guard/tests/corpus/pipe-to-tail.cases
+greenpiste explain pipe-to-tail --format cases >> crates/greenpiste-guard/tests/corpus/pipe-to-tail.cases
 $EDITOR crates/greenpiste-guard/tests/corpus/pipe-to-tail.cases    # each `?` becomes match or nomatch
-amont-agent corpus check                   # and this runs in the test suite
+greenpiste corpus check                   # and this runs in the test suite
 ```
 
 Include the cases that should **not** match. A corpus of positives alone
@@ -130,9 +130,9 @@ any other rule's file, or a malformed one, counts as a disagreement.
 forever. The backtest says what that costs. This says what it buys.
 
 ```sh
-amont-agent backtest --compliance
-amont-agent backtest --compliance --rule glob-in-flag-value --json
-amont-agent backtest --compliance --window 40
+greenpiste backtest --compliance
+greenpiste backtest --compliance --rule glob-in-flag-value --json
+greenpiste backtest --compliance --window 40
 ```
 
 For every firing it looks at what the model did **next**. If the next
@@ -239,7 +239,7 @@ the count of matches. Run it again two weeks after a release.
 
 ## 4b. Harness review - which part still earns its place on this model?
 
-`amont-agent harness-review` (ADR-0042, `harness.retire-on-evidence`) prints
+`greenpiste harness-review` (ADR-0042, `harness.retire-on-evidence`) prints
 one row per rule and assertion: its id, the failure it `prevents`, its stance,
 whether it is `irreversible`, and from the journal its `per_1000` (live rows
 over the transcripts' Bash calls) and the date it last fired. Shadow rows
@@ -269,8 +269,8 @@ model's calls is left out of the arm shares). The newest model is the one
 first seen on the latest day in the transcripts' Bash calls.
 
 ```
-amont-agent harness-review [--json] [--model <id>] [--transcripts <dir>] [--since <date>] [--out <dir>]
-amont-agent harness-review --check
+greenpiste harness-review [--json] [--model <id>] [--transcripts <dir>] [--since <date>] [--out <dir>]
+greenpiste harness-review --check
 ```
 
 `--check` reads the newest review file and takes the default model (most
@@ -283,8 +283,8 @@ retiring a part stays the person's decision.
 ## 5. Graduate — promote on the evidence
 
 ```sh
-amont-agent graduate bare-stash-pop --to advise
-amont-agent graduate bare-stash-pop --to deny
+greenpiste graduate bare-stash-pop --to advise
+greenpiste graduate bare-stash-pop --to deny
 ```
 
 Promotion is gated on the corpus: a rule cannot be promoted past a corpus that
@@ -293,7 +293,7 @@ does not support it.
 ## Demotion is not gated at all
 
 ```sh
-amont-agent demote bare-stash-pop
+greenpiste demote bare-stash-pop
 ```
 
 No questions, no evidence required, effective on the next command. This

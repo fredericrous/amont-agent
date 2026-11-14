@@ -1,6 +1,6 @@
 # shipped
 
-`amont-agent shipped <plan.md> [--json]` says what shipped under a plan. It
+`greenpiste shipped <plan.md> [--json]` says what shipped under a plan. It
 is read-only and derives everything from git (decisions ADR-0036), plus `gh`
 for the head of a GitHub squash.
 

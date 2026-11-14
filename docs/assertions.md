@@ -43,7 +43,7 @@ The tool has already run. A `deny` stance therefore speaks exactly like
 What an assertion *can* do is state a fact:
 
 ```
-amont-agent/push-landed: `git push` exited 0, but origin/main is at d0765d4f9
+greenpiste/push-landed: `git push` exited 0, but origin/main is at d0765d4f9
 while the local branch is at 8970c7ffb. The push did not land. Run the push
 again on its own and read its output, then confirm with `git ls-remote`.
 ```
@@ -75,7 +75,7 @@ must never be the reason a push becomes impossible.
 `examine` is pure, so the backtester replays it like any rule:
 
 ```console
-$ amont-agent backtest push-landed --since 2026-07-06
+$ greenpiste backtest push-landed --since 2026-07-06
 push-landed   1007   38.7   routine   observe
 ```
 

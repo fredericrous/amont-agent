@@ -1,7 +1,7 @@
-# `amont-agent quiet`
+# `greenpiste quiet`
 
 ```
-amont-agent quiet [--max-bytes N[k]] -- <cmd…>
+greenpiste quiet [--max-bytes N[k]] -- <cmd…>
 ```
 
 Runs `<cmd>` directly (a pipeline is the caller's `sh -c`) with its output in

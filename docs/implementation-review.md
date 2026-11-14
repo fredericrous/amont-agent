@@ -39,7 +39,7 @@ every entry under `docs/plans/` left out, 64 hex in any object format,
 computed read-only (attest SPEC, "Content id"). Recording the review in the
 plan, or adding a plan, therefore never makes it stale; a code change does.
 It is not attest's canonical tree, canon(T), which counts whether a plan
-file exists; `amont-agent tree-sha` prints the content id.
+file exists; `greenpiste tree-sha` prints the content id.
 
 A pass also holds for another tree with the same **branch patch**, when the
 repository's rule files are unchanged (ADR-0034,
@@ -64,7 +64,7 @@ patch); journalled `overruled-by-patch`. When the patch cannot be computed,
 the held message says why.
 
 ```sh
-amont-agent tree-sha [--block] [-C <dir>] [--] [<rev>]
+greenpiste tree-sha [--block] [-C <dir>] [--] [<rev>]
 ```
 
 `--block` prints the block the reviewer's prompt carries:
@@ -124,7 +124,7 @@ on stderr); 2 on a usage error.
 Every note ends with the next step:
 
 ```
-amont-agent/implementation-review: no implementation review of amont-agent tree 5085edae1d66 is in this session. worktree-task F4b: `amont-agent tree-sha --block`, then launch the implementation-review agent …
+greenpiste/implementation-review: no implementation review of greenpiste tree 5085edae1d66 is in this session. worktree-task F4b: `greenpiste tree-sha --block`, then launch the implementation-review agent …
 ```
 
 ## A resumed review
@@ -154,7 +154,7 @@ A resumed reviewer brings its whole first round with it, 50-80k tokens
 each time. A delta after a rebase or a small fix can instead be a fresh
 launch that reads only what changed:
 
-    amont-agent review-brief --interdiff <head> [--profile <role>]
+    greenpiste review-brief --interdiff <head> [--profile <role>]
 
 prints the same `<<<TREE>>>`, `<<<RULES>>>` and `<<<CANDIDATES>>>` headers
 as the full brief, then what changed since `<head>`, `docs/plans/` left
@@ -174,7 +174,7 @@ journalled `interdiff-brief` with the head, its size and its shape.
 The head comes from the stale line. Each fresh pass records, per role, the
 head, merge-base and tree it read under `by-branch/<repo>/<role>/<sha256
 of the remote ref>.json` (last writer wins). A push whose review is stale
-then says "A delta reads only what changed: `amont-agent review-brief
+then says "A delta reads only what changed: `greenpiste review-brief
 --interdiff <head>` (a profile seat adds `--profile <role>`)" when that
 record matches the stale review's tree. The brief looks the record up
 under the branch of the same name, which is what `git push` and `amont
@@ -217,14 +217,14 @@ under `docs/plans/` changed on the branch, read from the pushed tree),
 `review <reviewed|by-patch|overruled> <content id the review read>`,
 `preview <approved|evidence|not-required>` and `producer amont-agent
 <version>`. There is no `canon` line: attest's canonical tree is a tree fact
-amont-agent does not own, and the signer, amont, computes it and inserts it
+greenpiste does not own, and the signer, amont, computes it and inserts it
 before signing. A payload that carries one is refused by the signer.
 
 After the `review` line, one `code-review <role> <how> <content id>` line
 records each code-review profile the plan declares for the repository, in
 declaration order: `how` is `reviewed`, `by-patch`, `carried` or `overruled`,
 and the content id is the tree that profile's review read. A push with no
-declared profile writes no such line. `amont-agent doctor` (and `doctor
+declared profile writes no such line. `greenpiste doctor` (and `doctor
 --json`) reports one gap for each code-review agent file
 (`code-review-<role>.md`, `code-review-language.md`, `interface-review.md`)
 that no agents directory carries, and says nothing when all eight are there.
@@ -247,7 +247,7 @@ directory is hook-only: Write, Edit and Bash writes are refused.
 ## What the journal records
 
 Every push writes its decision line, under the rule's id, in the buckets
-`amont-agent status` counts: a declined push as `unconfirmed` with the reason
+`greenpiste status` counts: a declined push as `unconfirmed` with the reason
 (`reviewed`, `reviewed-by-patch`, `reviewed-by-patch-notes-moved`,
 `overruled`, `overruled-by-patch`, `overruled-by-patch-notes-moved`,
 `no-plan`, `dry-run`, `no-branch`, `unresolvable`), a spoken one as
@@ -279,7 +279,7 @@ the judgment, and `status` counts it in no bucket.
 
 ## Candidates and rulings
 
-`amont-agent review-brief` runs `adr-lint candidates --base <merge-base>
+`greenpiste review-brief` runs `adr-lint candidates --base <merge-base>
 --json --max 40` in the repository (`adr-lint` from PATH, or the program
 named by `AMONT_AGENT_ADR_LINT`; a bounded wait; stdin from /dev/null). A
 candidate is a line adr-lint marked on a line the branch adds, for the
@@ -351,7 +351,7 @@ the journal's `review=` counts and the first real cycles' finding quality.
 
 ```
 echo '[{"severity":"high","disposition":"fixed","section":"Verification"}]' |
-  amont-agent implementation-review record <plan.md> --verdict approve-with-changes
+  greenpiste implementation-review record <plan.md> --verdict approve-with-changes
 ```
 
 Appends one `amont-agent-impl-review-outcome-v1` row per invocation to
@@ -370,13 +370,13 @@ verdict exits 2 and appends nothing; an unreadable stdin exits 1. When a pass
 is remembered for the tree and its verdict differs from `--verdict` (a remembered
 `overruled` counts as agreeing with `rework`), a warning
 goes to stderr. The command writes only `outcomes.jsonl`
-and its lock file, never a pass file. `amont-agent plan-review stats` reads
+and its lock file, never a pass file. `greenpiste plan-review stats` reads
 this ledger and reports it as role `implementation-review`, `fixed` counting as
 accepted.
 
 ## Per-profile briefs
 
-`amont-agent review-brief --profile <role>` (`backend`, `platform`, `unix`,
+`greenpiste review-brief --profile <role>` (`backend`, `platform`, `unix`,
 `tui`, `react`, `ui-design`, `architect` or `lang:<x>`) adds a
 `Profile: <role>` line after the TREE, RULES and CANDIDATES lines and, after
 the code rules, a `## Judge rules for <role>` section: the full text of each
@@ -416,9 +416,9 @@ repository's line:
 - <repo>: none — copy of fp:<12 hex>
 ```
 
-`amont-agent plan-panel --code-review <plan.md> -C <dir> --base <ref>`
+`greenpiste plan-panel --code-review <plan.md> -C <dir> --base <ref>`
 proposes that line. The hook does not trust the sentence: it recomputes the
-fingerprint of the pushed branch (`amont-agent block sha`) and rechecks the
+fingerprint of the pushed branch (`greenpiste block sha`) and rechecks the
 registry. A hit requires the implementation review alone and journals
 `profiles-copy-matched`; a miss requires the full declared profiles, with no
 question to the person, and journals `profiles-copy-missed`.
@@ -428,11 +428,11 @@ block's file types has its own `approve` on that exact tree. The entry keeps
 that profile set and the rules sha. A miss names its cause: `no entry for
 fp:<id>`, `revoked: <because>`, `role <r> not covered`, `rules changed since
 registration`, `agent <a> changed since registration`, `no passed pin check;
-run amont-agent review-brief -C <dir>` (no record), `pin check failed:
+run greenpiste review-brief -C <dir>` (no record), `pin check failed:
 <detail>` (the record's own detail), `the pin record was made with
 AMONT_AGENT_GH set; run review-brief without it`, `binary diff`, `git failed`.
 
-`amont-agent block` manages the registry:
+`greenpiste block` manages the registry:
 
 - `block sha [-C <dir>] [--base <ref>]` prints the fingerprint of the branch.
 - `block list [--json]` lists the registered blocks, with the repository each came from (`-` and
@@ -447,7 +447,7 @@ AMONT_AGENT_GH set; run review-brief without it`, `binary diff`, `git failed`.
 A review recorded with `implementation-review record` carries `copy: true`
 when the hook journalled `profiles-copy-matched` for its tree, and `copy:
 false` otherwise; a row written before the key existed reads as not a copy.
-`amont-agent plan-review stats` counts, per seat, the copy-tagged reviews
+`greenpiste plan-review stats` counts, per seat, the copy-tagged reviews
 (`copies`) and the blocking or high findings fixed in them (`copy-defects`),
 which is how the rule is revisited at the first defect found in a copy or at
 30 copies.

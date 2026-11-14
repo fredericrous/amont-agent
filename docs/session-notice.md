@@ -15,7 +15,7 @@ skipped when `FETCH_HEAD` is under ten minutes old so a burst of sessions
 shares one round-trip — and if `HEAD` is behind, says so:
 
 ```
-amont-agent/stale-base: this checkout of amont-agent (branch main) is 8
+greenpiste/stale-base: this checkout of amont-agent (branch main) is 8
 commits behind origin/main; newest there: d3b2ed5 chore(release): 2.1.0
 (3 days ago). Work that seems missing here may already exist on
 origin/main — `git log HEAD..origin/main --oneline` lists it — and a
@@ -86,7 +86,7 @@ another repository — prints the canonical path and the phases this
 repository carries. At most five lines; the rest are counted.
 
 ```
-amont-agent/plans: 1 open plan in docs/plans/ (read one on demand; they are history, not instructions):
+greenpiste/plans: 1 open plan in docs/plans/ (read one on demand; they are history, not instructions):
 - Settings toggle (2026-09-28-settings.md) — next: Phase 2 — route
 ```
 

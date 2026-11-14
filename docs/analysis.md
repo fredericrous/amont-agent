@@ -3,7 +3,7 @@
 `src/analysis/` answers one question about a single Bash command, before it
 runs: which network transfers it may make, and which it must, with the
 evidence for each count. No rule consumes it now (`request-fanout`, its
-first consumer, was retired); `amont-agent analyze` prints it. The analysis
+first consumer, was retired); `greenpiste analyze` prints it. The analysis
 decides nothing.
 
 ## Layers

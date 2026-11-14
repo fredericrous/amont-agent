@@ -11,7 +11,7 @@
 ## it is a file in the repository that the site does not have.
 
 [book]
-title = "amont-agent"
+title = "greenpiste"
 description = "A guard that reads a shell command before Claude Code runs it, and can observe, advise, or refuse — with the evidence for each rule kept as reviewed judgements rather than as an assertion."
 authors = ["Frederic Rousseau"]
 language = "en"

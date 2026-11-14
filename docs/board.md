@@ -2,7 +2,7 @@
 
 Every session records which repository, worktree and branch it edits, so that
 another session can tell whether somebody else is working in the same place.
-`work-overlap` reads it, and `amont-agent board` lists it (see below).
+`work-overlap` reads it, and `greenpiste board` lists it (see below).
 
 ## The activity file
 
@@ -83,7 +83,7 @@ adds relative to the repository's default branch, read with bounded git calls
 only when the rule fires; none for a peer on the default branch) and how long
 ago it was last seen. The plan lookups of all named peers (at most three)
 share one 2 s budget, and a peer reached after it is named without a plan.
-The message then points to `amont-agent board --repo <repo
+The message then points to `greenpiste board --repo <repo
 name>`, then to a message to that session (SendMessage) or to the person. It
 is silent when the only matching activity is the session's own, and fires
 when another live session works in the very same worktree.
@@ -93,10 +93,10 @@ a session whose first write meets nobody is told on a later write, once a
 peer appears. Under `observe` the journalled firing counts as the telling,
 so the journal holds one line per session and repository.
 
-## `amont-agent board`
+## `greenpiste board`
 
 ```text
-amont-agent board [--repo <name>...] [--since <dur>] [--fetch] [--json]
+greenpiste board [--repo <name>...] [--since <dur>] [--fetch] [--json]
 ```
 
 Read-only. It lists, per repository, the work in flight and what landed

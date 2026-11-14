@@ -15,7 +15,7 @@ rule that talks is intervening.** That is why the two are named differently
 and why `backtest` numbers from an `advise` rule are not comparable with the
 numbers that justified promoting it.
 
-That contamination is also what makes it measurable. `amont-agent backtest
+That contamination is also what makes it measurable. `greenpiste backtest
 --compliance` reads the two stances against each other: what a model did
 after an `advise` fired, beside what it did after an `observe` fired and
 said nothing. The second is the rate the habit corrects on its own, and an
@@ -50,7 +50,7 @@ analysis does not have.
 
 The cap is applied after every configured key, so neither
 `amont.agent.stance deny` nor the rule's own key can pass it, and
-`graduate --to deny` refuses a capped rule with the reason. `amont-agent
+`graduate --to deny` refuses a capped rule with the reason. `greenpiste
 rules` prints each rule's ceiling beside its stance.
 
 ## Raising a stance for named agents

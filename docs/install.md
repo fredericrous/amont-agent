@@ -17,11 +17,29 @@ irm https://raw.githubusercontent.com/greenharness/greenpiste/main/install/insta
 Either one downloads a release binary, verifies it against the published
 `SHA256SUMS`, and puts it in `~/.local/bin`. Neither wires anything in.
 
-Or: `brew install fredericrous/tap/amont-agent`, `cargo install amont-agent`,
+Or: `brew install fredericrous/tap/greenpiste`, `cargo install greenpiste`,
 or a binary straight from
 [Releases](https://github.com/greenharness/greenpiste/releases/latest) — Linux
 x86_64 (gnu and static musl) and aarch64 (gnu), macOS (Intel and Apple
 silicon), and Windows x86_64.
+
+## Upgrading from amont-agent
+
+greenpiste was called `amont-agent` until 4.0.0. The installers and the
+formula also place `amont-agent` beside `greenpiste`, as a copy of the same
+binary, so hook entries written for the old name keep firing after the
+upgrade. `brew upgrade fredericrous/tap/amont-agent` moves to greenpiste
+through the tap's rename. Then move the hook entries to the new name once:
+
+```sh
+greenpiste install --write   # replaces the amont-agent entries, adds no second set
+greenpiste doctor
+```
+
+`cargo install greenpiste` places no `amont-agent` copy. The `amont-agent`
+crates stay at 3.35.0. Every name the tool reads and writes (the
+`~/.claude/amont-agent/` directory, `amont.agent.*` git config keys,
+`AMONT_AGENT_*` variables) is unchanged in this release.
 
 ## Why there is no npm package
 
@@ -49,8 +67,8 @@ Every channel above hands `install` a path that stays put.
 ## The wiring
 
 ```sh
-amont-agent install          # prints the settings block, writes nothing
-amont-agent install --write  # merges it into ~/.claude/settings.json
+greenpiste install          # prints the settings block, writes nothing
+greenpiste install --write  # merges it into ~/.claude/settings.json
 ```
 
 `install` refuses to guess. It will not patch a `settings.json` it could not
@@ -60,8 +78,8 @@ changes nothing unless `--reformat` says otherwise. `uninstall` removes exactly
 what it wrote and leaves everything else byte-identical.
 
 ```sh
-amont-agent install --write --project   # .claude/settings.json instead
-amont-agent install --write --local     # .claude/settings.local.json
+greenpiste install --write --project   # .claude/settings.json instead
+greenpiste install --write --local     # .claude/settings.local.json
 ```
 
 Four kinds of entry are written: the guard on `PreToolUse`, for Bash and for
@@ -86,13 +104,13 @@ non-zero when the guard is inert, so it can run from cron:
 
 ```
 ✓ installed in /Users/you/.claude/settings.json
-✓ amont-agent 2.0.0 at /Users/you/.local/bin/amont-agent
+✓ greenpiste 4.0.0 at /Users/you/.local/bin/greenpiste
 ✓ a refused command produces a valid decision document
 ✓ last ran 4m ago
 ✓ acting on pipe-to-tail
 ```
 
-`amont-agent doctor --json` prints one JSON document on stdout instead:
+`greenpiste doctor --json` prints one JSON document on stdout instead:
 `healthy` (the same verdict as the exit status), `findings` (a list of `ok`,
 `advisory`, `line` and `detail`), and `integration`, which is reported apart
 from health: `state` is `present`, `partial`, `absent` or `unknown` (a settings
@@ -113,7 +131,7 @@ An agents directory or plugin manifest that cannot be read counts as installed.
 ```sh
 AMONT_AGENT_OFF=1                                # this shell only
 git config --global amont.agent.enabled false    # everywhere
-amont-agent uninstall --write                    # remove the settings entries
+greenpiste uninstall --write                    # remove the settings entries
 ```
 
 Demoting one rule is almost always the better move than switching the guard
