@@ -65,7 +65,8 @@ fn files_under(root: &Path) -> Vec<String> {
                         .strip_prefix(root)
                         .expect("under root")
                         .to_string_lossy()
-                        .into_owned()]
+                        // `/` on every platform, as git and the embedded list spell it.
+                        .replace('\\', "/")]
                 }
             })
             .collect()
