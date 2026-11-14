@@ -89,7 +89,7 @@ impl World {
             payload["agent_transcript_path"] = serde_json::json!(a);
             payload["agent_id"] = serde_json::json!("a1");
         }
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("GIT_CONFIG_GLOBAL", self.root.join("global"))

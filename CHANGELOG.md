@@ -11,6 +11,14 @@
   alias, and `install --write` / `uninstall --write` recognise hook entries
   under either basename. The names the tool reads and writes are unchanged
   (plan 3b-2).
+- **The binary is `greenpiste`**, built from the crates `greenpiste`,
+  `greenpiste-guard` and `greenpiste-process` (the `amont-agent*` crates stay
+  at 3.35.0). `install.sh`, `install.ps1` and `make install` also place
+  `amont-agent` beside it as a copy (written to a temporary name and renamed
+  into place; on Windows the running executable is first renamed aside), so
+  hook entries baked to the old path keep working. After upgrading from
+  `amont-agent`, run `greenpiste install --write` once: it replaces the old
+  entries (it recognises both names) instead of adding a second set.
 
 ## v3.35.0
 

@@ -13,7 +13,7 @@
 use std::process::Command;
 
 fn corpus_check() -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .args(["corpus", "check"])
         .output()
         .expect("the binary runs");

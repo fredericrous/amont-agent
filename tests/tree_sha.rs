@@ -67,7 +67,7 @@ impl World {
     }
 
     fn run(&self, cwd: &Path, args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("tree-sha")
             .args(args)
             .current_dir(cwd)

@@ -132,7 +132,7 @@ impl World {
     }
 
     fn bin(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         // The fakes (`aval`, and `amont` or `git` where a test installs
         // them) come first on PATH.
         let path = std::env::var_os("PATH").unwrap_or_default();
@@ -1957,7 +1957,7 @@ fn a_passing_push_with_a_plan_writes_the_provenance_record() {
     assert_eq!(parts[0], "plan");
     assert_eq!(parts[1], "docs/plans/2026-09-29-x.md");
     assert_eq!(parts[2].len(), 64, "{plan}");
-    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let shown = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("plan-sha")
         .arg(repo.join("docs/plans/2026-09-29-x.md"))
         .output()
@@ -2029,7 +2029,7 @@ fn a_plan_approved_with_evidence_is_recorded_as_preview_evidence() {
     w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
     git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
     let head = git(&repo, &["rev-parse", "HEAD"]);
-    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let shown = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("plan-sha")
         .arg(repo.join(plan_rel))
         .output()
@@ -2061,7 +2061,7 @@ fn a_mockup_change_with_an_approval_is_recorded_as_preview_approved() {
             ("docs/mockups/pill/Main.dc.html", "<x-dc></x-dc>\n"),
         ],
     );
-    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let shown = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("plan-sha")
         .arg(repo.join(plan_rel))
         .output()
@@ -2711,7 +2711,7 @@ fn a_review_in_the_transcript_is_honoured_with_no_agent_installed() {
     w.commit(&repo, &[("src/lib.rs", "fn a() { b() }\nfn b() {}\n")]);
     git(&repo, &["config", "amont.agent.push-preview.ui", "true"]);
     let head = git(&repo, &["rev-parse", "HEAD"]);
-    let shown = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let shown = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("plan-sha")
         .arg(repo.join(plan_rel))
         .output()
@@ -4192,9 +4192,9 @@ fn state_dir(w: &World) -> PathBuf {
 }
 
 /// The fingerprint of the repository's branch against `origin/main`.
-fn block_of(repo: &Path) -> amont_agent_process::block_fingerprint::Fingerprint {
+fn block_of(repo: &Path) -> greenpiste_process::block_fingerprint::Fingerprint {
     let base = git(repo, &["merge-base", "HEAD", "origin/main"]);
-    amont_agent_process::block_fingerprint::fingerprint(
+    greenpiste_process::block_fingerprint::fingerprint(
         repo,
         &base,
         "HEAD",
@@ -4205,7 +4205,7 @@ fn block_of(repo: &Path) -> amont_agent_process::block_fingerprint::Fingerprint 
 }
 
 fn generations(w: &World, fingerprint: &str) -> usize {
-    amont_agent_process::block_registry::entries(&state_dir(w), fingerprint).len()
+    greenpiste_process::block_registry::entries(&state_dir(w), fingerprint).len()
 }
 
 /// The implementation review and the backend profile, both approving.
@@ -4255,21 +4255,21 @@ fn registered_pilot(name: &str) -> (World, PathBuf, PathBuf) {
     (w, pilot, copy)
 }
 
-fn passed_pin() -> amont_agent_process::block_registry::Pin {
-    amont_agent_process::block_registry::Pin::Passed {
+fn passed_pin() -> greenpiste_process::block_registry::Pin {
+    greenpiste_process::block_registry::Pin::Passed {
         release: "test".into(),
     }
 }
 
-fn failed_pin() -> amont_agent_process::block_registry::Pin {
-    amont_agent_process::block_registry::Pin::Failed { why: "test".into() }
+fn failed_pin() -> greenpiste_process::block_registry::Pin {
+    greenpiste_process::block_registry::Pin::Failed { why: "test".into() }
 }
 
 fn pin_record(
-    pin: amont_agent_process::block_registry::Pin,
+    pin: greenpiste_process::block_registry::Pin,
     gh_override_set: bool,
-) -> amont_agent_process::block_registry::PinRecord {
-    amont_agent_process::block_registry::PinRecord {
+) -> greenpiste_process::block_registry::PinRecord {
+    greenpiste_process::block_registry::PinRecord {
         pin,
         gh_override_set,
     }
@@ -4283,9 +4283,9 @@ fn pin_failed(w: &World, copy: &Path) {
     store_pin(w, copy, &pin_record(failed_pin(), false));
 }
 
-fn store_pin(w: &World, copy: &Path, pin: &amont_agent_process::block_registry::PinRecord) {
+fn store_pin(w: &World, copy: &Path, pin: &greenpiste_process::block_registry::PinRecord) {
     let fingerprint = block_of(copy);
-    amont_agent_process::block_registry::write_pin(
+    greenpiste_process::block_registry::write_pin(
         &state_dir(w),
         fingerprint.full(),
         &w.tree(copy),
@@ -4358,7 +4358,7 @@ fn a_copy_with_a_passed_pin_check_needs_no_profiles() {
         w.journal()
     );
     let copies =
-        amont_agent_process::block_registry::copies(&state_dir(&w), block_of(&pilot).full());
+        greenpiste_process::block_registry::copies(&state_dir(&w), block_of(&pilot).full());
     assert_eq!(copies.len(), 1, "{copies:?}");
     assert_eq!(copies[0].repo, "other");
     assert_eq!(copies[0].commit, git(&copy, &["rev-parse", "HEAD"]));
@@ -4436,16 +4436,16 @@ fn a_revoked_block_never_matches_even_with_a_later_generation() {
     pin_passed(&w, &copy);
     let fingerprint = block_of(&pilot);
     let base = state_dir(&w);
-    amont_agent_process::block_registry::revoke(&base, fingerprint.full(), "a defect").unwrap();
+    greenpiste_process::block_registry::revoke(&base, fingerprint.full(), "a defect").unwrap();
     // A generation that a concurrent registration creates after the revoke.
-    amont_agent_process::block_registry::register_entry(
+    greenpiste_process::block_registry::register_entry(
         &base,
         fingerprint.full(),
-        &amont_agent_process::block_registry::Generation {
+        &greenpiste_process::block_registry::Generation {
             rules_sha: ABC_SHA.into(),
             agent_digest: "e".repeat(64),
         },
-        &amont_agent_process::block_registry::EntryData {
+        &greenpiste_process::block_registry::EntryData {
             roles: vec!["backend".into(), "lang:rust".into()],
             agents: Vec::new(),
             source_branch: "late".into(),
@@ -4455,7 +4455,7 @@ fn a_revoked_block_never_matches_even_with_a_later_generation() {
     )
     .unwrap();
     denied_with(push_copy(&w, &copy, "s2"), "revoked: a defect");
-    amont_agent_process::block_registry::reinstate(&base, fingerprint.full()).unwrap();
+    greenpiste_process::block_registry::reinstate(&base, fingerprint.full()).unwrap();
     assert_eq!(push_copy(&w, &copy, "s3"), Said::Silent);
 }
 
@@ -4701,10 +4701,10 @@ fn sixteen_hooks_and_a_revoke_at_once_lose_no_copy_and_leave_no_temp_file() {
         .join("by-block")
         .join(fingerprint.full());
     assert_eq!(
-        amont_agent_process::block_registry::revoked(&state_dir(&w), fingerprint.full()).as_deref(),
+        greenpiste_process::block_registry::revoked(&state_dir(&w), fingerprint.full()).as_deref(),
         Some("race")
     );
-    let copies = amont_agent_process::block_registry::copies(&state_dir(&w), fingerprint.full());
+    let copies = greenpiste_process::block_registry::copies(&state_dir(&w), fingerprint.full());
     assert_eq!(copies.len(), 1, "{copies:?}");
     assert_eq!(copies[0].repo, "other");
     let commit = git(&copy, &["rev-parse", "HEAD"]);

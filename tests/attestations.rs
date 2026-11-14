@@ -39,7 +39,7 @@ impl World {
             .count()
     }
     fn cmd(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         c.env("CLAUDE_CONFIG_DIR", self.0.join("claude"))
             .env("HOME", self.0.join("home"))
             .env("AMONT_AGENT_PLAN_ROOT", self.0.join("root"))
@@ -426,7 +426,7 @@ fn a_closed_pipe_is_quiet() {
     let err = w.0.join("stderr.txt");
     let script = format!(
         "'{}' attestations 2>'{}' | head -1",
-        env!("CARGO_BIN_EXE_amont-agent"),
+        env!("CARGO_BIN_EXE_greenpiste"),
         err.display()
     );
     let mut sh = Command::new("sh");

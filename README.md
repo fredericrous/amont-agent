@@ -109,8 +109,8 @@ and the compiler keeps them apart (decisions ADR-0039):
 
 | Crate | Holds | Pages |
 |---|---|---|
-| [`amont-agent-guard`](crates/amont-agent-guard) | shell analysis, the rules and their stances, the assertions, the journal, `quiet` | [rules](docs/rules.md), [assertions](docs/assertions.md), [stances](docs/stances.md), [analysis](docs/analysis.md), [measuring](docs/measuring.md), [quiet](docs/quiet.md) |
-| [`amont-agent-process`](crates/amont-agent-process) | the plan-review panel, the implementation review, preview approvals, provenance, `shipped` | [plan review](docs/plan-review.md), [implementation review](docs/implementation-review.md), [preview](docs/preview.md), [shipped](docs/shipped.md) |
+| [`greenpiste-guard`](crates/greenpiste-guard) | shell analysis, the rules and their stances, the assertions, the journal, `quiet` | [rules](docs/rules.md), [assertions](docs/assertions.md), [stances](docs/stances.md), [analysis](docs/analysis.md), [measuring](docs/measuring.md), [quiet](docs/quiet.md) |
+| [`greenpiste-process`](crates/greenpiste-process) | the plan-review panel, the implementation review, preview approvals, provenance, `shipped` | [plan review](docs/plan-review.md), [implementation review](docs/implementation-review.md), [preview](docs/preview.md), [shipped](docs/shipped.md) |
 | `amont-agent` (the root) | the CLI and the hook's dispatch: the composition root that wires both | [install](docs/install.md), [configuration](docs/configuration.md), [session notice](docs/session-notice.md) |
 
 The guard never names the work process or the binary; the work process never

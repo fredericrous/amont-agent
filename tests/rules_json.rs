@@ -23,7 +23,7 @@ impl Home {
     }
 
     fn rules(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("rules")
             .args(args)
             .current_dir(&self.0)

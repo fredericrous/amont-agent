@@ -95,7 +95,7 @@ enum HostSlot {
 }
 
 fn send_inner(payload: &str, path: String, slot: HostSlot) -> Reply {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     match slot {
         HostSlot::Held => command.env("GREENHARNESS_HOST_SLOT", "held"),
         HostSlot::Free => command.env_remove("GREENHARNESS_HOST_SLOT"),
@@ -383,8 +383,8 @@ fn only_the_emitter_writes_to_stdout() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let trees = [
         root.join("src"),
-        root.join("crates/amont-agent-guard/src"),
-        root.join("crates/amont-agent-process/src"),
+        root.join("crates/greenpiste-guard/src"),
+        root.join("crates/greenpiste-process/src"),
     ];
     for t in &trees {
         assert!(t.is_dir(), "missing source tree {}", t.display());
@@ -815,7 +815,7 @@ fn a_declined_confirm_records_why_and_status_reads_it_back() {
         "`skipped` is not a reason: {line}"
     );
 
-    let status = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let status = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("status")
         .env("CLAUDE_CONFIG_DIR", home())
         .env_remove("AMONT_AGENT_OFF")
@@ -1566,7 +1566,7 @@ fn send_with_global_err(payload: &str, global: &str) -> (Reply, String) {
     let dir = home();
     let cfg = dir.join("fanout.gitconfig");
     std::fs::write(&cfg, global).expect("global config");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", &dir)
         .env("GIT_CONFIG_GLOBAL", &cfg)
@@ -1805,7 +1805,7 @@ impl LspWorld {
     fn send(&self, payload: &str, global: &str) -> Reply {
         let cfg = self.config.join("global.gitconfig");
         std::fs::write(&cfg, global).expect("global config");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", &self.config)
             .env("PATH", lsp_path(&self.bin))
@@ -3298,7 +3298,7 @@ fn send_clocked_with_path(
     now: u64,
     path: Option<&std::ffi::OsStr>,
 ) -> Reply {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     if let Some(path) = path {
         command.env("PATH", path);
     }
@@ -3613,7 +3613,7 @@ fn work_overlap_window_is_read_from_git_config() {
                  "session_id":"{session}","permission_mode":"default",
                  "tool_input":{{"file_path":{file},"old_string":"a","new_string":"b"}}}}"#
         );
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", home())
             .env("AMONT_AGENT_TEST_NOW", (scene.start + later).to_string())

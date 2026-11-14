@@ -32,7 +32,7 @@ impl Scratch {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("open")
             .args(args)
             .current_dir(&self.0)

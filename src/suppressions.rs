@@ -14,11 +14,11 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use amont_agent_guard::rules::lint_suppression_added::{
+use greenpiste_guard::rules::lint_suppression_added::{
     self as lint, FileChange, Hit, Origin, ReasonForm, RULE,
 };
-use amont_agent_guard::rules::Stance;
-use amont_agent_guard::stance;
+use greenpiste_guard::rules::Stance;
+use greenpiste_guard::stance;
 
 const OVERRIDE_KEY: &str = "amont.agent.suppressions";
 /// A blob over this is never read.
@@ -109,7 +109,7 @@ fn git_failed(command: &str, detail: impl Into<String>) -> ScanError {
 }
 
 pub const HELP: &str = concat!("\
-usage: ", amont_agent_guard::bin!(), " suppressions --staged
+usage: ", greenpiste_guard::bin!(), " suppressions --staged
 
 Judge the staged change: a lint suppression it adds (net of those it removes
 anywhere) blocks unless it carries a reason in its tool's own reason form.
@@ -148,7 +148,7 @@ pub fn run(args: &[OsString], handoff: IndexHandoff, git_index: Option<OsString>
     if let Some(unknown) = args.iter().find(|a| *a != "--staged") {
         eprintln!(
             concat!(
-                amont_agent_guard::bin!(),
+                greenpiste_guard::bin!(),
                 ": suppressions: unknown argument '{}'\n"
             ),
             unknown.to_string_lossy()
@@ -158,7 +158,7 @@ pub fn run(args: &[OsString], handoff: IndexHandoff, git_index: Option<OsString>
     }
     if args.is_empty() {
         eprintln!(concat!(
-            amont_agent_guard::bin!(),
+            greenpiste_guard::bin!(),
             ": suppressions needs --staged\n"
         ));
         eprint!("{HELP}");

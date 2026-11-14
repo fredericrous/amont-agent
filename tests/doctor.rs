@@ -30,7 +30,7 @@ impl Home {
         self
     }
     fn run(&self, args: &[&str]) -> (i32, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .args(args)
             .current_dir(&self.0)
             .env("CLAUDE_CONFIG_DIR", &self.0)
@@ -249,7 +249,7 @@ fn a_missing_heartbeat_is_not_evidence_the_guard_is_dead() {
         h.settings(),
         serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-                {"type": "command", "command": env!("CARGO_BIN_EXE_amont-agent"), "args": ["hook"]}
+                {"type": "command", "command": env!("CARGO_BIN_EXE_greenpiste"), "args": ["hook"]}
             ]}]}
         }))
         .unwrap(),
@@ -282,7 +282,7 @@ fn two_installs_are_reported_as_a_double_fire() {
     std::fs::create_dir_all(&proj).unwrap();
     std::fs::copy(h.settings(), proj.join("settings.json")).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("doctor")
         .current_dir(h.0.join("proj"))
         .env("CLAUDE_CONFIG_DIR", &h.0)
@@ -300,7 +300,7 @@ fn the_kill_switch_is_reported() {
     let h = Home::new("off");
     h.with_a_session();
     h.run(&["install", "--write"]);
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("doctor")
         .env("CLAUDE_CONFIG_DIR", &h.0)
         .env("AMONT_AGENT_OFF", "1")
@@ -328,10 +328,10 @@ fn install_both(h: &Home) {
         serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {
                 "PreToolUse": [{"matcher": "Bash", "hooks": [
-                    {"type": "command", "command": env!("CARGO_BIN_EXE_amont-agent"), "args": ["hook"]}
+                    {"type": "command", "command": env!("CARGO_BIN_EXE_greenpiste"), "args": ["hook"]}
                 ]}],
                 "SessionStart": [{"hooks": [
-                    {"type": "command", "command": env!("CARGO_BIN_EXE_amont-agent"), "args": ["hook"]}
+                    {"type": "command", "command": env!("CARGO_BIN_EXE_greenpiste"), "args": ["hook"]}
                 ]}]
             }
         }))
@@ -491,7 +491,7 @@ fn doctor_says_whether_the_lsp_rules_can_speak_here() {
             format!(r#"{{"enabledPlugins":{{"fleet-lsp@fleet-lsp":{plugin_on}}}}}"#),
         )
         .expect("settings");
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("doctor")
             .current_dir(&repo)
             .env("CLAUDE_CONFIG_DIR", &h.0)
@@ -514,7 +514,7 @@ fn doctor_says_whether_the_lsp_rules_can_speak_here() {
 
 /// `doctor --json`, with stdout parsed whole: anything else there fails.
 fn integration(h: &Home) -> (i32, serde_json::Value) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .args(["doctor", "--json"])
         .env("CLAUDE_CONFIG_DIR", &h.0)
         .env_remove("AMONT_AGENT_OFF")
@@ -540,7 +540,7 @@ fn json_reports_present_but_unhealthy_with_file_and_binary() {
     let h = Home::new("json-present");
     let missing = h.0.join("nowhere").join("amont-agent");
     let mut hooks = serde_json::Map::new();
-    for (event, matcher) in amont_agent_guard::settings::TARGETS {
+    for (event, matcher) in greenpiste_guard::settings::TARGETS {
         let mut block = serde_json::json!({"hooks": [
             {"type": "command", "command": missing, "args": ["hook"]}]});
         if let Some(matcher) = matcher {
@@ -604,7 +604,7 @@ fn json_reports_unknown_for_unparsable_settings() {
 fn doctor_help_prints_usage_on_stdout_and_exits_zero() {
     let h = Home::new("doctor-help");
     for flag in ["--help", "-h"] {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .args(["doctor", flag])
             .env("CLAUDE_CONFIG_DIR", &h.0)
             .output()
@@ -662,7 +662,7 @@ fn plan_root_doctor(
             .unwrap();
         assert!(ok.success());
     }
-    let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     c.arg("doctor")
         .args(json.then_some("--json"))
         .current_dir(cwd)
@@ -791,7 +791,7 @@ fn opener_doctor_line(home_dir: &Home, name: &str, opener: Option<&str>) -> Stri
             .unwrap();
         assert!(ok.success());
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .args(["doctor", "--json"])
         .current_dir(&home_dir.0)
         .env("CLAUDE_CONFIG_DIR", &home_dir.0)

@@ -22,7 +22,7 @@ fn scratch(name: &str) -> PathBuf {
 /// Runs the binary with the fake `aval` in `bin` first on PATH, so no test
 /// reaches the machine's own `aval`.
 fn run(args: &[&str], bin: &std::path::Path) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     cmd.args(args);
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs = vec![bin.to_path_buf()];
@@ -351,8 +351,7 @@ fn the_brief_carries_adr_lints_candidates_right_after_the_rules_line() {
     let (out, brief) = brief_text(&bin, &repo);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(out.stderr.is_empty(), "{out:?}");
-    let sha =
-        amont_agent_guard::sha256::hex(&amont_agent_guard::sha256::sha256(document.as_bytes()));
+    let sha = greenpiste_guard::sha256::hex(&greenpiste_guard::sha256::sha256(document.as_bytes()));
     let lines: Vec<&str> = brief.lines().collect();
     let rules = lines
         .iter()
@@ -397,8 +396,7 @@ fn no_candidates_is_an_empty_block_and_no_ruling_is_needed() {
     let repo = two_commit_repo("cand-zero-repo");
     let (out, brief) = brief_text(&bin, &repo);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    let sha =
-        amont_agent_guard::sha256::hex(&amont_agent_guard::sha256::sha256(document.as_bytes()));
+    let sha = greenpiste_guard::sha256::hex(&greenpiste_guard::sha256::sha256(document.as_bytes()));
     assert!(
         brief.contains(&format!(
             "<<<CANDIDATES sha={sha} n=0>>>\n<<<END CANDIDATES>>>\n"
@@ -513,7 +511,7 @@ fn run_without_aval(args: &[&str], dir: &std::path::Path, aval: Option<&str>) ->
     if !link.exists() {
         std::os::unix::fs::symlink(git_path.trim(), &link).unwrap();
     }
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     cmd.args(args);
     cmd.env("PATH", std::env::join_paths([dir, &only]).unwrap());
     cmd.env("AMONT_AGENT_ADR_LINT", dir.join("adr-lint"));
@@ -932,7 +930,7 @@ fn interdiff_with(
     head: &str,
     more: &[&str],
 ) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     cmd.args([
         "review-brief",
         "-C",
@@ -1005,8 +1003,7 @@ fn an_interdiff_from_another_head_than_the_last_pass_is_refused() {
     fake_aval(&bin, BRIEF_AVAL);
     let (repo, reviewed) = delta_repo("interdiff-branch", &[("a.txt", "three\n")]);
     let name = repo.file_name().unwrap().to_string_lossy().to_string();
-    let key =
-        amont_agent_guard::sha256::hex(&amont_agent_guard::sha256::sha256(b"refs/heads/feat"));
+    let key = greenpiste_guard::sha256::hex(&greenpiste_guard::sha256::sha256(b"refs/heads/feat"));
     let dir = bin
         .join("config")
         .join("amont-agent")
@@ -1406,7 +1403,7 @@ impl PinWorld {
         )
         .unwrap();
         git(&repo, &["commit", "-qam", "pin"]);
-        let fingerprint = amont_agent_process::block_fingerprint::fingerprint(
+        let fingerprint = greenpiste_process::block_fingerprint::fingerprint(
             &repo,
             "HEAD~1",
             "HEAD",
@@ -1416,14 +1413,14 @@ impl PinWorld {
         .unwrap()
         .full()
         .to_string();
-        amont_agent_process::block_registry::register_entry(
+        greenpiste_process::block_registry::register_entry(
             &bin.join("config/amont-agent"),
             &fingerprint,
-            &amont_agent_process::block_registry::Generation {
+            &greenpiste_process::block_registry::Generation {
                 rules_sha: "c".repeat(64),
                 agent_digest: "d".repeat(64),
             },
-            &amont_agent_process::block_registry::EntryData {
+            &greenpiste_process::block_registry::EntryData {
                 roles: vec!["backend".into()],
                 agents: vec![],
                 source_branch: "topic".into(),
@@ -1452,7 +1449,7 @@ impl PinWorld {
     /// `review-brief`, with `gh` as the override or, for `None`, a PATH that
     /// holds git and the fake aval and nothing else.
     fn brief(&self, gh: Option<&std::path::Path>, deadline_ms: &str) -> Output {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         cmd.args(["review-brief", "-C"])
             .arg(&self.repo)
             .args(["--base", "HEAD~1"]);
@@ -1484,9 +1481,9 @@ impl PinWorld {
         cmd.output().unwrap()
     }
 
-    fn recorded(&self) -> Option<amont_agent_process::block_registry::PinRecord> {
-        let tree = amont_agent_process::content_id::content_id(&self.repo, "HEAD").unwrap();
-        amont_agent_process::block_registry::read_pin(
+    fn recorded(&self) -> Option<greenpiste_process::block_registry::PinRecord> {
+        let tree = greenpiste_process::content_id::content_id(&self.repo, "HEAD").unwrap();
+        greenpiste_process::block_registry::read_pin(
             &self.bin.join("config/amont-agent"),
             &self.fingerprint,
             &tree,
@@ -1525,7 +1522,7 @@ fn a_missing_journal_directory_is_said_in_the_pin_section() {
     let inherited = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs = vec![world.bin.clone()];
     dirs.extend(std::env::split_paths(&inherited));
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .args(["review-brief", "-C"])
         .arg(&world.repo)
         .args(["--base", "HEAD~1"])

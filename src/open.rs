@@ -7,25 +7,25 @@
 //! inside each word afterwards, so the page is always exactly one argv entry
 //! and no shell runs.
 
-use amont_agent_guard::names::BIN;
+use greenpiste_guard::names::BIN;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use amont_agent_guard::doctor;
-use amont_agent_guard::git;
-use amont_agent_guard::shell::{self, Opaque, Parsed};
-use amont_agent_process::guide;
+use greenpiste_guard::doctor;
+use greenpiste_guard::git;
+use greenpiste_guard::shell::{self, Opaque, Parsed};
+use greenpiste_process::guide;
 
 const SETTING: &str = "amont.agent.opener";
-const USAGE: &str = concat!("usage: ", amont_agent_guard::bin!(), " open <url|path>");
+const USAGE: &str = concat!("usage: ", greenpiste_guard::bin!(), " open <url|path>");
 const LAUNCH_WAIT: Duration = Duration::from_secs(2);
 const CAPTURE_ATTEMPTS: u32 = 16;
 const POLL_EVERY: Duration = Duration::from_millis(20);
 
 const HELP: &str = concat!("\
-usage: ", amont_agent_guard::bin!(), " open <url|path>
+usage: ", greenpiste_guard::bin!(), " open <url|path>
 
 Open a page for the person, in a browser window they see. A path is made
 absolute, must exist, and is opened as a file:// URL.
@@ -297,7 +297,7 @@ fn launch(
 
 fn unknown_option(word: &OsStr) -> ExitCode {
     eprintln!(
-        concat!(amont_agent_guard::bin!(), ": unknown option {}"),
+        concat!(greenpiste_guard::bin!(), ": unknown option {}"),
         word.to_string_lossy()
     );
     eprintln!("{USAGE}");

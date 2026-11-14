@@ -60,7 +60,7 @@ impl World {
     }
 
     fn bin(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         c.env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("AMONT_AGENT_PLAN_ROOT", self.root.join("repos"))
             .env_remove("AMONT_AGENT_OFF");
@@ -728,7 +728,7 @@ fn stdin_on_a_terminal_is_a_usage_error() {
     {
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_amont-agent");
+    let bin = env!("CARGO_BIN_EXE_greenpiste");
     let log = w.root.join("script.log");
     let mut c = Command::new("script");
     if cfg!(target_os = "macos") {

@@ -97,7 +97,7 @@ impl World {
             std::env::var("PATH").unwrap_or_default()
         );
         let started = std::time::Instant::now();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", self.root.join("config"))
             .env("PATH", path)

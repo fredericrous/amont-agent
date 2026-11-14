@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
+const BIN: &str = env!("CARGO_BIN_EXE_greenpiste");
 const SESSION_ONE: &str = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SESSION_TWO: &str = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PLAN: &str = "---\nstatus: active\nrepos: [a, b]\n---\n# Board plan\n\n- [ ] Phase 1\n";

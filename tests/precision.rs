@@ -29,7 +29,7 @@ fn owned_directory() -> std::path::PathBuf {
 
 fn check_with(flags: &[&str], command: &str) -> String {
     let dir = owned_directory();
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("check")
         .arg("--cwd")
         .arg(&dir)
@@ -271,7 +271,7 @@ fn the_smaller_rules_catch_their_own_shapes() {
     assert!(fires_rule(
         &format!(
             "{} block reinstate fp:0123456789ab",
-            amont_agent_guard::names::ALIAS
+            greenpiste_guard::names::ALIAS
         ),
         "block-reinstate"
     ));
@@ -368,7 +368,7 @@ fn every_finding_carries_a_remedy() {
 #[test]
 fn every_listing_keeps_its_columns_apart() {
     for verb in [vec!["status"], vec!["rules"], vec!["corpus", "check"]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .args(&verb)
             .output()
             .expect("the binary runs");
@@ -398,7 +398,7 @@ fn every_listing_keeps_its_columns_apart() {
 fn known_id(word: &str) -> bool {
     static IDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     IDS.get_or_init(|| {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("rules")
             .output()
             .expect("the binary runs");

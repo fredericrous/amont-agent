@@ -42,14 +42,14 @@ jobs:
         run: |
           set -euo pipefail
           # Three crates, one version: the binary and its two libraries
-          # (amont-agent-guard, amont-agent-process). `cargo install` resolves
+          # (greenpiste-guard, greenpiste-process). `cargo install` resolves
           # the libraries by version, so a release where they differ is one
           # nobody can install; read all three, and the exact pins between
           # them, and refuse any disagreement.
           versions=$(cargo metadata --no-deps --format-version 1 | python3 -c '
           import json, sys
           m = json.load(sys.stdin)
-          names = {"amont-agent", "amont-agent-guard", "amont-agent-process"}
+          names = {"amont-agent", "greenpiste-guard", "greenpiste-process"}
           pkgs = {p["name"]: p for p in m["packages"] if p["name"] in names}
           assert set(pkgs) == names, sorted(pkgs)
           vs = {p["version"] for p in pkgs.values()}
@@ -360,7 +360,7 @@ jobs:
           # The libraries first, in dependency order: `amont-agent` resolves
           # them from crates.io by version. A rerun resumes a partial publish,
           # because each crate already up is "already uploaded".
-          for crate in amont-agent-guard amont-agent-process amont-agent; do
+          for crate in greenpiste-guard greenpiste-process amont-agent; do
             echo "→ publishing $crate $VERSION"
             if out=$(cargo publish -p "$crate" --locked 2>&1); then
               printf '%s\n' "$out"

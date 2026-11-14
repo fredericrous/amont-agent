@@ -133,7 +133,7 @@ impl World {
     }
 
     fn run_with_path(&self, payload: &Value, bin_dir: Option<&Path>) -> Reply {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         command
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", &self.claude)

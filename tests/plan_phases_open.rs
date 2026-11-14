@@ -114,7 +114,7 @@ impl World {
     }
 
     fn run(&self, payload: &serde_json::Value, claude: &Path) -> Reply {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", claude)
             .env("GIT_CONFIG_GLOBAL", &self.global)

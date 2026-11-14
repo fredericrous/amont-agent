@@ -3,7 +3,7 @@
 //! because it holds the guard's rules and the work process's `push-preview`.
 //! The guard's readers take it as a parameter, never name it.
 
-use amont_agent_guard::rules::Rule;
+use greenpiste_guard::rules::Rule;
 
 pub const RULES: &[Rule] = &[
     crate::rules::pipe_to_tail::RULE,
@@ -66,13 +66,13 @@ pub const RULES: &[Rule] = &[
 #[cfg(test)]
 mod tests {
     use super::RULES;
-    use amont_agent_guard::corpus;
+    use greenpiste_guard::corpus;
 
     /// ADR-0042: every part names the failure it prevents, in one sentence.
     #[test]
     fn every_rule_and_assertion_names_its_failure() {
         let parts = super::RULES.iter().map(|r| (r.id, r.prevents)).chain(
-            amont_agent_guard::assertions::ASSERTIONS
+            greenpiste_guard::assertions::ASSERTIONS
                 .iter()
                 .map(|a| (a.id, a.prevents)),
         );
@@ -157,7 +157,7 @@ mod tests {
         for r in RULES {
             assert!(r.evidence.per_1000.is_finite(), "{}", r.id);
         }
-        for a in amont_agent_guard::assertions::ASSERTIONS {
+        for a in greenpiste_guard::assertions::ASSERTIONS {
             assert!(a.evidence.per_1000.is_finite(), "{}", a.id);
         }
     }

@@ -121,7 +121,7 @@ impl World {
     }
 
     fn bin(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         c.env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("GIT_CONFIG_GLOBAL", self.root.join("global"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -1929,8 +1929,8 @@ impl CopyWorld {
     }
 
     fn register(&self) {
-        use amont_agent_process::block_registry::{register_entry, EntryData, Generation};
-        let fingerprint = amont_agent_process::block_fingerprint::fingerprint(
+        use greenpiste_process::block_registry::{register_entry, EntryData, Generation};
+        let fingerprint = greenpiste_process::block_fingerprint::fingerprint(
             &self.repo,
             "origin/main",
             "HEAD",
@@ -1938,7 +1938,7 @@ impl CopyWorld {
         )
         .unwrap()
         .unwrap();
-        let roles = amont_agent_process::implementation_review::roles_needed(
+        let roles = greenpiste_process::implementation_review::roles_needed(
             &self.repo,
             "origin/main",
             "HEAD",
@@ -1946,7 +1946,7 @@ impl CopyWorld {
         .unwrap();
         let agents: Vec<(String, String)> = roles
             .iter()
-            .filter_map(|role| amont_agent_process::code_review::agent_for(role))
+            .filter_map(|role| greenpiste_process::code_review::agent_for(role))
             .map(|(agent, _)| agent)
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
@@ -1956,8 +1956,8 @@ impl CopyWorld {
             &self.w.root.join("claude/amont-agent"),
             fingerprint.full(),
             &Generation {
-                rules_sha: amont_agent_process::review_brief::sha_of(COPY_RULES.as_bytes()),
-                agent_digest: amont_agent_process::implementation_review::agents_digest(&agents),
+                rules_sha: greenpiste_process::review_brief::sha_of(COPY_RULES.as_bytes()),
+                agent_digest: greenpiste_process::implementation_review::agents_digest(&agents),
             },
             &EntryData {
                 roles: roles.into_iter().collect(),

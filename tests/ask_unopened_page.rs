@@ -128,7 +128,7 @@ fn payload(question: &str, transcript: Option<&PathBuf>) -> String {
 
 fn send(payload: &str) -> Reply {
     let config = scratch("config");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", &config)
         .env_remove("AMONT_AGENT_OFF")
@@ -331,7 +331,7 @@ fn a_transcript_still_being_written_advises() {
 
 #[test]
 fn the_guard_encodes_a_file_url_as_the_opener_does() {
-    use amont_agent_guard::page_open::key_of;
+    use greenpiste_guard::page_open::key_of;
     use std::path::Path;
     for path in [
         "/a b/c.html",
@@ -341,7 +341,7 @@ fn the_guard_encodes_a_file_url_as_the_opener_does() {
     ] {
         assert_eq!(
             key_of(path, Path::new("/")),
-            amont_agent_process::guide::file_url(Path::new(path)),
+            greenpiste_process::guide::file_url(Path::new(path)),
             "{path}"
         );
     }

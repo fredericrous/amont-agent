@@ -11,9 +11,9 @@ const NAME: &str = "amont-agent";
 /// Exact lines, by file, that carry the `tool` field value of a record other
 /// programs read (plan 3b-2 renames it).
 const KEPT_LINES: &[(&str, &str)] = &[
-    ("crates/amont-agent-guard/src/quiet.rs", "\"amont-agent\","),
+    ("crates/greenpiste-guard/src/quiet.rs", "\"amont-agent\","),
     (
-        "crates/amont-agent-process/src/candidates_block.rs",
+        "crates/greenpiste-process/src/candidates_block.rs",
         "const TOOL: &str = \"amont-agent\";",
     ),
     // The clear-relay plugin's marketplace id, written into settings.json as
@@ -145,7 +145,7 @@ fn is_kept_data_name(source: &str, literal: &Literal, at: usize) -> bool {
     let before_on_line = &source[line_start..literal.text_start];
     let line = &source[line_start..line_end];
 
-    // The word is longer than the name: `CARGO_BIN_EXE_amont-agent`.
+    // The word is longer than the name: `CARGO_BIN_EXE_greenpiste`.
     if before.bytes().last().is_some_and(is_word_byte) {
         return true;
     }
@@ -298,7 +298,7 @@ fn a_planted_message_is_found_and_the_kept_data_names_are_not() {
         "let s = \"amont-agent-review-outcome-v1\";",
         "let t = \"amont-agent-shim-{}\";",
         "let r = \"{\\\"tool\\\":\\\"amont-agent\\\"}\";",
-        "let e = env!(\"CARGO_BIN_EXE_amont-agent\");",
+        "let e = env!(\"CARGO_BIN_EXE_greenpiste\");",
     ] {
         assert_eq!(stray_names(kept), Vec::<usize>::new(), "{kept}");
     }

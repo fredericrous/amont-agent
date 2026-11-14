@@ -78,7 +78,7 @@ impl Transcript {
 
     fn run(&self, args: &[&str]) -> String {
         let dir = self.write();
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .args(args)
             .arg("--transcripts")
             .arg(dir.join("projects"))
@@ -272,7 +272,7 @@ fn novelty_puts_the_unlike_match_first() {
 #[test]
 fn an_unknown_rank_is_refused() {
     let dir = Transcript::new("rank").write().clone();
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .args(["explain", "pipe-to-tail", "--rank", "wisdom"])
         .arg("--transcripts")
         .arg(dir.join("projects"))

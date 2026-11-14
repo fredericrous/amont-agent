@@ -113,7 +113,7 @@ impl World {
     }
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> (i32, String, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         // A test that installed the fake `amont` puts it first.
         let fake = self.root.join("bin");
         if fake.join("amont").is_file() {

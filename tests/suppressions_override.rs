@@ -21,7 +21,7 @@ fn pre_bash(command: &str) -> (String, String) {
         "tool_input": {"command": command},
     })
     .to_string();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", &home)
         .env("GIT_CONFIG_GLOBAL", home.join("no-global-gitconfig"))

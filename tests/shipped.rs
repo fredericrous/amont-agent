@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
+const BIN: &str = env!("CARGO_BIN_EXE_greenpiste");
 const PROV: &str = "refs/notes/amont-provenance";
 const ATTEST: &str = "refs/notes/amont-attest";
 
@@ -275,8 +275,8 @@ fn a_squash_with_only_green_notes_is_verified_under_the_green_namespace() {
 
 #[test]
 fn a_record_the_writer_builds_is_verified_under_greengate_provenance() {
-    use amont_agent_guard::notes_names::GREEN;
-    use amont_agent_process::provenance::{payload, Record, Review};
+    use greenpiste_guard::notes_names::GREEN;
+    use greenpiste_process::provenance::{payload, Record, Review};
     let world = World::new("written");
     let head = world.feature();
     let merge = world.squash("feat: a (#7)");
@@ -292,7 +292,7 @@ fn a_record_the_writer_builds_is_verified_under_greengate_provenance() {
         review: Review::Reviewed,
         review_content: "c0ffee",
         profiles: &[],
-        preview: amont_agent_process::preview::Outcome::NotRequired,
+        preview: greenpiste_process::preview::Outcome::NotRequired,
         version: "0",
     });
     assert!(

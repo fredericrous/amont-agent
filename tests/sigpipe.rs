@@ -53,7 +53,7 @@ fn big_transcript() -> PathBuf {
 #[test]
 fn a_closed_pipe_kills_a_listing_quietly() {
     let dir = big_transcript();
-    let bin = env!("CARGO_BIN_EXE_amont-agent");
+    let bin = env!("CARGO_BIN_EXE_greenpiste");
     let err = dir.join("stderr.txt");
     let status = dir.join("status.txt");
 
@@ -138,7 +138,7 @@ fn a_closed_pipe_kills_a_listing_quietly() {
 /// `die_on_sigpipe` is the one above.
 #[test]
 fn rules_survives_a_closed_pipe() {
-    let bin = env!("CARGO_BIN_EXE_amont-agent");
+    let bin = env!("CARGO_BIN_EXE_greenpiste");
     for reader in ["head -1", "grep -q pipe-to-tail"] {
         let out = Command::new("sh")
             .arg("-c")
@@ -167,7 +167,7 @@ fn rules_survives_a_closed_pipe() {
 /// them.
 #[test]
 fn help_survives_a_closed_pipe() {
-    let bin = env!("CARGO_BIN_EXE_amont-agent");
+    let bin = env!("CARGO_BIN_EXE_greenpiste");
     let out = Command::new("sh")
         .arg("-c")
         .arg(format!("'{bin}' --help 2>&1 | grep -q backtest"))

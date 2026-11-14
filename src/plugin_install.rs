@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use amont_agent_guard::settings::{self, PluginPlacement};
+use greenpiste_guard::settings::{self, PluginPlacement};
 
 pub const MARKETPLACE: &str = "amont-agent";
 pub const PLUGIN: &str = "clear-relay";
