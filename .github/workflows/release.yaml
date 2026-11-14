@@ -742,25 +742,6 @@ jobs:
       # No checkout: this must see only what a stranger sees — the tap and
       # the published release. Anything read out of the repository would be
       # testing the thing we already know.
-      # An existing install upgrades: the previous formula (the tap's parent
-      # commit) installed first, then the tap moved to HEAD and `brew upgrade`.
-      - name: Upgrade from the previous formula
-        run: |
-          set -euo pipefail
-          export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap fredericrous/tap
-          tap_dir=$(brew --repository fredericrous/tap)
-          head_ref=$(git -C "$tap_dir" rev-parse HEAD)
-          git -C "$tap_dir" checkout --quiet "$head_ref~1"
-          brew install fredericrous/tap/amont-agent
-          git -C "$tap_dir" checkout --quiet "$head_ref"
-          brew upgrade
-          for name in greenpiste amont-agent; do
-            reported=$("$name" --version)
-            printf '%s\n' "$reported"
-            [ "$reported" = "greenpiste $VERSION" ] || { echo "::error::$name --version said: $reported"; exit 1; }
-          done
-
       - name: Install from the tap
         run: |
           set -euo pipefail
@@ -789,6 +770,35 @@ jobs:
 
       - name: brew test
         run: brew test fredericrous/tap/greenpiste
+
+      # An existing install upgrades. This runs after the fresh-install
+      # checks above, so they test a stranger's first `brew install`: it
+      # removes that install, installs the old formula as it stood just
+      # before the rename, moves the tap back to HEAD and runs `brew upgrade`.
+      - name: Upgrade from the previous formula
+        run: |
+          set -euo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew uninstall greenpiste
+          tap_dir=$(brew --repository fredericrous/tap)
+          # The commit that removed Formula/amont-agent.rb is the rename; its
+          # parent still has the old formula, whatever landed on the tap since.
+          renamed=$(git -C "$tap_dir" log -1 --format=%H --diff-filter=D -- Formula/amont-agent.rb)
+          if [ -z "$renamed" ]; then
+            echo "::error::no tap commit removes Formula/amont-agent.rb; the rename did not land"; exit 1
+          fi
+          git -C "$tap_dir" checkout --quiet "$renamed~1"
+          brew install fredericrous/tap/amont-agent
+          # Back to the tap's branch, not a detached HEAD.
+          git -C "$tap_dir" checkout --quiet -
+          # Only ours: a bare `brew upgrade` would upgrade every formula on
+          # the runner. The old name goes through formula_renames.json.
+          brew upgrade fredericrous/tap/amont-agent
+          for name in greenpiste amont-agent; do
+            reported=$("$name" --version)
+            printf '%s\n' "$reported"
+            [ "$reported" = "greenpiste $VERSION" ] || { echo "::error::$name --version said: $reported"; exit 1; }
+          done
 
       - name: Say so
         run: |

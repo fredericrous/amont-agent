@@ -456,8 +456,12 @@ fn alias_entries(installs: &[Install]) -> Option<Finding> {
     (count > 0).then(|| {
         Finding::warn(
             format!(
-                "{count} hook {} still run the old name `{}`",
-                if count == 1 { "entry" } else { "entries" },
+                "{count} hook {} the old name `{}`",
+                if count == 1 {
+                    "entry still runs"
+                } else {
+                    "entries still run"
+                },
                 crate::names::ALIAS
             ),
             concat!(

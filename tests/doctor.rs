@@ -359,7 +359,10 @@ fn entries_still_pointing_at_the_old_name_are_told_to_reinstall() {
     )
     .unwrap();
     let (_, out) = h.run(&["doctor"]);
-    assert!(out.contains("1 hook entry still run"), "{out}");
+    assert!(
+        out.contains("1 hook entry still runs the old name"),
+        "{out}"
+    );
     assert!(out.contains("greenpiste install --write"), "{out}");
 }
 
