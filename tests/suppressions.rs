@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
+const BIN: &str = env!("CARGO_BIN_EXE_greenpiste");
 const GIT_ENV: [&str; 12] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -618,7 +618,10 @@ fn the_pack_declares_the_one_gate() {
         .collect();
     assert_eq!(
         lines,
-        ["pre-commit  suppressions  *  block  amont-agent suppressions --staged"]
+        [format!(
+            "pre-commit  suppressions  *  block  {} suppressions --staged",
+            greenpiste_guard::names::BIN
+        )]
     );
 }
 

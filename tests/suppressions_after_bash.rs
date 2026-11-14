@@ -79,7 +79,7 @@ impl World {
             Some(dir) => format!("{}:{search}", dir.display()),
             None => search,
         };
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", &self.home)
             .env("PATH", search)

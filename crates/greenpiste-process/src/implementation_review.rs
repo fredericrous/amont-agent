@@ -1,0 +1,3338 @@
+//! The implementation review (ADR-0022, `work.implementation-review`):
+//! before the push of a branch that carries a plan, one independent
+//! reviewer has read the diff against the plan and the active rules, and
+//! its verdict is bound to the tree it read.
+//!
+//! A review is bound to the **content id** of the commit it read (attest
+//! SPEC, "Content id"; not attest's canonical tree, which counts whether a
+//! plan exists): the sha256 of `git ls-tree -r -z --full-tree <rev>`'s entries — mode,
+//! type, object id and path, in git's own order — with every entry under
+//! `docs/plans/` left out. So recording the review in the plan never makes
+//! it stale, a later code change does, and the id is 64 hex whatever the
+//! repository's object format. It is computed read-only: no index, no
+//! object written, nothing to clean up if the hook is killed.
+//!
+//! The repository in a block is named by the basename of the parent of
+//! `git rev-parse --git-common-dir`, so a worktree checked out as
+//! `amont-agent-wt-x` still says `amont-agent`, and `tree-sha` and the
+//! rule cannot disagree on the name.
+//!
+//! ## What the hook reads
+//!
+//! A push is judged by `confirm` (the rule is `rules::implementation_review`):
+//! the pushed commit, the base it grew from (the remote's default branch,
+//! never the branch's own tracking ref — once a branch is published its
+//! plan commit is on the remote too, and a later push compared to the
+//! tracking ref would show no `docs/plans/` change and skip the rule for
+//! good), whether `docs/plans/` changed since that base, the content id,
+//! and then a binding: a completed `implementation-review` agent in this
+//! session's transcript whose block names this repository and tree, or a
+//! pass remembered under `<state>/implementation-review/by-tree/`.
+//!
+//! A pass also holds for another tree with the same **branch patch** when
+//! the repository's rule files are unchanged (ADR-0034,
+//! `work.implementation-review-binding`): a conflict-free rebase onto a
+//! moved `main` changes the tree, not the diff the reviewer read. The patch
+//! is `git diff --binary <merge-base> <pushed> -- . ':!docs/plans'` hashed by
+//! `git patch-id --verbatim`; the rules are `AGENTS.md`, `CLAUDE.md`,
+//! `.adr.yaml`, `.adr/` and `.claude/` in the pushed tree. A pass is filed
+//! under `by-patch/` too, and a hit there is journalled `reviewed-by-patch`.
+//! When the branch changes the root `CHANGELOG.md`, the pass is also filed
+//! under a release-notes-tolerant key ([`notes_patch`]): a release that only
+//! moved that file's context keeps it, journalled
+//! `reviewed-by-patch-notes-moved` (ADR-0059).
+//!
+//! The verdict is read, not assumed: a review that said `rework` and got
+//! no later delta on the same tree is not a pass. Only the hook writes a
+//! pass file — from a transcript binding, or from the person's `Overrule`
+//! on a marked question — and a Bash, Write or Edit under that directory
+//! is refused by the hook itself, outside any stance, because under `deny`
+//! a pass file is a trust boundary.
+
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
+
+use crate::code_review::Declared;
+
+use crate::candidates_block::Reviewed;
+use crate::content_id::content_id;
+use crate::plan_review::{completed_agents_resumable, Completed};
+use crate::provenance::Review as Bound;
+use crate::provenance::{ProfileHow, ProfileVerdict};
+use greenpiste_guard::git;
+use greenpiste_guard::journal;
+use greenpiste_guard::names::DATA_DIR;
+use greenpiste_guard::rules::{Confirmed, Context, Stance};
+use greenpiste_guard::sha256::{hex, sha256};
+use greenpiste_guard::shell::Simple;
+
+pub const RULE_ID: &str = "implementation-review";
+/// The agent type the reviewer is launched as; a prefix, like the panel's.
+const AGENT: &str = "implementation-review";
+/// Opens a review block in the reviewer's prompt.
+pub const BLOCK_OPEN: &str = "<<<TREE ";
+const BLOCK_CLOSE: &str = ">>>";
+/// The directory a review does not bind to: the plan's own record.
+const PLANS_PATH: &str = "docs/plans";
+/// The marker a person's overrule question carries.
+const MARKER: &str = "[implementation-review ";
+const OVERRULE: &str = "Overrule";
+/// Follows the tree in a marker that overrules a code-review profile.
+const PROFILE_KEY: &str = " profile=";
+
+// ---------------------------------------------------------------- the tree
+
+/// The files whose content a review was read against, besides the diff:
+/// the repository's active rules.
+const RULE_FILES: &[&[u8]] = &[b"AGENTS.md", b"CLAUDE.md", b".adr.yaml"];
+const RULE_DIRS: &[&[u8]] = &[b".adr/", b".claude/"];
+
+/// What a pass carries over to another tree: the branch patch and the
+/// fingerprint of the rule files. Both must match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchKey {
+    pub patch: String,
+    /// The release-notes-tolerant patch ([`notes_patch`]), when the branch
+    /// changes the root `CHANGELOG.md`: the same pass also holds when only
+    /// that file's context or blank lines moved (ADR-0059).
+    pub notes: Option<String>,
+    pub rules: String,
+}
+
+impl PatchKey {
+    /// The ids a pass is filed and looked up under, exact first.
+    fn ids(&self) -> impl Iterator<Item = (&str, PatchMatch)> {
+        std::iter::once((self.patch.as_str(), PatchMatch::Exact)).chain(
+            self.notes
+                .as_deref()
+                .map(|notes| (notes, PatchMatch::NotesMoved)),
+        )
+    }
+}
+
+/// Which key a remembered pass was found under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PatchMatch {
+    /// The same branch patch.
+    Exact,
+    /// Only the root `CHANGELOG.md`'s context or blank lines moved.
+    NotesMoved,
+}
+
+impl PatchMatch {
+    /// The store directory the key's passes live in.
+    fn dir(self) -> &'static str {
+        match self {
+            PatchMatch::Exact => "by-patch",
+            PatchMatch::NotesMoved => "by-notes-patch",
+        }
+    }
+
+    /// The word a carried pass's `how` starts with.
+    fn how(self) -> &'static str {
+        match self {
+            PatchMatch::Exact => "patch",
+            PatchMatch::NotesMoved => "patch-notes-moved",
+        }
+    }
+}
+
+/// Whether filing a pass under its patch keys replaces a record already
+/// there: a new review does; refiling a pass found by tree does not, so the
+/// record keeps naming the tree that was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refile {
+    All,
+    Missing,
+}
+
+/// How a pass is filed under its patch keys: the `how` it records and
+/// whether it replaces a record already there.
+#[derive(Debug, Clone, Copy)]
+struct Filing<'a> {
+    how: &'a str,
+    refile: Refile,
+}
+
+/// The one release-notes file whose context may move under a pass: a
+/// release rewrites the lines around a branch's `## Unreleased` entry.
+const NOTES_FILE: &str = "CHANGELOG.md";
+
+/// The patch with the root `CHANGELOG.md` read by its changed text only:
+/// the sha256 of the `git patch-id --verbatim` of everything else (without
+/// `docs/plans/`) and of that file's changed lines inside its `-U0` hunks,
+/// in order, blank ones left out (`\ No newline` markers count).
+///
+/// `Ok(None)` when the branch leaves the file alone (the exact key says it
+/// all) or when the file is not a regular file of the same mode on both
+/// sides. `Err` when git cannot answer. Either way only the exact key holds:
+/// the push gets a clean miss, never a carry.
+pub fn notes_patch(repo: &Path, merge_base: &str, pushed: &str) -> Result<Option<String>, String> {
+    let run = |args: &[&str], stdin: Option<&[u8]>| -> Result<Vec<u8>, String> {
+        git::bytes_in(repo, args, stdin)
+            .map_err(|e| format!("git could not be run: {e}"))?
+            .ok_or_else(|| format!("`git {}` failed", args[0]))
+    };
+    let status = run(
+        &[
+            "diff",
+            "--name-status",
+            "--no-renames",
+            merge_base,
+            pushed,
+            "--",
+            NOTES_FILE,
+        ],
+        None,
+    )?;
+    if String::from_utf8_lossy(&status).trim() != format!("M\t{NOTES_FILE}") {
+        return Ok(None);
+    }
+    let mode = |rev: &str| -> Result<String, String> {
+        let entry = run(&["ls-tree", rev, "--", NOTES_FILE], None)?;
+        String::from_utf8_lossy(&entry)
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
+            .ok_or_else(|| format!("no {NOTES_FILE} at {rev}"))
+    };
+    let (before, after) = (mode(merge_base)?, mode(pushed)?);
+    if before != after || !matches!(before.as_str(), "100644" | "100755") {
+        return Ok(None);
+    }
+    let rest = run(
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            merge_base,
+            pushed,
+            "--",
+            ".",
+            &format!(":!{PLANS_PATH}"),
+            &format!(":!{NOTES_FILE}"),
+        ],
+        None,
+    )?;
+    let rest_id = if rest.is_empty() {
+        String::new()
+    } else {
+        let out = run(&["patch-id", "--verbatim"], Some(&rest))?;
+        String::from_utf8_lossy(&out)
+            .split_whitespace()
+            .next()
+            .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_string)
+            .ok_or("`git patch-id` printed no id")?
+    };
+    // `--text`: a file git would call binary still shows its lines, so an
+    // edit to it can never hash to nothing.
+    let notes = run(
+        &[
+            "diff",
+            "-U0",
+            "--text",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            merge_base,
+            pushed,
+            "--",
+            NOTES_FILE,
+        ],
+        None,
+    )?;
+    let mut bytes = b"notes-patch v1\0".to_vec();
+    bytes.extend_from_slice(rest_id.as_bytes());
+    bytes.push(0);
+    // The file header comes before the first hunk; inside hunks every line
+    // is content, whatever it starts with (`----` is a removed `---`).
+    let mut hunks = 0usize;
+    for line in notes.split(|byte| *byte == b'\n') {
+        if line.starts_with(b"@@") {
+            hunks += 1;
+            continue;
+        }
+        if hunks == 0 {
+            continue;
+        }
+        let content = matches!(line.first(), Some(b'+' | b'-' | b'\\'));
+        if content && !line[1..].iter().all(u8::is_ascii_whitespace) {
+            bytes.extend_from_slice(line);
+            bytes.push(b'\n');
+        }
+    }
+    if hunks == 0 {
+        return Err(format!("`git diff` showed no hunk for {NOTES_FILE}"));
+    }
+    Ok(Some(hex(&sha256(&bytes))))
+}
+
+/// The `git patch-id --verbatim` of the branch's diff since `merge_base`,
+/// `docs/plans/` left out. `Err` on an empty diff or any failure: a key
+/// that cannot be computed carries nothing over.
+pub fn branch_patch(repo: &Path, merge_base: &str, pushed: &str) -> Result<String, String> {
+    let diff = git::bytes_in(
+        repo,
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            merge_base,
+            pushed,
+            "--",
+            ".",
+            &format!(":!{PLANS_PATH}"),
+        ],
+        None,
+    )
+    .map_err(|e| format!("git could not be run: {e}"))?
+    .ok_or("`git diff` against the base failed")?;
+    if diff.is_empty() {
+        return Err("the branch changes nothing outside docs/plans/".into());
+    }
+    let out = git::bytes_in(repo, &["patch-id", "--verbatim"], Some(&diff))
+        .map_err(|e| format!("git could not be run: {e}"))?
+        .ok_or("`git patch-id` failed")?;
+    let out = String::from_utf8_lossy(&out);
+    out.split_whitespace()
+        .next()
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .ok_or_else(|| "`git patch-id` printed no id".into())
+}
+
+/// The sha256 of the rule files' entries in `rev`'s tree.
+pub fn rules_fingerprint(repo: &Path, rev: &str) -> Result<String, String> {
+    let spec = format!("{rev}^{{tree}}");
+    let entries = git::ls_tree_entries(repo, &spec)
+        .map_err(|e| format!("git could not be run in {}: {e}", repo.display()))?
+        .ok_or_else(|| format!("`{rev}` does not name a tree in {}", repo.display()))?;
+    let mut bytes: Vec<u8> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .iter()
+            .position(|c| *c == b'\t')
+            .map(|i| &entry[i + 1..])
+            .unwrap_or(&entry[..]);
+        if RULE_FILES.contains(&path) || RULE_DIRS.iter().any(|d| path.starts_with(d)) {
+            bytes.extend_from_slice(&entry);
+            bytes.push(0);
+        }
+    }
+    Ok(hex(&sha256(&bytes)))
+}
+
+/// Both halves of the key for `pushed`, or why either cannot be computed:
+/// a miss, never a pass, and the caller says the reason when it holds.
+pub fn patch_key(repo: &Path, merge_base: &str, pushed: &str) -> Result<PatchKey, String> {
+    Ok(PatchKey {
+        patch: branch_patch(repo, merge_base, pushed)?,
+        notes: notes_patch(repo, merge_base, pushed).ok().flatten(), // a notes key git cannot compute is a clean miss, never a carry
+        rules: rules_fingerprint(repo, pushed)?,
+    })
+}
+
+/// The repository's name for a block: the basename of the directory that
+/// holds its common `.git`, whichever worktree `repo` is.
+pub fn repo_name(repo: &Path) -> Option<String> {
+    let common = git::stdout_in(repo, &["rev-parse", "--git-common-dir"])?;
+    if common.is_empty() {
+        return None;
+    }
+    let common = PathBuf::from(common);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        repo.join(common)
+    };
+    let common = std::fs::canonicalize(&common).unwrap_or(common);
+    common
+        .parent()
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+}
+
+/// The review block a reviewer's prompt carries.
+pub fn block(repo: &str, sha: &str) -> String {
+    format!("{BLOCK_OPEN}repo={repo} sha={sha}{BLOCK_CLOSE}")
+}
+
+/// The `(repo, sha)` of every review block in a prompt. A sha that is not
+/// 64 hex is not a binding.
+pub fn parse_blocks(prompt: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = prompt;
+    while let Some(at) = rest.find(BLOCK_OPEN) {
+        rest = &rest[at + BLOCK_OPEN.len()..];
+        let Some(end) = rest.find(BLOCK_CLOSE) else {
+            break;
+        };
+        let inner = &rest[..end];
+        rest = &rest[end..];
+        let Some(body) = inner.strip_prefix("repo=") else {
+            continue;
+        };
+        let Some(split) = body.rfind(" sha=") else {
+            continue;
+        };
+        let repo = body[..split].trim().to_string();
+        let sha = body[split + 5..].trim().to_ascii_lowercase();
+        if repo.is_empty() || !is_sha256(&sha) {
+            continue;
+        }
+        out.push((repo, sha));
+    }
+    out
+}
+
+pub fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(12)]
+}
+
+// ---------------------------------------------------------------- the verdict
+
+/// What a reviewer's result said, read from its first `Verdict:` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Approve,
+    ApproveWithChanges,
+    Rework,
+}
+
+impl Verdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Approve => "approve",
+            Verdict::ApproveWithChanges => "approve-with-changes",
+            Verdict::Rework => "rework",
+        }
+    }
+}
+
+/// The verdict a result text states, or `None` when it states none the
+/// contract knows — which is not a pass.
+pub fn verdict_of(result: &str) -> Option<Verdict> {
+    let line = result.lines().find(|l| l.contains("Verdict:"))?;
+    let after = line.split_once("Verdict:")?.1;
+    let word: String = after
+        .trim()
+        .trim_start_matches(['*', '`', '_', ' '])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match word.as_str() {
+        "approve-with-changes" => Some(Verdict::ApproveWithChanges),
+        "approve" | "approved" => Some(Verdict::Approve),
+        "rework" => Some(Verdict::Rework),
+        _ => None,
+    }
+}
+
+/// The reviews this session completed, in launch order: what each bound
+/// and what it said. A reviewer resumed with `SendMessage` on a new block is
+/// a review of its own ([`completed_agents_resumable`]).
+pub struct Review {
+    pub repo: String,
+    pub sha: String,
+    pub verdict: Option<Verdict>,
+    /// The sha of the prompt's `<<<RULES …>>>` line, when it has a valid one.
+    pub rules_sha: Option<String>,
+    /// The candidates the prompt listed and the result ruled on.
+    pub candidates: Reviewed,
+}
+
+pub fn reviews(transcript: &Path) -> std::io::Result<Vec<Review>> {
+    let file = std::fs::File::open(transcript)?;
+    let reader = std::io::BufReader::new(file);
+    Ok(completed_agents_resumable(reader, AGENT)
+        .into_iter()
+        .flat_map(|c: Completed| {
+            let verdict = verdict_of(&c.result);
+            let rules_sha = crate::review_brief::parse_rules_sha(&c.prompt);
+            let candidates = Reviewed::read(c.agent_id.as_deref(), &c.prompt, &c.result);
+            parse_blocks(crate::code_review::header(&c.prompt))
+                .into_iter()
+                .map(move |(repo, sha)| Review {
+                    repo,
+                    sha,
+                    verdict,
+                    rules_sha: rules_sha.clone(),
+                    candidates: candidates.clone(),
+                })
+        })
+        .collect())
+}
+
+// ---------------------------------------------------------------- the store
+
+fn store() -> Option<PathBuf> {
+    Some(journal::dir()?.join(RULE_ID))
+}
+
+fn private_dir(dir: &Path) -> Option<()> {
+    std::fs::create_dir_all(dir).ok()?;
+    journal::private(dir, 0o700);
+    Some(())
+}
+
+fn pass_file(repo: &str, sha: &str) -> Option<PathBuf> {
+    if repo.contains('/') || repo.contains("..") || !is_sha256(sha) {
+        return None;
+    }
+    Some(
+        store()?
+            .join("by-tree")
+            .join(repo)
+            .join(format!("{sha}.json")),
+    )
+}
+
+/// The verdict a remembered pass carries (`approve`, `approve-with-changes`
+/// or `overruled`), if this repository and tree have one.
+pub fn remembered(repo: &str, sha: &str) -> Option<String> {
+    remembered_pass(repo, sha).map(|pass| pass.verdict)
+}
+
+/// A remembered verdict and the rules line the passing review's prompt
+/// carried.
+struct Pass {
+    verdict: String,
+    prompt_rules: PromptRules,
+    candidates: Reviewed,
+}
+
+/// What a passing review's prompt said about the rules it was given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptRules {
+    /// The pass was remembered before the rules line was stored.
+    NotRecorded,
+    /// The prompt carried no rules line.
+    Absent,
+    /// The prompt's rules line, 64 hex.
+    Sha(String),
+}
+
+/// How [`PromptRules::Absent`] is stored: the field is kept, and empty, so
+/// it reads apart from a pass that predates the field.
+const RULES_ABSENT_STORED: &str = "";
+
+impl PromptRules {
+    fn of_prompt(sha: Option<&str>) -> PromptRules {
+        sha.map_or(PromptRules::Absent, |sha| PromptRules::Sha(sha.to_string()))
+    }
+
+    /// The stored `prompt_rules_sha`: `null` (not recorded), `""` (absent)
+    /// or the sha.
+    fn stored(&self) -> Option<&str> {
+        match self {
+            PromptRules::NotRecorded => None,
+            PromptRules::Absent => Some(RULES_ABSENT_STORED),
+            PromptRules::Sha(sha) => Some(sha),
+        }
+    }
+
+    fn from_stored(stored: Option<&str>) -> PromptRules {
+        match stored {
+            None => PromptRules::NotRecorded,
+            Some(RULES_ABSENT_STORED) => PromptRules::Absent,
+            Some(sha) => PromptRules::Sha(sha.to_string()),
+        }
+    }
+}
+
+fn pass_of(stored_record: &serde_json::Value) -> Option<Pass> {
+    Some(Pass {
+        verdict: stored_record.get("verdict")?.as_str()?.to_string(),
+        prompt_rules: PromptRules::from_stored(
+            stored_record
+                .get("prompt_rules_sha")
+                .and_then(serde_json::Value::as_str),
+        ),
+        candidates: Reviewed::from_json(stored_record.get("candidates")),
+    })
+}
+
+fn remembered_pass(repo: &str, sha: &str) -> Option<Pass> {
+    let f = pass_file(repo, sha)?;
+    pass_of(&serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()?)
+}
+
+/// Written only by the hook: from a transcript binding whose verdict is a
+/// pass, or from the person's `Overrule` of a `rework`.
+fn remember(
+    repo: &str,
+    sha: &str,
+    verdict: &str,
+    how: &str,
+    prompt_rules: &PromptRules,
+    candidates: &Reviewed,
+) -> Option<()> {
+    let f = pass_file(repo, sha)?;
+    private_dir(f.parent()?)?;
+    let body = serde_json::json!({
+        "repo": repo,
+        "tree": sha,
+        "verdict": verdict,
+        "agent": AGENT,
+        "how": how,
+        "prompt_rules_sha": prompt_rules.stored(),
+        "candidates": candidates.to_json(),
+    })
+    .to_string();
+    greenpiste_guard::atomic::write_atomic(&f, &body).ok()?;
+    journal::private(&f, 0o600);
+    Some(())
+}
+
+fn patch_file(repo: &str, patch: &str, kind: PatchMatch) -> Option<PathBuf> {
+    if repo.contains('/')
+        || repo.contains("..")
+        || patch.is_empty()
+        || !patch.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(
+        store()?
+            .join(kind.dir())
+            .join(repo)
+            .join(format!("{patch}.json")),
+    )
+}
+
+/// The pass remembered for this patch, when its rules match: the verdict,
+/// the tree it was given for, and the key it was found under, exact first.
+fn remembered_patch(repo: &str, key: &PatchKey) -> Option<(Pass, String, PatchMatch)> {
+    key.ids().find_map(|(id, kind)| {
+        let file = patch_file(repo, id, kind)?;
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+        if record.get("rules")?.as_str()? != key.rules {
+            return None;
+        }
+        Some((
+            pass_of(&record)?,
+            record.get("tree")?.as_str()?.to_string(),
+            kind,
+        ))
+    })
+}
+
+/// Files a pass under its patch too, so a conflict-free rebase keeps it,
+/// and under the release-notes-tolerant key when there is one.
+fn remember_patch(
+    repo: &str,
+    key: &PatchKey,
+    tree: &str,
+    verdict: &str,
+    filing: Filing,
+    prompt_rules: &PromptRules,
+    candidates: &Reviewed,
+) -> Option<()> {
+    for (id, kind) in key.ids() {
+        let file = patch_file(repo, id, kind)?;
+        if filing.refile == Refile::Missing && file.exists() {
+            continue;
+        }
+        private_dir(file.parent()?)?;
+        let body = serde_json::json!({
+            "repo": repo,
+            "patch": id,
+            "rules": key.rules,
+            "tree": tree,
+            "verdict": verdict,
+            "agent": AGENT,
+            "how": filing.how,
+            "prompt_rules_sha": prompt_rules.stored(),
+            "candidates": candidates.to_json(),
+        })
+        .to_string();
+        greenpiste_guard::atomic::write_atomic(&file, &body).ok()?;
+        journal::private(&file, 0o600);
+    }
+    Some(())
+}
+
+/// What a passed review of a branch read: the pushed head, its merge-base
+/// and the tree. `review-brief --interdiff` starts a delta from `head`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchPass {
+    pub head: String,
+    pub base: String,
+    pub tree: String,
+}
+
+impl BranchPass {
+    /// A record whose three fields are object ids; anything else is no
+    /// record, so a damaged file never names a head.
+    fn from_record(record: &serde_json::Value) -> Option<Self> {
+        let id = |field: &str| {
+            record
+                .get(field)?
+                .as_str()
+                .filter(|value| {
+                    (40..=64).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+                .map(str::to_string)
+        };
+        Some(Self {
+            head: id("head")?,
+            base: id("base")?,
+            tree: id("tree")?,
+        })
+    }
+}
+
+/// The store directory of a role's branch records: the implementation
+/// review's, or a code-review profile's slug.
+fn role_dir(profile: Option<&str>) -> Option<String> {
+    match profile {
+        None => Some(AGENT.to_string()),
+        Some(profile) => crate::code_review::slug(profile),
+    }
+}
+
+/// `by-branch/<repo>/<role>/<sha256(dst)>.json`: what this role's last pass
+/// of the remote branch `dst` read.
+fn branch_file(repo: &str, profile: Option<&str>, dst: &str) -> Option<PathBuf> {
+    if repo.contains('/') || repo.contains("..") || dst.is_empty() {
+        return None;
+    }
+    Some(
+        store()?
+            .join("by-branch")
+            .join(repo)
+            .join(role_dir(profile)?)
+            .join(format!("{}.json", hex(&sha256(dst.as_bytes())))),
+    )
+}
+
+/// Records what a fresh pass of this role read. Last writer wins: a
+/// branch's newest pass is the one a delta starts from. Written
+/// atomically; a failure only loses the hint.
+fn remember_branch(repo: &str, profile: Option<&str>, dst: &str, pass: &BranchPass) -> Option<()> {
+    let file = branch_file(repo, profile, dst)?;
+    private_dir(file.parent()?)?;
+    let body = serde_json::json!({
+        "repo": repo,
+        "branch": dst,
+        "head": pass.head,
+        "base": pass.base,
+        "tree": pass.tree,
+    })
+    .to_string();
+    greenpiste_guard::atomic::write_atomic(&file, &body).ok()?;
+    journal::private(&file, 0o600);
+    Some(())
+}
+
+/// What this role's last pass of the remote branch `dst` read, when a
+/// well-formed record is kept.
+pub fn reviewed_head(repo: &str, profile: Option<&str>, dst: &str) -> Option<BranchPass> {
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(branch_file(repo, profile, dst)?).ok()?)
+            .ok()?;
+    BranchPass::from_record(&record)
+}
+
+/// The remote ref a push of the current branch updates, as the push check
+/// sees it (`target.dst`) for `git push` and `amont land`: the branch of the
+/// same name. A push to another name (`HEAD:refs/heads/other`) is keyed
+/// there, and the brief then finds no record and says so. `None` on a
+/// detached HEAD.
+pub fn branch_ref(repo: &Path) -> Option<String> {
+    let branch = git::stdout_in(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    Some(format!("refs/heads/{branch}"))
+}
+
+// The code-review profiles (ADR-0052).
+
+/// A completed review by one code-review profile's agent (ADR-0052), bound
+/// to the profile its launch prompt named.
+pub struct ProfileReview {
+    pub repo: String,
+    pub sha: String,
+    pub profile: String,
+    pub agent: String,
+    pub verdict: Option<Verdict>,
+}
+
+/// The code-review profile reviews this session completed, in launch order.
+/// A launch counts for a profile only when its agent is the one the profile
+/// maps to and its prompt's header ([`crate::code_review::header`]) carries
+/// exactly one `Profile:` line naming that profile. The review blocks it binds
+/// are read from the same header. A resumed round inherits the profile of its
+/// launch and may omit the line; one that names another profile counts for
+/// nothing.
+pub fn profile_reviews(transcript: &Path) -> std::io::Result<Vec<ProfileReview>> {
+    let bytes = std::fs::read(transcript)?;
+    let mut completed = completed_agents_resumable(bytes.as_slice(), "code-review-");
+    completed.extend(completed_agents_resumable(
+        bytes.as_slice(),
+        "interface-review",
+    ));
+    let mut launched: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for c in completed {
+        let lines = crate::code_review::profile_lines(&c.prompt);
+        let inherited = c.agent_id.as_ref().and_then(|id| launched.get(id));
+        let profile = if c.resumed {
+            match (lines.as_slice(), inherited) {
+                ([], Some(profile)) => Some(profile.clone()),
+                ([line], Some(profile)) if line == profile => Some(profile.clone()),
+                _ => None,
+            }
+        } else {
+            match lines.as_slice() {
+                [line] => Some(line.to_string()),
+                _ => None,
+            }
+        };
+        let Some(profile) = profile.filter(|profile| {
+            crate::code_review::agent_for(profile).is_some_and(|(agent, _)| agent == c.agent)
+        }) else {
+            continue;
+        };
+        if !c.resumed {
+            if let Some(id) = &c.agent_id {
+                launched.insert(id.clone(), profile.clone());
+            }
+        }
+        let verdict = verdict_of(&c.result);
+        out.extend(
+            parse_blocks(crate::code_review::header(&c.prompt))
+                .into_iter()
+                .map(|(repo, sha)| ProfileReview {
+                    repo,
+                    sha,
+                    profile: profile.clone(),
+                    agent: c.agent.clone(),
+                    verdict,
+                }),
+        );
+    }
+    Ok(out)
+}
+
+fn profile_pass_file(profile: &str, repo: &str, sha: &str) -> Option<PathBuf> {
+    if repo.contains('/') || repo.contains("..") || !is_sha256(sha) {
+        return None;
+    }
+    Some(
+        store()?
+            .join("by-profile")
+            .join(crate::code_review::slug(profile)?)
+            .join("by-tree")
+            .join(repo)
+            .join(format!("{sha}.json")),
+    )
+}
+
+fn profile_patch_file(profile: &str, repo: &str, patch: &str, kind: PatchMatch) -> Option<PathBuf> {
+    if repo.contains('/')
+        || repo.contains("..")
+        || patch.is_empty()
+        || !patch.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(
+        store()?
+            .join("by-profile")
+            .join(crate::code_review::slug(profile)?)
+            .join(kind.dir())
+            .join(repo)
+            .join(format!("{patch}.json")),
+    )
+}
+
+fn write_profile_pass(file: &Path, body: &serde_json::Value) -> Option<()> {
+    private_dir(file.parent()?)?;
+    greenpiste_guard::atomic::write_atomic(file, &body.to_string()).ok()?;
+    journal::private(file, 0o600);
+    Some(())
+}
+
+fn profile_record(profile: &str, repo: &str, sha: &str) -> Option<serde_json::Value> {
+    let file = profile_pass_file(profile, repo, sha)?;
+    serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()
+}
+
+fn remembered_profile(profile: &str, repo: &str, sha: &str) -> Option<String> {
+    Some(
+        profile_record(profile, repo, sha)?
+            .get("verdict")?
+            .as_str()?
+            .to_string(),
+    )
+}
+
+/// How a remembered profile pass bound, from what it recorded.
+fn remembered_how(profile: &str, repo: &str, sha: &str) -> ProfileHow {
+    let record = profile_record(profile, repo, sha);
+    let field = |key: &str| {
+        record
+            .as_ref()
+            .and_then(|r| r.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let how = field("how");
+    if field("verdict") == "overruled" {
+        ProfileHow::Overruled
+    } else if how.starts_with("carried-from") {
+        ProfileHow::Carried
+    } else if how.starts_with("patch") {
+        ProfileHow::ByPatch
+    } else {
+        ProfileHow::Reviewed
+    }
+}
+
+/// The content id a remembered profile pass read: what it recorded, else the
+/// tree (a pass from before `read` was stored).
+fn remembered_read(profile: &str, repo: &str, sha: &str) -> String {
+    profile_record(profile, repo, sha)
+        .and_then(|r| r.get("read")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| sha.to_string())
+}
+
+/// What a profile pass recorded about the review beyond its tree, so that a
+/// later push can check whether it carries (ADR-0052): the commit the review
+/// read, the plan that declared the profile and a digest of the repository's
+/// parsed `## Code review` declaration. A pass without them never carries.
+struct Basis {
+    commit: String,
+    plan: String,
+    declaration: String,
+}
+
+fn remember_profile(
+    profile: &str,
+    repo: &str,
+    sha: &str,
+    verdict: &str,
+    how: &str,
+    read: &str,
+    basis: Option<&Basis>,
+) -> Option<()> {
+    let mut body = serde_json::json!({
+        "repo": repo,
+        "tree": sha,
+        "profile": profile,
+        "verdict": verdict,
+        "agent": crate::code_review::agent_for(profile)?.0,
+        "how": how,
+        "read": read,
+    });
+    if let Some(basis) = basis {
+        body["commit"] = basis.commit.clone().into();
+        body["plan"] = basis.plan.clone().into();
+        body["declaration"] = basis.declaration.clone().into();
+    }
+    write_profile_pass(&profile_pass_file(profile, repo, sha)?, &body)
+}
+
+/// A profile's pass remembered for this patch: verdict, tree, and the key
+/// it was found under, exact first.
+fn remembered_profile_patch(
+    profile: &str,
+    repo: &str,
+    key: &PatchKey,
+) -> Option<(String, String, PatchMatch)> {
+    key.ids().find_map(|(id, kind)| {
+        let file = profile_patch_file(profile, repo, id, kind)?;
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+        if record.get("rules")?.as_str()? != key.rules {
+            return None;
+        }
+        Some((
+            record.get("verdict")?.as_str()?.to_string(),
+            record.get("tree")?.as_str()?.to_string(),
+            kind,
+        ))
+    })
+}
+
+fn remember_profile_patch(
+    profile: &str,
+    repo: &str,
+    key: &PatchKey,
+    tree: &str,
+    verdict: &str,
+    filing: Filing,
+) -> Option<()> {
+    for (id, kind) in key.ids() {
+        let file = profile_patch_file(profile, repo, id, kind)?;
+        if filing.refile == Refile::Missing && file.exists() {
+            continue;
+        }
+        write_profile_pass(
+            &file,
+            &serde_json::json!({
+                "repo": repo,
+                "patch": id,
+                "rules": key.rules,
+                "tree": tree,
+                "profile": profile,
+                "verdict": verdict,
+                "agent": crate::code_review::agent_for(profile)?.0,
+                "how": filing.how,
+            }),
+        )?;
+    }
+    Some(())
+}
+
+/// Where a declared profile stands on the pushed tree.
+enum Standing {
+    /// How the pass bound, and the content id its review read.
+    Passed(ProfileHow, String),
+    /// The latest review of the tree said this (`rework`, or nothing the
+    /// contract reads).
+    Reworked(String, String),
+    Missing,
+}
+
+/// The profiles the branch's plans declare for this repository.
+#[derive(Default)]
+struct Declaration {
+    profiles: Vec<String>,
+    /// The first plan that declares them.
+    plan: String,
+    /// Whether any plan has a `## Code review` section.
+    any_section: bool,
+    /// The sha256 of this repository's parsed declarations, in plan order.
+    digest: String,
+    /// The reason of a `none — copy of fp:<12 hex>` line: a claim the hook
+    /// verifies, never trusts.
+    copy_of: Option<String>,
+}
+
+/// What this session's profile reviews say about carrying a pass.
+enum SessionCarry {
+    /// The profile's latest review of an earlier branch tree is not
+    /// `approve`: nothing carries, not even a filed pass.
+    Blocked,
+    /// It is an `approve` whose commits all held the declaration in force.
+    Carry {
+        /// The content id the review read.
+        reviewed_id: String,
+        /// What the carried pass records.
+        kept: Basis,
+    },
+    /// The session says nothing that decides it: filed passes may.
+    Undecided,
+}
+
+/// The per-profile half of the push judgement: every code-review profile
+/// the branch's plans declare for this repository needs its own pass on the
+/// pushed tree. A plan with no section requires none.
+struct ProfileGate<'a> {
+    repo: &'a Path,
+    name: &'a str,
+    tree: &'a str,
+    key: Option<&'a PatchKey>,
+    plans: &'a [String],
+    pushed: &'a str,
+    merge_base: &'a str,
+    /// The remote ref the push updates: the key of the by-branch record.
+    dst: &'a str,
+    transcript: Option<&'a Path>,
+    stance: Stance,
+    /// The branch changes nothing outside docs/plans/ (a successful
+    /// `git diff --quiet`; a failed one is `false`).
+    plan_only: bool,
+}
+
+/// How a declaration read at a commit treats a pointer plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Canonical {
+    /// Follow `canonical:` to the plan root's checkout: right for the pushed
+    /// commit, whose declaration is the one in force now.
+    Follow,
+    /// A pointer records no revision of its canonical file, so what it
+    /// declared at an earlier commit cannot be proven: give no declaration.
+    Unproven,
+}
+
+impl ProfileGate<'_> {
+    fn declaration(&self) -> Result<Declaration, String> {
+        self.declaration_of(self.pushed, self.plans, Canonical::Follow)
+            .map(|found| found.unwrap_or_else(Declaration::default))
+    }
+
+    /// The declaration as `commit` held it, read from the plans it changed
+    /// since the merge-base, for a session carry. `None` when it cannot be
+    /// read or proven (a pointer plan), so nothing carries from it.
+    fn declaration_at(&self, commit: &str) -> Option<Declaration> {
+        let changed = git::stdout_in(
+            self.repo,
+            &[
+                "diff",
+                "--name-only",
+                self.merge_base,
+                commit,
+                "--",
+                PLANS_PATH,
+            ],
+        )?;
+        let plans: Vec<String> = changed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
+        self.declaration_of(commit, &plans, Canonical::Unproven)
+            .ok()
+            .flatten()
+    }
+
+    /// A pointer's own line that differs from the line its canonical plan now
+    /// holds for this repository is journalled: the pointer's line wins, and
+    /// the drift should not go unseen.
+    fn note_drift(&self, path: &str, text: &str, own: &BTreeMap<String, Declared>) {
+        let Ok(Some(then)) = crate::code_review::canonical_text(text)
+            .and_then(|canonical| crate::code_review::parse(&canonical))
+        else {
+            return;
+        };
+        if own.get(self.name) == then.get(self.name) {
+            return;
+        }
+        let line = |map: &BTreeMap<String, Declared>| {
+            map.get(self.name)
+                .map_or_else(|| "not declared".to_string(), Declared::describe)
+        };
+        note(
+            "pointer-line-drift",
+            "-",
+            self.name,
+            &format!(
+                "{path}: pointer `{}`, canonical `{}`",
+                line(own),
+                line(&then)
+            ),
+        );
+    }
+
+    fn declaration_of(
+        &self,
+        commit: &str,
+        plans: &[String],
+        canonical: Canonical,
+    ) -> Result<Option<Declaration>, String> {
+        let mut found = Declaration::default();
+        let mut described = String::new();
+        for path in plans {
+            // A plan deleted on the branch is not there to declare anything.
+            let Some(text) = git::stdout_in(self.repo, &["show", &format!("{commit}:{path}")])
+            else {
+                continue;
+            };
+            let own = crate::code_review::has_own_section(&text);
+            if canonical == Canonical::Unproven && crate::code_review::is_pointer(&text) && !own {
+                return Ok(None);
+            }
+            let declared = crate::code_review::declared_text(&text)
+                .and_then(|text| crate::code_review::parse(&text))
+                .map_err(|why| {
+                    format!("the code review declared in {path} cannot be read: {why}")
+                })?;
+            let Some(declared) = declared else { continue };
+            crate::code_review::require_own_line(&text, &declared, self.name)
+                .map_err(|why| format!("the code review declared in {path}: {why}"))?;
+            if own && canonical == Canonical::Follow {
+                self.note_drift(path, &text, &declared);
+            }
+            found.any_section = true;
+            if let Some(line) = declared.get(self.name) {
+                described.push_str(&line.describe());
+                described.push('\n');
+            }
+            if let Some(crate::code_review::Declared::NoReview { reason }) = declared.get(self.name)
+            {
+                if reason.starts_with(COPY_PREFIX) && found.copy_of.is_none() {
+                    found.copy_of = Some(reason.clone());
+                    if found.plan.is_empty() {
+                        found.plan = path.clone();
+                    }
+                }
+            }
+            if let Some(crate::code_review::Declared::Profiles { profiles, .. }) =
+                declared.get(self.name)
+            {
+                if found.plan.is_empty() {
+                    found.plan = path.clone();
+                }
+                for profile in profiles {
+                    if !found.profiles.contains(profile) {
+                        found.profiles.push(profile.clone());
+                    }
+                }
+            }
+        }
+        found.digest = hex(&sha256(described.as_bytes()));
+        Ok(Some(found))
+    }
+
+    /// The commits of the branch after the merge-base, newest first, each
+    /// with its content id. Computed once per push and shared by every
+    /// profile.
+    fn branch(&self) -> Vec<(String, String)> {
+        git::stdout_in(
+            self.repo,
+            &["rev-list", self.pushed, &format!("^{}", self.merge_base)],
+        )
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter_map(|commit| {
+                    let id = content_id(self.repo, commit).ok()?;
+                    Some((commit.to_string(), id))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// The basis a pass for the pushed tree records: the newest branch
+    /// commit whose content id is the pushed tree, with the plan and
+    /// declaration digest now in force. `None` when the commit cannot be
+    /// found, so the pass cannot carry.
+    fn basis(&self, declared: &Declaration, branch: &[(String, String)]) -> Option<Basis> {
+        let (commit, _) = branch.iter().find(|(_, id)| id == self.tree)?;
+        Some(Basis {
+            commit: commit.clone(),
+            plan: declared.plan.clone(),
+            declaration: declared.digest.clone(),
+        })
+    }
+
+    /// The session's say on carrying `profile`: its latest review, in launch
+    /// order, of a tree of the branch other than the pushed one.
+    fn session_carry(
+        &self,
+        profile: &str,
+        declared: &Declaration,
+        branch: &[(String, String)],
+        reviews: &[ProfileReview],
+    ) -> SessionCarry {
+        let Some(latest) = reviews.iter().rev().find(|review| {
+            review.repo == self.name
+                && review.profile == profile
+                && review.sha != self.tree
+                && branch.iter().any(|(_, id)| *id == review.sha)
+        }) else {
+            return SessionCarry::Undecided;
+        };
+        if latest.verdict != Some(Verdict::Approve) {
+            note(
+                "profile-carry-blocked",
+                "-",
+                self.name,
+                &format!(
+                    "tree={} profile={profile} by {} verdict={}",
+                    short(self.tree),
+                    &latest.sha[..12],
+                    latest.verdict.map_or("none", Verdict::as_str)
+                ),
+            );
+            return SessionCarry::Blocked;
+        }
+        // A content id leaves docs/plans/ out, so a plan-only commit keeps
+        // the tree: every branch commit with the reviewed tree is one the
+        // review may have read, and each must hold the declaration in force
+        // now. One that differs, or cannot be read, carries nothing.
+        let commits: Vec<&String> = branch
+            .iter()
+            .filter(|(_, id)| *id == latest.sha)
+            .map(|(commit, _)| commit)
+            .collect();
+        let Some(newest) = commits.first() else {
+            return SessionCarry::Undecided;
+        };
+        let same = commits.iter().all(|commit| {
+            self.declaration_at(commit)
+                .is_some_and(|then| then.plan == declared.plan && then.digest == declared.digest)
+        });
+        if !same {
+            note(
+                "profile-carry-declaration-differs",
+                "-",
+                self.name,
+                &format!(
+                    "tree={} profile={profile} reviewed {}: a commit with that tree holds another, an unreadable or a pointer declaration",
+                    short(self.tree),
+                    &latest.sha[..12]
+                ),
+            );
+            return SessionCarry::Undecided;
+        }
+        SessionCarry::Carry {
+            reviewed_id: latest.sha.clone(),
+            kept: Basis {
+                commit: (*newest).clone(),
+                plan: declared.plan.clone(),
+                declaration: declared.digest.clone(),
+            },
+        }
+    }
+
+    /// An `approve` this profile gave an earlier commit of the branch that
+    /// still stands: the commit is in `pushed ^merge-base` (an ancestor of
+    /// the pushed commit, strictly after the current merge-base, so a
+    /// rebased branch or a merged plan's review never matches), and the
+    /// pass recorded the same plan and declaration digest. Returns the
+    /// content id the review read and the basis the carried pass keeps.
+    fn carried(
+        &self,
+        profile: &str,
+        declared: &Declaration,
+        branch: &[(String, String)],
+    ) -> Option<(String, Basis)> {
+        for (_, id) in branch {
+            if id == self.tree {
+                continue;
+            }
+            let Some(record) = profile_record(profile, self.name, id) else {
+                continue;
+            };
+            let field = |key: &str| record.get(key).and_then(serde_json::Value::as_str);
+            let (Some("approve"), Some(reviewed), Some(plan), Some(digest)) = (
+                field("verdict"),
+                field("commit"),
+                field("plan"),
+                field("declaration"),
+            ) else {
+                continue;
+            };
+            let Some((_, reviewed_id)) = branch.iter().find(|(commit, _)| commit == reviewed)
+            else {
+                continue;
+            };
+            if plan == declared.plan && digest == declared.digest {
+                return Some((
+                    reviewed_id.clone(),
+                    Basis {
+                        commit: reviewed.to_string(),
+                        plan: plan.to_string(),
+                        declaration: digest.to_string(),
+                    },
+                ));
+            }
+        }
+        None
+    }
+
+    fn standing<'r>(
+        &self,
+        profile: &str,
+        declared: &Declaration,
+        basis: Option<&Basis>,
+        branch: &[(String, String)],
+        reviews: &dyn Fn() -> &'r [ProfileReview],
+    ) -> Standing {
+        let (name, tree) = (self.name, self.tree);
+        if let Some(verdict) = remembered_profile(profile, name, tree) {
+            if let Some(key) = self.key {
+                remember_profile_patch(
+                    profile,
+                    name,
+                    key,
+                    tree,
+                    &verdict,
+                    Filing {
+                        how: "tree",
+                        refile: Refile::Missing,
+                    },
+                );
+            }
+            return Standing::Passed(
+                remembered_how(profile, name, tree),
+                remembered_read(profile, name, tree),
+            );
+        }
+        if let Some((verdict, old_tree, kind)) = self
+            .key
+            .and_then(|key| remembered_profile_patch(profile, name, key))
+        {
+            remember_profile(
+                profile,
+                name,
+                tree,
+                &verdict,
+                &format!("{} {}", kind.how(), short(&old_tree)),
+                // The review read `old_tree`, not this one: no commit here
+                // is what it read, so this pass cannot carry.
+                &old_tree,
+                None,
+            );
+            let how = if verdict == "overruled" {
+                ProfileHow::Overruled
+            } else {
+                ProfileHow::ByPatch
+            };
+            return Standing::Passed(how, old_tree);
+        }
+        let Some(latest) = reviews()
+            .iter()
+            .rev()
+            .find(|r| r.repo == name && r.sha == tree && r.profile == profile)
+        else {
+            let carry = match self.session_carry(profile, declared, branch, reviews()) {
+                SessionCarry::Blocked => None,
+                SessionCarry::Carry { reviewed_id, kept } => Some((reviewed_id, kept)),
+                SessionCarry::Undecided => self.carried(profile, declared, branch),
+            };
+            if let Some((reviewed_id, kept)) = carry {
+                let stat = git::stdout_in(
+                    self.repo,
+                    &["diff", "--shortstat", &kept.commit, self.pushed],
+                )
+                .unwrap_or_default();
+                remember_profile(
+                    profile,
+                    name,
+                    tree,
+                    "approve",
+                    &format!("carried-from {}", &reviewed_id[..12]),
+                    &reviewed_id,
+                    Some(&kept),
+                );
+                note(
+                    "profile-carried",
+                    "-",
+                    name,
+                    &format!(
+                        "tree={} profile={profile} carried-from {} {stat}",
+                        short(tree),
+                        &reviewed_id[..12]
+                    ),
+                );
+                return Standing::Passed(ProfileHow::Carried, reviewed_id);
+            }
+            return Standing::Missing;
+        };
+        match latest.verdict {
+            Some(verdict @ (Verdict::Approve | Verdict::ApproveWithChanges)) => {
+                remember_profile(
+                    profile,
+                    name,
+                    tree,
+                    verdict.as_str(),
+                    "transcript",
+                    tree,
+                    basis,
+                );
+                if let Some(key) = self.key {
+                    remember_profile_patch(
+                        profile,
+                        name,
+                        key,
+                        tree,
+                        verdict.as_str(),
+                        Filing {
+                            how: "transcript",
+                            refile: Refile::All,
+                        },
+                    );
+                }
+                remember_branch(
+                    name,
+                    Some(profile),
+                    self.dst,
+                    &BranchPass {
+                        head: self.pushed.to_string(),
+                        base: self.merge_base.to_string(),
+                        tree: tree.to_string(),
+                    },
+                );
+                Standing::Passed(ProfileHow::Reviewed, tree.to_string())
+            }
+            other => Standing::Reworked(
+                latest.agent.clone(),
+                other
+                    .map(Verdict::as_str)
+                    .unwrap_or("no verdict this guard can read")
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// What holds the push, when the implementation review has passed: the
+    /// verdict of every declared profile, in declaration order, when each has
+    /// a pass (empty when none is declared).
+    fn hold(&self, implementation: Implementation) -> Result<Vec<ProfileVerdict>, Judged> {
+        // A branch that changes nothing outside docs/plans/ has no code for a
+        // profile to read: implementation-review alone checks its record.
+        // Decided before the declaration is read, so an unreadable one cannot
+        // hold a plan-only push.
+        if self.plan_only {
+            note(
+                "profiles-plan-only",
+                "-",
+                self.name,
+                &format!("tree={}", short(self.tree)),
+            );
+            return Ok(Vec::new());
+        }
+        let mut declared = match self.declaration() {
+            Ok(declared) => declared,
+            Err(why) if self.stance == Stance::Deny => {
+                return Err(unknown(Some(self.tree), &why));
+            }
+            Err(why) => {
+                note(
+                    "profiles-unreadable",
+                    "-",
+                    self.name,
+                    &format!("tree={} {why}", short(self.tree)),
+                );
+                return Ok(Vec::new());
+            }
+        };
+        let mut copy_miss: Option<String> = None;
+        if declared.profiles.is_empty() {
+            if let Some(reason) = declared.copy_of.clone() {
+                match self.copy_outcome(&reason) {
+                    CopyOutcome::Hit => return Ok(Vec::new()),
+                    CopyOutcome::Unknown(why) if self.stance == Stance::Deny => {
+                        return Err(unknown(Some(self.tree), &why));
+                    }
+                    CopyOutcome::Unknown(why) => {
+                        note(
+                            "profiles-unreadable",
+                            "-",
+                            self.name,
+                            &format!("tree={} {why}", short(self.tree)),
+                        );
+                        return Ok(Vec::new());
+                    }
+                    CopyOutcome::Miss { cause, roles } => {
+                        declared.profiles = roles;
+                        copy_miss = Some(format!(
+                            "the declared copy `{}` did not match ({cause}), so the full code review is required.",
+                            reason.trim()
+                        ));
+                    }
+                }
+            }
+        }
+        if declared.profiles.is_empty() {
+            if !declared.any_section {
+                note(
+                    "undeclared-profiles",
+                    "-",
+                    self.name,
+                    &format!("tree={}", short(self.tree)),
+                );
+            }
+            return Ok(Vec::new());
+        }
+        let loaded: std::cell::OnceCell<Vec<ProfileReview>> = std::cell::OnceCell::new();
+        let reviews = || -> &[ProfileReview] {
+            loaded.get_or_init(|| {
+                self.transcript
+                    .and_then(|path| profile_reviews(path).ok())
+                    .unwrap_or_default()
+            })
+        };
+        let branch = self.branch();
+        let basis = self.basis(&declared, &branch);
+        let mut missing: Vec<String> = Vec::new();
+        let mut reworked: Vec<String> = Vec::new();
+        let mut passed: Vec<ProfileVerdict> = Vec::new();
+        for profile in &declared.profiles {
+            match self.standing(profile, &declared, basis.as_ref(), &branch, &reviews) {
+                Standing::Passed(how, content) => passed.push(ProfileVerdict {
+                    role: profile.clone(),
+                    how,
+                    content,
+                }),
+                Standing::Missing => {
+                    missing.push(match crate::code_review::agent_for(profile) {
+                        Some((agent, Some(language))) => format!("{agent} --lang {language}"),
+                        Some((agent, None)) => agent,
+                        None => profile.clone(),
+                    });
+                }
+                Standing::Reworked(agent, verdict) => reworked.push(format!(
+                    "the code review of {} tree {} by {agent} said {verdict}, and no delta followed.",
+                    self.name,
+                    short(self.tree)
+                )),
+            }
+        }
+        if missing.is_empty() && reworked.is_empty() {
+            self.register(&declared, &passed, implementation, &reviews);
+            return Ok(passed);
+        }
+        let mut reason = copy_miss.map(|why| format!("{why} ")).unwrap_or_default();
+        reason.push_str(&reworked.join(" "));
+        if !missing.is_empty() {
+            if !reason.is_empty() && !reason.ends_with(' ') {
+                reason.push(' ');
+            }
+            reason.push_str(&format!(
+                "missing code review of {} tree {}: {} (declared in {}). Launch them on this tree, or narrow ## Code review with a reason.",
+                self.name,
+                short(self.tree),
+                missing.join(", "),
+                declared.plan
+            ));
+        }
+        Err(Judged::Profiles {
+            reason,
+            excerpt: format!(
+                "tree={} review={} verdict=-",
+                short(self.tree),
+                if missing.is_empty() {
+                    "profile-rework"
+                } else {
+                    "profile-missing"
+                }
+            ),
+        })
+    }
+}
+
+/// The start of a `none —` reason that claims the change copies a registered
+/// block.
+const COPY_PREFIX: &str = "copy of fp:";
+
+/// How long the hook gives `git diff` to fingerprint the branch.
+const FINGERPRINT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the implementation review of the pushed tree said, for the one
+/// decision that needs it: whether the tree may register as a block.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Implementation {
+    Approved,
+    Otherwise,
+}
+
+/// The hook's verdict on a `copy of fp:<12 hex>` declaration.
+enum CopyOutcome {
+    Hit,
+    /// The full set of profiles the change needs, and the named cause.
+    Miss {
+        cause: String,
+        roles: Vec<String>,
+    },
+    /// The roles the change needs could not be told, so neither a hit nor a
+    /// miss with a full set can be stated.
+    Unknown(String),
+}
+
+/// Backend first, then the rest in set order.
+fn ordered(roles: &std::collections::BTreeSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = roles.iter().filter(|r| *r == "backend").cloned().collect();
+    out.extend(roles.iter().filter(|r| *r != "backend").cloned());
+    out
+}
+
+/// The agent behind each role and the sha256 of its file (`-` when no source
+/// carries one), sorted by agent name. An agent file that exists and cannot
+/// be read, or directories that cannot be listed, are an error.
+pub fn agent_digests(repo: &Path, roles: &[String]) -> Result<Vec<(String, String)>, String> {
+    let agents: std::collections::BTreeSet<String> = roles
+        .iter()
+        .filter_map(|role| crate::code_review::agent_for(role))
+        .map(|(agent, _)| agent)
+        .collect();
+    let mut digests = Vec::new();
+    for agent in agents {
+        let files = crate::agents::agent_files(repo, &agent)
+            .ok_or_else(|| "the agent directories cannot be listed".to_string())?;
+        let mut digest = "-".to_string();
+        for path in files {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    digest = hex(&sha256(&bytes));
+                    break;
+                }
+                Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+                Err(why) => return Err(format!("cannot read {}: {why}", path.display())),
+            }
+        }
+        digests.push((agent, digest));
+    }
+    Ok(digests)
+}
+
+/// One digest of the agents a generation was registered under.
+pub fn agents_digest(agents: &[(String, String)]) -> String {
+    let lines: String = agents
+        .iter()
+        .map(|(agent, digest)| format!("{agent}\t{digest}\n"))
+        .collect();
+    hex(&sha256(lines.as_bytes()))
+}
+
+/// The roles the files of `merge_base..pushed` (without `docs/plans/`) call
+/// for, seated from the repository's areas as `code_review` seats them.
+pub fn roles_needed(
+    repo: &Path,
+    merge_base: &str,
+    pushed: &str,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let plans_excluded = format!(":(top,exclude){PLANS_PATH}");
+    let listing = git::stdout_in(
+        repo,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "--no-relative",
+            merge_base,
+            pushed,
+            "--",
+            ":(top)",
+            &plans_excluded,
+        ],
+    )
+    .ok_or_else(|| "git failed".to_string())?;
+    let paths: Vec<String> = listing
+        .lines()
+        .map(str::to_string)
+        .filter(|path| !path.is_empty())
+        .collect();
+    let areas = crate::plan_review::repo_areas(repo)
+        .map_err(|why| format!("repository areas unavailable: {why}"))?
+        .ok_or_else(|| "repository areas unavailable".to_string())?;
+    Ok(crate::code_review::code_roles(&crate::file_types::classes(
+        &paths, &areas,
+    )))
+}
+
+/// Whether a registered, unrevoked generation of the block `full`, for
+/// today's rules and agents, covers every role in `needed`; else the named
+/// cause of the miss.
+pub fn registered_cover(
+    repo: &Path,
+    base: &Path,
+    full: &str,
+    wanted_id: &str,
+    needed: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    if let Some(because) = crate::block_registry::revoked(base, full) {
+        return Err(format!("revoked: {because}"));
+    }
+    let entries = crate::block_registry::entries(base, full);
+    if entries.is_empty() {
+        return Err(format!("no entry for {wanted_id}"));
+    }
+    let rules =
+        crate::review_brief::rules_sha(repo).map_err(|why| format!("rules unavailable: {why}"))?;
+    let mut role_gap: Option<String> = None;
+    let mut agent_change: Option<String> = None;
+    for entry in &entries {
+        if entry.generation.rules_sha != rules {
+            continue;
+        }
+        let now = agent_digests(repo, &entry.registered.roles)?;
+        if agents_digest(&now) != entry.generation.agent_digest {
+            let changed: Vec<&str> = now
+                .iter()
+                .filter(|pair| !entry.registered.agents.contains(pair))
+                .map(|(agent, _)| agent.as_str())
+                .collect();
+            agent_change.get_or_insert_with(|| {
+                format!("agent {} changed since registration", changed.join(", "))
+            });
+            continue;
+        }
+        match needed
+            .iter()
+            .find(|role| !entry.registered.roles.contains(role))
+        {
+            Some(role) => {
+                role_gap.get_or_insert_with(|| format!("role {role} not covered"));
+            }
+            None => return Ok(()),
+        }
+    }
+    Err(role_gap
+        .or(agent_change)
+        .unwrap_or_else(|| "rules changed since registration".to_string()))
+}
+
+impl ProfileGate<'_> {
+    /// The roles the files of the branch (without `docs/plans/`) call for,
+    /// seated from the repository's areas as `code_review` seats them.
+    fn needed_roles(&self) -> Result<std::collections::BTreeSet<String>, String> {
+        roles_needed(self.repo, self.merge_base, self.pushed)
+    }
+
+    fn copy_outcome(&self, reason: &str) -> CopyOutcome {
+        let needed = match self.needed_roles() {
+            Ok(needed) => needed,
+            Err(cause) => {
+                note(
+                    "profiles-copy-missed",
+                    "-",
+                    self.name,
+                    &format!("tree={} {cause}", short(self.tree)),
+                );
+                return CopyOutcome::Unknown(cause);
+            }
+        };
+        let roles = ordered(&needed);
+        let outcome = self.verify_copy(reason, &needed);
+        match outcome {
+            Ok(fingerprint) => {
+                note(
+                    "profiles-copy-matched",
+                    "-",
+                    self.name,
+                    &format!("tree={} fp:{}", short(self.tree), &fingerprint[..12]),
+                );
+                self.record_copy(&fingerprint);
+                CopyOutcome::Hit
+            }
+            Err(cause) => {
+                note(
+                    "profiles-copy-missed",
+                    "-",
+                    self.name,
+                    &format!("tree={} {cause}", short(self.tree)),
+                );
+                CopyOutcome::Miss { cause, roles }
+            }
+        }
+    }
+
+    fn record_copy(&self, fingerprint: &str) {
+        let Some(base) = journal::dir() else {
+            return;
+        };
+        let branch = self.dst.trim_start_matches("refs/heads/");
+        if let Err(why) =
+            crate::block_registry::record_copy(&base, fingerprint, self.name, self.pushed, branch)
+        {
+            note(
+                "block-copy-unrecorded",
+                "-",
+                self.name,
+                &format!("tree={} {why}", short(self.tree)),
+            );
+        }
+    }
+
+    /// The full fingerprint the declaration names when the change really is
+    /// that registered block, else the named cause of the miss.
+    fn verify_copy(
+        &self,
+        reason: &str,
+        needed: &std::collections::BTreeSet<String>,
+    ) -> Result<String, String> {
+        let wanted = reason
+            .strip_prefix("copy of ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|token| token.strip_prefix("fp:"))
+            .map_or_else(String::new, str::to_string);
+        let wanted_id = format!("fp:{wanted}");
+        // A reason must name exactly 12 lowercase hex characters.
+        if wanted.len() != 12
+            || !wanted
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(format!("no entry for {wanted_id}"));
+        }
+        if self.stance != Stance::Deny {
+            return Err(format!(
+                "the hook is not enforcing, so {wanted_id} is not verified"
+            ));
+        }
+        let fingerprint = match crate::block_fingerprint::fingerprint(
+            self.repo,
+            self.merge_base,
+            self.pushed,
+            std::time::Instant::now() + FINGERPRINT_BUDGET,
+        ) {
+            Ok(Some(fingerprint)) => fingerprint,
+            Ok(None) => return Err("binary diff".to_string()),
+            Err(why) => return Err(format!("git failed: {why}")),
+        };
+        if fingerprint.short() != wanted_id {
+            return Err(format!(
+                "no entry for {wanted_id} (this change is {})",
+                fingerprint.short()
+            ));
+        }
+        let full = fingerprint.full().to_string();
+        let Some(base) = journal::dir() else {
+            return Err(format!("no entry for {wanted_id}"));
+        };
+        registered_cover(self.repo, &base, &full, &wanted_id, needed)?;
+        self.pin_passed(&base, &full).map(|()| full)
+    }
+
+    fn pin_passed(&self, base: &Path, fingerprint: &str) -> Result<(), String> {
+        let missing = || {
+            format!(
+                concat!(
+                    "no passed pin check; run ",
+                    greenpiste_guard::bin!(),
+                    " review-brief -C {}"
+                ),
+                self.repo.display()
+            )
+        };
+        let record =
+            crate::block_registry::read_pin(base, fingerprint, self.tree).ok_or_else(missing)?;
+        if let crate::block_registry::Pin::Failed { why } = &record.pin {
+            return Err(format!("pin check failed: {why}"));
+        }
+        if record.gh_override_set && !crate::pin_check::gh_override_set() {
+            return Err(
+                "the pin record was made with AMONT_AGENT_GH set; run review-brief without it"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Record the pushed change as a reviewed block when every profile of the
+    /// full set for its file classes said `approve` for this exact content id,
+    /// in the transcript, and the implementation review approved it.
+    fn register<'r>(
+        &self,
+        declared: &Declaration,
+        passed: &[ProfileVerdict],
+        implementation: Implementation,
+        reviews: &dyn Fn() -> &'r [ProfileReview],
+    ) {
+        if implementation != Implementation::Approved
+            || declared.profiles.is_empty()
+            || passed
+                .iter()
+                .any(|p| matches!(p.how, ProfileHow::Overruled | ProfileHow::Carried))
+        {
+            return;
+        }
+        let approved = declared.profiles.iter().all(|profile| {
+            reviews()
+                .iter()
+                .rev()
+                .find(|r| r.repo == self.name && r.sha == self.tree && r.profile == *profile)
+                .is_some_and(|r| r.verdict == Some(Verdict::Approve))
+        });
+        if !approved {
+            return;
+        }
+        let Some(base) = journal::dir() else {
+            return self.unregistered("no journal directory");
+        };
+        let needed = match self.needed_roles() {
+            Ok(needed) => needed,
+            Err(why) => return self.unregistered(&why),
+        };
+        let declared_set: std::collections::BTreeSet<String> =
+            declared.profiles.iter().cloned().collect();
+        if declared_set != needed {
+            let relation = if declared_set.is_subset(&needed) {
+                "narrower than"
+            } else {
+                "differs from"
+            };
+            return self.unregistered(&format!(
+                "declared set {relation} {}",
+                ordered(&needed).join(", ")
+            ));
+        }
+        let fingerprint = match crate::block_fingerprint::fingerprint(
+            self.repo,
+            self.merge_base,
+            self.pushed,
+            std::time::Instant::now() + FINGERPRINT_BUDGET,
+        ) {
+            Ok(Some(fingerprint)) => fingerprint,
+            Ok(None) => return self.unregistered("binary diff"),
+            Err(why) => return self.unregistered(&format!("git failed: {why}")),
+        };
+        let full = fingerprint.full();
+        if crate::block_registry::revoked(&base, full).is_some() {
+            return self.unregistered("revoked");
+        }
+        let rules_sha = match crate::review_brief::rules_sha(self.repo) {
+            Ok(rules_sha) => rules_sha,
+            Err(why) => return self.unregistered(&format!("rules unavailable: {why}")),
+        };
+        let roles = ordered(&declared_set);
+        let agents = match agent_digests(self.repo, &roles) {
+            Ok(agents) => agents,
+            Err(why) => return self.unregistered(&why),
+        };
+        let generation = crate::block_registry::Generation {
+            rules_sha,
+            agent_digest: agents_digest(&agents),
+        };
+        let known = crate::block_registry::entries(&base, full)
+            .iter()
+            .any(|entry| entry.generation == generation);
+        if known {
+            return;
+        }
+        let registered = crate::block_registry::EntryData {
+            roles,
+            agents,
+            source_branch: self.dst.trim_start_matches("refs/heads/").to_string(),
+            source_repo: Some(self.name.to_string()),
+            content_id: self.tree.to_string(),
+        };
+        match crate::block_registry::register_entry(&base, full, &generation, &registered) {
+            Ok(()) => note(
+                "block-registered",
+                "-",
+                self.name,
+                &format!("tree={} {}", short(self.tree), fingerprint.short()),
+            ),
+            Err(why) => self.unregistered(&why.to_string()),
+        }
+    }
+
+    fn unregistered(&self, cause: &str) {
+        note(
+            "block-unregistered",
+            "-",
+            self.name,
+            &format!("tree={} {cause}", short(self.tree)),
+        );
+    }
+}
+
+// ---------------------------------------------------------------- the push
+
+/// What the hook found out about a push.
+pub enum Judged {
+    /// The rule has nothing to say: the reason is the journal's
+    /// `unconfirmed` reason.
+    Decline(&'static str),
+    /// The rule speaks: the reason to say, and the journal excerpt.
+    Say { reason: String, excerpt: String },
+    /// A declared code-review profile has no pass: the reason names what to
+    /// launch, so the rule's own remedy (the implementation review) is not
+    /// added.
+    Profiles { reason: String, excerpt: String },
+    /// The agent the rule needs is not installed: said, never held.
+    Gap { reason: String, excerpt: String },
+}
+
+/// Judge the push in `cmd`, whose clause runs in `cwd`.
+pub fn judge_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Judged {
+    use greenpiste_guard::push_target::{self, Kind, Push};
+    let (repo, targets) = match push_target::resolve_for(ctx, cmd) {
+        Push::Resolved { repo, targets } => (repo, targets),
+        Push::DryRun => return Judged::Decline("dry-run"),
+        Push::DeleteOnly => return Judged::Decline("delete-only"),
+        // amont refuses this land itself: nothing is published.
+        Push::Refused(_) => return Judged::Decline("land-refused"),
+        Push::Unresolvable { shape, .. } => {
+            // Under `deny` an unreadable shape is held, so `--all` is not the
+            // way around the gate; otherwise it is journalled and passes.
+            return if stance == Stance::Deny {
+                unknown(None, &format!("the push cannot be read: {shape}"))
+            } else {
+                Judged::Decline("unresolvable")
+            };
+        }
+    };
+    let Some(target) = targets.iter().find(|t| t.kind == Kind::Branch) else {
+        return Judged::Decline("no-branch");
+    };
+    let pushed = target.src.as_str();
+    // Commits some remote already has are not this push's work: seeding a
+    // fork reaches here with no default branch on the fork, and used to ask
+    // for a review of upstream's history.
+    if git::nothing_new(&repo, pushed) {
+        return Judged::Decline("nothing-new");
+    }
+    let Some(base) = default_base(&repo, &target.remote) else {
+        return unknown(
+            None,
+            &format!(
+                "no default branch of `{}` is known here (no {0}/HEAD, {0}/main or {0}/master)",
+                target.remote
+            ),
+        );
+    };
+    let Some(merge_base) = git::stdout_in(&repo, &["merge-base", pushed, &base]) else {
+        return unknown(
+            None,
+            &format!("`git merge-base {} {base}` failed", short(pushed)),
+        );
+    };
+    let Some(changed) = git::stdout_in(
+        &repo,
+        &["diff", "--name-only", &merge_base, pushed, "--", PLANS_PATH],
+    ) else {
+        return unknown(None, "`git diff` against the base failed");
+    };
+    if changed.trim().is_empty() {
+        return Judged::Decline("no-plan");
+    }
+    let tree = match content_id(&repo, pushed) {
+        Ok(t) => t,
+        Err(why) => return unknown(None, &why),
+    };
+    let Some(name) = repo_name(&repo) else {
+        return unknown(Some(&tree), "the repository has no name");
+    };
+    // The branch patch, computed once: a pass found here or below is filed
+    // under it, and a miss by tree is looked up by it.
+    let key = patch_key(&repo, &merge_base, pushed);
+    let plans: Vec<String> = changed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    // Said when the push is held: no earlier review could carry over.
+    let unkeyed = key
+        .as_ref()
+        .err()
+        .map(|why| format!(" No earlier review could carry over by patch: {why}."))
+        .unwrap_or_default();
+    let key = key.ok();
+    let push = crate::provenance::Push {
+        repo: &repo,
+        name: &name,
+        pushed,
+        patch: key.as_ref().map(|k| k.patch.as_str()),
+        plans: &plans,
+        target,
+    };
+    let plans_excluded = format!(":(top,exclude){PLANS_PATH}/");
+    let plan_only = match git::diff_quiet_in(
+        &repo,
+        &[
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--ignore-submodules=none",
+            &merge_base,
+            pushed,
+            "--",
+            ":(top)",
+            &plans_excluded,
+        ],
+    ) {
+        Ok(same) => same,
+        // Not an answer: keep the profiles required, and say why.
+        Err(why) => {
+            note(
+                "profiles-plan-only-unknown",
+                "-",
+                &name,
+                &format!("tree={} {why}", short(&tree)),
+            );
+            false
+        }
+    };
+    let gate = ProfileGate {
+        repo: &repo,
+        name: &name,
+        tree: &tree,
+        key: key.as_ref(),
+        plans: &plans,
+        pushed,
+        merge_base: &merge_base,
+        dst: &target.dst,
+        transcript: ctx.transcript,
+        stance,
+        plan_only,
+    };
+    if let Some(Pass {
+        verdict,
+        prompt_rules,
+        candidates,
+    }) = remembered_pass(&name, &tree)
+    {
+        if let Some(k) = &key {
+            remember_patch(
+                &name,
+                k,
+                &tree,
+                &verdict,
+                Filing {
+                    how: "tree",
+                    refile: Refile::Missing,
+                },
+                &prompt_rules,
+                &candidates,
+            );
+        }
+        let profiles = match gate.hold(if verdict == "approve" {
+            Implementation::Approved
+        } else {
+            Implementation::Otherwise
+        }) {
+            Ok(profiles) => profiles,
+            Err(held) => return held,
+        };
+        let overruled = verdict == "overruled";
+        provenance(
+            &push,
+            if overruled {
+                Bound::Overruled
+            } else {
+                Bound::Reviewed
+            },
+            &tree,
+            &profiles,
+        );
+        if !overruled {
+            check_remembered_rules(&repo, &name, &tree, &prompt_rules);
+            check_candidates(&name, &tree, &candidates);
+        }
+        return Judged::Decline(if overruled { "overruled" } else { "reviewed" });
+    }
+    if let Some((pass, old_tree, kind)) = key.as_ref().and_then(|k| remembered_patch(&name, k)) {
+        let Pass {
+            verdict,
+            prompt_rules,
+            candidates,
+        } = pass;
+        remember(
+            &name,
+            &tree,
+            &verdict,
+            &format!("{} {}", kind.how(), short(&old_tree)),
+            &prompt_rules,
+            &candidates,
+        );
+        let profiles = match gate.hold(if verdict == "approve" {
+            Implementation::Approved
+        } else {
+            Implementation::Otherwise
+        }) {
+            Ok(profiles) => profiles,
+            Err(held) => return held,
+        };
+        let overruled = verdict == "overruled";
+        provenance(
+            &push,
+            if overruled {
+                Bound::Overruled
+            } else {
+                Bound::ByPatch
+            },
+            &old_tree,
+            &profiles,
+        );
+        if !overruled {
+            check_remembered_rules(&repo, &name, &tree, &prompt_rules);
+            check_candidates(&name, &tree, &candidates);
+        }
+        return Judged::Decline(match (overruled, kind) {
+            (true, PatchMatch::Exact) => "overruled-by-patch",
+            (true, PatchMatch::NotesMoved) => "overruled-by-patch-notes-moved",
+            (false, PatchMatch::Exact) => "reviewed-by-patch",
+            (false, PatchMatch::NotesMoved) => "reviewed-by-patch-notes-moved",
+        });
+    }
+    let Some(transcript) = ctx.transcript else {
+        return unknown(Some(&tree), "the payload carried no transcript_path");
+    };
+    let reviews = match reviews(transcript) {
+        Ok(r) => r,
+        Err(e) => {
+            return unknown(
+                Some(&tree),
+                &format!(
+                    "the transcript {} could not be read: {e}",
+                    transcript.display()
+                ),
+            )
+        }
+    };
+    let mine: Vec<&Review> = reviews.iter().filter(|r| r.repo == name).collect();
+    if let Some(latest) = mine.iter().rev().find(|r| r.sha == tree) {
+        return match latest.verdict {
+            Some(Verdict::Rework) | None => Judged::Say {
+                reason: format!(
+                    "the implementation review of {name} tree {} said {}, and no delta followed.",
+                    short(&tree),
+                    latest
+                        .verdict
+                        .map(Verdict::as_str)
+                        .unwrap_or("no verdict this guard can read")
+                ),
+                excerpt: format!(
+                    "tree={} review=rework verdict={}",
+                    short(&tree),
+                    latest.verdict.map(Verdict::as_str).unwrap_or("-")
+                ),
+            },
+            Some(v) => {
+                let prompt_rules = PromptRules::of_prompt(latest.rules_sha.as_deref());
+                let candidates = &latest.candidates;
+                remember(
+                    &name,
+                    &tree,
+                    v.as_str(),
+                    "transcript",
+                    &prompt_rules,
+                    candidates,
+                );
+                remember_branch(
+                    &name,
+                    None,
+                    &target.dst,
+                    &BranchPass {
+                        head: pushed.to_string(),
+                        base: merge_base.to_string(),
+                        tree: tree.to_string(),
+                    },
+                );
+                if let Some(k) = &key {
+                    remember_patch(
+                        &name,
+                        k,
+                        &tree,
+                        v.as_str(),
+                        Filing {
+                            how: "transcript",
+                            refile: Refile::All,
+                        },
+                        &prompt_rules,
+                        candidates,
+                    );
+                }
+                let profiles = match gate.hold(if v == Verdict::Approve {
+                    Implementation::Approved
+                } else {
+                    Implementation::Otherwise
+                }) {
+                    Ok(profiles) => profiles,
+                    Err(held) => return held,
+                };
+                provenance(&push, Bound::Reviewed, &tree, &profiles);
+                check_remembered_rules(&repo, &name, &tree, &prompt_rules);
+                check_candidates(&name, &tree, candidates);
+                Judged::Decline("reviewed")
+            }
+        };
+    }
+    if let Some(older) = mine.last() {
+        // The head that stale review read, when this branch's last pass
+        // recorded it: a delta then reads only what changed since.
+        let delta = reviewed_head(&name, None, &target.dst)
+            .filter(|pass| pass.tree == older.sha)
+            .map(|pass| {
+                format!(
+                    concat!(
+                        " A delta reads only what changed: `",
+                        greenpiste_guard::bin!(),
+                        " review-brief --interdiff {}` (a profile seat adds `--profile <role>`)."
+                    ),
+                    short(&pass.head)
+                )
+            })
+            .unwrap_or_default();
+        return Judged::Say {
+            reason: format!(
+                "the implementation review of {name} read tree {}; this push carries tree {} (stale).{unkeyed}{delta}",
+                short(&older.sha),
+                short(&tree)
+            ),
+            excerpt: format!("tree={} review=stale verdict=-", short(&tree)),
+        };
+    }
+    if !crate::agents::carried(crate::agents::Need::ImplementationReview, &repo)
+        && !std::env::current_dir().is_ok_and(|cwd| {
+            crate::agents::carried(crate::agents::Need::ImplementationReview, &cwd)
+        })
+    {
+        return Judged::Gap {
+            reason: crate::agents::gap_line(crate::agents::Need::ImplementationReview),
+            excerpt: format!("tree={} review=gap verdict=-", short(&tree)),
+        };
+    }
+    Judged::Say {
+        reason: format!(
+            "no implementation review of {name} tree {} is in this session.{unkeyed}",
+            short(&tree)
+        ),
+        excerpt: format!("tree={} review=missing verdict=-", short(&tree)),
+    }
+}
+
+/// The advise-only comparison of the rules a passing review read with the
+/// rules now: journalled, never holding the push. `prompt_rules` is what the
+/// pass remembered: `NotRecorded` (from before the line was stored) journals
+/// `rules-unknown`; `Absent` and `Sha` are compared with `rules_sha` now.
+fn check_remembered_rules(repo: &Path, name: &str, tree: &str, prompt_rules: &PromptRules) {
+    let excerpt = match prompt_rules {
+        PromptRules::NotRecorded => "review=rules-unknown",
+        PromptRules::Absent => {
+            crate::review_brief::rules_excerpt(None, &crate::review_brief::rules_sha(repo))
+        }
+        PromptRules::Sha(seen) => {
+            crate::review_brief::rules_excerpt(Some(seen), &crate::review_brief::rules_sha(repo))
+        }
+    };
+    note(
+        "rules-checked",
+        "-",
+        name,
+        &format!("tree={} {excerpt}", short(tree)),
+    );
+}
+
+/// What a passing review did with the candidates adr-lint listed: one
+/// `candidates-checked` note, and one ruling record per ruled candidate.
+/// Never holds the push: a ruling that cannot be written is journalled.
+fn check_candidates(name: &str, tree: &str, candidates: &Reviewed) {
+    note(
+        "candidates-checked",
+        "-",
+        name,
+        &format!("tree={} {}", short(tree), candidates.excerpt()),
+    );
+    if let Err(why) = crate::candidates_block::append_rulings(name, tree, candidates) {
+        note(
+            "rulings-write-failed",
+            "-",
+            name,
+            &format!("tree={} {why}", short(tree)),
+        );
+    }
+}
+
+/// Files the provenance record of a pass and journals what came of it. A
+/// failure never changes the judgment.
+fn provenance(
+    push: &crate::provenance::Push,
+    review: Bound,
+    review_content: &str,
+    profiles: &[ProfileVerdict],
+) {
+    use crate::provenance::Filing;
+    match crate::provenance::file(push, review, review_content, profiles) {
+        Filing::Deferred => note(
+            "provenance-deferred",
+            "-",
+            push.name,
+            "the preview has not stood",
+        ),
+        Filing::Written(file) => note(
+            "provenance-written",
+            "-",
+            push.name,
+            &file.display().to_string(),
+        ),
+        Filing::Kept(file) => note(
+            "provenance-kept",
+            "-",
+            push.name,
+            &file.display().to_string(),
+        ),
+        Filing::Failed(why) => note("provenance-write-failed", "-", push.name, &why),
+    }
+}
+
+fn unknown(tree: Option<&str>, why: &str) -> Judged {
+    Judged::Say {
+        reason: format!("whether this push was reviewed cannot be told: {why}"),
+        excerpt: format!(
+            "tree={} review=unknown verdict=-",
+            tree.map(short).unwrap_or("-")
+        ),
+    }
+}
+
+/// The remote's default branch as last fetched: `<remote>/HEAD`, else
+/// `<remote>/main`, else `<remote>/master`. Never `HEAD`: with the pushed
+/// commit as its own base every push would show no plan.
+pub(crate) fn default_base(repo: &Path, remote: &str) -> Option<String> {
+    [
+        format!("refs/remotes/{remote}/HEAD"),
+        format!("refs/remotes/{remote}/main"),
+        format!("refs/remotes/{remote}/master"),
+    ]
+    .into_iter()
+    .find(|r| {
+        git::stdout_in(
+            repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{r}^{{commit}}"),
+            ],
+        )
+        .is_some_and(|s| !s.is_empty())
+    })
+}
+
+/// The rule's `confirm`, for a push: what to say, or why not.
+pub fn confirm_push(ctx: &Context, cmd: &Simple, stance: Stance) -> Confirmed {
+    match judge_push(ctx, cmd, stance) {
+        Judged::Decline(why) => Confirmed::No(why),
+        Judged::Say { reason, excerpt } => Confirmed::YesSaying {
+            remedy: None,
+            floor: None,
+            ceiling: None,
+            reason,
+            excerpt,
+        },
+        Judged::Profiles { reason, excerpt } => Confirmed::YesSaying {
+            remedy: Some(String::new()),
+            floor: None,
+            ceiling: None,
+            reason,
+            excerpt,
+        },
+        // Said at most as advice: the review cannot be had here, so refusing
+        // the push would hold it for something nobody can supply.
+        Judged::Gap { reason, excerpt } => Confirmed::YesSaying {
+            remedy: Some(String::new()),
+            floor: None,
+            ceiling: Some(Stance::Advise),
+            reason,
+            excerpt,
+        },
+    }
+}
+
+// ---------------------------------------------------------------- the guards
+
+/// Whether a path is inside the pass-file store, compared lexically (`.`
+/// and `..` folded, no symlink followed) and, where the store exists, by
+/// its canonical form too. Only the hook writes there.
+pub fn guards_path(path: &Path) -> bool {
+    HOOK_ONLY_DIRS
+        .iter()
+        .filter_map(|d| Some(journal::dir()?.join(d)))
+        .any(|store| guards_store(path, &store))
+}
+
+fn guards_store(path: &Path, store: &Path) -> bool {
+    let here = lexical(path);
+    if here.starts_with(lexical(store)) {
+        return true;
+    }
+    if let Ok(real) = std::fs::canonicalize(store) {
+        if here.starts_with(&real) {
+            return true;
+        }
+        // The path's own existing ancestor, resolved.
+        if let Some(parent) = here.parent() {
+            if let Ok(real_parent) = std::fs::canonicalize(parent) {
+                return real_parent.starts_with(&real);
+            }
+        }
+    }
+    false
+}
+
+/// A path with `.` and `..` folded lexically.
+pub fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Programs whose operand naming the store is taken as a write. A reader
+/// (`ls`, `cat`, `find`, `grep`, `stat`, …) is not on this list, so looking
+/// at the record is allowed; the list is the Bash half of a best-effort
+/// guard, since a parser cannot see inside `python -c` beyond its words.
+const WRITERS: &[&str] = &[
+    "rm", "mv", "cp", "tee", "touch", "install", "truncate", "ln", "chmod", "chown", "mkdir",
+    "rmdir", "dd", "sed", "perl", "ruby", "node", "deno", "python", "python3", "sh", "bash", "zsh",
+    "dash", "fish", "sudo", "xargs", "rsync", "tar", "unzip", "chezmoi", "git",
+];
+
+/// The first clause of a command that would WRITE into the store: a redirect
+/// into it (`> …/by-tree/…`), or a program on [`WRITERS`] with a word naming
+/// it. A read — `ls`, `cat`, `find` of the pass files — passes: the record is
+/// there to be looked at. Returns the clause's span.
+pub fn store_clause(parsed: &greenpiste_guard::shell::Parsed) -> Option<std::ops::Range<usize>> {
+    parsed
+        .clauses()
+        .iter()
+        .find(|cmd| {
+            let redirected = cmd
+                .redirects
+                .iter()
+                .any(|(op, w)| op.contains('>') && names_store(&w.text));
+            let writer = cmd
+                .program()
+                .map(|p| p.rsplit('/').next().unwrap_or(p))
+                .is_some_and(|p| WRITERS.contains(&p) || p.starts_with("python"));
+            redirected || (writer && cmd.words.iter().any(|w| names_store(&w.text)))
+        })
+        .map(|cmd| cmd.at..cmd.end)
+}
+
+/// Whether a shell word names the store, spelled with either separator:
+/// Windows writes the same directory with backslashes.
+pub fn names_store(word: &str) -> bool {
+    let word = word.replace('\\', "/");
+    HOOK_ONLY_DIRS.iter().any(|d| {
+        word.contains(&format!("{DATA_DIR}/{d}/"))
+            || word.contains(&format!("{DATA_DIR}/{d}")) && word.ends_with(d)
+    })
+}
+
+/// The directories under the config dir that only the hook writes.
+const HOOK_ONLY_DIRS: &[&str] = &[RULE_ID, "provenance"];
+
+pub const GUARD_REASON: &str =
+    "files under ~/.claude/amont-agent/implementation-review/ and ~/.claude/amont-agent/provenance/ are written by the hook alone: the pass files from a completed review in this session's transcript or the person's Overrule, the provenance records from a push the hook passed.";
+pub const GUARD_REMEDY: &str =
+    "Run the review (worktree-task F4b) or ask the person; never write the record by hand.";
+
+// ---------------------------------------------------------------- the person
+
+/// What a marked question names: the repository, the tree, and the code-review
+/// profile when the marker carries `profile=<role>` (`None` is the
+/// implementation review itself):
+/// `[implementation-review <repo>@<sha64> profile=<role>]`, the repository
+/// split from the tree at the last `@`.
+pub fn marker(question: &str) -> Option<(String, String, Option<String>)> {
+    let start = question.find(MARKER)? + MARKER.len();
+    let end = start + question[start..].find(']')?;
+    let inner = question[start..end].trim();
+    let (named, profile) = match inner.rfind(PROFILE_KEY) {
+        Some(at) => {
+            let profile = inner[at + PROFILE_KEY.len()..].trim();
+            if !crate::code_review::valid_profile(profile) {
+                return None;
+            }
+            (inner[..at].trim(), Some(profile.to_string()))
+        }
+        None => (inner, None),
+    };
+    let at = named.rfind('@')?;
+    let repo = named[..at].trim().to_string();
+    let sha = named[at + 1..].trim().to_ascii_lowercase();
+    (!repo.is_empty() && is_sha256(&sha)).then_some((repo, sha, profile))
+}
+
+fn asks_dir() -> Option<PathBuf> {
+    Some(store()?.join("asks"))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Before an `AskUserQuestion` runs: remember a marked question, and whether
+/// it arrived pre-answered, so the answer can be trusted or not.
+pub fn on_pre_ask(ask: &greenpiste_guard::payload::Ask) {
+    let marked: Vec<(String, String, Option<String>)> =
+        ask.questions.iter().filter_map(|q| marker(q)).collect();
+    if marked.is_empty() || ask.tool_use_id.is_empty() || ask.tool_use_id.contains('/') {
+        return;
+    }
+    let Some(d) = asks_dir() else { return };
+    if private_dir(&d).is_none() {
+        return;
+    }
+    let names: Vec<String> = marked
+        .iter()
+        .map(|(repo, sha, profile)| match profile {
+            Some(profile) => format!("{repo}@{sha}{PROFILE_KEY}{profile}"),
+            None => format!("{repo}@{sha}"),
+        })
+        .collect();
+    let _ = greenpiste_guard::atomic::write_atomic(
+        &d.join(&ask.tool_use_id),
+        &format!(
+            "{}\t{}\t{}\t{}\n",
+            ask.session.replace(['\t', '\n'], " "),
+            ask.prefilled,
+            names.join(","),
+            now_ms()
+        ),
+    );
+    if ask.prefilled {
+        note("prefilled", &ask.session, &marked[0].0, &names.join(","));
+    }
+}
+
+/// After an `AskUserQuestion`: an `Overrule` of a `rework` this session's
+/// transcript shows is remembered as a pass; anything else changes nothing.
+/// Returns what the session must hear when an overrule bound nothing.
+pub fn on_post_ask(ask: &greenpiste_guard::payload::Ask) -> Option<String> {
+    if !ask.questions.iter().any(|q| marker(q).is_some()) {
+        return None;
+    }
+    let recorded = asks_dir()
+        .map(|d| d.join(&ask.tool_use_id))
+        .filter(|_| !ask.tool_use_id.is_empty() && !ask.tool_use_id.contains('/'))
+        .and_then(|p| {
+            let t = std::fs::read_to_string(&p).ok();
+            let _ = std::fs::remove_file(&p);
+            t
+        });
+    let Some(recorded) = recorded else {
+        note(
+            "unrecorded",
+            &ask.session,
+            "-",
+            "marked question with no PreToolUse record",
+        );
+        return None;
+    };
+    let f: Vec<&str> = recorded.trim_end().split('\t').collect();
+    if f.len() != 4 || f[0] != ask.session || f[1] != "false" {
+        return None;
+    }
+    let mut said: Vec<String> = Vec::new();
+    for question in &ask.questions {
+        let Some((repo, sha, profile)) = marker(question) else {
+            continue;
+        };
+        let reviewed = match &profile {
+            Some(profile) => format!("code review ({profile})"),
+            None => "implementation review".to_string(),
+        };
+        let label = ask
+            .answers
+            .iter()
+            .find(|(q, _)| q == question)
+            .map(|(_, l)| l.as_str())
+            .unwrap_or("");
+        if label != OVERRULE {
+            if !label.is_empty() {
+                note(
+                    "answered",
+                    &ask.session,
+                    &repo,
+                    &format!("tree={} answer={}", short(&sha), label.to_ascii_lowercase()),
+                );
+            }
+            continue;
+        }
+        let Some(transcript) = ask.transcript.as_deref() else {
+            note(
+                "unknown",
+                &ask.session,
+                &repo,
+                &format!("tree={} overrule without a transcript", short(&sha)),
+            );
+            said.push(format!(
+                "The answer Overrule bound NOTHING for {repo} tree {} ({reviewed}): the question's event carried no transcript, so the rework it overrules cannot be seen.",
+                short(&sha)
+            ));
+            continue;
+        };
+        let reworked = match &profile {
+            None => reviews(transcript)
+                .map(|rs| {
+                    rs.iter()
+                        .rev()
+                        .find(|r| r.repo == repo && r.sha == sha)
+                        .is_some_and(|r| matches!(r.verdict, Some(Verdict::Rework) | None))
+                })
+                .unwrap_or(false),
+            Some(profile) => profile_reviews(transcript)
+                .map(|rs| {
+                    rs.iter()
+                        .rev()
+                        .find(|r| r.repo == repo && r.sha == sha && r.profile == *profile)
+                        .is_some_and(|r| matches!(r.verdict, Some(Verdict::Rework) | None))
+                })
+                .unwrap_or(false),
+        };
+        if !reworked {
+            note(
+                "unbound",
+                &ask.session,
+                &repo,
+                &format!("tree={} overrule with no rework to overrule", short(&sha)),
+            );
+            said.push(format!(
+                "The answer Overrule bound NOTHING for {repo} tree {} ({reviewed}): no completed {reviewed} of that tree said rework in this session.",
+                short(&sha)
+            ));
+            continue;
+        }
+        match &profile {
+            None => {
+                remember(
+                    &repo,
+                    &sha,
+                    "overruled",
+                    "person",
+                    &PromptRules::NotRecorded,
+                    &Reviewed::not_recorded(),
+                );
+            }
+            Some(profile) => {
+                remember_profile(profile, &repo, &sha, "overruled", "person", &sha, None);
+            }
+        }
+        note(
+            "overruled",
+            &ask.session,
+            &repo,
+            &format!("tree={} review=overruled verdict=rework", short(&sha)),
+        );
+    }
+    (!said.is_empty()).then(|| said.join("\n\n"))
+}
+
+/// One journal line under the rule's id, for what happens away from a push.
+pub(crate) fn note(outcome: &str, session: &str, repo: &str, excerpt: &str) {
+    journal::record(&journal::Entry {
+        rule: RULE_ID,
+        stance: "-",
+        outcome,
+        session,
+        repo,
+        mode: "-",
+        excerpt,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content_id::content_id_of;
+
+    /// A real session's launch of an implementation reviewer, resumed twice
+    /// with `SendMessage` (2026-10-08), anonymised.
+    const RESUMED: &str = include_str!("../../../tests/fixtures/sendmessage-resume.jsonl");
+    const LAUNCH_TREE: &str = "6066ad987edfbbb3a514b6d9247b126a77a316db2e1350c226ffd14593a0ba35";
+    const ROUND_2: &str = "b196a592b3b76cb75155b14491291a45602ae66c6f20ef18e4413a34169556ab";
+    const ROUND_3: &str = "85f71e67db10c7737c55b27a3c5753b2617c58dec0d58e7ebae5085898cc12d7";
+
+    /// The known answers attest's SPEC quotes under "Content id". Changing
+    /// one is changing the definition: every stored review and approval
+    /// would stop matching.
+    #[test]
+    fn the_content_id_gives_the_spec_known_answers() {
+        let o1 = "1".repeat(40);
+        let o2 = "2".repeat(40);
+        let id = |recs: &[String]| {
+            content_id_of(
+                &recs
+                    .iter()
+                    .map(|r| r.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        // no records: the sha256 of the empty string
+        assert_eq!(
+            id(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            id(&[format!("100644 blob {o1}\tREADME.md")]),
+            "6f0214fffd79cb8eb5afb2283e46911f5f9022a25b3f339ae8a50a1ee223a0b2"
+        );
+        // every record under the top-level docs/plans/ is left out, a
+        // symlink too; a near name and a nested docs/plans/ are kept
+        let several = [
+            format!("100644 blob {o1}\tREADME.md"),
+            format!("100644 blob {o2}\tdocs/plans/a.md"),
+            format!("100644 blob {o2}\tdocs/plans-old/a.md"),
+            format!("120000 blob {o1}\tdocs/plans/link"),
+            format!("100644 blob {o1}\tx/docs/plans/a.md"),
+        ];
+        let several_id = "0fca850e419d8a202129087fd90f00fe285c4b9cc63b42f4db6162e0a2b12eaf";
+        assert_eq!(id(&several), several_id);
+        // so a plan's existence does not count, unlike attest's canon(T)
+        assert_eq!(
+            id(&[several[0].clone(), several[2].clone(), several[4].clone()]),
+            several_id
+        );
+        // a raw path with a newline: no quoting, no decoding
+        assert_eq!(
+            id(&[
+                format!("100644 blob {o1}\tdocs/a\nb.md"),
+                format!("100644 blob {o2}\tdocs/plans/c\nd.md"),
+            ]),
+            "88a9c5d4a7b3892be98a8492631b3c436954c2000a038b5d641bd054e76e19e0"
+        );
+    }
+
+    fn reviews_of(text: &str) -> Vec<(String, Option<Verdict>)> {
+        completed_agents_resumable(text.as_bytes(), AGENT)
+            .into_iter()
+            .flat_map(|c| {
+                let v = verdict_of(&c.result);
+                parse_blocks(&c.prompt)
+                    .into_iter()
+                    .map(move |(_, sha)| (sha, v))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_resumed_round_is_a_review_of_its_own_tree() {
+        assert_eq!(
+            reviews_of(RESUMED),
+            vec![
+                (LAUNCH_TREE.to_string(), Some(Verdict::ApproveWithChanges)),
+                (ROUND_2.to_string(), Some(Verdict::Approve)),
+                (ROUND_3.to_string(), Some(Verdict::Approve)),
+            ],
+            "the launch keeps its own verdict"
+        );
+    }
+
+    #[test]
+    fn the_shared_reader_counts_the_launch_alone() {
+        // What the plain reader returns: a resume is not a launch.
+        let launches = crate::plan_review::completed_agents(RESUMED.as_bytes(), AGENT);
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].prompt.contains(LAUNCH_TREE));
+        assert_eq!(
+            verdict_of(&launches[0].result),
+            Some(Verdict::ApproveWithChanges),
+            "the rounds' notifications do not overwrite the launch's"
+        );
+    }
+
+    #[test]
+    fn a_resume_of_an_agent_that_is_not_a_reviewer_does_not_count() {
+        let other = RESUMED.replace(
+            "\"subagent_type\":\"implementation-review\"",
+            "\"subagent_type\":\"general-purpose\"",
+        );
+        assert!(reviews_of(&other).is_empty());
+        // The message went to another agent than the one that resumed.
+        let elsewhere = RESUMED.replace(
+            "\"to\":\"aa339dbce3244a139\"",
+            "\"to\":\"a0000000000000000\"",
+        );
+        assert_eq!(reviews_of(&elsewhere).len(), 1);
+    }
+
+    #[test]
+    fn a_resumed_round_needs_its_own_agents_structured_notification() {
+        // Another task's id on the round's notifications.
+        let lines: Vec<String> = RESUMED
+            .lines()
+            .map(|l| {
+                if l.contains("\"origin\":{\"kind\":\"task-notification\"") {
+                    l.replace(
+                        "<task-id>aa339dbce3244a139</task-id>",
+                        "<task-id>a0000000000000000</task-id>",
+                    )
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        assert_eq!(reviews_of(&lines.join("\n")).len(), 1);
+
+        // The round's notifications echoed in a tool result and typed by a
+        // person: neither was queued by Claude Code.
+        let forged: Vec<String> = RESUMED
+            .lines()
+            .map(|l| {
+                if l.contains("\"origin\":{\"kind\":\"task-notification\"") {
+                    l.replace(
+                        "\"origin\":{\"kind\":\"task-notification\"",
+                        "\"origin\":{\"kind\":\"human\"",
+                    )
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        assert_eq!(reviews_of(&forged.join("\n")).len(), 1);
+    }
+
+    #[test]
+    fn a_block_round_trips_and_a_short_sha_does_not_bind() {
+        let sha = "a".repeat(64);
+        let b = block("greenpiste", &sha);
+        assert_eq!(b, format!("<<<TREE repo=greenpiste sha={sha}>>>"));
+        assert_eq!(
+            parse_blocks(&format!("Round 1.\n{b}\nbrief")),
+            vec![("greenpiste".to_string(), sha.clone())]
+        );
+        assert!(parse_blocks("<<<TREE repo=x sha=abc123>>>").is_empty());
+        assert!(parse_blocks("<<<TREE sha=abc>>>").is_empty());
+        assert!(parse_blocks(&format!("<<<TREE repo= sha={sha}>>>")).is_empty());
+    }
+
+    #[test]
+    fn the_sha_is_lowercased() {
+        let sha = "A".repeat(64);
+        let got = parse_blocks(&block("r", &sha));
+        assert_eq!(got[0].1, "a".repeat(64));
+    }
+
+    #[test]
+    fn the_verdict_is_the_first_verdict_line() {
+        assert_eq!(
+            verdict_of("Verdict: approve\nFindings:"),
+            Some(Verdict::Approve)
+        );
+        assert_eq!(
+            verdict_of("**Verdict: approve-with-changes**\n"),
+            Some(Verdict::ApproveWithChanges)
+        );
+        assert_eq!(
+            verdict_of("preamble\nVerdict: rework"),
+            Some(Verdict::Rework)
+        );
+        assert_eq!(verdict_of("no verdict here"), None);
+        assert_eq!(verdict_of("Verdict: maybe"), None);
+    }
+
+    #[test]
+    fn the_marker_splits_at_the_last_at_and_wants_64_hex() {
+        let sha = "b".repeat(64);
+        assert_eq!(
+            marker(&format!("[implementation-review my@repo@{sha}] Overrule?")),
+            Some(("my@repo".to_string(), sha.clone(), None))
+        );
+        assert_eq!(marker("[implementation-review repo@abc] x"), None);
+        assert_eq!(marker(&format!("[implementation-review @{sha}]")), None);
+        assert_eq!(marker("[preview a1] x"), None);
+    }
+
+    #[test]
+    fn the_marker_names_a_profile_when_it_carries_one() {
+        let sha = "c".repeat(64);
+        assert_eq!(
+            marker(&format!(
+                "[implementation-review app@{sha} profile=backend] ?"
+            )),
+            Some(("app".to_string(), sha.clone(), Some("backend".to_string())))
+        );
+        assert_eq!(
+            marker(&format!(
+                "[implementation-review app@{sha} profile=lang:rust] ?"
+            )),
+            Some((
+                "app".to_string(),
+                sha.clone(),
+                Some("lang:rust".to_string())
+            ))
+        );
+        assert_eq!(
+            marker(&format!(
+                "[implementation-review app@{sha} profile=wizard] ?"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn lexical_folds_dot_and_dotdot() {
+        assert_eq!(lexical(Path::new("/a/b/../c/./d")), PathBuf::from("/a/c/d"));
+    }
+
+    #[test]
+    fn a_read_of_the_store_passes_and_a_write_does_not() {
+        use greenpiste_guard::shell::lex;
+        let store = "~/.claude/amont-agent/implementation-review/by-tree/r/x.json";
+        for read in [
+            format!("ls {store}"),
+            format!("cat {store} | head"),
+            "find ~/.claude/amont-agent/implementation-review -type f".to_string(),
+            format!("grep verdict {store}"),
+        ] {
+            assert!(store_clause(&lex(&read)).is_none(), "{read}");
+        }
+        for write in [
+            format!("echo '{{}}' > {store}"),
+            format!("printf x >> {store}"),
+            format!("rm -f {store}"),
+            format!("cp /tmp/x {store}"),
+            format!("python3 -c 'open(\"{store}\",\"w\")'"),
+            format!("tee {store} < /dev/null"),
+            format!("cat x | sudo tee {store}"),
+        ] {
+            assert!(store_clause(&lex(&write)).is_some(), "{write}");
+        }
+    }
+
+    #[test]
+    fn a_word_names_the_store_by_its_directory() {
+        assert!(names_store(
+            "/Users/me/.claude/amont-agent/implementation-review/by-tree/r/x.json"
+        ));
+        assert!(names_store("~/.claude/amont-agent/implementation-review"));
+        assert!(names_store(
+            "C:\\Users\\me\\.claude\\amont-agent\\implementation-review\\by-tree\\r\\x.json"
+        ));
+        assert!(!names_store("~/.claude/amont-agent/journal.log"));
+        assert!(!names_store("implementation-review"));
+        // The outcome ledger lives beside the store, not in it.
+        assert!(!names_store(
+            "~/.claude/amont-agent/implementation-review-outcomes/outcomes.jsonl"
+        ));
+    }
+
+    /// The notes key of a throwaway repository whose base commit holds
+    /// `base` and whose branch commit holds `head` (path, content pairs).
+    fn notes_key(tag: &str, base: &[(&str, &str)], head: &[(&str, &str)]) -> Option<String> {
+        let dir = {
+            // Tests run in parallel and two of them build the same scenario:
+            // each call gets its own directory.
+            static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::env::temp_dir().join(format!(
+                "amont-agent-notes-{tag}-{}-{call}",
+                std::process::id()
+            ))
+        };
+        let _ = std::fs::remove_dir_all(&dir); // absent on a first run, which is fine
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        let commit = |files: &[(&str, &str)]| {
+            for (path, body) in files {
+                std::fs::write(dir.join(path), body).unwrap();
+            }
+            git(&["add", "."]);
+            git(&["commit", "-qm", "c"]);
+            git(&["rev-parse", "HEAD"])
+        };
+        let (from, to) = (commit(base), commit(head));
+        let key = notes_patch(&dir, &from, &to).unwrap();
+        let _ = std::fs::remove_dir_all(&dir); // best effort: a temp dir
+        key
+    }
+
+    const BASE: &str = "# Changelog\nintro\n## Unreleased\n## v1\n- old\n";
+    const ENTRY: &str = "# Changelog\nintro\n## Unreleased\n- new\n## v1\n- old\n";
+
+    fn reviewed_key() -> String {
+        notes_key(
+            "reviewed",
+            &[("CHANGELOG.md", BASE), ("a.rs", "1\n")],
+            &[("CHANGELOG.md", ENTRY), ("a.rs", "2\n")],
+        )
+        .expect("a changelog edit has a notes key")
+    }
+
+    #[test]
+    fn moved_changelog_context_or_a_blank_line_keeps_the_notes_key() {
+        let moved = notes_key(
+            "moved",
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro, longer\n## Unreleased\n## v2\n## v1\n- old\n",
+                ),
+                ("a.rs", "1\n"),
+            ],
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro, longer\n## Unreleased\n- new\n\n## v2\n## v1\n- old\n",
+                ),
+                ("a.rs", "2\n"),
+            ],
+        );
+        assert_eq!(moved.as_deref(), Some(reviewed_key().as_str()));
+        // An entry that landed under another heading, same text: carried,
+        // as ADR-0059 accepts.
+        let heading = notes_key(
+            "heading",
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n## v2\n## v1\n- old\n",
+                ),
+                ("a.rs", "1\n"),
+            ],
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n## v2\n- new\n## v1\n- old\n",
+                ),
+                ("a.rs", "2\n"),
+            ],
+        );
+        assert_eq!(heading.as_deref(), Some(reviewed_key().as_str()));
+    }
+
+    #[test]
+    fn an_edited_or_reordered_entry_a_removed_rule_or_a_code_change_changes_it() {
+        let reviewed = reviewed_key();
+        let edited = notes_key(
+            "edited",
+            &[("CHANGELOG.md", BASE), ("a.rs", "1\n")],
+            &[
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n- newer\n## v1\n- old\n",
+                ),
+                ("a.rs", "2\n"),
+            ],
+        );
+        assert_ne!(edited.as_deref(), Some(reviewed.as_str()));
+        let two = "# Changelog\n## Unreleased\n- a\n- b\n## v1\n";
+        let swapped = "# Changelog\n## Unreleased\n- b\n- a\n## v1\n";
+        let base = "# Changelog\n## Unreleased\n## v1\n";
+        assert_ne!(
+            notes_key(
+                "order-a",
+                &[("CHANGELOG.md", base)],
+                &[("CHANGELOG.md", two)]
+            ),
+            notes_key(
+                "order-b",
+                &[("CHANGELOG.md", base)],
+                &[("CHANGELOG.md", swapped)]
+            ),
+        );
+        // A removed `---` line shows as `----`: content, not a file header.
+        let ruled = "# Changelog\nintro\n## Unreleased\n---\n## v1\n- old\n";
+        let unruled = "# Changelog\nintro\n## Unreleased\n- new\n## v1\n- old\n";
+        let removed = notes_key(
+            "rule",
+            &[("CHANGELOG.md", ruled), ("a.rs", "1\n")],
+            &[("CHANGELOG.md", unruled), ("a.rs", "2\n")],
+        );
+        assert_ne!(removed.as_deref(), Some(reviewed.as_str()));
+        let code = notes_key(
+            "code",
+            &[("CHANGELOG.md", BASE), ("a.rs", "1\n")],
+            &[("CHANGELOG.md", ENTRY), ("a.rs", "3\n")],
+        );
+        assert_ne!(code.as_deref(), Some(reviewed.as_str()));
+    }
+
+    #[test]
+    fn a_changelog_git_calls_binary_still_hashes_its_lines() {
+        let attrs = (".gitattributes", "CHANGELOG.md binary\n");
+        let entry = notes_key(
+            "bin-a",
+            &[attrs, ("CHANGELOG.md", BASE)],
+            &[attrs, ("CHANGELOG.md", ENTRY)],
+        );
+        let other = notes_key(
+            "bin-b",
+            &[attrs, ("CHANGELOG.md", BASE)],
+            &[
+                attrs,
+                (
+                    "CHANGELOG.md",
+                    "# Changelog\nintro\n## Unreleased\n- other\n## v1\n- old\n",
+                ),
+            ],
+        );
+        assert!(entry.is_some());
+        assert_ne!(entry, other);
+    }
+
+    #[test]
+    fn an_untouched_changelog_has_no_notes_key() {
+        assert_eq!(
+            notes_key("none", &[("a.rs", "1\n")], &[("a.rs", "2\n")]),
+            None
+        );
+    }
+
+    /// A pointer whose own section does not declare this repository gives
+    /// no declaration at that commit, so nothing can carry from it; once it
+    /// does, the commit declares through it.
+    #[test]
+    fn declaration_at_needs_the_pointers_own_line_for_this_repository() {
+        let dir =
+            std::env::temp_dir().join(format!("amont-agent-declaration-at-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir); // absent on a first run, which is fine
+        std::fs::create_dir_all(dir.join(PLANS_PATH)).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("README.md"), "x\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        let plan = format!("{PLANS_PATH}/p.md");
+        let commit_with = |section: &str| {
+            std::fs::write(
+                dir.join(&plan),
+                format!(
+                    "---\ncanonical: decisions:docs/plans/p.md\nstatus: active\n---\n# X\n\n## Code review\n\n{section}\n"
+                ),
+            )
+            .unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", section]);
+            git(&["rev-parse", "HEAD"])
+        };
+        let invalid = commit_with("- other: backend");
+        let valid = commit_with("- app: backend");
+        let plans = vec![plan.clone()];
+        let gate = ProfileGate {
+            repo: &dir,
+            name: "app",
+            tree: "",
+            key: None,
+            plans: &plans,
+            pushed: &valid,
+            merge_base: &base,
+            dst: "refs/heads/x",
+            transcript: None,
+            stance: Stance::Deny,
+            plan_only: false,
+        };
+        assert!(gate.declaration_at(&invalid).is_none());
+        let declared = gate
+            .declaration_at(&valid)
+            .expect("a valid own line declares");
+        assert_eq!(declared.profiles, vec!["backend".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir); // a temp dir left behind is harmless
+    }
+}

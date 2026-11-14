@@ -7,15 +7,15 @@
 
 use std::path::PathBuf;
 
-use amont_agent_guard::settings::{self, PluginPlacement};
+use greenpiste_guard::settings::{self, PluginPlacement};
 
-pub const MARKETPLACE: &str = "amont-agent";
+pub const MARKETPLACE: &str = greenpiste_guard::names::DATA_DIR;
 pub const PLUGIN: &str = "clear-relay";
 
 const MARKETPLACE_JSON: &str = r#"{
-  "name": "amont-agent",
+  "name": "{marketplace}",
   "owner": {
-    "name": "amont-agent"
+    "name": "{marketplace}"
   },
   "plugins": [
     {
@@ -51,10 +51,10 @@ const PLUGIN_FILES: &[(&str, &str)] = &[
 /// can be resolved (then only the hooks are installed).
 pub fn placement() -> Option<PluginPlacement> {
     let state_root = settings::state_root()?;
-    let state_dir = state_root.join("amont-agent");
+    let state_dir = state_root.join(MARKETPLACE);
     let mut files: Vec<(PathBuf, String)> = vec![(
         PathBuf::from(".claude-plugin/marketplace.json"),
-        MARKETPLACE_JSON.to_string(),
+        MARKETPLACE_JSON.replace("{marketplace}", MARKETPLACE),
     )];
     files.extend(PLUGIN_FILES.iter().map(|(rel, body)| {
         (

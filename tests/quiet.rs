@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
+const BIN: &str = env!("CARGO_BIN_EXE_greenpiste");
 
 /// The sha256 of `tests/fixtures/excerpt/MANIFEST.sha256`. amont carries a
 /// copy of the fixtures and pins the same value; an edit to one copy only
@@ -98,7 +98,7 @@ fn quiet_cmd(home: &Path, args: &[&str]) -> Command {
 }
 
 fn quiet(home: &Path, args: &[&str]) -> Output {
-    quiet_cmd(home, args).output().expect("run amont-agent")
+    quiet_cmd(home, args).output().expect("run greenpiste")
 }
 
 fn text(b: &[u8]) -> String {

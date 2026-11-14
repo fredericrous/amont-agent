@@ -95,10 +95,10 @@ file shows: `cli`, `ui`, `screen`, `ops`, `contract` (or its old name
 
 ## Which agents to launch
 
-`amont-agent plan-panel <plan.md>` answers with the hook's own code:
+`greenpiste plan-panel <plan.md>` answers with the hook's own code:
 
 ```
-repos=amont-agent areas=cli,lang:rust body=cf3f43c938c4 panel=full seats=paths
+repos=greenpiste areas=cli,lang:rust body=cf3f43c938c4 panel=full seats=paths
 plan-review-backend
 plan-review-language --lang rust
 plan-review-tui
@@ -114,7 +114,7 @@ baseline stored before 3.22.0 reads in today's class names (`large` as
 
 ## Binding a review to the plan
 
-`amont-agent plan-sha --block [--lang <l>] [--slice <role>] <plan.md>` prints the review
+`greenpiste plan-sha --block [--lang <l>] [--slice <role>] <plan.md>` prints the review
 block that each reviewer's prompt carries:
 
 ```
@@ -156,7 +156,7 @@ is outside every slice: backend, which binds the whole body, reviews it.
 Backend, architect, product owner, unix, tui, ux-research and game-ux always
 bind the whole body, and so does every seat on a plan seated from areas.
 
-`amont-agent plan-sha --block --slice <role> <plan.md>` prints two lines:
+`greenpiste plan-sha --block --slice <role> <plan.md>` prints two lines:
 
 ```
 <<<PLAN path=… sha=<body sha> lang=rust slice=<64 hex>>>>
@@ -174,7 +174,7 @@ A sliced review counts when it reviewed this body, or when its `slice=` is
 the role's slice as it stands. In a delta the hook also requires every
 sliced seat whose slice moved since the last pass, and names the moved span
 with the command to re-run:
-``stale (its slice changed: Phase 2) for repos=…: lang:typescript; re-run: `amont-agent plan-sha --block --lang typescript --slice lang:typescript <plan.md>` ``
+``stale (its slice changed: Phase 2) for repos=…: lang:typescript; re-run: `greenpiste plan-sha --block --lang typescript --slice lang:typescript <plan.md>` ``
 (the command is in backticks, so it copies alone; a path with a space is
 quoted).
 A seat that was whole-body at the last pass and is sliced now (`it has a
@@ -231,7 +231,7 @@ The default stance is `deny`. Set `amont.agent.plan-review-panel.stance` to
 
 ## Recording what the panel did
 
-`amont-agent plan-review record <plan.md> [--transcript <path>]` appends one
+`greenpiste plan-review record <plan.md> [--transcript <path>]` appends one
 JSON row per completed plan-review reviewer of the plan to
 `~/.claude/amont-agent/plan-review/outcomes.jsonl`, so the panel can later be
 judged on its own record. Without `--transcript` it reads the transcript under
@@ -291,7 +291,7 @@ hook takes the ledger lock with `LOCK_NB` and retries for at most 2 s; if
 another process still holds it, it journals one `skipped` entry (body sha and
 plan path) and returns. `plan-review stats` lists such a plan as
 `record-skipped` until the ledger has a row for that body (or any row for the
-plan recorded after the skip); running `amont-agent plan-review record
+plan recorded after the skip); running `greenpiste plan-review record
 <plan.md>` by hand catches up.
 
 Its status line (`wrote N rows (round R, plan <sha12>)`, `already recorded
@@ -308,7 +308,7 @@ ledger cannot be written; 2 on a usage error or malformed findings.
 A reviewer that proposes an edit ends its result with a `Patches:` section: a
 fenced JSON array of `{"finding": n, "old_string": "...", "new_string": "..."}`,
 one object per edit, `old_string` copied from the plan and unique in it.
-`amont-agent plan-apply <plan.md>` applies them with no model. The accepted
+`greenpiste plan-apply <plan.md>` applies them with no model. The accepted
 findings come on stdin, `[{"role": "tui", "finding": 1}, ...]`; a finding may
 carry `"patch": {"old_string", "new_string"}` to supply an edit the main
 session wrote itself. Stdin on a terminal is a usage error.
@@ -355,7 +355,7 @@ never count as a recorded reviewer.
 ## Judging a seat: `plan-review stats`
 
 ```
-amont-agent plan-review stats [--json] [--model <id>]
+greenpiste plan-review stats [--json] [--model <id>]
 ```
 
 Reads `~/.claude/amont-agent/plan-review/outcomes.jsonl` and, for the
@@ -402,7 +402,7 @@ A plan declares who reviews its code in a `## Code review` section (after
 
 A profile is `backend`, `platform`, `unix`, `tui`, `react`, `ui-design`,
 `architect` or `lang:<x>`; a parenthesised reason for the profiles left out
-is kept as text. `amont-agent plan-panel --code-review <plan.md>` proposes
+is kept as text. `greenpiste plan-panel --code-review <plan.md>` proposes
 the list: one line `<repo>\t<profiles comma-separated>`, or
 `<repo>\tnone\t<reason>`, per repository of the machine comment, from the
 files the Phases name in it (`backend` always, each `lang:<x>`; `ops` adds

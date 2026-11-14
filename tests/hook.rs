@@ -95,7 +95,7 @@ enum HostSlot {
 }
 
 fn send_inner(payload: &str, path: String, slot: HostSlot) -> Reply {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     match slot {
         HostSlot::Held => command.env("GREENHARNESS_HOST_SLOT", "held"),
         HostSlot::Free => command.env_remove("GREENHARNESS_HOST_SLOT"),
@@ -383,8 +383,8 @@ fn only_the_emitter_writes_to_stdout() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let trees = [
         root.join("src"),
-        root.join("crates/amont-agent-guard/src"),
-        root.join("crates/amont-agent-process/src"),
+        root.join("crates/greenpiste-guard/src"),
+        root.join("crates/greenpiste-process/src"),
     ];
     for t in &trees {
         assert!(t.is_dir(), "missing source tree {}", t.display());
@@ -523,7 +523,7 @@ fn a_session_opening_in_a_stale_checkout_is_told_how_far_behind_it_is() {
     let text = out["additionalContext"].as_str().unwrap_or_default();
     assert!(text.contains("1 commit behind origin/main"), "{text}");
     assert!(text.contains("the thing that already exists"), "{text}");
-    assert!(text.starts_with("amont-agent/stale-base:"), "{text}");
+    assert!(text.starts_with("greenpiste/stale-base:"), "{text}");
     // Informed, not moved: HEAD is where it was.
     let head = Command::new("git")
         .args(["-C", clone.to_str().unwrap(), "log", "-1", "--format=%s"])
@@ -570,7 +570,7 @@ fn a_branch_started_from_a_stale_head_is_advised() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.starts_with("amont-agent/stale-base:"), "{doc}");
+    assert!(text.starts_with("greenpiste/stale-base:"), "{doc}");
     assert!(
         doc["hookSpecificOutput"]["permissionDecision"].is_null(),
         "advice refuses nothing: {doc}"
@@ -639,7 +639,7 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.contains("amont-agent/agents-md: AGENTS.md"), "{text}");
+    assert!(text.contains("greenpiste/agents-md: AGENTS.md"), "{text}");
     assert!(text.contains("amont agents-md"), "{text}");
 
     // greengate 4.0's markers open the same gate.
@@ -655,7 +655,7 @@ fn a_session_opening_on_a_stale_guidance_block_is_told() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.contains("amont-agent/agents-md: AGENTS.md"), "{text}");
+    assert!(text.contains("greenpiste/agents-md: AGENTS.md"), "{text}");
     std::fs::write(
         work.join("AGENTS.md"),
         "# Project\n\n<!-- amont:start -->\nSTALE\n<!-- amont:end -->\n",
@@ -738,7 +738,7 @@ fn a_push_from_an_unrehearsed_tree_is_advised_and_a_stamped_one_is_not() {
     let text = doc["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap_or_default();
-    assert!(text.starts_with("amont-agent/push-preflight:"), "{doc}");
+    assert!(text.starts_with("greenpiste/push-preflight:"), "{doc}");
     assert!(text.contains("amont rehearse --wait"), "{text}");
     assert!(
         doc["hookSpecificOutput"]["permissionDecision"].is_null(),
@@ -815,7 +815,7 @@ fn a_declined_confirm_records_why_and_status_reads_it_back() {
         "`skipped` is not a reason: {line}"
     );
 
-    let status = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let status = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("status")
         .env("CLAUDE_CONFIG_DIR", home())
         .env_remove("AMONT_AGENT_OFF")
@@ -1566,7 +1566,7 @@ fn send_with_global_err(payload: &str, global: &str) -> (Reply, String) {
     let dir = home();
     let cfg = dir.join("fanout.gitconfig");
     std::fs::write(&cfg, global).expect("global config");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", &dir)
         .env("GIT_CONFIG_GLOBAL", &cfg)
@@ -1805,7 +1805,7 @@ impl LspWorld {
     fn send(&self, payload: &str, global: &str) -> Reply {
         let cfg = self.config.join("global.gitconfig");
         std::fs::write(&cfg, global).expect("global config");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", &self.config)
             .env("PATH", lsp_path(&self.bin))
@@ -3114,7 +3114,7 @@ fn unloaded_transcript(name: &str) -> PathBuf {
 
 /// How many times the reply's reason text carries the bug-nudge advisory.
 fn advisory_count(r: &Reply) -> usize {
-    r.reason().matches("amont-agent/bug-nudge").count()
+    r.reason().matches("greenpiste/bug-nudge").count()
 }
 
 #[test]
@@ -3298,7 +3298,7 @@ fn send_clocked_with_path(
     now: u64,
     path: Option<&std::ffi::OsStr>,
 ) -> Reply {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     if let Some(path) = path {
         command.env("PATH", path);
     }
@@ -3538,7 +3538,7 @@ fn work_overlap_tells_a_session_once_about_a_live_peer_in_its_repository() {
         &scene.second_repo.display().to_string(),
         "main",
         "1m",
-        "amont-agent board --repo second",
+        "greenpiste board --repo second",
         "SendMessage",
     ] {
         assert!(reason.contains(part), "{part}: {}", told.stdout);
@@ -3613,7 +3613,7 @@ fn work_overlap_window_is_read_from_git_config() {
                  "session_id":"{session}","permission_mode":"default",
                  "tool_input":{{"file_path":{file},"old_string":"a","new_string":"b"}}}}"#
         );
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", home())
             .env("AMONT_AGENT_TEST_NOW", (scene.start + later).to_string())
@@ -4272,7 +4272,7 @@ fn at_deny_only_a_large_whole_dump_is_refused() {
 
 // screenshot-in-main-session
 
-const SCREENSHOT_ADVICE: &str = "amont-agent/screenshot-in-main-session: a screenshot here puts \
+const SCREENSHOT_ADVICE: &str = "greenpiste/screenshot-in-main-session: a screenshot here puts \
      the image (~126 KB) into the main context. Delegate the check: Agent tool with \
      subagent_type \"browser-check\", giving the URL and what to verify.";
 

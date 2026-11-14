@@ -14,7 +14,7 @@ fn root(name: &str) -> PathBuf {
 }
 
 fn bin(root: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
     c.env("CLAUDE_CONFIG_DIR", root.join("claude"))
         .env_remove("AMONT_AGENT_OFF");
     c

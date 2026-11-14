@@ -107,7 +107,7 @@ fn post_bash(command: &str, cwd: &Path) -> String {
 
 fn send(payload: &str) -> Reply {
     let home = scratch("home");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", &home)
         .env_remove("AMONT_AGENT_OFF")
@@ -150,7 +150,7 @@ fn send_speaking(payload: &str) -> Reply {
         .output()
         .expect("git config runs");
     assert!(out.status.success(), "could not set the stance");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("hook")
         .env("CLAUDE_CONFIG_DIR", &home)
         .env("GIT_CONFIG_GLOBAL", &cfg)

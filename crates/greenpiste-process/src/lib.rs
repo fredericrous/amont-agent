@@ -1,0 +1,33 @@
+//! amont-agent's work process: the plan-review panel, the implementation
+//! review, preview approvals, provenance, `shipped` and the attestations
+//! sweep, whose verdicts hold or release an agent's tool call (decisions
+//! ADR-0039). It builds on the guard (`greenpiste-guard`) and never names the
+//! binary.
+
+pub mod agents;
+pub mod attestations;
+pub mod block_fingerprint;
+pub mod block_registry;
+pub mod board;
+pub mod candidates_block;
+pub mod clear_boundary;
+pub mod code_review;
+pub mod content_id;
+pub mod file_types;
+pub mod guide;
+pub mod impl_review_outcomes;
+pub mod implementation_review;
+pub mod implementation_review_rule;
+pub mod pin_check;
+pub mod plan_apply;
+pub mod plan_phases;
+pub mod plan_review;
+pub mod plan_text;
+pub mod plan_words;
+pub mod plans;
+pub mod preview;
+pub mod provenance;
+pub mod push_preview;
+pub mod review_brief;
+pub mod review_outcomes;
+pub mod shipped;

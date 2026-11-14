@@ -33,12 +33,12 @@ terminal, a local page, and the app already open in their browser.
    (`attestations/<name>` in a Markdown file under a repository's `docs/`)
    or it holds a `.keep`; a removed directory sits in
    `.trash-<secs>-<name>` for 7 days (`mv` it back to undo).
-   `amont-agent attestations` shows what would go.
+   `greenpiste attestations` shows what would go.
 3. **Serve and register.** From the clean worktree, at the commit to be
    pushed:
 
    ```sh
-   amont-agent preview register --url http://localhost:5173/settings \
+   greenpiste preview register --url http://localhost:5173/settings \
      --guide ~/.claude/amont-agent/attestations/abc1234/guide.md
    ```
 
@@ -46,7 +46,7 @@ terminal, a local page, and the app already open in their browser.
    may come before it, joined by `&&` or `;`:
 
    ```sh
-   cd ~/Developer/app-wt-settings && npm run build && amont-agent preview register --url … --guide …
+   cd ~/Developer/app-wt-settings && npm run build && greenpiste preview register --url … --guide …
    ```
 
    It refuses a dirty tree, a non-commit `HEAD`, a guide inside the worktree
@@ -81,7 +81,7 @@ terminal, a local page, and the app already open in their browser.
    bound, and the journal says why.
 
    A line an earlier clause printed cannot pass for the register's own
-   (`printf '<json>'; amont-agent preview register --bad`): the
+   (`printf '<json>'; greenpiste preview register --bad`): the
    `PreToolUse` hook stamps when the call started, in
    `previews/registers/<tool_use_id>`, and the bind requires that the id
    starts with the commit's sha7 and that the page exists, names the full
@@ -170,7 +170,7 @@ of `Reference`. The converter is hand-rolled for this subset — headings,
 paragraphs, bullet and numbered lists with one nested level, fenced code,
 quotes, **bold**, `code`, links, images and bare URLs — and escapes
 everything else; a link whose scheme is not http(s), mailto or file is text.
-No markdown crate: amont-agent is on a trust path and a page only the person
+No markdown crate: greenpiste is on a trust path and a page only the person
 reads does not clear `change.dependency-bar`.
 
 ## Mockup mode
@@ -246,7 +246,7 @@ compares the guide's images itself. It approves the commit with channel
   call wrote, outside the repository, no larger than a guide may be.
 
 A hard link of one file to the other is one file, as a symlink is.
-`register` prints `"unchanged": true`, and on stderr: `amont-agent: before
+`register` prints `"unchanged": true`, and on stderr: `greenpiste: before
 and after are byte-identical; the hook approves this preview as unchanged
 when it binds it, if they still are`. The flag only informs: the hook
 compares the files again and never approves on what the command printed.

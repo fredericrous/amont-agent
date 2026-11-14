@@ -1,8 +1,8 @@
-//! Shared plumbing for the shell-analysis oracle: calling the amont-agent
+//! Shared plumbing for the shell-analysis oracle: calling the greenpiste
 //! binary, reading its claims, the corpora, and running scripts under real
 //! shells with stubbed network clients.
 //!
-//! The analyzer is exercised ONLY through `amont-agent analyze`; nothing here
+//! The analyzer is exercised ONLY through `greenpiste analyze`; nothing here
 //! links the crate. What the harness checks is the published contract in
 //! `docs/analysis.md`, read off the JSON the binary prints.
 
@@ -25,7 +25,7 @@ pub fn repo_root() -> PathBuf {
         .expect("repository root")
 }
 
-/// `$AMONT_AGENT_BIN`, else `<repo>/target/debug/amont-agent`. Panics with
+/// `$AMONT_AGENT_BIN`, else `<repo>/target/debug/greenpiste`. Panics with
 /// the fix when it is missing: this harness never builds the crate itself.
 pub fn amont_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("AMONT_AGENT_BIN") {
@@ -42,14 +42,14 @@ pub fn amont_bin() -> PathBuf {
             // snapshot — without a separate step to forget.
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
             let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-                .args(["build", "--quiet", "--bin", "amont-agent"])
+                .args(["build", "--quiet", "--bin", "greenpiste"])
                 .current_dir(&root)
                 .env_remove("CARGO_TARGET_DIR")
                 .env_remove("RUSTUP_TOOLCHAIN")
                 .status()
                 .expect("spawn cargo build at the repository root");
             assert!(status.success(), "cargo build at {} failed", root.display());
-            let p = root.join("target/debug/amont-agent");
+            let p = root.join("target/debug/greenpiste");
             assert!(p.is_file(), "no binary at {} after building", p.display());
             p
         })
@@ -235,7 +235,7 @@ pub fn analyze_raw(bin: &Path, dialect: &str, src: &str) -> Run {
         .args(["analyze", "--dialect", dialect, src])
         .stdin(Stdio::null())
         .output()
-        .expect("spawn amont-agent");
+        .expect("spawn greenpiste");
     Run {
         status: out.status,
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -257,7 +257,7 @@ pub fn analyze(bin: &Path, dialect: &str, src: &str) -> Analysis {
 
 // ── corpora ─────────────────────────────────────────────────────────────────
 
-/// `crates/amont-agent-guard/src/corpus.rs::unescape`, byte for byte in behaviour: `\n`, `\r`, `\t`,
+/// `crates/greenpiste-guard/src/corpus.rs::unescape`, byte for byte in behaviour: `\n`, `\r`, `\t`,
 /// `\\` are escapes; any other backslash is kept verbatim.
 pub fn unescape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -289,10 +289,10 @@ pub struct Sample {
     pub command: String,
 }
 
-/// Every case in `crates/amont-agent-guard/tests/corpus/*.cases` (`label\tcommand`, `#` comments),
-/// parsed the way `crates/amont-agent-guard/src/corpus.rs::parse` does.
+/// Every case in `crates/greenpiste-guard/tests/corpus/*.cases` (`label\tcommand`, `#` comments),
+/// parsed the way `crates/greenpiste-guard/src/corpus.rs::parse` does.
 pub fn corpus_cases() -> Vec<Sample> {
-    let dir = repo_root().join("crates/amont-agent-guard/tests/corpus");
+    let dir = repo_root().join("crates/greenpiste-guard/tests/corpus");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -320,12 +320,12 @@ pub fn corpus_cases() -> Vec<Sample> {
     out
 }
 
-/// The string literals of `crates/amont-agent-guard/src/analysis/interp/tests.rs` (Appendix C) that
+/// The string literals of `crates/greenpiste-guard/src/analysis/interp/tests.rs` (Appendix C) that
 /// are commands: every `"…"` and `r#"…"#` literal that mentions a client,
 /// minus `format!` templates. Read from the source at test time, so a case
 /// added there is checked here without a copy to keep in step.
 pub fn appendix_c() -> Vec<Sample> {
-    let path = repo_root().join("crates/amont-agent-guard/src/analysis/interp/tests.rs");
+    let path = repo_root().join("crates/greenpiste-guard/src/analysis/interp/tests.rs");
     let src = std::fs::read_to_string(&path).expect("read interp tests");
     let mut out = Vec::new();
     for (line, lit) in rust_string_literals(&src) {

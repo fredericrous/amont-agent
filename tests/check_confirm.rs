@@ -15,7 +15,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 fn check(dir: &Path, extra: &[&str], command: &str) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("check")
         .arg("--cwd")
         .arg(dir)

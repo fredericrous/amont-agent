@@ -32,7 +32,7 @@ impl Scratch {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("open")
             .args(args)
             .current_dir(&self.0)
@@ -138,7 +138,7 @@ fn no_argument_is_a_usage_error() {
     let s = Scratch::new("usage");
     let out = s.run(&[]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: amont-agent open <url|path>"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: greenpiste open <url|path>"));
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn help_exits_0() {
     let s = Scratch::new("help");
     let out = s.run(&["--help"]);
     assert_eq!(out.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("usage: amont-agent open <url|path>"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("usage: greenpiste open <url|path>"));
 }
 
 #[test]
@@ -183,8 +183,8 @@ fn an_unknown_option_exits_2_with_the_option_and_the_usage() {
     assert_eq!(out.status.code(), Some(2));
     let said = String::from_utf8_lossy(&out.stderr);
     let lines: Vec<&str> = said.lines().collect();
-    assert_eq!(lines[0], "amont-agent: unknown option --bogus", "{said}");
-    assert_eq!(lines[1], "usage: amont-agent open <url|path>", "{said}");
+    assert_eq!(lines[0], "greenpiste: unknown option --bogus", "{said}");
+    assert_eq!(lines[1], "usage: greenpiste open <url|path>", "{said}");
 }
 
 #[test]

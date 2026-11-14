@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const BIN: &str = env!("CARGO_BIN_EXE_amont-agent");
+const BIN: &str = env!("CARGO_BIN_EXE_greenpiste");
 const SESSION_ONE: &str = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const SESSION_TWO: &str = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const PLAN: &str = "---\nstatus: active\nrepos: [a, b]\n---\n# Board plan\n\n- [ ] Phase 1\n";
@@ -241,7 +241,7 @@ fn help_exits_zero_and_a_bad_flag_exits_two() {
     assert_eq!(both.status.code(), Some(0));
     let help = world.board(&world.top, &["--help"]);
     assert_eq!(help.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&help.stdout).contains("amont-agent board"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("greenpiste board"));
     assert_eq!(world.board(&world.top, &["--bogus"]).status.code(), Some(2));
     assert_eq!(
         world.board(&world.top, &["--since", "soon"]).status.code(),

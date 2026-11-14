@@ -1,4 +1,4 @@
-# amont-agent
+# greenpiste
 
 **Your agent just ran `git push … | tail -5`, the push was rejected, and the
 command reported success.**
@@ -9,7 +9,7 @@ that never left the machine all look identical — and the trimming throws the
 error text away too. No git hook can catch that: the mistake is in the command
 string and never reaches one.
 
-`amont-agent` is a Claude Code hook that reads an agent's tool calls before
+`greenpiste` (formerly `amont-agent`, still installed as a copy under that name) is a Claude Code hook that reads an agent's tool calls before
 they run — a shell command first of all — and can observe one, advise against
 it, or refuse it. The same guard holds the work-process verdicts a tool call
 waits on: a plan's review panel before `ExitPlanMode`, the implementation
@@ -19,7 +19,7 @@ review and the preview approval before a push.
 [![License](https://img.shields.io/github/license/greenharness/greenpiste)](LICENSE)
 
 ```console
-$ amont-agent check 'git push origin main 2>&1 | tail -5'
+$ greenpiste check 'git push origin main 2>&1 | tail -5'
 pipe-to-tail [deny]
   `git push` pipes into `tail`, so the pipeline reports tail's exit status, not git push's. A failed, rejected or timed-out run reads as success, and the trimming discards the error text as well.
   → Run `git push` on its own and read its output afterwards. Then verify the effect rather than the exit code.
@@ -32,7 +32,7 @@ pipe-to-tail [deny]
 curl -fsSL https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.sh | sh
 ```
 
-Or `brew install fredericrous/tap/amont-agent`, `cargo install amont-agent`,
+Or `brew install fredericrous/tap/greenpiste`, `cargo install greenpiste`,
 the PowerShell installer, or a
 [prebuilt binary](https://github.com/greenharness/greenpiste/releases/latest).
 Then wire it in — a separate step, because a program that can refuse your
@@ -40,9 +40,9 @@ agent's commands should not add itself to your settings as a side effect of
 you downloading it:
 
 ```sh
-amont-agent install          # prints the settings block, writes nothing
-amont-agent install --write  # merges it into ~/.claude/settings.json
-amont-agent doctor           # installed, runnable, firing? plan root in use
+greenpiste install          # prints the settings block, writes nothing
+greenpiste install --write  # merges it into ~/.claude/settings.json
+greenpiste doctor           # installed, runnable, firing? plan root in use
 ```
 
 `install --write` also places the `clear-relay` Claude Code plugin under
@@ -63,7 +63,7 @@ context with nothing in flight it tells you a `/clear` would pay, and at
 `/clear` and carry on. A rule is promoted from your own
 transcripts, not from an argument: `mine`, `backtest`, `explain`,
 `corpus check`, `backtest --compliance`, then `graduate`. Demoting is one
-command with no questions. `amont-agent rules` lists every rule with the
+command with no questions. `greenpiste rules` lists every rule with the
 stance in force on your machine and its measured rate.
 
 It never emits `allow`, every failure path is silence, it does not phone home,
@@ -109,9 +109,9 @@ and the compiler keeps them apart (decisions ADR-0039):
 
 | Crate | Holds | Pages |
 |---|---|---|
-| [`amont-agent-guard`](crates/amont-agent-guard) | shell analysis, the rules and their stances, the assertions, the journal, `quiet` | [rules](docs/rules.md), [assertions](docs/assertions.md), [stances](docs/stances.md), [analysis](docs/analysis.md), [measuring](docs/measuring.md), [quiet](docs/quiet.md) |
-| [`amont-agent-process`](crates/amont-agent-process) | the plan-review panel, the implementation review, preview approvals, provenance, `shipped` | [plan review](docs/plan-review.md), [implementation review](docs/implementation-review.md), [preview](docs/preview.md), [shipped](docs/shipped.md) |
-| `amont-agent` (the root) | the CLI and the hook's dispatch: the composition root that wires both | [install](docs/install.md), [configuration](docs/configuration.md), [session notice](docs/session-notice.md) |
+| [`greenpiste-guard`](crates/greenpiste-guard) | shell analysis, the rules and their stances, the assertions, the journal, `quiet` | [rules](docs/rules.md), [assertions](docs/assertions.md), [stances](docs/stances.md), [analysis](docs/analysis.md), [measuring](docs/measuring.md), [quiet](docs/quiet.md) |
+| [`greenpiste-process`](crates/greenpiste-process) | the plan-review panel, the implementation review, preview approvals, provenance, `shipped` | [plan review](docs/plan-review.md), [implementation review](docs/implementation-review.md), [preview](docs/preview.md), [shipped](docs/shipped.md) |
+| `greenpiste` (the root) | the CLI and the hook's dispatch: the composition root that wires both | [install](docs/install.md), [configuration](docs/configuration.md), [session notice](docs/session-notice.md) |
 
 The guard never names the work process or the binary; the work process never
 names the binary. Dependencies are `serde`/`serde_json` (for reading),

@@ -34,10 +34,13 @@ pub fn run() -> ExitCode {
     // A person typing `amont-agent hook` with no payload would otherwise block
     // on stdin forever with no indication why.
     if std::io::stdin().is_terminal() {
-        eprintln!(
-            "amont-agent: `hook` reads a Claude Code payload on stdin.\n\
-             Try `amont-agent check '<command>'` to test a command by hand."
-        );
+        eprintln!(concat!(
+            greenpiste_guard::bin!(),
+            ": `hook` reads a Claude Code payload on stdin.\n\
+             Try `",
+            greenpiste_guard::bin!(),
+            " check '<command>'` to test a command by hand."
+        ));
         return ExitCode::from(2);
     }
 
@@ -52,7 +55,10 @@ pub fn run() -> ExitCode {
     match decided {
         Ok(d) => d.emit(),
         Err(_) => {
-            eprintln!("amont-agent: internal error; allowing the command through");
+            eprintln!(concat!(
+                greenpiste_guard::bin!(),
+                ": internal error; allowing the command through"
+            ));
             Decision::Silent.emit()
         }
     }
@@ -61,7 +67,7 @@ pub fn run() -> ExitCode {
 /// `ask-unopened-page`: a question that names a local page nobody opened for
 /// the person. The stance is looked up only once a page is named.
 fn ask_unopened_page(ask: &payload::Ask) -> Decision {
-    use amont_agent_guard::page_open::{self, Verdict};
+    use greenpiste_guard::page_open::{self, Verdict};
     let rule = &rules::ask_unopened_page::RULE;
     let (pages, why) = match page_open::judge(ask) {
         Verdict::Shown => return Decision::Silent,
@@ -137,7 +143,7 @@ fn decide(raw: &str) -> Decision {
         .ok()
         .and_then(|v| v.get("session_id")?.as_str().map(str::to_string))
     {
-        amont_agent_guard::shadow::enter_session(&session);
+        greenpiste_guard::shadow::enter_session(&session);
     }
     match payload::parse(raw) {
         Event::SessionStart(session) => {
@@ -318,7 +324,7 @@ fn work_overlap(
     if candidates.is_empty() {
         return Decision::Silent;
     }
-    let window = amont_agent_guard::gitconfig::duration_or(
+    let window = greenpiste_guard::gitconfig::duration_or(
         "amont.agent.work-overlap.window",
         crate::activity::DEFAULT_WINDOW,
     );
@@ -408,7 +414,7 @@ fn stale_checkout_notice(session: &Session) -> Option<String> {
     match stance {
         Stance::Observe => None,
         Stance::Advise | Stance::Deny => Some(format!(
-            "amont-agent/{}: {}",
+            concat!(greenpiste_guard::bin!(), "/{}: {}"),
             rule.id,
             crate::stale::notice(&drift)
         )),
@@ -936,7 +942,7 @@ fn suppressions_after_bash(bash: &Bash) -> Option<String> {
         };
         journal_outcome(outcome, what);
     };
-    let Some(top) = amont_agent_guard::git::stdout_bounded(
+    let Some(top) = greenpiste_guard::git::stdout_bounded(
         &bash.cwd,
         &["rev-parse", "--show-toplevel"],
         deadline,
@@ -945,7 +951,7 @@ fn suppressions_after_bash(bash: &Bash) -> Option<String> {
         return None;
     };
     let root = std::path::PathBuf::from(top);
-    let Some(status) = amont_agent_guard::git::bytes_bounded(
+    let Some(status) = greenpiste_guard::git::bytes_bounded(
         &root,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         None,
@@ -981,7 +987,7 @@ fn suppressions_after_bash(bash: &Bash) -> Option<String> {
             input.extend_from_slice(name.as_bytes());
             input.push(b'\n');
         }
-        let Some(sizes) = amont_agent_guard::git::bytes_bounded(
+        let Some(sizes) = greenpiste_guard::git::bytes_bounded(
             &root,
             &["cat-file", "--batch-check=%(objectsize)"],
             Some(&input),
@@ -1016,8 +1022,7 @@ fn suppressions_after_bash(bash: &Bash) -> Option<String> {
                 }
             }
         }
-        let Some(blobs) =
-            amont_agent_guard::git::cat_file_batch_bounded(&root, &readable, deadline)
+        let Some(blobs) = greenpiste_guard::git::cat_file_batch_bounded(&root, &readable, deadline)
         else {
             failure("cat-file");
             return None;
@@ -1768,7 +1773,7 @@ fn adr_lint_gate(op: &crate::payload::FileOp, root: &std::path::Path) -> bool {
     }
     let shown = root.display().to_string();
     let answer = run_with_deadline(
-        std::ffi::OsStr::new(amont_agent_guard::gate::gate_binary()),
+        std::ffi::OsStr::new(greenpiste_guard::gate::gate_binary()),
         &["list", "--json"],
         root,
         AMONT_LIST_DEADLINE,
@@ -1804,8 +1809,7 @@ fn on_post_write(op: &crate::payload::FileOp) -> Decision {
     let Some(dir) = op.path.parent() else {
         return Decision::Silent;
     };
-    let Some(top) = amont_agent_guard::git::stdout_in(dir, &["rev-parse", "--show-toplevel"])
-    else {
+    let Some(top) = greenpiste_guard::git::stdout_in(dir, &["rev-parse", "--show-toplevel"]) else {
         return Decision::Silent;
     };
     let root = crate::lsp::normal(std::path::Path::new(&top));

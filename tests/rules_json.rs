@@ -23,7 +23,7 @@ impl Home {
     }
 
     fn rules(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("rules")
             .args(args)
             .current_dir(&self.0)
@@ -182,7 +182,7 @@ fn rules_takes_only_json() {
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(
             String::from_utf8(out.stdout).unwrap(),
-            "usage: amont-agent rules [--json]\n"
+            "usage: greenpiste rules [--json]\n"
         );
     }
 }

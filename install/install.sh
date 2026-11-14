@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the amont-agent binary. Nothing else.
+# Install the greenpiste binary (and amont-agent, its old name, as a copy). Nothing else.
 #
 #   curl -fsSL https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.sh | sh
 #
@@ -7,14 +7,14 @@
 # downloads a verified binary, puts it on your PATH, and tells you what to run
 # next. That restraint is the point: a program that can REFUSE the commands
 # your agent runs should not install itself into your settings.json as a side
-# effect of you fetching it. `amont-agent install --write` is a separate,
+# effect of you fetching it. `greenpiste install --write` is a separate,
 # deliberate act, and it prints the block before it writes anything.
 #
 # POSIX sh, no bashisms: this has to run wherever curl does.
 set -eu
 
 REPO="greenharness/greenpiste"
-# `$HOME/.local/bin` by default. `amont-agent install` writes the ABSOLUTE
+# `$HOME/.local/bin` by default. `greenpiste install` writes the ABSOLUTE
 # path of this binary into settings.json, so the directory matters only for
 # whether you can type the command yourself.
 BIN_DIR="${AMONT_AGENT_BIN_DIR:-$HOME/.local/bin}"
@@ -55,7 +55,7 @@ target() {
             if ldd --version 2>&1 | grep -qi musl; then libc=musl; else libc=gnu; fi
             case "$arch" in
                 x86_64|amd64)  echo "x86_64-unknown-linux-$libc" ;;
-                aarch64|arm64) [ "$libc" = "musl" ] && die "no aarch64 musl build yet — build from source with cargo install amont-agent"
+                aarch64|arm64) [ "$libc" = "musl" ] && die "no aarch64 musl build yet — build from source with cargo install greenpiste"
                                echo "aarch64-unknown-linux-gnu" ;;
                 *) die "unsupported architecture: $arch" ;;
             esac
@@ -89,16 +89,16 @@ resolve_version() {
     # handing you a tarball full of HTML.
     tag=$(fetch "https://api.github.com/repos/$REPO/releases/latest" \
         | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n 1)
-    [ -n "$tag" ] || die "could not determine the latest release (rate limited? set AMONT_VERSION=vX.Y.Z)"
+    [ -n "$tag" ] || die "could not determine the latest release (rate limited? set AMONT_AGENT_VERSION=vX.Y.Z)"
     echo "${tag#v}"
 }
 
 main() {
-    printf '\n  amont-agent installer\n\n'
+    printf '\n  greenpiste installer\n\n'
 
     t=$(target)
     v=$(resolve_version)
-    name="amont-agent-${v}-${t}"
+    name="greenpiste-${v}-${t}"
     base="https://github.com/$REPO/releases/download/v${v}"
 
     say "version:  $v"
@@ -108,17 +108,31 @@ main() {
 
     tmp=$(mktemp -d)
     # Clean up on the way out however we leave, including Ctrl-C.
-    trap 'rm -rf "$tmp"' EXIT INT TERM
+    trap 'rm -rf "$tmp"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
-    say "downloading…"
-    fetch_to "$base/${name}.tar.gz" "$tmp/${name}.tar.gz" \
-        || die "download failed: $base/${name}.tar.gz"
+    if [ -n "${GREENPISTE_ARCHIVE_DIR:-}" ]; then
+        # A local archive (the release's standalone check): the same checks
+        # as a download, read from a directory instead of the release.
+        say "from:     $GREENPISTE_ARCHIVE_DIR"
+        cp "$GREENPISTE_ARCHIVE_DIR/${name}.tar.gz" "$tmp/${name}.tar.gz" \
+            || die "no ${name}.tar.gz in $GREENPISTE_ARCHIVE_DIR"
+    else
+        say "downloading…"
+        fetch_to "$base/${name}.tar.gz" "$tmp/${name}.tar.gz" \
+            || die "download failed: $base/${name}.tar.gz"
+    fi
 
     # Checksums are not optional here. This binary runs on every commit with
     # your credentials and reads every staged file; verifying what it is before
     # putting it in that position is the whole argument the project makes about
     # its own dependencies, applied to itself.
-    if fetch_to "$base/SHA256SUMS" "$tmp/SHA256SUMS" 2> /dev/null; then
+    if if [ -n "${GREENPISTE_ARCHIVE_DIR:-}" ]; then
+        cp "$GREENPISTE_ARCHIVE_DIR/SHA256SUMS" "$tmp/SHA256SUMS" 2> /dev/null
+    else
+        fetch_to "$base/SHA256SUMS" "$tmp/SHA256SUMS" 2> /dev/null
+    fi; then
         if command -v sha256sum > /dev/null 2>&1; then
             got=$(sha256sum "$tmp/${name}.tar.gz" | cut -d' ' -f1)
         elif command -v shasum > /dev/null 2>&1; then
@@ -144,38 +158,49 @@ main() {
     # Whether this is an upgrade decides what to say at the end: the
     # first-install steps are wrong advice the second time.
     upgrading=0
-    [ -x "$BIN_DIR/amont-agent" ] && upgrading=1
+    [ -x "$BIN_DIR/greenpiste" ] && upgrading=1
+    from_old=0
+    [ "$upgrading" -eq 0 ] && [ -x "$BIN_DIR/amont-agent" ] && from_old=1
     mkdir -p "$BIN_DIR"
-    b=amont-agent
-    if [ -f "$tmp/$name/$b" ]; then
-        # Write to a temporary name and rename over the destination:
-        # replacing a RUNNING binary in place fails on some platforms, and
-        # rename is atomic, so a half-copied amont-agent never exists.
-        cp "$tmp/$name/$b" "$BIN_DIR/.$b.new"
-        chmod 755 "$BIN_DIR/.$b.new"
-        mv "$BIN_DIR/.$b.new" "$BIN_DIR/$b"
-        ok "installed $BIN_DIR/$b"
-    fi
+    b=greenpiste
+    [ -f "$tmp/$name/$b" ] || die "the archive holds no $b"
+    # Write to a temporary name and rename over the destination: replacing
+    # a RUNNING binary in place fails on some platforms, and rename is
+    # atomic, so a half-copied binary never exists. The old name,
+    # amont-agent, is placed the same way as a copy (never a symlink: an
+    # older installer writing over it would write through to greenpiste),
+    # so hook entries baked to its path keep working.
+    for dest in greenpiste amont-agent; do
+        cp "$tmp/$name/$b" "$BIN_DIR/.$dest.new"
+        chmod 755 "$BIN_DIR/.$dest.new"
+        mv "$BIN_DIR/.$dest.new" "$BIN_DIR/$dest"
+    done
+    ok "installed $BIN_DIR/greenpiste (and amont-agent, a copy)"
 
     printf '\n'
     case ":$PATH:" in
         *":$BIN_DIR:"*) ;;
-        *) warn "$BIN_DIR is not on your PATH — add it, or you will not be able to run amont-agent yourself" ;;
+        *) warn "$BIN_DIR is not on your PATH — add it, or you will not be able to run greenpiste yourself" ;;
     esac
 
     if [ "$upgrading" -eq 1 ]; then
         printf '  Upgraded. The settings.json entry points at this path, so\n'
         printf '  nothing needs rewiring. Confirm it still fires:\n\n'
-        printf '    amont-agent doctor\n\n'
+        printf '    greenpiste doctor\n\n'
+    elif [ "$from_old" -eq 1 ]; then
+        printf '  Upgraded from amont-agent, which stays as a copy, so the hooks\n'
+        printf '  keep firing. Move them to the new name once:\n\n'
+        printf '    greenpiste install --write\n'
+        printf '    greenpiste doctor\n\n'
     else
         printf '  Installed, and wired into nothing. The guard does not run until\n'
         printf '  Claude Code is told about it:\n\n'
-        printf '    amont-agent install          # print the settings block, write nothing\n'
-        printf '    amont-agent install --write  # merge it into ~/.claude/settings.json\n'
-        printf '    amont-agent doctor           # installed, runnable, and actually firing?\n\n'
+        printf '    greenpiste install          # print the settings block, write nothing\n'
+        printf '    greenpiste install --write  # merge it into ~/.claude/settings.json\n'
+        printf '    greenpiste doctor           # installed, runnable, and actually firing?\n\n'
         printf '  Every rule but pipe-to-tail ships as observe, so nothing is\n'
         printf '  refused until you have seen what it would have caught:\n\n'
-        printf '    amont-agent status\n\n'
+        printf '    greenpiste status\n\n'
     fi
 }
 

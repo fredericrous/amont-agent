@@ -29,7 +29,7 @@ impl Home {
         std::fs::read_to_string(self.settings()).unwrap_or_default()
     }
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .args(args)
             .env("CLAUDE_CONFIG_DIR", &self.0)
             // The plugin's state goes beside the scratch config, never to a real XDG state home.
@@ -273,7 +273,7 @@ fn project_settings(root: &Path) -> PathBuf {
 }
 
 fn run_in(root: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .args(args)
         .current_dir(root)
         // The plugin's state directory, never the person's real one.

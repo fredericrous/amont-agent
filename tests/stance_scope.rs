@@ -56,7 +56,7 @@ impl Fixture {
 
     /// The `now` column of `amont-agent status`, for one rule.
     fn stance_of(&self, rule: &str) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("status")
             .current_dir(self.repo())
             .env("CLAUDE_CONFIG_DIR", self.dir.join("claude"))
@@ -280,7 +280,7 @@ fn a_stance_for_a_retired_rule_is_ignored() {
         f.set("--local", &format!("amont.agent.{id}.stance"), "advise");
     }
     assert_eq!(f.stance_of("pipe-to-tail"), "deny");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .arg("hook")
         .current_dir(f.repo())
         .env("CLAUDE_CONFIG_DIR", f.dir.join("claude"))
@@ -350,7 +350,7 @@ fn work_overlap_is_capped_at_advise() {
 #[test]
 fn rules_shows_the_stance_in_force() {
     let line = |f: &Fixture| {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("rules")
             .current_dir(f.repo())
             .env("CLAUDE_CONFIG_DIR", f.dir.join("claude"))
@@ -437,7 +437,7 @@ impl Fixture {
             "tool_input": {"pattern": "fn agent_type", "path": "."},
         })
         .to_string();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .current_dir(&repo)
             .env("CLAUDE_CONFIG_DIR", &claude)

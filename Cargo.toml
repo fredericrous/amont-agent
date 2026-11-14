@@ -1,5 +1,5 @@
 [package]
-name = "amont-agent"
+name = "greenpiste"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -28,8 +28,8 @@ categories = ["development-tools", "command-line-utilities"]
 rust-version.workspace = true
 
 [dependencies]
-amont-agent-guard.workspace = true
-amont-agent-process.workspace = true
+greenpiste-guard.workspace = true
+greenpiste-process.workspace = true
 # The binary's own JSON (`analyze --json`) and its integration tests read
 # and write `Value`s; why this crate reads with serde_json and never derives
 # is argued in the guard's manifest, where most of the parsing lives.
@@ -40,14 +40,14 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # therefore already in scope for this crate's tests — restating it buys
 # nothing and costs two places to bump.
 
-# What we WRITE is emitted by `crates/amont-agent-guard/src/json.rs`, a hand-rolled escaper, so the
+# What we WRITE is emitted by `crates/greenpiste-guard/src/json.rs`, a hand-rolled escaper, so the
 # hook's answer shares no representation with the payloads we parse.
 
 [features]
 # Failure injection for the integration tests, which spawn the binary and so
 # cannot use `cfg(test)`. Never on in a build that ships: nothing reachable
 # from the CLI reads these variables without it. The hooks live in the guard.
-test-hooks = ["amont-agent-guard/test-hooks"]
+test-hooks = ["greenpiste-guard/test-hooks"]
 
 [profile.release]
 strip = true
@@ -64,7 +64,7 @@ lto = true
 # docs/plans/2026-10-19-guard-and-work-process-components.md). The crate
 # graph holds the boundary: the guard never names the work process or the
 # binary, and the work process never names the binary.
-members = [".", "crates/amont-agent-guard", "crates/amont-agent-process"]
+members = [".", "crates/greenpiste-guard", "crates/greenpiste-process"]
 # The analyzer's syntax oracle is its own workspace, on purpose.
 exclude = ["tools/shell-oracle"]
 
@@ -83,8 +83,8 @@ rust-version = "1.85.0"
 # The one place the inter-crate version is written: `path` for a checkout,
 # `version` for crates.io, exact because they are released together.
 [workspace.dependencies]
-amont-agent-guard = { path = "crates/amont-agent-guard", version = "=3.35.0" }
-amont-agent-process = { path = "crates/amont-agent-process", version = "=3.35.0" }
+greenpiste-guard = { path = "crates/greenpiste-guard", version = "=3.35.0" }
+greenpiste-process = { path = "crates/greenpiste-process", version = "=3.35.0" }
 
 [workspace.lints.clippy]
 # adr-lint sync: general.linters-police-suppressions

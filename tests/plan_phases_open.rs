@@ -114,7 +114,7 @@ impl World {
     }
 
     fn run(&self, payload: &serde_json::Value, claude: &Path) -> Reply {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", claude)
             .env("GIT_CONFIG_GLOBAL", &self.global)
@@ -197,7 +197,7 @@ fn an_open_phase_blocks_and_is_named() {
     let v = r.json();
     let reason = v["reason"].as_str().unwrap();
     assert!(
-        reason.starts_with("amont-agent/plan-phases-open:"),
+        reason.starts_with("greenpiste/plan-phases-open:"),
         "{reason}"
     );
     assert!(reason.contains("2026-10-07-x.md"), "{reason}");

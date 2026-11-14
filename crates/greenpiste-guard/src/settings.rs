@@ -1,0 +1,740 @@
+//! Editing Claude Code's `settings.json` without breaking it.
+//!
+//! This is a file the user writes by hand. Everything here is arranged around
+//! that one fact: we add one handler, we remove exactly what we added, and we
+//! touch nothing else — not the key order, not the indentation, not somebody
+//! else's hook.
+//!
+//! ## Refuse rather than guess
+//!
+//! If the file does not parse, we do **not** attempt a textual patch. A regex
+//! edit of JSON that is already malformed is how a hand-maintained config gets
+//! destroyed. We say what is wrong, print the block to paste, and change
+//! nothing.
+//!
+//! ## Why not `hookfile::guard_write`
+//!
+//! That guard is a statement about `.git/hooks`: it refuses a **tracked** file
+//! outright, and refuses when git cannot answer at all. Both are right there —
+//! `.git/hooks` is machine-local scratch, so a tracked file in it means a
+//! symlink has escaped. Neither is right here. A project `.claude/settings.json`
+//! is legitimately tracked and we are being asked to edit it, and a user-level
+//! `~/.claude/settings.json` sits outside any repository, where "git cannot
+//! answer" is the normal case rather than a warning.
+//!
+//! So the symlink and regular-file checks are re-stated for this context, and
+//! only the atomic swap — `hookfile::stage` then `hookfile::commit_all` — is
+//! reused. That swap is what makes a symlinked `settings.json` get REPLACED
+//! rather than written through to its target.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{json, Map, Value};
+
+/// The Claude Code config directory.
+///
+/// `$CLAUDE_CONFIG_DIR` wins because that is the override Claude Code itself
+/// honours. `$HOME` is not enough on its own: Windows usually leaves it unset
+/// and uses `%USERPROFILE%`, and this repository ships a Windows installer and
+/// gates a Windows CI job, so "no home directory" there would mean install and
+/// the journal both silently giving up.
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    if let Some(d) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(std::path::PathBuf::from(d));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(std::path::PathBuf::from(home).join(".claude"))
+}
+
+/// The directory under which `amont-agent/claude-marketplace` lives: the XDG
+/// state home, else a `state` directory beside a relocated Claude config, else
+/// `~/.local/state`. A relocated config keeps its state with it, so a scratch
+/// `CLAUDE_CONFIG_DIR` never writes into the person's real home.
+pub fn state_root() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(PathBuf::from(dir).join("state"));
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".local").join("state"))
+}
+
+/// The name the hook entries are written under.
+pub use crate::names::BIN;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    User,
+    Project,
+    ProjectLocal,
+}
+
+impl Scope {
+    pub fn path(self, project: &Path) -> Option<PathBuf> {
+        match self {
+            Scope::User => Some(config_dir()?.join("settings.json")),
+            Scope::Project => Some(project.join(".claude").join("settings.json")),
+            Scope::ProjectLocal => Some(project.join(".claude").join("settings.local.json")),
+        }
+    }
+}
+
+pub enum Change {
+    Add,
+    Update,
+    AlreadyCurrent,
+    /// The settings are current; only the plugin's files are written.
+    PluginFilesOnly,
+    Remove,
+    /// Removing our hooks left the document as exactly `{}`: the file is
+    /// deleted rather than written back empty. Decided from content alone.
+    RemoveFile,
+    NothingToRemove,
+    /// The file uses formatting this program cannot reproduce, so writing it
+    /// back would reformat parts we were not asked to touch. See
+    /// [`would_reformat`].
+    WouldReformat,
+}
+
+impl Change {
+    pub fn describe(&self, path: &Path) -> String {
+        let p = path.display();
+        match self {
+            Change::Add => format!("added our hooks to {p}"),
+            Change::Update => format!("updated our hooks in {p}"),
+            Change::AlreadyCurrent => format!("{p} is already current — nothing written"),
+            Change::PluginFilesOnly => {
+                format!("{p} is already current; the clear-relay plugin's files were stale")
+            }
+            Change::Remove => format!("removed our hooks from {p}"),
+            Change::RemoveFile => format!(
+                "removed our hooks from {p} — nothing else was left, so the file was removed"
+            ),
+            Change::NothingToRemove => format!("no {BIN} hook in {p} — nothing written"),
+            Change::WouldReformat => format!(
+                "{p} uses formatting this program cannot reproduce — writing it back would \
+                 reformat parts of the file nobody asked to change.\n\
+                 Paste the block below in by hand, or re-run with --reformat to accept a \
+                 normalised file."
+            ),
+        }
+    }
+}
+
+/// Would writing this file back change anything we were not asked to change?
+///
+/// The test is a round trip: parse the file and render it with no edits at all.
+/// If that already differs from what is on disk, then our renderer and the
+/// author's formatting disagree — `serde_json`'s pretty printer always expands
+/// arrays, so a hand-written `"allow": ["one"]` comes back over three lines —
+/// and every edit we make would arrive buried in that noise.
+///
+/// The promise at the top of this module is that we touch nothing else. When we
+/// cannot keep it, the right move is to say so and write nothing, not to keep it
+/// approximately.
+fn would_reformat(raw: &str, doc: &Value, indent: &str, nl: bool) -> bool {
+    if raw.trim().is_empty() {
+        return false;
+    }
+    // Re-render the document as it was READ, before any of our edits.
+    match serde_json::from_str::<Value>(raw) {
+        Ok(original) => {
+            let _ = doc;
+            render(&original, indent, nl) != raw
+        }
+        Err(_) => false,
+    }
+}
+
+pub struct Plan {
+    pub path: PathBuf,
+    pub after: String,
+    pub change: Change,
+    /// Plugin files to write beside the settings change, only those whose
+    /// content on disk differs. Written by [`apply`], never by a dry run.
+    pub files: Vec<(PathBuf, String)>,
+    /// The plugin directory an uninstall removes along with its settings entries.
+    pub remove_dir: Option<PathBuf>,
+}
+
+/// The Claude Code plugin that ships beside the hooks: where its marketplace
+/// directory goes, what the plugin's files hold, and the state directory its
+/// `stateDir` option names. The binary builds it (it embeds the files); this
+/// module only places it, so the one [`Plan`] covers settings and plugin.
+pub struct PluginPlacement {
+    /// Directory holding `.claude-plugin/marketplace.json` and `plugins/`.
+    pub marketplace_dir: PathBuf,
+    /// Marketplace name, the key under `extraKnownMarketplaces`.
+    pub marketplace: &'static str,
+    /// Plugin name, enabled as `<plugin>@<marketplace>`.
+    pub plugin: &'static str,
+    /// Files relative to `marketplace_dir`, with their content.
+    pub files: Vec<(PathBuf, String)>,
+    /// The value of the plugin's `stateDir` option.
+    pub state_dir: PathBuf,
+}
+
+impl PluginPlacement {
+    fn plugin_id(&self) -> String {
+        format!("{}@{}", self.plugin, self.marketplace)
+    }
+
+    /// `root` with our entries added (or replaced).
+    fn with_entries(
+        &self,
+        mut root: Map<String, Value>,
+        path: &Path,
+    ) -> Result<Map<String, Value>, MergeError> {
+        let markets = object_entry(&mut root, "extraKnownMarketplaces", path)?;
+        markets.insert(
+            self.marketplace.to_string(),
+            json!({ "source": { "source": "directory", "path": self.marketplace_dir.display().to_string() } }),
+        );
+        let enabled = object_entry(&mut root, "enabledPlugins", path)?;
+        enabled.insert(self.plugin_id(), Value::Bool(true));
+        let configs = object_entry(&mut root, "pluginConfigs", path)?;
+        configs.insert(
+            self.plugin_id(),
+            json!({ "options": { "stateDir": self.state_dir.display().to_string() } }),
+        );
+        Ok(root)
+    }
+
+    /// `root` without exactly our entries, a parent object dropped only when
+    /// that left it empty, and whether anything was ours.
+    fn without_entries(&self, mut root: Map<String, Value>) -> (Map<String, Value>, bool) {
+        let mut removed = false;
+        for (key, member) in [
+            ("extraKnownMarketplaces", self.marketplace.to_string()),
+            ("enabledPlugins", self.plugin_id()),
+            ("pluginConfigs", self.plugin_id()),
+        ] {
+            let Some(map) = root.get_mut(key).and_then(|v| v.as_object_mut()) else {
+                continue;
+            };
+            if map.remove(&member).is_some() {
+                removed = true;
+                if map.is_empty() {
+                    root.remove(key);
+                }
+            }
+        }
+        (root, removed)
+    }
+
+    /// The files whose content on disk is not already what we would write.
+    fn stale_files(&self) -> Vec<(PathBuf, String)> {
+        self.files
+            .iter()
+            .map(|(rel, body)| (self.marketplace_dir.join(rel), body.clone()))
+            .filter(|(dest, body)| std::fs::read_to_string(dest).ok().as_deref() != Some(body))
+            .collect()
+    }
+}
+
+fn object_entry<'a>(
+    root: &'a mut Map<String, Value>,
+    key: &'static str,
+    path: &Path,
+) -> Result<&'a mut Map<String, Value>, MergeError> {
+    root.entry(key)
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or(MergeError::WrongShape {
+            path: path.into(),
+            key,
+        })
+}
+
+pub enum MergeError {
+    Unparseable { path: PathBuf, why: String },
+    WrongShape { path: PathBuf, key: &'static str },
+    NotAFile(PathBuf),
+}
+
+impl MergeError {
+    pub fn explain(&self) -> String {
+        match self {
+            MergeError::Unparseable { path, why } => format!(
+                "{} is not valid JSON ({why}).\n\
+                 Refusing to edit it — fix the file, or paste the block below in by hand.",
+                path.display()
+            ),
+            MergeError::WrongShape { path, key } => format!(
+                "{} has a `{key}` that is not the shape Claude Code expects; refusing to edit it",
+                path.display()
+            ),
+            MergeError::NotAFile(p) => format!(
+                "{} is not a regular file; refusing to write through it",
+                p.display()
+            ),
+        }
+    }
+}
+
+/// The handler we write. Three deliberate choices, each of which has a failure
+/// mode attached:
+///
+/// * **An absolute path.** A command resolved from `PATH` exits 127 the moment
+///   `PATH` differs — and 127 lands in Claude Code's *non-blocking* bucket, so
+///   the guard is silently gone with nothing to notice it.
+/// * **A positional verb first.** `crates/amont/src/main.rs` learned this the
+///   hard way: only position 0 should ever decide what runs.
+/// * **No `if` field.** `if: "Bash(git *)"` looks like a cheap prefilter, but
+///   it fails open when it cannot parse a command and would silently drop every
+///   non-git rule. This hook is not slow enough to need it.
+fn handler(bin: &Path) -> Value {
+    json!({
+        "type": "command",
+        "command": bin.display().to_string(),
+        "args": ["hook"],
+        "timeout": 10
+    })
+}
+
+pub fn is_ours(h: &Value) -> bool {
+    h.get("command")
+        .and_then(|c| c.as_str())
+        .is_some_and(crate::names::is_ours_program)
+}
+
+/// Two spaces unless the file says otherwise, and whether it ended in a
+/// newline. Preserving both is the difference between a one-line diff and a
+/// diff that looks like we rewrote the file.
+fn shape(raw: &str) -> (String, bool) {
+    let indent = raw
+        .lines()
+        .find_map(|l| {
+            let ws: String = l.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            if !ws.is_empty() && l.trim_start().starts_with('"') {
+                Some(ws)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "  ".to_string());
+    (indent, raw.ends_with('\n'))
+}
+
+fn render(doc: &Value, indent: &str, trailing_newline: bool) -> String {
+    let mut buf = Vec::new();
+    let fmt = serde_json::ser::PrettyFormatter::with_indent(indent.as_bytes());
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
+    use serde::Serialize;
+    doc.serialize(&mut ser).expect("a Value always serialises");
+    let mut out = String::from_utf8(buf).expect("serde_json emits UTF-8");
+    if trailing_newline {
+        out.push('\n');
+    }
+    out
+}
+
+fn read(path: &Path) -> Result<(Value, String), MergeError> {
+    if path.exists() {
+        let meta =
+            std::fs::symlink_metadata(path).map_err(|_| MergeError::NotAFile(path.into()))?;
+        // A symlink is allowed; `commit_all` renames over it, which replaces
+        // the link rather than writing through to whatever it points at.
+        if !meta.is_file() && !meta.file_type().is_symlink() {
+            return Err(MergeError::NotAFile(path.into()));
+        }
+        let raw = std::fs::read_to_string(path).map_err(|_| MergeError::NotAFile(path.into()))?;
+        if raw.trim().is_empty() {
+            return Ok((Value::Object(Map::new()), raw));
+        }
+        let doc = serde_json::from_str(&raw).map_err(|e| MergeError::Unparseable {
+            path: path.into(),
+            why: e.to_string(),
+        })?;
+        Ok((doc, raw))
+    } else {
+        Ok((Value::Object(Map::new()), String::new()))
+    }
+}
+
+/// Where we install, and why each one is there.
+///
+/// `SessionStart` is not decoration. It fires once per session and writes a
+/// heartbeat, which is the ONLY way `doctor` can tell "no rule fired this week"
+/// apart from "the guard has been dead since Tuesday". Writing that heartbeat
+/// from `PreToolUse` instead would put a filesystem write on the path that runs
+/// before every shell command — the one path this crate promises to keep free.
+/// `PostToolUse` is the assertion tier: a call that has already run and
+/// reported success. It is a legitimate place for work the pre-command path
+/// refuses to do — the command is over, so nothing is waiting on us — but it
+/// still fires on every successful Bash call, so the pure prefilter runs first
+/// there exactly as it does before one.
+pub const TARGETS: &[(&str, Option<&str>)] = &[
+    ("PreToolUse", Some("Bash")),
+    // The file tier: a Read, Edit or Write is not a shell command, but the
+    // question "was this file already read this session" can only be answered
+    // if the hook sees every one of them.
+    ("PreToolUse", Some("Read|Edit|Write|MultiEdit")),
+    // `symbol-grep-not-lsp` on the Grep tool. Its own block, so the file
+    // tier's matcher above stays exactly what earlier installs wrote and
+    // nothing is installed twice.
+    ("PreToolUse", Some("Grep")),
+    ("PostToolUse", Some("Bash")),
+    // `land-retry` (amont land): a land that ends unverified or not-observed
+    // exits non-zero after the remote accepted its push, so its check must
+    // see the failed call too.
+    ("PostToolUseFailure", Some("Bash")),
+    // A Read is remembered only once it has run: a Read that was refused, or
+    // that failed on a path that is not there, put nothing in context, and
+    // `file-reread` must not later say it did. Its own block rather than
+    // `Bash|Read`, so an install joins the Bash block a user already has
+    // instead of adding a second one that fires beside it.
+    ("PostToolUse", Some("Read")),
+    // The LSP tool's calls are recorded per session and agent, so a Read of a
+    // file LSP was asked about is not advised (or refused) as a blind Read.
+    // Its own block, as Grep got in 2.32.0.
+    ("PostToolUse", Some("LSP")),
+    // `adr-lint-written` checks the file a successful Edit, Write or
+    // MultiEdit left on disk. Its own block, as Read and LSP have.
+    ("PostToolUse", Some("Edit|Write|MultiEdit")),
+    ("SessionStart", None),
+    // Preview approval (ADR-0023). A typed approval arrives as a prompt; an
+    // answered marked question arrives after `AskUserQuestion`, and whether
+    // its answers were pre-filled by the model can only be seen before it.
+    ("UserPromptSubmit", None),
+    ("PreToolUse", Some("AskUserQuestion")),
+    ("PostToolUse", Some("AskUserQuestion")),
+    // The review panel (ADR-0022, `work.plan-review-panel`): a plan is
+    // checked for its reviews the moment it is about to be presented.
+    ("PreToolUse", Some("ExitPlanMode")),
+    // Preview evidence (ADR-0028): a plan the person approved is recorded,
+    // so a `## Preview` evidence line in it can stand for the preview.
+    ("PostToolUse", Some("ExitPlanMode")),
+    // `screenshot-in-main-session`: the chrome-devtools screenshot tool, by
+    // its literal MCP name. Its own block, as Grep's.
+    (
+        "PreToolUse",
+        Some(crate::rules::screenshot_in_main_session::TOOL),
+    ),
+    // The turn ending: the one moment a plan left open can be seen.
+    ("Stop", None),
+];
+
+/// Add our handler to one event, joining an existing block rather than adding a
+/// competing one. Returns whether anything changed.
+fn ensure(
+    hooks: &mut Map<String, Value>,
+    path: &Path,
+    event: &str,
+    matcher: Option<&str>,
+    want: &Value,
+) -> Result<(), MergeError> {
+    let list = hooks
+        .entry(event.to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let list = list.as_array_mut().ok_or(MergeError::WrongShape {
+        path: path.into(),
+        key: "an event",
+    })?;
+
+    for block in list.iter_mut() {
+        if block.get("matcher").and_then(|m| m.as_str()) != matcher {
+            continue;
+        }
+        let Some(handlers) = block.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+            continue;
+        };
+        if let Some(mine) = handlers.iter_mut().find(|h| is_ours(h)) {
+            *mine = want.clone();
+        } else {
+            // Somebody else already hooks this event. Join them.
+            handlers.push(want.clone());
+        }
+        return Ok(());
+    }
+
+    let block = match matcher {
+        Some(m) => json!({ "matcher": m, "hooks": [want] }),
+        None => json!({ "hooks": [want] }),
+    };
+    list.push(block);
+    Ok(())
+}
+
+pub fn plan_install(
+    path: &Path,
+    bin: &Path,
+    reformat: bool,
+    plugin: Option<&PluginPlacement>,
+) -> Result<Plan, MergeError> {
+    let (mut doc, raw) = read(path)?;
+    let (indent, nl) = shape(&raw);
+    if !reformat && would_reformat(&raw, &doc, &indent, nl) {
+        return Ok(Plan {
+            path: path.into(),
+            after: raw,
+            change: Change::WouldReformat,
+            files: Vec::new(),
+            remove_dir: None,
+        });
+    }
+    let before = raw.clone();
+
+    let root = doc.as_object_mut().ok_or(MergeError::WrongShape {
+        path: path.into(),
+        key: "(root)",
+    })?;
+    let existed = root.contains_key("hooks");
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let hooks = hooks.as_object_mut().ok_or(MergeError::WrongShape {
+        path: path.into(),
+        key: "hooks",
+    })?;
+
+    let want = handler(bin);
+    for (event, matcher) in TARGETS {
+        ensure(hooks, path, event, *matcher, &want)?;
+    }
+    let files = match plugin {
+        Some(placement) => {
+            *root = placement.with_entries(std::mem::take(root), path)?;
+            placement.stale_files()
+        }
+        None => Vec::new(),
+    };
+
+    let after = render(&doc, &indent, nl || before.is_empty());
+    let change = if after == before && files.is_empty() {
+        Change::AlreadyCurrent
+    } else if after == before {
+        Change::PluginFilesOnly
+    } else if existed {
+        Change::Update
+    } else {
+        Change::Add
+    };
+    Ok(Plan {
+        path: path.into(),
+        after,
+        change,
+        files,
+        remove_dir: None,
+    })
+}
+
+pub fn plan_uninstall(
+    path: &Path,
+    reformat: bool,
+    plugin: Option<&PluginPlacement>,
+) -> Result<Plan, MergeError> {
+    let (mut doc, raw) = read(path)?;
+    let (indent, nl) = shape(&raw);
+    // The directory goes whether or not settings still name it, so a run
+    // after an uninstall that failed half-way finishes the job, even one
+    // that had already removed the settings file.
+    let remove_dir = plugin
+        .filter(|placement| placement.marketplace_dir.exists())
+        .map(|placement| placement.marketplace_dir.clone());
+    if raw.is_empty() {
+        return Ok(Plan {
+            path: path.into(),
+            after: raw,
+            change: Change::NothingToRemove,
+            files: Vec::new(),
+            remove_dir,
+        });
+    }
+    if !reformat && would_reformat(&raw, &doc, &indent, nl) {
+        return Ok(Plan {
+            path: path.into(),
+            after: raw,
+            change: Change::WouldReformat,
+            files: Vec::new(),
+            remove_dir: None,
+        });
+    }
+
+    let mut removed = false;
+    for (event, _) in TARGETS {
+        let Some(list) = doc
+            .get_mut("hooks")
+            .and_then(|h| h.get_mut(*event))
+            .and_then(|p| p.as_array_mut())
+        else {
+            continue;
+        };
+        // Which blocks we emptied, by position. The old shape dropped every
+        // block with an empty `hooks` array, which is not the same set: a
+        // block the AUTHOR left empty — a matcher they are still deciding
+        // about — was swept away by an uninstall that had nothing to do with
+        // it. "We remove exactly what we added" is the promise at the top of
+        // this module, and an empty block we never touched is not ours.
+        let mut emptied: Vec<usize> = Vec::new();
+        for (i, block) in list.iter_mut().enumerate() {
+            if let Some(handlers) = block.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                let before = handlers.len();
+                handlers.retain(|h| !is_ours(h));
+                if handlers.len() != before {
+                    removed = true;
+                    if handlers.is_empty() {
+                        emptied.push(i);
+                    }
+                }
+            }
+        }
+        let mut at = 0;
+        list.retain(|_| {
+            let keep = !emptied.contains(&at);
+            at += 1;
+            keep
+        });
+        if list.is_empty() {
+            if let Some(hooks) = doc.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                hooks.remove(*event);
+            }
+        }
+    }
+    if let Some(hooks) = doc.get("hooks").and_then(|h| h.as_object()) {
+        if hooks.is_empty() {
+            if let Some(root) = doc.as_object_mut() {
+                root.remove("hooks");
+            }
+        }
+    }
+
+    if let Some(root) = doc.as_object_mut() {
+        if let Some(placement) = plugin {
+            let (kept, ours) = placement.without_entries(std::mem::take(root));
+            *root = kept;
+            removed |= ours;
+        }
+    }
+
+    if !removed {
+        return Ok(Plan {
+            path: path.into(),
+            after: raw,
+            change: Change::NothingToRemove,
+            files: Vec::new(),
+            remove_dir,
+        });
+    }
+    if doc.as_object().is_some_and(|root| root.is_empty()) {
+        return Ok(Plan {
+            path: path.into(),
+            after: String::new(),
+            change: Change::RemoveFile,
+            files: Vec::new(),
+            remove_dir,
+        });
+    }
+    Ok(Plan {
+        path: path.into(),
+        after: render(&doc, &indent, nl),
+        change: Change::Remove,
+        files: Vec::new(),
+        remove_dir,
+    })
+}
+
+/// Write the plan, atomically, or delete the file for `RemoveFile`, with the
+/// plugin in the order that never leaves settings naming a plugin that is not
+/// all there: an install writes the plugin files first and the settings
+/// last, an uninstall writes the settings first and removes the plugin
+/// directory last. Each file is staged to a temp file next to the
+/// destination, then renamed — so a symlinked `settings.json` is replaced
+/// rather than written through, and a crash mid-write cannot leave a
+/// half-file.
+pub fn apply(plan: &Plan) -> std::io::Result<()> {
+    for (dest, body) in &plan.files {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        crate::atomic::write_atomic(dest, body)?;
+    }
+    apply_settings(plan)?;
+    if let Some(dir) = &plan.remove_dir {
+        match std::fs::remove_dir_all(dir) {
+            // Gone already is what was asked for.
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn apply_settings(plan: &Plan) -> std::io::Result<()> {
+    if matches!(
+        plan.change,
+        Change::AlreadyCurrent
+            | Change::PluginFilesOnly
+            | Change::NothingToRemove
+            | Change::WouldReformat
+    ) {
+        return Ok(());
+    }
+    if matches!(plan.change, Change::RemoveFile) {
+        // `remove_file` unlinks a symlink itself and never follows it.
+        std::fs::remove_file(&plan.path)?;
+        if let Some(parent) = plan.path.parent() {
+            if parent.file_name().is_some_and(|name| name == ".claude") {
+                // Non-recursive: fails when the directory holds anything else.
+                let _ = std::fs::remove_dir(parent); // a non-empty directory stays
+            }
+        }
+        return Ok(());
+    }
+    if let Some(parent) = plan.path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::atomic::write_atomic(&plan.path, &plan.after)
+}
+
+/// The block to paste when we will not write it ourselves.
+pub fn snippet(bin: &Path) -> String {
+    let want = handler(bin);
+    let mut hooks = Map::new();
+    for (event, matcher) in TARGETS {
+        let block = match matcher {
+            Some(m) => json!({ "matcher": m, "hooks": [want.clone()] }),
+            None => json!({ "hooks": [want.clone()] }),
+        };
+        hooks.insert((*event).to_string(), Value::Array(vec![block]));
+    }
+    render(&json!({ "hooks": hooks }), "  ", true)
+}
+
+#[cfg(test)]
+mod is_ours_tests {
+    use super::*;
+
+    fn entry(command: &str) -> Value {
+        json!({ "type": "command", "command": command, "args": ["hook"] })
+    }
+
+    #[test]
+    fn both_basenames_are_ours_with_or_without_exe() {
+        for command in [
+            "/usr/local/bin/greenpiste",
+            "/usr/local/bin/greenpiste.exe",
+            "C:\\bin\\greenpiste.exe",
+            "greenpiste",
+        ] {
+            assert!(is_ours(&entry(command)), "{command}");
+        }
+        let alias = crate::names::ALIAS;
+        for command in [
+            format!("/usr/local/bin/{alias}"),
+            format!("C:\\bin\\{alias}.exe"),
+        ] {
+            assert!(is_ours(&entry(&command)), "{command}");
+        }
+    }
+
+    #[test]
+    fn other_commands_are_not_ours() {
+        for command in ["/usr/bin/git", "/x/greenpiste-fleet", "/x/amont", ""] {
+            assert!(!is_ours(&entry(command)), "{command}");
+        }
+        assert!(!is_ours(&json!({ "type": "command" })));
+    }
+}

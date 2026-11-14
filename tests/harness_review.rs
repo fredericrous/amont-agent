@@ -41,7 +41,7 @@ impl Home {
         (code, out)
     }
     fn run_err(&self, args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("harness-review")
             .args(args)
             .arg("--out")
@@ -111,7 +111,7 @@ fn the_json_has_one_row_per_rule_and_assertion() {
     h.session("a", "claude-one", "2026-10-01");
     let (code, json) = h.run(&["--json"]);
     assert_eq!(code, 0);
-    let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+    let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
         .args(["rules", "--json"])
         .env("CLAUDE_CONFIG_DIR", &h.0)
         .output()

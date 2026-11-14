@@ -60,7 +60,7 @@ impl World {
     }
 
     fn bin(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_amont-agent"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_greenpiste"));
         c.env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("AMONT_AGENT_PLAN_ROOT", self.root.join("repos"))
             .env_remove("AMONT_AGENT_OFF");
@@ -328,7 +328,7 @@ fn a_mixed_run_writes_the_matched_and_ends_stdout_with_the_apply_block() {
         )
     );
     assert!(
-        said.contains("\nnext: apply the unmatched edits, then run amont-agent plan-apply --check")
+        said.contains("\nnext: apply the unmatched edits, then run greenpiste plan-apply --check")
     );
     // The `next:` line is copied and the APPLY block is machine-read: both
     // carry the path unclipped. Every other line fits 80 columns.
@@ -728,7 +728,7 @@ fn stdin_on_a_terminal_is_a_usage_error() {
     {
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_amont-agent");
+    let bin = env!("CARGO_BIN_EXE_greenpiste");
     let log = w.root.join("script.log");
     let mut c = Command::new("script");
     if cfg!(target_os = "macos") {

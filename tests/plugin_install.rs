@@ -28,7 +28,7 @@ impl Home {
         self.state().join("amont-agent").join("claude-marketplace")
     }
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let out = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .args(args)
             .env("CLAUDE_CONFIG_DIR", &self.0)
             .env("XDG_STATE_HOME", self.state())

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Install the amont-agent binary on Windows. Nothing else.
+    Install the greenpiste binary on Windows (and amont-agent, its old name, as a copy). Nothing else.
 
 .DESCRIPTION
     irm https://raw.githubusercontent.com/greenharness/greenpiste/main/install/install.ps1 | iex
@@ -21,7 +21,7 @@
 
 .PARAMETER BinDir
     Where to put the executable. Defaults to $HOME\.local\bin.
-    `amont-agent install` writes this binary's ABSOLUTE path into
+    `greenpiste install` writes this binary's ABSOLUTE path into
     settings.json, so the directory decides only whether you can type the
     command yourself — Claude Code finds it either way.
 #>
@@ -53,7 +53,7 @@ try {
 }
 
 Write-Host ''
-Write-Host '  amont-agent installer'
+Write-Host '  greenpiste installer'
 Write-Host ''
 
 # Only x86_64 is published today. Windows on ARM runs x64 binaries through
@@ -68,7 +68,7 @@ if ($arch -eq 'ARM64') {
 if ($Version -eq 'latest') {
     try {
         $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
-            -Headers @{ 'User-Agent' = 'amont-agent-installer' }
+            -Headers @{ 'User-Agent' = 'greenpiste-installer' }
         $Version = $release.tag_name
     } catch {
         Fail "could not determine the latest release (rate limited? pass -Version v1.2.3): $_"
@@ -76,7 +76,7 @@ if ($Version -eq 'latest') {
 }
 $v = $Version -replace '^v', ''
 
-$name = "amont-agent-$v-$target"
+$name = "greenpiste-$v-$target"
 $base = "https://github.com/$Repo/releases/download/v$v"
 
 Write-Host "  version:  $v"
@@ -84,16 +84,28 @@ Write-Host "  platform: $target"
 Write-Host "  into:     $BinDir"
 Write-Host ''
 
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("amont-agent-" + [guid]::NewGuid().ToString('N'))
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("greenpiste-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 try {
     $zip = Join-Path $tmp "$name.zip"
-    Write-Host '  downloading...'
-    try {
-        Invoke-WebRequest -Uri "$base/$name.zip" -OutFile $zip -UseBasicParsing
-    } catch {
-        Fail "download failed: $base/$name.zip"
+    $archiveDir = $env:GREENPISTE_ARCHIVE_DIR
+    if ($archiveDir) {
+        # A local archive (the release's standalone check): the same checks
+        # as a download, read from a directory instead of the release.
+        Write-Host "  from:     $archiveDir"
+        try {
+            Copy-Item -Path (Join-Path $archiveDir "$name.zip") -Destination $zip -ErrorAction Stop
+        } catch {
+            Fail "no $name.zip in $archiveDir"
+        }
+    } else {
+        Write-Host '  downloading...'
+        try {
+            Invoke-WebRequest -Uri "$base/$name.zip" -OutFile $zip -UseBasicParsing
+        } catch {
+            Fail "download failed: $base/$name.zip"
+        }
     }
 
     # Checksums are not optional here. This binary runs on every commit with
@@ -102,7 +114,11 @@ try {
     # about its own dependencies, applied to itself.
     $sums = Join-Path $tmp 'SHA256SUMS'
     try {
-        Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $sums -UseBasicParsing
+        if ($archiveDir) {
+            Copy-Item -Path (Join-Path $archiveDir 'SHA256SUMS') -Destination $sums -ErrorAction Stop
+        } else {
+            Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $sums -UseBasicParsing
+        }
     } catch {
         $sums = $null
         Write-Warn 'no SHA256SUMS published for this release - the download was NOT verified'
@@ -124,22 +140,35 @@ try {
     $src = Join-Path $tmp $name
     # Whether this is an upgrade decides what to say at the end: the
     # first-install steps are wrong advice the second time.
-    $upgrading = Test-Path (Join-Path $BinDir 'amont-agent.exe')
+    $upgrading = Test-Path (Join-Path $BinDir 'greenpiste.exe')
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
-    foreach ($exe in @('amont-agent.exe')) {
-        $from = Join-Path $src $exe
-        if (Test-Path $from) {
-            $to = Join-Path $BinDir $exe
-            # Copy beside the destination and move it into place: replacing a
-            # RUNNING executable in place fails on Windows with a sharing
-            # violation, and a move is atomic, so a half-copied amont-agent.exe
-            # never exists.
-            $staged = "$to.new"
-            Copy-Item -Path $from -Destination $staged -Force
-            Move-Item -Path $staged -Destination $to -Force
-            Write-Ok "installed $to"
+    $from = Join-Path $src 'greenpiste.exe'
+    if (-not (Test-Path $from)) { throw "the archive holds no greenpiste.exe" }
+    # The old name, amont-agent.exe, is placed the same way as a copy, so
+    # hook entries baked to its path keep working.
+    foreach ($exe in @('greenpiste.exe', 'amont-agent.exe')) {
+        $to = Join-Path $BinDir $exe
+        # Copy beside the destination, then move it into place: the move is
+        # a rename in one directory, so the path holds the whole old file or
+        # the whole new one, never a half-copied executable.
+        $staged = "$to.new"
+        Copy-Item -Path $from -Destination $staged -Force
+        # Windows refuses to overwrite or delete a RUNNING executable (the
+        # hook runs on most tool calls), but it allows renaming one: move
+        # the current file aside first. A leftover from an earlier run is
+        # removed when it is no longer running, else left for the next run.
+        $aside = "$to.old"
+        Remove-Item -Path $aside -Force -ErrorAction SilentlyContinue
+        if (Test-Path $aside) {
+            # The leftover is itself still running: set this one aside under
+            # a name of its own.
+            $aside = "$to.old-" + [guid]::NewGuid().ToString('N')
         }
+        if (Test-Path $to) { Move-Item -Path $to -Destination $aside -Force }
+        Move-Item -Path $staged -Destination $to -Force
+        Remove-Item -Path $aside -Force -ErrorAction SilentlyContinue
+        Write-Ok "installed $to"
     }
 } finally {
     Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
@@ -160,19 +189,19 @@ if ($upgrading) {
     Write-Host '  Upgraded. The settings.json entry points at this path, so'
     Write-Host '  nothing needs rewiring. Confirm it still fires:'
     Write-Host ''
-    Write-Host '    amont-agent doctor'
+    Write-Host '    greenpiste doctor'
     Write-Host ''
 } else {
     Write-Host '  Installed, and wired into nothing. The guard does not run until'
     Write-Host '  Claude Code is told about it:'
     Write-Host ''
-    Write-Host '    amont-agent install          # print the settings block, write nothing'
-    Write-Host '    amont-agent install --write  # merge it into the Claude settings.json'
-    Write-Host '    amont-agent doctor           # installed, runnable, and actually firing?'
+    Write-Host '    greenpiste install          # print the settings block, write nothing'
+    Write-Host '    greenpiste install --write  # merge it into the Claude settings.json'
+    Write-Host '    greenpiste doctor           # installed, runnable, and actually firing?'
     Write-Host ''
     Write-Host '  Every rule but pipe-to-tail ships as observe, so nothing is refused'
     Write-Host '  until you have seen what it would have caught:'
     Write-Host ''
-    Write-Host '    amont-agent status'
+    Write-Host '    greenpiste status'
     Write-Host ''
 }

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const RULE: &str = "amont-agent/publish-without-skill";
+const RULE: &str = "greenpiste/publish-without-skill";
 
 #[derive(Debug, PartialEq)]
 enum Said {
@@ -89,7 +89,7 @@ impl World {
             payload["agent_transcript_path"] = serde_json::json!(a);
             payload["agent_id"] = serde_json::json!("a1");
         }
-        let mut child = Command::new(env!("CARGO_BIN_EXE_amont-agent"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_greenpiste"))
             .arg("hook")
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"))
             .env("GIT_CONFIG_GLOBAL", self.root.join("global"))
@@ -400,7 +400,7 @@ fn gh_pr_merge_auto_still_refuses_on_its_own() {
     let t = w.transcript("t", &[human("x")]);
     let said = w.publish(cmd, &t);
     let text = said.text();
-    let (a, b) = (text.find("amont-agent/gh-pr-merge-auto"), text.find(RULE));
+    let (a, b) = (text.find("greenpiste/gh-pr-merge-auto"), text.find(RULE));
     assert!(matches!(said, Said::Deny(_)), "{said:?}");
     assert!(a.is_some() && b.is_some() && a < b, "{text}");
     let t = w.transcript("u", &lines(&[vec![human("x")], skill("merge-when-green")]));
@@ -422,10 +422,7 @@ fn a_curl_merge_is_refused_alone_or_advised_first() {
     w.stance("publish-without-skill", "advise");
     let said = w.publish(CURL, &t);
     let text = said.text();
-    let (a, b) = (
-        text.find(RULE),
-        text.find("amont-agent/forge-merge-by-hand"),
-    );
+    let (a, b) = (text.find(RULE), text.find("greenpiste/forge-merge-by-hand"));
     assert!(matches!(said, Said::Advise(_)), "{said:?}");
     assert!(a.is_some() && b.is_some() && a < b, "{text}");
 }
