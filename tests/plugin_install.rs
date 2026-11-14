@@ -74,6 +74,27 @@ fn files_under(root: &Path) -> Vec<String> {
     out
 }
 
+/// The files git tracks under `dir`, relative to it. `claude plugin test`
+/// leaves its scaffolding (`tsconfig.json`, `.claude-plugin/types/`) in the
+/// source directory; it is not part of the plugin, so a walk of the
+/// directory would count it.
+fn tracked_files_under(dir: &Path) -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z", "--", "."])
+        .current_dir(dir)
+        .output()
+        .expect("git runs");
+    assert!(out.status.success(), "git ls-files failed");
+    let mut files: Vec<String> = out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| String::from_utf8(name.to_vec()).expect("UTF-8 path"))
+        .collect();
+    files.sort();
+    files
+}
+
 #[test]
 fn a_dry_run_prints_the_plan_and_writes_nothing() {
     let home = Home::new("dry");
@@ -170,8 +191,9 @@ fn the_embedded_files_are_the_files_under_the_plugin_directory() {
     assert_eq!(code, 0, "{err}");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin/clear-relay");
     let placed = home.marketplace().join("plugins/clear-relay");
-    assert_eq!(files_under(&placed), files_under(&source));
-    for file in files_under(&source) {
+    let tracked = tracked_files_under(&source);
+    assert_eq!(files_under(&placed), tracked);
+    for file in tracked {
         assert_eq!(
             std::fs::read_to_string(placed.join(&file)).unwrap(),
             std::fs::read_to_string(source.join(&file)).unwrap(),
