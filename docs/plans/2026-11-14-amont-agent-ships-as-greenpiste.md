@@ -304,6 +304,12 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
 
 ## Decision log
 
+- 2026-11-14 — PR #254's windows-latest CI failed in the names test: it
+  built the shown path with `.display()`, which uses backslashes on Windows,
+  so the names module and the kept lines never matched. Fixed by normalising
+  the path to `/` (32ea3e0c); implementation-review and lang:rust approved
+  the delta.
+
 - 2026-11-14 (Phase 3) — done. The `workflow_dispatch` dry run on the pushed
   branch (run 43607830670, bd78b5f4) concluded `success`: all six targets
   built, `standalone` passed on ubuntu-latest (install.sh) and windows-latest
@@ -349,7 +355,7 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
 
 ## Implementation review
 
-- implementation-review: approve-with-changes ×2, then approve-with-changes (bada9ca9…, 5dd5e997…). Fixed: the `&mut` output parameter in `tests/names.rs`, the Phase 4 split, the `greengate.conf` decision. Deliberate: Phase 3's dry run runs on the pushed branch, before the merge.
+- implementation-review: approve-with-changes ×3, then approve (99468e9c…, after a fix for PR #254 Windows CI: the names test compared paths with backslashes). Fixed: the `&mut` output parameter in `tests/names.rs`, the Phase 4 split, the `greengate.conf` decision. Deliberate: Phase 3's dry run runs on the pushed branch, before the merge.
 - backend: approve-with-changes ×2, then approve. Fixed: `brew upgrade` through the rename tested after the fresh install, `doctor` naming entries on the old name, Windows and post-publish install checks. Deliberate: `bin_aliases` not hard-coded (the committed-manifest test pins it).
 - lang:rust, lang:python, architect: approve-with-changes, then approve. Fixed: `names::{DATA_DIR,RECORD_TOOL}`, case-insensitive `.exe`, exact names-test skips, refusals instead of asserts, OSError handled.
 - platform, tui, unix: approve-with-changes, then approve. Fixed: regular-file check that can fail, scoped `brew upgrade`, the tap left on its branch, Ctrl-C exits, the singular wording. Deliberate: the `AMONT_AGENT_*` variables and installer inputs (plan 3b-2), and two installer behaviours that predate this change.
