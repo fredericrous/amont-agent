@@ -49,7 +49,7 @@ jobs:
           versions=$(cargo metadata --no-deps --format-version 1 | python3 -c '
           import json, sys
           m = json.load(sys.stdin)
-          names = {"amont-agent", "greenpiste-guard", "greenpiste-process"}
+          names = {"greenpiste", "greenpiste-guard", "greenpiste-process"}
           pkgs = {p["name"]: p for p in m["packages"] if p["name"] in names}
           assert set(pkgs) == names, sorted(pkgs)
           vs = {p["version"] for p in pkgs.values()}
@@ -72,6 +72,12 @@ jobs:
             dry=true
           fi
           echo "manifest=$manifest tag=$tag dry_run=$dry"
+          # greenharness.toml is what grh pins; its version is the crates'.
+          declared=$(python3 -I -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["extension"]["version"])' greenharness.toml)
+          if [ "$declared" != "$manifest" ]; then
+            echo "::error::greenharness.toml declares $declared, the crates are $manifest."
+            exit 1
+          fi
           if [ "$manifest" != "$tag" ]; then
             echo "::error::tag v$tag does not match the manifest version $manifest."
             echo "::error::Commit the version bump FIRST, confirm HEAD moved, then tag."
@@ -155,26 +161,41 @@ jobs:
           target_upper=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
           echo "CARGO_TARGET_${target_upper}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
 
-      - run: cargo build -p amont-agent --release --locked --target ${{ matrix.target }}
+      - run: cargo build -p greenpiste --release --locked --target ${{ matrix.target }}
 
+      # Two archive sets from one build: greenpiste-<v>-<t>, and
+      # amont-agent-<v>-<t> holding a regular-file copy of the same binary
+      # under the old name, which installers and grh pins from before the
+      # rename still fetch. The alias set goes when the census finds no
+      # program still reading the old name.
       - name: Archive
         id: archive
         run: |
           set -euo pipefail
           version="${{ needs.guard.outputs.version }}"
-          name="amont-agent-${version}-${{ matrix.target }}"
-          staging="dist/$name"
-          mkdir -p "$staging"
-          cp README.md LICENSE "$staging/"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/amont-agent.exe" "$staging/"
-            (cd dist && 7z a "$name.zip" "$name" > /dev/null)
-            echo "asset=dist/$name.zip" >> "$GITHUB_OUTPUT"
-          else
-            cp "target/${{ matrix.target }}/release/amont-agent" "$staging/"
-            (cd dist && tar czf "$name.tar.gz" "$name")
-            echo "asset=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
-          fi
+          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; else ext=""; fi
+          assets=""
+          for pair in "greenpiste greenpiste" "amont-agent amont-agent"; do
+            set -- $pair
+            name="$1-${version}-${{ matrix.target }}"
+            bin_name="$2"
+            staging="dist/$name"
+            mkdir -p "$staging"
+            cp README.md LICENSE "$staging/"
+            cp "target/${{ matrix.target }}/release/greenpiste$ext" "$staging/$bin_name$ext"
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              (cd dist && 7z a "$name.zip" "$name" > /dev/null)
+              assets="$assets dist/$name.zip"
+            else
+              (cd dist && tar czf "$name.tar.gz" "$name")
+              assets="$assets dist/$name.tar.gz"
+            fi
+          done
+          {
+            echo "assets<<EOF"
+            for asset in $assets; do echo "$asset"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       # Prove the thing we are about to hand people actually runs, and that it
       # still DECIDES — a binary that answers `--help` and then refuses nothing
@@ -185,10 +206,14 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.guard.outputs.version }}"
-          bin="dist/amont-agent-${version}-${{ matrix.target }}/amont-agent"
+          bin="dist/greenpiste-${version}-${{ matrix.target }}/greenpiste"
+          alias_bin="dist/amont-agent-${version}-${{ matrix.target }}/amont-agent"
           # An `if`, not `[ … ] && …`: under `set -e` a false test as the last
           # command of a line is a FAILING step.
-          if [ "${{ runner.os }}" = "Windows" ]; then bin="$bin.exe"; fi
+          if [ "${{ runner.os }}" = "Windows" ]; then bin="$bin.exe"; alias_bin="$alias_bin.exe"; fi
+          # The alias archive holds the same bytes, a regular file.
+          cmp "$bin" "$alias_bin"
+          test -f "$alias_bin" && ! test -L "$alias_bin"
 
           # CAPTURE FIRST, then grep the variable — never `"$bin" | grep -q`.
           #
@@ -217,7 +242,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ steps.archive.outputs.asset }}
+          path: ${{ steps.archive.outputs.assets }}
           if-no-files-found: error
 
   # The blocking twin of ci.yaml's advisory audit — same parsing, opposite
@@ -271,16 +296,68 @@ jobs:
           print("no vulnerability advisories")
           PY
 
+  # greenpiste stands alone (ADR-0064 `harness.standalone-tools`): installed
+  # by install/install.sh from the archives this run built, on a clean runner
+  # with no grh, it answers its own commands, and its old name runs as the
+  # same build.
+  standalone:
+    name: greenpiste stands alone
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x86_64-unknown-linux-gnu
+          path: dist
+      - name: Install from the built archives and run it with no grh
+        run: |
+          set -euo pipefail
+          version="${{ needs.guard.outputs.version }}"
+          if command -v grh > /dev/null 2>&1; then
+            echo "::error::grh is on this runner; the check would prove nothing"; exit 1
+          fi
+          # install.sh verifies against SHA256SUMS, so write one for the dir.
+          (cd dist && sha256sum * > SHA256SUMS)
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          GREENPISTE_ARCHIVE_DIR="$PWD/dist" AMONT_AGENT_BIN_DIR="$bin" AMONT_AGENT_VERSION="v$version" \
+            sh install/install.sh
+          export PATH="$bin:$PATH"
+          greenpiste --version | tee "$RUNNER_TEMP/v"
+          grep -qx "greenpiste $version" "$RUNNER_TEMP/v"
+          rules=$(greenpiste rules --json)
+          python3 -I -c 'import json, sys; json.loads(sys.argv[1])' "$rules"
+          amont-agent --version | tee "$RUNNER_TEMP/v-alias"
+          grep -qx "greenpiste $version" "$RUNNER_TEMP/v-alias"
+          cmp "$bin/greenpiste" "$bin/amont-agent"
+          echo "greenpiste installs, runs and answers to amont-agent with no grh"
+
   publish:
     name: publish the release
-    needs: [guard, build, audit]
+    needs: [guard, build, audit, standalone]
     runs-on: ubuntu-latest
+    # `id-token: write` is the OIDC grant `attest-build-provenance` signs with;
+    # `attestations: write` stores the result against this repo.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # The manifest grh pins, written from the tarballs BEFORE SHA256SUMS so
+      # it is checksummed and attested with them. Its [tool.release] names the
+      # greenpiste-* tarballs only.
+      - name: The manifest grh pins
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release-manifest.py "${{ needs.guard.outputs.version }}" \
+            dist greenharness.toml dist/greenharness.toml
       - name: Checksums
         run: |
           set -euo pipefail
@@ -288,6 +365,21 @@ jobs:
           ls -la
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
+      # Attest AFTER the checksums are written, so `SHA256SUMS` is itself a
+      # subject. That is the point: the installer and the tap already verify
+      # against that file, and until now it was served from the same origin
+      # as the artifacts it vouched for — a checksum authenticates nothing
+      # against a compromise of the place it came from. Anchoring the file
+      # anchors every consumer downstream of it without changing one.
+      #
+      # Attestations go to GitHub's API, not into `dist`, so the `dist/*`
+      # release glob below needs no change. Verify with:
+      #   gh attestation verify <file> --repo greenharness/greenpiste
+      - name: Attest
+        if: needs.guard.outputs.dry_run == 'false'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
       # A dry run stops here, having built and checksummed everything. The only
       # step it skips is the irreversible one.
       - name: Publish
@@ -296,15 +388,96 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Idempotent, because re-running a release is a normal thing to want:
+          # Idempotent, because re-running a release is a normal thing to want.
+          # `gh release create` fails outright on "a release with the same tag
+          # name already exists", which took down the whole run — and with it
+          # `publish-crates`, which needs this job. That is precisely backwards:
           # the reason to re-run is usually that a LATER step failed.
           if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
-            echo "release ${GITHUB_REF_NAME} already exists — refreshing its assets"
-            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+            # A released asset is never replaced (no --clobber): grh pins the
+            # manifest's digest, and an installer that checked an archive
+            # once must find the same bytes again.
+            #
+            # A PUBLISHED (non-draft) release whose SHA256SUMS is listed is
+            # COMPLETE: SHA256SUMS is uploaded with the archives, and a later
+            # job failing is why anyone re-runs. Its assets are kept as they
+            # are, and this run's build is not compared with them: a
+            # `workflow_dispatch` on the tag rebuilds the archives, and tar
+            # records file times, so the bytes differ while the release is
+            # fine. The jobs after this one read the PUBLISHED assets, never
+            # this run's (publish-npm downloads and checks them; publish-tap
+            # reads SHA256SUMS).
+            #
+            # A draft, or a release without SHA256SUMS, stopped part-way: it is
+            # finished by checking or uploading each asset, then published. An
+            # asset there with other bytes is refused, because a half-published
+            # set from two builds is not a release; re-run the FAILED jobs of
+            # the original run (they reuse its build), not a new dispatch.
+            # `gh release view`, not the tags API: an upload cut off part-way
+            # leaves a DRAFT (gh creates the release as a draft, uploads,
+            # then publishes), and the tags API does not see drafts.
+            gh release view "${GITHUB_REF_NAME}" --json assets \
+              --jq '.assets[] | .name + " " + (.digest // "")' > /tmp/published
+            draft=$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft)
+            # `awk` exits 0 when the name is listed: no `| grep -q` under
+            # pipefail, which closes the pipe early.
+            listed() { awk -v n="$1" '$1 == n { found = 1 } END { exit !found }' /tmp/published; }
+            # Upload an asset the release lacks; refuse one it has with other
+            # bytes (a half-published set from two builds is not a release).
+            check_or_upload() {
+              f="$1"
+              name=$(basename "$f")
+              if ! listed "$name"; then
+                echo "uploading $name"
+                gh release upload "${GITHUB_REF_NAME}" "$f"
+                return
+              fi
+              want="sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+              have=$(awk -v n="$name" '$1 == n { print $2 }' /tmp/published)
+              if [ -z "$have" ]; then
+                gh release download "${GITHUB_REF_NAME}" --pattern "$name" --output /tmp/published-asset --clobber
+                have="sha256:$(sha256sum /tmp/published-asset | cut -d' ' -f1)"
+              fi
+              if [ "$have" != "$want" ]; then
+                echo "::error::$name on the release is $have, this build made $want; a released asset is never replaced."
+                echo "::error::Re-run the failed jobs of the run that built it (they reuse its bytes), or delete the partial release's assets by hand and re-run, or release the next version."
+                exit 1
+              fi
+              echo "$name is already on the release with this build's bytes"
+            }
+            if listed SHA256SUMS && [ "$draft" != true ]; then
+              gh release download "${GITHUB_REF_NAME}" --pattern SHA256SUMS --output /tmp/published-sums --clobber
+              missing=0
+              while read -r _ name; do
+                listed "$name" \
+                  || { echo "::error::SHA256SUMS lists $name, which the release does not carry"; missing=1; }
+              done < /tmp/published-sums
+              if [ "$missing" -ne 0 ]; then
+                echo "::error::Delete the partial release's assets by hand, then re-run, or release the next version."
+                exit 1
+              fi
+              echo "release ${GITHUB_REF_NAME} is published and complete; its assets are kept"
+            else
+              # A draft, or a release without SHA256SUMS: nobody installed from
+              # it yet, so finish it. The archives first, SHA256SUMS last, each
+              # either uploaded or, when there, checked to be this build's
+              # bytes; then publish a draft.
+              echo "release ${GITHUB_REF_NAME} is unfinished (draft: $draft) — finishing it"
+              for f in dist/*; do
+                name=$(basename "$f")
+                [ "$name" = SHA256SUMS ] && continue
+                check_or_upload "$f"
+              done
+              check_or_upload dist/SHA256SUMS
+              if [ "$draft" = true ]; then
+                gh release edit "${GITHUB_REF_NAME}" --draft=false
+              fi
+            fi
           else
             # Notes an upgrader can read, then the generated PR list. Matching
-            # on $2 rather than a prefix so extracting v2.0.2 can never grab
-            # v2.0.21.
+            # on $2 rather than a prefix so extracting v1.0.2 can never grab
+            # v1.0.21. The guard job already proved the CHANGELOG section
+            # exists.
             notes=$(mktemp)
             awk -v ver="${GITHUB_REF_NAME}" '
               $1 == "##" && $2 == ver { grab = 1; next }
@@ -357,10 +530,10 @@ jobs:
           # release must not fail on a crate that is already up, and "already
           # uploaded" is exactly that answer — anything else is a real failure.
           #
-          # The libraries first, in dependency order: `amont-agent` resolves
+          # The libraries first, in dependency order: `greenpiste` resolves
           # them from crates.io by version. A rerun resumes a partial publish,
           # because each crate already up is "already uploaded".
-          for crate in greenpiste-guard greenpiste-process amont-agent; do
+          for crate in greenpiste-guard greenpiste-process greenpiste; do
             echo "→ publishing $crate $VERSION"
             if out=$(cargo publish -p "$crate" --locked 2>&1); then
               printf '%s\n' "$out"
@@ -375,7 +548,7 @@ jobs:
             fi
           done
           echo "### Published to crates.io" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`cargo install amont-agent\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`cargo install greenpiste\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
   # The tap formula, bumped by the release rather than by hand: a release is
   # not published until `brew upgrade` can see it.
@@ -413,12 +586,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          musl="amont-agent-$VERSION-x86_64-unknown-linux-musl"
+          musl="greenpiste-$VERSION-x86_64-unknown-linux-musl"
           gh release download "v$VERSION" --pattern SHA256SUMS --pattern "$musl.tar.gz"
           sha256sum -c --ignore-missing SHA256SUMS
           mkdir rel && tar -xzf "$musl.tar.gz" -C rel
           GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-            "rel/$musl/amont-agent" rules --json > rules.json
+            "rel/$musl/greenpiste" rules --json > rules.json
           test -s rules.json
       - name: Clone the tap
         env:
@@ -432,26 +605,42 @@ jobs:
           echo "GIT_SSH_COMMAND=ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
           GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes" \
             git clone --depth 1 git@github.com:fredericrous/homebrew-tap.git tap
+      # The formula is greenpiste's own (packaging/homebrew/greenpiste.rb),
+      # rewritten from the published SHA256SUMS and binary. The rename of the
+      # old formula goes in the SAME tap commit, written only now that the
+      # assets exist: `formula_renames.json` makes `brew upgrade` move an
+      # installed old formula to greenpiste, and the old formula file is
+      # removed so the old name cannot be installed beside it.
       - name: Rewrite the formula
         run: |
           set -euo pipefail
-          python3 scripts/bump-tap.py "$VERSION" SHA256SUMS rules.json tap/Formula/amont-agent.rb
-          ruby -c tap/Formula/amont-agent.rb
+          cp packaging/homebrew/greenpiste.rb tap/Formula/greenpiste.rb
+          python3 -I scripts/bump-tap.py "$VERSION" SHA256SUMS rules.json tap/Formula/greenpiste.rb
+          ruby -c tap/Formula/greenpiste.rb
+          python3 -I - tap/formula_renames.json <<'PY'
+          import json, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          renames = json.loads(path.read_text()) if path.exists() else {}
+          renames["amont-agent"] = "greenpiste"
+          path.write_text(json.dumps(renames, indent=2, sort_keys=True) + "\n")
+          PY
+          rm -f tap/Formula/amont-agent.rb
       - name: Push
         run: |
           set -euo pipefail
           cd tap
-          if git diff --quiet; then
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
             echo "the tap already carries $VERSION — nothing to publish"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/amont-agent.rb
-          git commit -m "chore: amont-agent $VERSION"
+          git add Formula/greenpiste.rb formula_renames.json
+          git add -u Formula
+          git commit -m "chore: greenpiste $VERSION"
           git push origin HEAD
           echo "### Published to the homebrew tap" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`brew upgrade fredericrous/tap/amont-agent\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`brew upgrade fredericrous/tap/greenpiste\` — v$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
   # The only thing anywhere that runs the formula.
   #
@@ -488,13 +677,15 @@ jobs:
         run: |
           set -euo pipefail
           brew tap fredericrous/tap
-          brew install fredericrous/tap/amont-agent
+          brew install fredericrous/tap/greenpiste
 
       - name: The installed binary is the version just published
         run: |
           set -euo pipefail
-          amont-agent --version | tee /tmp/v
-          grep -qx "amont-agent $VERSION" /tmp/v
+          greenpiste --version | tee /tmp/v
+          grep -qx "greenpiste $VERSION" /tmp/v
+          # The old name, a copy of the same build.
+          amont-agent --version | grep -qx "greenpiste $VERSION"
 
       # It still DECIDES, not merely starts. A guard that installs and then
       # refuses nothing is the defect no unit test can see, because tests
@@ -502,14 +693,14 @@ jobs:
       - name: The installed guard still says no
         run: |
           set -euo pipefail
-          out=$(amont-agent check 'git push origin main 2>&1 | tail -5')
+          out=$(greenpiste check 'git push origin main 2>&1 | tail -5')
           printf '%s\n' "$out"
           printf '%s' "$out" | grep -q 'pipe-to-tail'
 
       - name: brew test
-        run: brew test fredericrous/tap/amont-agent
+        run: brew test fredericrous/tap/greenpiste
 
       - name: Say so
         run: |
           echo "### brew install verified" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`brew install fredericrous/tap/amont-agent\` produces v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`brew install fredericrous/tap/greenpiste\` produces v$VERSION" >> "$GITHUB_STEP_SUMMARY"

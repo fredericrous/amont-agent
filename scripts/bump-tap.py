@@ -11,7 +11,7 @@ target the formula wants that the release did not build, a rewrite count
 other than what the formula carries, a stale version string surviving.
 
 It also writes the caveat's list of rules that refuse by default, from the
-released binary's own `amont-agent rules --json`: the `%w[...]` line inside
+released binary's own `greenpiste rules --json`: the `%w[...]` line inside
 the formula's `def refusing_by_default`. That list was hand-written once
 and went stale for four releases (it said only pipe-to-tail refuses, while
 plan-review-panel had shipped at deny since 2.22.0); the formula's `brew
@@ -21,7 +21,7 @@ Idempotent on purpose: re-run against a formula already at the version it
 produces byte-identical output, so the workflow's "nothing to commit" path
 is how a resumed release run no-ops.
 
-Usage: bump-tap.py <version> <SHA256SUMS> <rules.json> <Formula/amont-agent.rb>
+Usage: bump-tap.py <version> <SHA256SUMS> <rules.json> <Formula/greenpiste.rb>
 """
 
 import json
@@ -75,14 +75,16 @@ def main() -> None:
         if len(parts) != 2:
             continue
         sha, name = parts
-        m = re.fullmatch(r"amont-agent-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
+        # The amont-agent-* alias archives are the same binary under the old
+        # name; only the greenpiste-* archives feed the formula.
+        m = re.fullmatch(r"greenpiste-([0-9.]+)-(.+?)\.(?:tar\.gz|zip)", name)
         if not m:
             continue
         assert m.group(1) == version, (
             f"SHA256SUMS is for {m.group(1)}, not {version} — wrong release?"
         )
         sums[m.group(2)] = (sha, name)
-    assert sums, f"no amont-agent checksums parsed from {sums_path}"
+    assert sums, f"no greenpiste checksums parsed from {sums_path}"
 
     formula = pathlib.Path(formula_path)
     text = formula.read_text()
@@ -105,7 +107,7 @@ def main() -> None:
 
     pair = re.compile(
         r'url "https://github\.com/(?:fredericrous/amont-agent|greenharness/greenpiste)/releases/'
-        r'download/v[0-9.]+/amont-agent-[0-9.]+-(?P<target>[a-z0-9_-]+)\.tar\.gz"'
+        r'download/v[0-9.]+/(?:amont-agent|greenpiste)-[0-9.]+-(?P<target>[a-z0-9_-]+)\.tar\.gz"'
         r'(?P<mid>\s+)sha256 "[0-9a-f]{64}"'
     )
     text, n = pair.subn(rewrite, text)
@@ -121,7 +123,7 @@ def main() -> None:
     )
     assert n_home == 1, "the formula carries no homepage line naming fredericrous/amont-agent or greenharness/greenpiste"
 
-    stale = set(re.findall(r"amont-agent-([0-9.]+)-", text)) - {version}
+    stale = set(re.findall(r"(?:amont-agent|greenpiste)-([0-9.]+)-", text)) - {version}
     assert not stale, f"stale release versions survived the rewrite: {stale}"
 
     text = rewrite_refusing(text, refusing)

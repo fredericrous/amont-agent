@@ -67,8 +67,11 @@ class BumpTap(unittest.TestCase):
         self.formula = self.dir / "amont-agent.rb"
         self.formula.write_text(FORMULA)
         self.sums = self.dir / "SHA256SUMS"
+        # A real release lists both archive sets; only greenpiste-* feeds the
+        # formula, the amont-agent-* ones carry other (alias) bytes.
         self.sums.write_text(
-            "".join(f"{'a' * 64}  amont-agent-2.0.0-{t}.tar.gz\n" for t in TARGETS)
+            "".join(f"{'a' * 64}  greenpiste-2.0.0-{t}.tar.gz\n" for t in TARGETS)
+            + "".join(f"{'b' * 64}  amont-agent-2.0.0-{t}.tar.gz\n" for t in TARGETS)
         )
 
     def run_script(self, rules: list) -> subprocess.CompletedProcess:
@@ -147,6 +150,46 @@ class BumpTap(unittest.TestCase):
         r = self.run_script([rule("pipe-to-tail", "deny")])
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("no homepage line", r.stderr)
+
+    def test_both_url_prefixes_are_accepted_and_greenpiste_is_written(self) -> None:
+        old = FORMULA
+        new = FORMULA.replace("/amont-agent-1.0.0-", "/greenpiste-1.0.0-")
+        for text in (old, new):
+            self.formula.write_text(text)
+            r = self.run_script([rule("pipe-to-tail", "deny")])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = self.formula.read_text()
+            self.assertEqual(out.count("/greenpiste-2.0.0-"), 4, out)
+            self.assertNotIn("amont-agent-", out)
+
+    def test_the_sha256s_come_from_greenpiste_archives_only(self) -> None:
+        self.run_script([rule("pipe-to-tail", "deny")])
+        out = self.formula.read_text()
+        self.assertEqual(out.count("a" * 64), 4)
+        self.assertNotIn("b" * 64, out)
+
+    def test_sums_with_only_alias_archives_are_refused(self) -> None:
+        self.sums.write_text(
+            "".join(f"{'b' * 64}  amont-agent-2.0.0-{t}.tar.gz\n" for t in TARGETS)
+        )
+        r = self.run_script([rule("pipe-to-tail", "deny")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no greenpiste checksums", r.stderr)
+
+    def test_a_greenpiste_archive_of_another_version_is_refused(self) -> None:
+        self.sums.write_text(
+            self.sums.read_text() + f"{'c' * 64}  greenpiste-1.9.0-{TARGETS[0]}.tar.gz\n"
+        )
+        r = self.run_script([rule("pipe-to-tail", "deny")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("wrong release", r.stderr)
+
+    def test_a_stale_version_in_either_prefix_is_refused(self) -> None:
+        self.formula.write_text(FORMULA + '  # amont-agent-0.9.0-x\n')
+        r = self.run_script([rule("pipe-to-tail", "deny")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("stale release versions", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

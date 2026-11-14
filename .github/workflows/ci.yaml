@@ -54,6 +54,7 @@ jobs:
       # The release's tap bump, tested here rather than first exercised by a
       # tag: a publish-tap job that fails runs after the release is public.
       - run: python3 scripts/test_bump_tap.py
+      - run: python3 -I scripts/test_release_manifest.py
       # general.no-disabled-safety: the clippy settings that refuse a
       # reasonless `#[allow]` are still in Cargo.toml (ADR-0044). CI only,
       # not `make lint`: a contributor need not install adr-lint, and clippy
