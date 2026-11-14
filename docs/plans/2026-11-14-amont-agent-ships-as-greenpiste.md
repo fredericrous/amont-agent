@@ -205,7 +205,7 @@ and grh pins greenpiste 4.0.0 by its new name.
 
 ## Phases
 
-- [ ] Phase 1 — the names module and every message through it:
+- [x] Phase 1 — the names module and every message through it:
   `amont-agent/crates/amont-agent-guard/src/names.rs`,
   `amont-agent/crates/amont-agent-guard/src/lib.rs`,
   `amont-agent/crates/amont-agent-guard/src/settings.rs`,
@@ -302,6 +302,8 @@ give a working greenpiste 4.0.0, the hooks run as `greenpiste`, and
 `amont-agent` answers only as an alias until the census.
 
 ## Decision log
+
+- 2026-11-14 (Phase 1) — done (169892be). Observed: `target/debug/amont-agent --version` prints `greenpiste 3.34.0`; `check 'git push origin main 2>&1 | tail -5'` denies `pipe-to-tail`; `check 'amont-agent block reinstate x'` and `check 'greenpiste block reinstate x'` both deny `block-reinstate`; `tests/names.rs` passes (and failed on a stray Windows-style `.claude\\amont-agent\\` path until the kept list learnt the escaped separator); `cargo test --workspace --locked` passes at the commit gate. The relais worker over-renamed two data names in tests (LSP fixture paths, renamed with their fixtures; one state-store path, restored to `amont-agent`). Phase 2 waits for amont-agent 3.35.0 (perso-0b, feat/clear-at-boundary), at that session's request.
 
 - 2026-11-14 — 3b split as 3a was: 3b-1 (this plan: installed, published
   and printed names) and 3b-2 (names read and written), so the data-name
