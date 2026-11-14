@@ -6,22 +6,28 @@
 
 ### Added
 
-- `clear-at-boundary` (deny, ceiling `deny`): a turn that ends at a boundary
+- `clear-at-boundary` (advise, ceiling `deny`): a turn that ends at a boundary
   (a `git worktree remove`, a `sweep.py --apply`, or a `docs(plan): ` commit
   that does not close a phase) with the main chain's context at 200,000 tokens
   or more and nothing in flight (no background task, no relais run waiting on
   the session as read from its transcript, clean repositories, nothing
-  unpushed outside `docs/plans/`) is sent on once to write the handoff and end
-  with ``safe to /clear; next: `<prompt>` ``. A boundary reached while work
-  is in flight is kept as pending and advised at the first idle `Stop` after
-  it, unless new work started. At most 3 advices per session. At a lone plan
-  commit past 200k it speaks before `plan-phases-open`. Rollback:
-  `git config --global amont.agent.clear-at-boundary.stance observe`.
+  unpushed outside `docs/plans/`) gets one note to the person; at `deny` the
+  agent is sent on once to write the handoff and end with
+  ``safe to /clear; next: `<prompt>` ``. A boundary reached while work is in
+  flight is kept as pending and advised at the first idle `Stop` after it,
+  unless new work started. At most 3 advices per session. At a lone plan
+  commit past 200k its Continue comes before `plan-phases-open`; at `advise`
+  `plan-phases-open` carries the plan on. It ships at `advise` because its
+  backtest missed two bars; to send the agent on:
+  `git config --global amont.agent.clear-at-boundary.stance deny`.
 - The `clear-relay` Claude Code plugin: when an answer ends with that line, it
   waits 10 s (typing or `/stay` stops it), runs `/clear` and submits the
   prompt in the new session. `amont-agent install --write` places it under
-  `<state dir>/amont-agent/claude-marketplace/` and enables it in
-  `settings.json`; `uninstall --write` removes it.
+  `<state dir>/amont-agent/claude-marketplace/`, enables it in `settings.json`
+  (`extraKnownMarketplaces`, `enabledPlugins`, `pluginConfigs`) and prints what
+  it wrote; `uninstall --write` removes it, and a later run removes a plugin
+  directory an interrupted uninstall left. Each relay step goes as a JSON line
+  to `<state dir>/amont-agent/clear-relay/<session>.jsonl`.
 
 ## v3.34.0
 

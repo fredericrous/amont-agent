@@ -119,7 +119,6 @@ fn the_rules_that_refuse_by_default() {
         [
             "ask-unopened-page",
             "block-reinstate",
-            "clear-at-boundary",
             "pipe-to-tail",
             "plan-phases-open",
             "plan-review-panel",

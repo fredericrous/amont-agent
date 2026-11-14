@@ -1,12 +1,16 @@
-//! The pure pieces of the `clear-at-boundary` judgement: what a transcript
-//! tail says about the context size and the current turn, whether the turn
-//! reached a boundary, whether a relais run still waits on this session, and
-//! whether the repositories the turn touched are clean. No hook wiring lives
-//! here; `docs/plans/2026-11-13-advise-clear-at-a-boundary.md` is the
+//! The `clear-at-boundary` judgement of a `Stop`: what a transcript tail says
+//! about the context size and the current turn, whether the turn reached a
+//! boundary, whether a relais run still waits on this session, and whether
+//! the repositories the turn touched are clean. The reading of the tail and
+//! of relais messages is pure; [`on_stop`] is the shell around it, which
+//! spawns git, keeps the session's state file and journals each outcome.
+//! `src/hook.rs` orders it against `plan-phases-open`;
+//! `docs/plans/2026-11-13-advise-clear-at-a-boundary.md` is the
 //! specification.
 //!
 //! greenpiste never spawns `relais` (ADR-0064): the run state is read from
-//! what the transcript's own relais tool results already showed.
+//! what the transcript's own relais tool results already showed, through
+//! the phrases in [`relais_messages`].
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
@@ -45,6 +49,8 @@ pub const MAX_ADVICES_PER_SESSION: u32 = 3;
 /// The first chunk of a transcript tail.
 pub const TAIL_FIRST_CHUNK: u64 = 64 * 1024;
 /// The largest tail read.
+// holds-until: a session's relais history fits in 8 MB of transcript; past
+// that, a run index kept in the state file instead of the tail.
 pub const TAIL_CAP: u64 = 8 * 1024 * 1024;
 
 /// The entries of a transcript's tail, oldest first.
@@ -84,7 +90,12 @@ pub fn read_tail_until(
         file.seek(SeekFrom::Start(start))?;
         let mut bytes = Vec::new();
         (&mut file).take(size - start).read_to_end(&mut bytes)?;
-        let entries = parse_lines(&bytes, start > 0);
+        let whole_lines = if start > 0 {
+            without_first_line(&bytes)
+        } else {
+            &bytes
+        };
+        let entries = parse_lines(whole_lines);
         if start == 0 {
             return Ok(Tail {
                 entries,
@@ -107,10 +118,18 @@ pub fn read_tail_until(
     }
 }
 
-fn parse_lines(bytes: &[u8], first_line_is_cut: bool) -> Vec<Value> {
+/// The bytes after the first newline: a chunk read from inside the file
+/// starts in the middle of a line.
+fn without_first_line(bytes: &[u8]) -> &[u8] {
+    bytes
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(&[], |at| &bytes[at + 1..])
+}
+
+fn parse_lines(bytes: &[u8]) -> Vec<Value> {
     bytes
         .split(|byte| *byte == b'\n')
-        .skip(usize::from(first_line_is_cut))
         .filter_map(|line| serde_json::from_slice(line).ok())
         .collect()
 }
@@ -465,12 +484,54 @@ impl RelaisFlight {
     pub fn in_flight(&self) -> bool {
         self.pending > 0 || !self.waiting.is_empty()
     }
+
+    /// What one relais plugin message changes: a successor launched adds a
+    /// run, a run finished or relais exited takes one off.
+    fn apply(&mut self, message: &str) {
+        use relais_messages::{
+            EXITED, FINISHED, RUN_ID, SUCCESSOR, WAITING_STATES, WITHOUT_OUTCOME,
+        };
+        if message.contains(SUCCESSOR) {
+            self.pending += 1;
+        }
+        if let Some(id) = word_after(message, RUN_ID).filter(|id| id.starts_with("run-")) {
+            if let Some(state) = word_after(message, FINISHED) {
+                self.pending = self.pending.saturating_sub(1);
+                self.waiting.retain(|(waiting, _)| waiting != id);
+                if WAITING_STATES.contains(&state) {
+                    self.waiting.push((id.to_string(), state.to_string()));
+                }
+            }
+        } else if message.contains(EXITED) && message.contains(WITHOUT_OUTCOME) {
+            self.pending = self.pending.saturating_sub(1);
+        }
+    }
 }
 
-/// States a finished run waits on this session in.
-const WAITING_STATES: [&str; 3] = ["needs_review", "needs_decision", "interrupted"];
-const PLUGIN_MESSAGE_PREFIX: &str = "The relais plugin sent a message:\n";
-const STARTED_PREFIX: &str = "Started relais run";
+/// The relais wording this rule reads, from relais's
+/// `claude-plugin/hooks/runs.ts`. It is relais's text, not a published
+/// format: when relais rewords a phrase, a start or an end goes unseen. Each
+/// phrase is read so that a miss errs towards a run in flight (an end not
+/// recognised keeps the run pending, and the rule silent), except a start
+/// not recognised, which the plan's Decision log names as the one contract
+/// to recheck at each relais release.
+mod relais_messages {
+    /// The engine's frame around a message the relais plugin sent.
+    pub const PLUGIN_MESSAGE_PREFIX: &str = "The relais plugin sent a message:\n";
+    /// The start of an `mcp__relais__run` result that started a run.
+    pub const STARTED_PREFIX: &str = "Started relais run";
+    /// A plugin message launching a successor run.
+    pub const SUCCESSOR: &str = "launches successor";
+    /// Followed by the run id, in `relais run <id> finished: <state>`.
+    pub const RUN_ID: &str = "relais run ";
+    /// Followed by the run's final state.
+    pub const FINISHED: &str = "finished: ";
+    /// `relais exited [with code N] without an outcome`.
+    pub const EXITED: &str = "relais exited";
+    pub const WITHOUT_OUTCOME: &str = "without an outcome";
+    /// States a finished run waits on this session in.
+    pub const WAITING_STATES: [&str; 3] = ["needs_review", "needs_decision", "interrupted"];
+}
 
 fn result_text(block: &Value) -> String {
     match &block["content"] {
@@ -524,9 +585,9 @@ pub fn relais_flight(entries: &[Value]) -> RelaisFlight {
                 if let Some(message) = entry
                     .pointer("/message/content")
                     .and_then(Value::as_str)
-                    .and_then(|text| text.strip_prefix(PLUGIN_MESSAGE_PREFIX))
+                    .and_then(|text| text.strip_prefix(relais_messages::PLUGIN_MESSAGE_PREFIX))
                 {
-                    apply_plugin_message(&mut flight, message);
+                    flight.apply(message);
                     continue;
                 }
                 for block in blocks(entry) {
@@ -535,7 +596,9 @@ pub fn relais_flight(entries: &[Value]) -> RelaisFlight {
                             .as_str()
                             .and_then(|id| tool_names.get(id))
                             .is_some_and(|name| name == "mcp__relais__run")
-                        && result_text(block).trim_start().starts_with(STARTED_PREFIX);
+                        && result_text(block)
+                            .trim_start()
+                            .starts_with(relais_messages::STARTED_PREFIX);
                     if started {
                         flight.pending += 1;
                     }
@@ -545,24 +608,6 @@ pub fn relais_flight(entries: &[Value]) -> RelaisFlight {
         }
     }
     flight
-}
-
-fn apply_plugin_message(flight: &mut RelaisFlight, message: &str) {
-    if message.contains("launches successor") {
-        flight.pending += 1;
-    }
-    if let Some(id) = word_after(message, "relais run ").filter(|id| id.starts_with("run-")) {
-        if let Some(state) = word_after(message, "finished: ") {
-            flight.pending = flight.pending.saturating_sub(1);
-            flight.waiting.retain(|(waiting, _)| waiting != id);
-            if WAITING_STATES.contains(&state) {
-                flight.waiting.push((id.to_string(), state.to_string()));
-            }
-        }
-    } else if message.contains("relais exited with code") && message.contains("without an outcome")
-    {
-        flight.pending = flight.pending.saturating_sub(1);
-    }
 }
 
 /// How the repositories a boundary touched stand.
@@ -580,14 +625,20 @@ pub enum Repositories {
     TimedOut,
 }
 
-/// `Err(true)` is the deadline, `Err(false)` is git saying no.
-fn run(directory: &Path, args: &[&str], deadline: Instant) -> Result<Vec<u8>, bool> {
+fn run(directory: &Path, args: &[&str], deadline: Instant) -> Result<Vec<u8>, BoundedFailure> {
     bytes_bounded_detail(directory, args, None, &[], deadline)
-        .map_err(|failure| matches!(failure, BoundedFailure::TimedOut))
 }
 
-fn run_text(directory: &Path, args: &[&str], deadline: Instant) -> Result<String, bool> {
+fn run_text(directory: &Path, args: &[&str], deadline: Instant) -> Result<String, BoundedFailure> {
     run(directory, args, deadline).map(|b| String::from_utf8_lossy(&b).trim().to_string())
+}
+
+/// How one repository stands.
+enum RepoCheck {
+    /// Clean, with its HEAD (empty when unborn).
+    Clean(String),
+    NotClean(String),
+    TimedOut,
 }
 
 /// The payload `cwd` when inside a work tree, and each existing `directory`:
@@ -610,60 +661,78 @@ pub fn check_repositories(
         }
         let top = match run_text(directory, &["rev-parse", "--show-toplevel"], deadline) {
             Ok(top) => PathBuf::from(top),
-            Err(true) => return Repositories::TimedOut,
-            Err(false) => continue,
+            Err(BoundedFailure::TimedOut) => return Repositories::TimedOut,
+            Err(BoundedFailure::Exited { .. }) => continue,
         };
         if heads.iter().any(|(seen, _)| *seen == top) {
             continue;
         }
         match check_one(&top, deadline) {
-            Ok(Ok(head)) => heads.push((top, head)),
-            Ok(Err(reason)) => {
+            RepoCheck::Clean(head) => heads.push((top, head)),
+            RepoCheck::NotClean(reason) => {
                 return Repositories::NotClean {
                     directory: top,
                     reason,
                 }
             }
-            Err(()) => return Repositories::TimedOut,
+            RepoCheck::TimedOut => return Repositories::TimedOut,
         }
     }
     Repositories::Clean { heads }
 }
 
-/// `Ok(Ok(head))` clean, `Ok(Err(reason))` not clean, `Err(())` timed out.
-fn check_one(top: &Path, deadline: Instant) -> Result<Result<String, String>, ()> {
+/// A git refusal is a reason the repository cannot be called clean, named
+/// after the command git refused.
+fn refused(what: &str, failure: BoundedFailure) -> RepoCheck {
+    match failure {
+        BoundedFailure::TimedOut => RepoCheck::TimedOut,
+        BoundedFailure::Exited { .. } => RepoCheck::NotClean(format!("git {what} failed")),
+    }
+}
+
+fn check_one(top: &Path, deadline: Instant) -> RepoCheck {
     let head = match run_text(top, &["rev-parse", "HEAD"], deadline) {
         Ok(head) => head,
-        Err(true) => return Err(()),
-        Err(false) => String::new(),
+        Err(BoundedFailure::TimedOut) => return RepoCheck::TimedOut,
+        Err(BoundedFailure::Exited { .. }) => String::new(), // an unborn branch has no HEAD
     };
-    let status = run(top, &["status", "--porcelain", "-z"], deadline).map_err(|_| ())?;
+    let status = match run(top, &["status", "--porcelain", "-z"], deadline) {
+        Ok(status) => status,
+        Err(failure) => return refused("status", failure),
+    };
     if !status.is_empty() {
-        return Ok(Err("uncommitted changes".to_string()));
+        return RepoCheck::NotClean("uncommitted changes".to_string());
     }
     let names = match unpushed_names(top, "@{upstream}..HEAD", deadline) {
         Ok(names) => names,
-        Err(true) => return Err(()),
-        Err(false) => {
+        Err(BoundedFailure::TimedOut) => return RepoCheck::TimedOut,
+        Err(BoundedFailure::Exited { .. }) => {
             let Some((base, _)) = amont_agent_guard::git::default_ref(top, deadline) else {
                 return if Instant::now() >= deadline {
-                    Err(())
+                    RepoCheck::TimedOut
                 } else {
-                    Ok(Err("no upstream or base to compare with".to_string()))
+                    RepoCheck::NotClean("no upstream or base to compare with".to_string())
                 };
             };
-            unpushed_names(top, &format!("{base}..HEAD"), deadline).map_err(|_| ())?
+            match unpushed_names(top, &format!("{base}..HEAD"), deadline) {
+                Ok(names) => names,
+                Err(failure) => return refused("log", failure),
+            }
         }
     };
     if names.iter().any(|name| !name.starts_with("docs/plans/")) {
-        return Ok(Err("unpushed commits outside docs/plans/".to_string()));
+        return RepoCheck::NotClean("unpushed commits outside docs/plans/".to_string());
     }
-    Ok(Ok(head))
+    RepoCheck::Clean(head)
 }
 
 /// The paths the commits of `range` touch, read NUL-separated: git quotes a
 /// non-ASCII name unless told otherwise.
-fn unpushed_names(top: &Path, range: &str, deadline: Instant) -> Result<Vec<String>, bool> {
+fn unpushed_names(
+    top: &Path,
+    range: &str,
+    deadline: Instant,
+) -> Result<Vec<String>, BoundedFailure> {
     let bytes = run(
         top,
         &["log", "--name-only", "-z", "--format=", range],
@@ -726,13 +795,13 @@ struct State {
     pending: Option<Pending>,
 }
 
-fn parse_pending(value: &Value) -> Option<Pending> {
-    let text = |name: &str| value[name].as_str().map(str::to_string);
+fn parse_pending(pending_json: &Value) -> Option<Pending> {
+    let text = |name: &str| pending_json[name].as_str().map(str::to_string);
     Some(Pending {
         uuid: text("uuid")?,
         command: text("command")?,
         what: text("what")?,
-        dirs: value["dirs"]
+        dirs: pending_json["dirs"]
             .as_array()?
             .iter()
             .filter_map(|dir| dir.as_str().map(PathBuf::from))
@@ -745,15 +814,15 @@ fn parse_pending(value: &Value) -> Option<Pending> {
 /// pending boundary.
 fn parse_state(text: &str) -> Option<State> {
     if text.starts_with('{') {
-        let value: Value = serde_json::from_str(text).ok()?;
+        let state_json: Value = serde_json::from_str(text).ok()?;
         return Some(State {
-            turn: value["turn"].as_str()?.to_string(),
-            key: value["key"].as_str()?.to_string(),
-            advices: value["advices"]
+            turn: state_json["turn"].as_str()?.to_string(),
+            key: state_json["key"].as_str()?.to_string(),
+            advices: state_json["advices"]
                 .as_u64()
                 .and_then(|count| u32::try_from(count).ok())
                 .unwrap_or(0),
-            pending: parse_pending(&value["pending"]),
+            pending: parse_pending(&state_json["pending"]),
         });
     }
     let (head, key) = text.split_once('\n')?;
@@ -791,12 +860,13 @@ fn render_state(state: &State) -> String {
     .to_string()
 }
 
-fn write_state(session: &str, state: &State) -> Option<()> {
-    let file = state_file(session)?;
-    let dir = file.parent()?;
-    std::fs::create_dir_all(dir).ok()?;
+fn write_state(session: &str, state: &State) -> std::io::Result<()> {
+    let unusable = || std::io::Error::other("no usable state file for this session");
+    let file = state_file(session).ok_or_else(unusable)?;
+    let dir = file.parent().ok_or_else(unusable)?;
+    std::fs::create_dir_all(dir)?;
     journal::private(dir, 0o700);
-    write_atomic(&file, &render_state(state)).ok()
+    write_atomic(&file, &render_state(state))
 }
 
 /// State files older than a week are nobody's session any more.
@@ -878,17 +948,20 @@ fn payload_says_silence(stop: &Stop) -> bool {
     })
 }
 
-/// What the Stop shows about a boundary past [`SIZE`] tokens, with `fact`
-/// the plan's state from `plan_phases::open_phase`. `Working` is in flight,
-/// so the rule is silent. Every failure is silence. At `deny` the answer is
-/// a Continue, at `advise` a note to the person, at `observe` silence.
+/// What the Stop shows about a boundary past [`SIZE`] tokens. `fact` gives
+/// the plan's state (`plan_phases::open_phase`), and is called only once the
+/// context is past the size, so a smaller Stop spawns no git for this rule.
+/// `Working` is in flight, so the rule is silent. Every failure is silence.
+/// At `deny` the answer is a Continue, at `advise` a note to the person
+/// (except at `PlanOnly`, where `plan-phases-open` carries the plan on), at
+/// `observe` silence.
 pub fn on_stop(
     stop: &Stop,
-    fact: PhaseFact,
+    fact: impl FnOnce() -> PhaseFact,
     deadline: Instant,
     stance: impl FnOnce() -> Stance,
 ) -> Decision {
-    if fact == PhaseFact::Working || payload_says_silence(stop) {
+    if payload_says_silence(stop) {
         return Decision::Silent;
     }
     let Some(transcript) = stop.transcript.as_deref() else {
@@ -909,7 +982,26 @@ pub fn on_stop(
     let Some(size) = context_size(&tail.entries).filter(|size| *size >= SIZE) else {
         return Decision::Silent;
     };
-    judge_boundary(stop, &tail, size, deadline, stance()).unwrap_or(Decision::Silent)
+    let fact = fact();
+    if fact == PhaseFact::Working {
+        return Decision::Silent;
+    }
+    judge_boundary(stop, &tail, size, fact, deadline, stance()).unwrap_or(Decision::Silent)
+}
+
+/// The boundary a Stop judges: one this turn reached, or one kept pending
+/// from an earlier Stop.
+enum Candidate {
+    Own(Pending),
+    Resumed(Pending),
+}
+
+impl Candidate {
+    fn boundary(&self) -> &Pending {
+        match self {
+            Candidate::Own(boundary) | Candidate::Resumed(boundary) => boundary,
+        }
+    }
 }
 
 fn position_of(entries: &[Value], uuid: &str) -> Option<usize> {
@@ -956,6 +1048,7 @@ fn judge_boundary(
     stop: &Stop,
     tail: &Tail,
     size: u64,
+    fact: PhaseFact,
     deadline: Instant,
     stance: Stance,
 ) -> Option<Decision> {
@@ -981,7 +1074,19 @@ fn judge_boundary(
         record("watched", what);
         None
     };
+    // A state file that cannot be written loses the boundary key and the
+    // count: say so, and stay silent rather than advise without them.
+    let persist = |state: &State| -> bool {
+        let written = write_state(&stop.session, state).is_ok();
+        if !written {
+            record("watched", "state-unwritable");
+        }
+        written
+    };
 
+    if fact == PhaseFact::TimedOut {
+        return watched("timeout");
+    }
     let Some(window) = turn_window(&tail.entries) else {
         return watched("turn-too-long");
     };
@@ -993,7 +1098,7 @@ fn judge_boundary(
             .as_ref()
             .is_none_or(|pending| pending.uuid != boundary.uuid)
     });
-    let (candidate, from_pending) = match (own, state.pending.clone()) {
+    let candidate = match (own, state.pending.clone()) {
         (Some(boundary), _) => {
             let mut dirs: Vec<PathBuf> = Vec::new();
             for dir in found.iter().flat_map(|boundary| boundary.dirs.iter()) {
@@ -1001,37 +1106,38 @@ fn judge_boundary(
                     dirs.push(dir.clone());
                 }
             }
-            let candidate = Pending {
+            Candidate::Own(Pending {
                 uuid: boundary.uuid.clone(),
                 command: boundary.command.clone(),
                 what: boundary.what.clone(),
                 dirs,
-            };
-            (candidate, false)
+            })
         }
         (None, None) => return watched("no boundary"),
         (None, Some(pending)) => {
             let Some(at) = position_of(&tail.entries, &pending.uuid) else {
                 state.pending = None;
-                write_state(&stop.session, &state);
+                persist(&state);
                 return watched("pending-lost");
             };
             let after = &tail.entries[at + 1..];
             if after.iter().any(is_person_prompt) {
                 state.pending = None;
-                write_state(&stop.session, &state);
+                persist(&state);
                 return watched("no boundary");
             }
             if work_in(after) {
                 return watched("pending-work");
             }
-            (pending, true)
+            Candidate::Resumed(pending)
         }
     };
     let hold = |state: &mut State, reason: &str| -> Option<Decision> {
-        if !from_pending {
-            state.pending = Some(candidate.clone());
-            write_state(&stop.session, state);
+        if let Candidate::Own(boundary) = &candidate {
+            state.pending = Some(boundary.clone());
+            if !persist(state) {
+                return None;
+            }
         }
         record("watched", &format!("pending {reason}"));
         None
@@ -1046,27 +1152,30 @@ fn judge_boundary(
     if flight.pending > 0 {
         return hold(&mut state, &format!("relais pending {}", flight.pending));
     }
-    let heads = match check_repositories(cwd, &candidate.dirs, deadline) {
+    let boundary = candidate.boundary();
+    let heads = match check_repositories(cwd, &boundary.dirs, deadline) {
         Repositories::Clean { heads } => heads,
         Repositories::NotClean { reason, .. } => return hold(&mut state, &reason),
         Repositories::TimedOut => return watched("timeout"),
     };
-    let key = boundary_key(&candidate.command, &heads);
+    let key = boundary_key(&boundary.command, &heads);
     let advices = state.advices;
     if state.key == key {
         if state.pending.is_some() {
             state.pending = None;
-            write_state(&stop.session, &state);
+            persist(&state);
         }
         return None;
     }
     if advices >= MAX_ADVICES_PER_SESSION {
         return watched("cap");
     }
-    let boundary = &candidate;
-
-    let spoke = stance != Stance::Observe;
-    let turn = if spoke {
+    // At `advise` a note cannot carry the plan on, and a lone plan commit's
+    // next step is the plan's: `plan-phases-open` speaks instead.
+    let carried_by_plan = stance == Stance::Advise && fact == PhaseFact::PlanOnly;
+    let counted = stance != Stance::Observe && !carried_by_plan;
+    // Only a Continue asks for a handoff Stop, which `spoke_this_turn` lets end.
+    let turn = if stance == Stance::Deny {
         window.prompt_uuid.as_str()
     } else {
         ""
@@ -1074,10 +1183,18 @@ fn judge_boundary(
     let state = State {
         turn: turn.to_string(),
         key,
-        advices: advices + u32::from(spoke),
+        advices: advices + u32::from(counted),
         pending: None,
     };
-    write_state(&stop.session, &state)?;
+    if !persist(&state) {
+        return None;
+    }
+    if carried_by_plan {
+        return watched(&format!(
+            "{} (advise, plan-phases-open carries the plan)",
+            boundary.what
+        ));
+    }
     let fact = format!(
         "this turn reached a boundary ({}) with nothing in flight, and the context is at {}k tokens, past {}k.",
         boundary.what,
@@ -1267,6 +1384,43 @@ mod tests {
         let everything = read_tail_until(&path, 512, 1 << 20, |_| false).expect("read all");
         assert_eq!(everything.entries.len(), entries.len());
         assert!(!everything.capped);
+        std::fs::remove_dir_all(&directory).expect("clean up");
+    }
+
+    #[test]
+    fn below_the_size_the_plan_state_is_never_asked_for() {
+        let directory = scratch("lazy");
+        let path = directory.join("t.jsonl");
+        write_lines(
+            &path,
+            &[
+                prompt("p1"),
+                bash("b1", "git worktree remove ../x"),
+                tool_result("b1", "ok"),
+                assistant(Some((10, 0, 149_990)), false, json!([])),
+            ],
+        );
+        let stop = Stop {
+            session: "lazy-session".to_string(),
+            cwd: Some(directory.clone()),
+            permission_mode: None,
+            last_message: None,
+            background_busy: false,
+            stop_hook_active: false,
+            transcript: Some(path),
+        };
+        let asked = std::cell::Cell::new(false);
+        let decision = on_stop(
+            &stop,
+            || {
+                asked.set(true);
+                PhaseFact::NoOpenPhase
+            },
+            deadline(),
+            || Stance::Deny,
+        );
+        assert!(matches!(decision, Decision::Silent));
+        assert!(!asked.get(), "open_phase was asked for at 150k");
         std::fs::remove_dir_all(&directory).expect("clean up");
     }
 

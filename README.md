@@ -53,13 +53,14 @@ amont-agent doctor           # installed, runnable, firing? plan root in use
 
 Each rule has a stance: `observe` records the firing and says nothing,
 `advise` puts the reason into the model's context, `deny` refuses the call
-with the reason and the remedy. Of the 57 rules, eight ship as `deny`,
+with the reason and the remedy. Of the 57 rules, seven ship as `deny`,
 among them `pipe-to-tail`; `plan-review-panel`, which refuses a plan at
-`ExitPlanMode` before its review panel ran; `plan-phases-open`, which
-sends an agent on when it stops with a plan phase still open; and
-`clear-at-boundary`, which, at a boundary past 200k tokens of context with
-nothing in flight, sends it on once to write the handoff so the
-`clear-relay` plugin can `/clear` and carry on. A rule is promoted from your own
+`ExitPlanMode` before its review panel ran; and `plan-phases-open`, which
+sends an agent on when it stops with a plan phase still open.
+`clear-at-boundary` ships at `advise`: at a boundary past 200k tokens of
+context with nothing in flight it tells you a `/clear` would pay, and at
+`deny` it has the agent write the handoff so the `clear-relay` plugin can
+`/clear` and carry on. A rule is promoted from your own
 transcripts, not from an argument: `mine`, `backtest`, `explain`,
 `corpus check`, `backtest --compliance`, then `graduate`. Demoting is one
 command with no questions. `amont-agent rules` lists every rule with the

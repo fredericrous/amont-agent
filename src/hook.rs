@@ -101,23 +101,29 @@ fn ask_unopened_page(ask: &payload::Ask) -> Decision {
     }
 }
 
-/// A turn ending. The plan's state is computed once, within one deadline
-/// shared with the repository checks. `Working` is in flight, so only
-/// `plan-phases-open` judges it; at `PlanOnly` past 200k `clear-at-boundary`
-/// judges first, and when it spoke, `plan-phases-open` stays silent for the
-/// rest of the turn.
+/// A turn ending. `clear-at-boundary` asks for the plan's state only past
+/// 200k, within one deadline shared with its repository checks. `Working` is
+/// in flight, so only `plan-phases-open` judges it; at `PlanOnly` past 200k
+/// `clear-at-boundary` judges first, and when its Continue spoke,
+/// `plan-phases-open` stays silent for the rest of the turn.
 fn on_stop(stop: &payload::Stop) -> Decision {
     use crate::clear_boundary;
     use crate::plan_phases::PhaseFact;
     let deadline = std::time::Instant::now() + clear_boundary::DEADLINE;
-    let fact = crate::plan_phases::open_phase(stop, deadline);
-    let clear = clear_boundary::on_stop(stop, fact, deadline, || {
-        crate::stance::resolve(&rules::clear_at_boundary::RULE)
-    });
+    let clear = clear_boundary::on_stop(
+        stop,
+        || crate::plan_phases::open_phase(stop, deadline),
+        deadline,
+        || crate::stance::resolve(&rules::clear_at_boundary::RULE),
+    );
     if !matches!(clear, Decision::Silent) {
         return clear;
     }
-    if fact == PhaseFact::PlanOnly && clear_boundary::spoke_this_turn(stop) {
+    // The state file is read first: only a turn the rule spoke in pays for
+    // the git calls of `open_phase`.
+    if clear_boundary::spoke_this_turn(stop)
+        && crate::plan_phases::open_phase(stop, deadline) == PhaseFact::PlanOnly
+    {
         return Decision::Silent;
     }
     crate::plan_phases::on_stop(stop, || {

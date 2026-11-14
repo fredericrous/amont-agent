@@ -7,9 +7,13 @@
 //! from the hook's `Stop` arm. The rule is declared here so its stance
 //! resolves, graduates and reports like every other rule's.
 //!
-//! Default `deny`: a `Stop` continuation is the only way to have the handoff
-//! written, so `deny` sends it, `advise` tells the person instead, and
-//! `observe` only journals.
+//! Default `advise`, ceiling `deny`: a `Stop` continuation is the only way to
+//! have the handoff written, so `deny` sends it, `advise` tells the person
+//! instead, and `observe` only journals. It ships at `advise` because its
+//! backtest missed two bars (25 of 31 compacted sessions advised before their
+//! first compaction against 28; 46 of 140 advices followed by an editing
+//! turn against at most 10%); `deny` waits on the Outcome's 7- and 14-day
+//! counts.
 
 use crate::rules::{Evidence, Examine, Finding, Rule, Stance, Trend};
 use crate::shell::Parsed;
@@ -22,7 +26,7 @@ pub const RULE: Rule = Rule {
     prevents:
         "A turn ending at a boundary past 200k tokens of context without a handoff and a clear",
     irreversible: false,
-    default_stance: Stance::Deny,
+    default_stance: Stance::Advise,
     max_stance: Stance::Deny,
     evidence: Evidence {
         per_1000: 0.0,

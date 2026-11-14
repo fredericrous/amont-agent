@@ -86,6 +86,8 @@ pub enum Change {
     Add,
     Update,
     AlreadyCurrent,
+    /// The settings are current; only the plugin's files are written.
+    PluginFilesOnly,
     Remove,
     /// Removing our hooks left the document as exactly `{}`: the file is
     /// deleted rather than written back empty. Decided from content alone.
@@ -104,6 +106,9 @@ impl Change {
             Change::Add => format!("added our hooks to {p}"),
             Change::Update => format!("updated our hooks in {p}"),
             Change::AlreadyCurrent => format!("{p} is already current — nothing written"),
+            Change::PluginFilesOnly => {
+                format!("{p} is already current; the clear-relay plugin's files were stale")
+            }
             Change::Remove => format!("removed our hooks from {p}"),
             Change::RemoveFile => format!(
                 "removed our hooks from {p} — nothing else was left, so the file was removed"
@@ -177,26 +182,30 @@ impl PluginPlacement {
         format!("{}@{}", self.plugin, self.marketplace)
     }
 
-    /// Add our entries; returns whether the document changed shape.
-    fn add_entries(&self, root: &mut Map<String, Value>, path: &Path) -> Result<(), MergeError> {
-        let markets = object_entry(root, "extraKnownMarketplaces", path)?;
+    /// `root` with our entries added (or replaced).
+    fn with_entries(
+        &self,
+        mut root: Map<String, Value>,
+        path: &Path,
+    ) -> Result<Map<String, Value>, MergeError> {
+        let markets = object_entry(&mut root, "extraKnownMarketplaces", path)?;
         markets.insert(
             self.marketplace.to_string(),
             json!({ "source": { "source": "directory", "path": self.marketplace_dir.display().to_string() } }),
         );
-        let enabled = object_entry(root, "enabledPlugins", path)?;
+        let enabled = object_entry(&mut root, "enabledPlugins", path)?;
         enabled.insert(self.plugin_id(), Value::Bool(true));
-        let configs = object_entry(root, "pluginConfigs", path)?;
+        let configs = object_entry(&mut root, "pluginConfigs", path)?;
         configs.insert(
             self.plugin_id(),
             json!({ "options": { "stateDir": self.state_dir.display().to_string() } }),
         );
-        Ok(())
+        Ok(root)
     }
 
-    /// Remove exactly our entries, and a parent object only when that left it
-    /// empty. Returns whether anything was ours.
-    fn remove_entries(&self, root: &mut Map<String, Value>) -> bool {
+    /// `root` without exactly our entries, a parent object dropped only when
+    /// that left it empty, and whether anything was ours.
+    fn without_entries(&self, mut root: Map<String, Value>) -> (Map<String, Value>, bool) {
         let mut removed = false;
         for (key, member) in [
             ("extraKnownMarketplaces", self.marketplace.to_string()),
@@ -213,7 +222,7 @@ impl PluginPlacement {
                 }
             }
         }
-        removed
+        (root, removed)
     }
 
     /// The files whose content on disk is not already what we would write.
@@ -493,7 +502,7 @@ pub fn plan_install(
     }
     let files = match plugin {
         Some(placement) => {
-            placement.add_entries(root, path)?;
+            *root = placement.with_entries(std::mem::take(root), path)?;
             placement.stale_files()
         }
         None => Vec::new(),
@@ -502,7 +511,9 @@ pub fn plan_install(
     let after = render(&doc, &indent, nl || before.is_empty());
     let change = if after == before && files.is_empty() {
         Change::AlreadyCurrent
-    } else if existed || after == before {
+    } else if after == before {
+        Change::PluginFilesOnly
+    } else if existed {
         Change::Update
     } else {
         Change::Add
@@ -592,11 +603,15 @@ pub fn plan_uninstall(
 
     if let Some(root) = doc.as_object_mut() {
         if let Some(placement) = plugin {
-            removed |= placement.remove_entries(root);
+            let (kept, ours) = placement.without_entries(std::mem::take(root));
+            *root = kept;
+            removed |= ours;
         }
     }
+    // The directory goes whether or not settings still named it, so a run
+    // after an uninstall that failed half-way finishes the job.
     let remove_dir = plugin
-        .filter(|placement| removed && placement.marketplace_dir.exists())
+        .filter(|placement| placement.marketplace_dir.exists())
         .map(|placement| placement.marketplace_dir.clone());
 
     if !removed {
@@ -605,7 +620,7 @@ pub fn plan_uninstall(
             after: raw,
             change: Change::NothingToRemove,
             files: Vec::new(),
-            remove_dir: None,
+            remove_dir,
         });
     }
     if doc.as_object().is_some_and(|root| root.is_empty()) {
@@ -626,19 +641,22 @@ pub fn plan_uninstall(
     })
 }
 
-/// Write the plan, atomically, or delete the file for `RemoveFile`; then the
-/// plugin files, or the plugin directory an uninstall removes. Staged to
-/// a temp file next to the destination, then renamed — so a symlinked
-/// `settings.json` is replaced rather than written through, and a crash
-/// mid-write cannot leave a half-file.
+/// Write the plan, atomically, or delete the file for `RemoveFile`, with the
+/// plugin in the order that never leaves settings naming a plugin that is not
+/// all there: an install writes the plugin files first and the settings
+/// last, an uninstall writes the settings first and removes the plugin
+/// directory last. Each file is staged to a temp file next to the
+/// destination, then renamed — so a symlinked `settings.json` is replaced
+/// rather than written through, and a crash mid-write cannot leave a
+/// half-file.
 pub fn apply(plan: &Plan) -> std::io::Result<()> {
-    apply_settings(plan)?;
     for (dest, body) in &plan.files {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
         crate::atomic::write_atomic(dest, body)?;
     }
+    apply_settings(plan)?;
     if let Some(dir) = &plan.remove_dir {
         std::fs::remove_dir_all(dir)?;
     }
@@ -648,7 +666,10 @@ pub fn apply(plan: &Plan) -> std::io::Result<()> {
 fn apply_settings(plan: &Plan) -> std::io::Result<()> {
     if matches!(
         plan.change,
-        Change::AlreadyCurrent | Change::NothingToRemove | Change::WouldReformat
+        Change::AlreadyCurrent
+            | Change::PluginFilesOnly
+            | Change::NothingToRemove
+            | Change::WouldReformat
     ) {
         return Ok(());
     }

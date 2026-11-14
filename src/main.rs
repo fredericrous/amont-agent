@@ -83,8 +83,9 @@ const USAGE: &str = "\
 usage: amont-agent <command>
 
   hook                  read a Claude Code payload on stdin, decide
-  install [--write]     add the hook to settings.json (prints it by default)
-  uninstall [--write]   remove exactly what install added
+  install [--write]     add the hook to settings.json (prints it by default), and
+                        place and enable the clear-relay plugin
+  uninstall [--write]   remove exactly what install added, the plugin included
   status                every rule, its stance, and what it has seen
   doctor [--json]       is the guard installed, runnable, and actually firing?
                         --json prints the findings and, apart from health, the
@@ -2880,6 +2881,11 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     };
 
     let plugin = plugin_install::placement();
+    if plugin.is_none() {
+        eprintln!(
+            "amont-agent: no state directory resolves (XDG_STATE_HOME, CLAUDE_CONFIG_DIR, HOME), so the clear-relay plugin is left out"
+        );
+    }
     let planned = if adding {
         settings::plan_install(&path, &bin, f.reformat, plugin.as_ref())
     } else {
@@ -2927,6 +2933,20 @@ fn run_install(args: &[OsString], adding: bool) -> ExitCode {
     match settings::apply(&plan) {
         Ok(()) => {
             println!("{}", plan.change.describe(&plan.path));
+            for (dest, _) in &plan.files {
+                println!("wrote {}", dest.display());
+            }
+            if adding && !plan.files.is_empty() {
+                if let Some(placement) = &plugin {
+                    println!(
+                        "enabled {}@{}: after an answer ending \"safe to /clear; next: `<prompt>`\" it clears the session and submits the prompt within 10 s (type or /stay to keep the session); `uninstall --write` removes it",
+                        placement.plugin, placement.marketplace
+                    );
+                }
+            }
+            if let Some(dir) = &plan.remove_dir {
+                println!("removed {}", dir.display());
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

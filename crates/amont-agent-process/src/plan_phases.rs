@@ -32,7 +32,7 @@ pub fn on_stop(stop: &Stop, stance: impl FnOnce() -> Stance) -> Decision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseFact {
     /// No open phase, or nothing could be established.
-    None,
+    NoOpenPhase,
     /// An open, non-decision phase, and no commit after the plan's own
     /// `docs(plan): ` commit: the plan is the whole state.
     PlanOnly,
@@ -45,14 +45,35 @@ pub enum PhaseFact {
 /// The commit subject that opens a plan's branch.
 const PLAN_COMMIT_PREFIX: &str = "docs(plan): ";
 
-/// `Err(true)` is a deadline, `Err(false)` is git saying no.
-fn bounded(root: &Path, args: &[&str], deadline: Instant) -> Result<Vec<u8>, bool> {
-    use amont_agent_guard::git::{bytes_bounded_detail, BoundedFailure};
-    bytes_bounded_detail(root, args, None, &[], deadline)
-        .map_err(|failure| matches!(failure, BoundedFailure::TimedOut))
+/// Why the plan's state could not be established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unknown {
+    /// A git child did not answer before the deadline.
+    TimedOut,
+    /// No plan, no repository, or git refused a command.
+    Unestablished,
 }
 
-fn bounded_text(root: &Path, args: &[&str], deadline: Instant) -> Result<String, bool> {
+impl From<amont_agent_guard::git::BoundedFailure> for Unknown {
+    fn from(failure: amont_agent_guard::git::BoundedFailure) -> Self {
+        match failure {
+            amont_agent_guard::git::BoundedFailure::TimedOut => Unknown::TimedOut,
+            amont_agent_guard::git::BoundedFailure::Exited { .. } => Unknown::Unestablished,
+        }
+    }
+}
+
+fn bounded(root: &Path, args: &[&str], deadline: Instant) -> Result<Vec<u8>, Unknown> {
+    Ok(amont_agent_guard::git::bytes_bounded_detail(
+        root,
+        args,
+        None,
+        &[],
+        deadline,
+    )?)
+}
+
+fn bounded_text(root: &Path, args: &[&str], deadline: Instant) -> Result<String, Unknown> {
     bounded(root, args, deadline).map(|b| String::from_utf8_lossy(&b).trim().to_string())
 }
 
@@ -61,27 +82,27 @@ fn bounded_text(root: &Path, args: &[&str], deadline: Instant) -> Result<String,
 pub fn open_phase(stop: &Stop, deadline: Instant) -> PhaseFact {
     match phase_fact(stop, deadline) {
         Ok(fact) => fact,
-        Err(true) => PhaseFact::TimedOut,
-        Err(false) => PhaseFact::None,
+        Err(Unknown::TimedOut) => PhaseFact::TimedOut,
+        Err(Unknown::Unestablished) => PhaseFact::NoOpenPhase,
     }
 }
 
-/// `Err(false)` means the fact cannot be established.
-fn phase_fact(stop: &Stop, deadline: Instant) -> Result<PhaseFact, bool> {
+fn phase_fact(stop: &Stop, deadline: Instant) -> Result<PhaseFact, Unknown> {
+    use Unknown::Unestablished;
     if !amont_agent_guard::session_state::usable_id(&stop.session) {
-        return Err(false);
+        return Err(Unestablished);
     }
-    let cwd = stop.cwd.as_deref().ok_or(false)?;
+    let cwd = stop.cwd.as_deref().ok_or(Unestablished)?;
     if !cwd.is_dir() {
-        return Err(false);
+        return Err(Unestablished);
     }
-    let root = repo_root(cwd).ok_or(false)?;
+    let root = repo_root(cwd).ok_or(Unestablished)?;
     if !root.join("docs/plans").is_dir() {
-        return Err(false);
+        return Err(Unestablished);
     }
     let (branch, base) = branch_and_base_bounded(&root, deadline)?;
     if base.split_once('/').map(|(_, b)| b) == Some(branch.as_str()) {
-        return Err(false);
+        return Err(Unestablished);
     }
     let changed = bounded(
         &root,
@@ -109,10 +130,10 @@ fn phase_fact(stop: &Stop, deadline: Instant) -> Result<PhaseFact, bool> {
         deadline,
     )?;
     let names = plan_names(&changed, &untracked);
-    let plan = choose(&root, &names, &branch).ok_or(false)?;
-    let line = next_open(&plan.body).ok_or(false)?;
+    let plan = choose(&root, &names, &branch).ok_or(Unestablished)?;
+    let line = next_open(&plan.body).ok_or(Unestablished)?;
     if line.contains('🧑') {
-        return Err(false);
+        return Err(Unestablished);
     }
     let range = format!("{base}..HEAD");
     let subjects = bounded(&root, &["log", "-z", "--format=%s", &range], deadline)?;
@@ -136,7 +157,7 @@ fn phase_fact(stop: &Stop, deadline: Instant) -> Result<PhaseFact, bool> {
 }
 
 /// [`branch_and_base`] with every git child under `deadline`.
-fn branch_and_base_bounded(root: &Path, deadline: Instant) -> Result<(String, String), bool> {
+fn branch_and_base_bounded(root: &Path, deadline: Instant) -> Result<(String, String), Unknown> {
     let out = bounded_text(
         root,
         &["rev-parse", "--abbrev-ref", "HEAD", "origin/HEAD"],
@@ -152,15 +173,15 @@ fn branch_and_base_bounded(root: &Path, deadline: Instant) -> Result<(String, St
                 .map(str::to_string);
             (branch, base)
         }
-        Err(true) => return Err(true),
+        Err(Unknown::TimedOut) => return Err(Unknown::TimedOut),
         // rev-parse fails as a whole when `origin/HEAD` is missing.
-        Err(false) => (
+        Err(Unknown::Unestablished) => (
             bounded_text(root, &["symbolic-ref", "-q", "--short", "HEAD"], deadline)?,
             None,
         ),
     };
     if branch.is_empty() || branch == "HEAD" {
-        return Err(false);
+        return Err(Unknown::Unestablished);
     }
     if let Some(base) = base {
         return Ok((branch, base));
@@ -168,7 +189,8 @@ fn branch_and_base_bounded(root: &Path, deadline: Instant) -> Result<(String, St
     match amont_agent_guard::git::default_ref(root, deadline) {
         Some((base, _)) => Ok((branch, base)),
         // `default_ref` folds a deadline into `None`.
-        None => Err(Instant::now() >= deadline),
+        None if Instant::now() >= deadline => Err(Unknown::TimedOut),
+        None => Err(Unknown::Unestablished),
     }
 }
 
@@ -629,13 +651,13 @@ mod tests {
 
         #[test]
         fn no_open_phase_is_none() {
-            assert_eq!(fact(&repo_with_plan(DONE_PLAN)), PhaseFact::None);
+            assert_eq!(fact(&repo_with_plan(DONE_PLAN)), PhaseFact::NoOpenPhase);
         }
 
         #[test]
         fn a_decision_phase_is_none() {
             let plan = OPEN_PLAN.replace("Phase 1", "🧑 decision: pick");
-            assert_eq!(fact(&repo_with_plan(&plan)), PhaseFact::None);
+            assert_eq!(fact(&repo_with_plan(&plan)), PhaseFact::NoOpenPhase);
         }
 
         #[test]

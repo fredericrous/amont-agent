@@ -14,7 +14,7 @@ impl Home {
     fn new(name: &str) -> Home {
         let dir =
             std::env::temp_dir().join(format!("amont-agent-plugin-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir); // a home left by a killed run, if any
         std::fs::create_dir_all(&dir).expect("scratch dir");
         Home(dir)
     }
@@ -48,30 +48,31 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0); // a leftover temp directory is harmless
     }
 }
 
 fn files_under(root: &Path) -> Vec<String> {
-    fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).expect("readable directory") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                walk(&path, root, out);
-            } else {
-                out.push(
-                    path.strip_prefix(root)
+    fn walk(dir: &Path, root: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("readable directory")
+            .flat_map(|entry| {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    walk(&path, root)
+                } else {
+                    vec![path
+                        .strip_prefix(root)
                         .expect("under root")
                         .to_string_lossy()
-                        .into_owned(),
-                );
-            }
-        }
+                        .into_owned()]
+                }
+            })
+            .collect()
     }
-    let mut out = Vec::new();
-    walk(root, root, &mut out);
-    out.sort();
-    out
+    let mut files = walk(root, root);
+    files.sort();
+    files
 }
 
 /// The files git tracks under `dir`, relative to it. `claude plugin test`

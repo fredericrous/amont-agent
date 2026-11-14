@@ -395,6 +395,21 @@ and with the relay a boundary advice no longer waits for them.
   read those files. The plugin-install test now compares against the files
   git tracks, since `claude plugin test` leaves its scaffolding in the
   source directory.
+- 2026-11-14 — The person chose to ship `clear-at-boundary` at `advise`, not
+  `deny`, after the implementation review blocked on the agent waiving the
+  backtest bars itself (25 of 31 against 28; 46 of 140 advices, 33%, followed
+  by an editing turn against at most 10%, about 21% once the relay answers
+  "continue"/"go"). At `deny` the Outcome's own (b) rollback would likely
+  fire. Promotion to `deny` waits on the 7- and 14-day Outcome counts. At
+  `advise` a lone plan commit is left to `plan-phases-open`, since a note
+  cannot carry the plan on.
+- 2026-11-14 — The relais phrases the rule reads (`Started relais run`,
+  `launches successor`, `relais run <id> finished: <state>`, `relais exited
+  … without an outcome`, from relais `claude-plugin/hooks/runs.ts`) are a
+  contract relais never published. An end it does not recognise keeps a run
+  in flight (silence); a start it does not recognise is the one miss that
+  advises during a run. Recheck the phrases at each relais release; they
+  live in `clear_boundary::relais_messages`.
 
 ## Verification
 
@@ -461,7 +476,7 @@ and with the relay a boundary advice no longer waits for them.
   this session's own Stop payload with its real transcript (past 200k
   after a teardown) → the Continue text; replay it in plan mode → silent.
 - Phase 2: the released binary reports 3.35.0, and `amont-agent rules
-  --json` lists `clear-at-boundary` at `deny`.
+  --json` lists `clear-at-boundary` at `advise`, max `deny`.
 - Phase 3: `relais programme check docs/programmes/session-boundaries`
   exits 0. `python3 -I count-context.py --until 2026-11-13` matches the
   block pasted into the Resolution when run on the same day.

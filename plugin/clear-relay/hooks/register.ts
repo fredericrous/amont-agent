@@ -7,12 +7,10 @@ const COUNTDOWN_MS = 10_000
 const CLEAR_WAIT_MS = 5_000
 const MIN_GAP_MS = 120_000
 const MAX_PROMPT_CHARS = 2_000
-const SHOWN_PROMPT_CHARS = 60
+const SHOWN_PROMPT_CHARS = 30
 const FAILURE_TOAST_MS = 60_000
 
 type Engine = Parameters<Hook<'turn.complete'>>[0]
-
-type RelayEvent = 'arm' | 'disarm' | 'clear' | 'submit' | 'failure'
 
 type Relay = {
   prompt: string
@@ -25,7 +23,45 @@ type State =
   | { kind: 'armed'; relay: Relay; timer: Timer }
   | { kind: 'firing'; relay: Relay }
 
-/** The prompt of a handoff line, or undefined when the answer's last line is not one. */
+type DisarmCause =
+  | 'keystroke'
+  | 'typing'
+  | 'prompt-submitted'
+  | 'turn-started'
+  | 'stay'
+  | 'other-ending'
+  | 'cleared-by-person'
+
+type RelayFailure =
+  | { kind: 'clear-refused'; detail: string }
+  | { kind: 'clear-timeout' }
+  | { kind: 'submit-dropped'; detail: string }
+  | { kind: 'stay-unregistered'; detail: string }
+  | { kind: 'threw'; detail: string }
+
+/** One line of the relay's log. A failure carries the prompt, so it can be pasted from the log. */
+type LogEntry =
+  | { event: 'arm' | 'clear' | 'submit' }
+  | { event: 'disarm'; cause: DisarmCause }
+  | { event: 'failure'; failure: RelayFailure; prompt: string }
+
+/**
+ * What one registration of the module holds. `register` creates it and every
+ * helper takes it: the hooks compiler wants the functions `$` is passed to at
+ * the top of the file, so the state travels as this argument instead.
+ */
+type Relayer = {
+  readonly isEnabled: boolean
+  readonly stateDir: string
+  state: State
+  lastFiredAt: number | undefined
+  clearEnded: (() => void) | undefined
+  // One write chain per log file: the file is read and rewritten whole, so two
+  // overlapping writes would each drop the other's line.
+  readonly writes: Map<string, Promise<void>>
+}
+
+/** The handoff prompt, or undefined when the answer's last line is not a handoff line. */
 function handoffPrompt(answer: string): string | undefined {
   const lines = answer.split('\n').filter(line => line.trim() !== '')
   const last = lines[lines.length - 1]?.trim()
@@ -44,75 +80,74 @@ function shown(prompt: string): string {
     : prompt
 }
 
-type Settings = { isEnabled: boolean; stateDir: string }
+function describe(failure: RelayFailure): string {
+  switch (failure.kind) {
+    case 'clear-refused':
+      return `/clear was refused (${failure.detail})`
+    case 'clear-timeout':
+      return `the session did not end within ${CLEAR_WAIT_MS / 1000} s of /clear`
+    case 'submit-dropped':
+      return `the prompt was refused (${failure.detail})`
+    case 'stay-unregistered':
+      return `/stay was not registered (${failure.detail})`
+    case 'threw':
+      return `the relay failed (${failure.detail})`
+  }
+}
 
-let settings: Settings = { isEnabled: true, stateDir: '' }
-let state: State = { kind: 'idle' }
-let lastFiredAt: number | undefined
-let clearEnded: (() => void) | undefined
-// One write chain per log file: the file is read and rewritten whole, so two
-// overlapping writes would each drop the other's line.
-const writes = new Map<string, Promise<void>>()
-
-
-
-async function logFile($: Engine, sessionId: string): Promise<string> {
+async function logFile($: Engine, relayer: Relayer, sessionId: string): Promise<string> {
   const base =
-    settings.stateDir !== ''
-      ? settings.stateDir
+    relayer.stateDir !== ''
+      ? relayer.stateDir
       : `${(await $.env.get('HOME')) ?? ''}/.local/state/amont-agent`
 
   return `${base}/clear-relay/${sessionId}.jsonl`
 }
 
-async function log(
-  $: Engine,
-  relay: Relay,
-  event: RelayEvent,
-  cause?: string,
-): Promise<void> {
-  const file = await logFile($, relay.sessionId)
+async function log($: Engine, relayer: Relayer, relay: Relay, entry: LogEntry): Promise<void> {
+  const file = await logFile($, relayer, relay.sessionId)
   const line = JSON.stringify({
-    event,
+    ...entry,
     session: relay.sessionId,
     cwd: relay.cwd,
     time: await $.clock.now(),
-    ...(cause === undefined ? {} : { cause }),
   })
-  const previous = writes.get(file) ?? Promise.resolve()
+  const previous = relayer.writes.get(file) ?? Promise.resolve()
+  // The log is a record: a failed write is said in the UI log and never stops the relay.
   const written = previous
     .then(async () => {
       const before = (await $.fs.exists(file)) ? await $.fs.read(file) : ''
       await $.fs.write(file, `${before}${line}\n`)
     })
-    .catch(() => undefined) // the log is a record; failing to write it must not stop the relay
-  writes.set(file, written)
+    .catch(error => $.ui.log(`clear-relay: log write to ${file} failed (${String(error)})`))
+  relayer.writes.set(file, written)
   await written
 }
 
-async function disarm($: Engine, cause: string): Promise<void> {
-  if (state.kind !== 'armed') return
-  const { relay, timer } = state
+async function disarm($: Engine, relayer: Relayer, cause: DisarmCause): Promise<void> {
+  if (relayer.state.kind !== 'armed') return
+  const { relay, timer } = relayer.state
   timer.cancel()
-  state = { kind: 'idle' }
+  relayer.state = { kind: 'idle' }
   $.ui.status(undefined)
-  await log($, relay, 'disarm', cause)
+  await log($, relayer, relay, { event: 'disarm', cause })
 }
 
-async function fail($: Engine, relay: Relay, what: string): Promise<void> {
-  state = { kind: 'idle' }
+async function fail($: Engine, relayer: Relayer, relay: Relay, failure: RelayFailure): Promise<void> {
+  relayer.state = { kind: 'idle' }
   $.ui.status(undefined)
+  const file = await logFile($, relayer, relay.sessionId)
   $.ui.toast(
-    `clear-relay: ${what}. Paste this to carry on: ${relay.prompt}`,
+    `clear-relay: ${describe(failure)}. Paste this to carry on (also in ${file}): ${relay.prompt}`,
     { timeoutMs: FAILURE_TOAST_MS },
   )
-  await log($, relay, 'failure', what)
+  await log($, relayer, relay, { event: 'failure', failure, prompt: relay.prompt })
 }
 
-function waitForClear($: Engine): { ended: Promise<boolean>; stop: () => void } {
+function waitForClear($: Engine, relayer: Relayer): { ended: Promise<boolean>; stop: () => void } {
   let timer: Timer | undefined
   const ended = new Promise<boolean>(resolve => {
-    clearEnded = () => resolve(true)
+    relayer.clearEnded = () => resolve(true)
     timer = $.clock.after(CLEAR_WAIT_MS, () => resolve(false))
   })
 
@@ -120,108 +155,118 @@ function waitForClear($: Engine): { ended: Promise<boolean>; stop: () => void } 
     ended,
     stop: () => {
       timer?.cancel()
-      clearEnded = undefined
+      relayer.clearEnded = undefined
     },
   }
 }
 
-async function fire($: Engine): Promise<void> {
-  if (state.kind !== 'armed') return
-  const { relay } = state
-  state = { kind: 'firing', relay }
+async function fire($: Engine, relayer: Relayer): Promise<void> {
+  if (relayer.state.kind !== 'armed') return
+  const { relay } = relayer.state
+  relayer.state = { kind: 'firing', relay }
 
   try {
     const box = await $.prompt.read()
     if (box.text.trim() !== '') {
-      state = { kind: 'idle' }
+      relayer.state = { kind: 'idle' }
       $.ui.status(undefined)
-      await log($, relay, 'disarm', 'typing')
+      await log($, relayer, relay, { event: 'disarm', cause: 'typing' })
       return
     }
-    lastFiredAt = await $.clock.now()
+    relayer.lastFiredAt = await $.clock.now()
 
-    const wait = waitForClear($)
+    const wait = waitForClear($, relayer)
     try {
       await $.command.run({ command: 'clear' })
     } catch (error) {
       wait.stop()
-      await fail($, relay, `/clear was refused (${String(error)})`)
+      await fail($, relayer, relay, { kind: 'clear-refused', detail: String(error) })
       return
     }
     const isCleared = await wait.ended
     wait.stop()
     if (!isCleared) {
-      await fail($, relay, 'the session did not end within 5 s of /clear')
+      await fail($, relayer, relay, { kind: 'clear-timeout' })
       return
     }
-    await log($, relay, 'clear')
-    await declareStay($, relay)
+    await log($, relayer, relay, { event: 'clear' })
+    await declareStay($, relayer, relay)
 
     const submitted = await $.prompt.submit({ text: relay.prompt })
     if (submitted.drop !== undefined) {
-      await fail($, relay, `the prompt was refused (${submitted.drop})`)
+      await fail($, relayer, relay, { kind: 'submit-dropped', detail: String(submitted.drop) })
       return
     }
-    state = { kind: 'idle' }
+    relayer.state = { kind: 'idle' }
     $.ui.status(undefined)
-    await log($, relay, 'submit')
+    await log($, relayer, relay, { event: 'submit' })
   } catch (error) {
-    await fail($, relay, `the relay failed (${String(error)})`)
+    await fail($, relayer, relay, { kind: 'threw', detail: String(error) })
   }
 }
 
 // No session.start follows a /clear, so the command is declared at every arm
 // and again after a clear; declaring a name again replaces it.
-async function declareStay($: Engine, relay: Relay): Promise<void> {
+async function declareStay($: Engine, relayer: Relayer, relay: Relay): Promise<void> {
   await $.command
     .register({
       name: 'stay',
       description: 'Keep this session: cancel the pending clear.',
     })
     .catch(error =>
-      log($, relay, 'failure', `/stay was not registered (${String(error)})`),
+      log($, relayer, relay, {
+        event: 'failure',
+        failure: { kind: 'stay-unregistered', detail: String(error) },
+        prompt: relay.prompt,
+      }),
     )
 }
 
-async function arm($: Engine, prompt: string): Promise<void> {
+async function arm($: Engine, relayer: Relayer, prompt: string): Promise<void> {
   const box = await $.prompt.read()
   if (box.text.trim() !== '') return
   const now = await $.clock.now()
-  if (lastFiredAt !== undefined && now - lastFiredAt < MIN_GAP_MS) return
+  if (relayer.lastFiredAt !== undefined && now - relayer.lastFiredAt < MIN_GAP_MS) return
 
   const relay: Relay = {
     prompt,
     sessionId: await $.session.id(),
     cwd: await $.session.cwd(),
   }
-  const text = `clearing in 10 s, then: ${shown(prompt)}; type anything or /stay to keep this session`
+  // The way out first, so a cut line still says how to keep the session.
+  const text = `clear within 10 s (type or /stay to keep), then: ${shown(prompt)}`
   const timer = $.clock.after(COUNTDOWN_MS, () => {
-    void fire($)
+    void fire($, relayer)
   })
-  state = { kind: 'armed', relay, timer }
+  relayer.state = { kind: 'armed', relay, timer }
   $.ui.toast(text, { timeoutMs: COUNTDOWN_MS })
   $.ui.status(text)
-  await log($, relay, 'arm')
+  await log($, relayer, relay, { event: 'arm' })
 
-  await declareStay($, relay)
+  await declareStay($, relayer, relay)
 }
 
 export const register: Register = (on, options) => {
-  settings = {
+  const relayer: Relayer = {
+    // plugin.json types `enabled` as a boolean, and the engine refuses any other value.
     isEnabled: options.enabled !== false,
     stateDir: typeof options.stateDir === 'string' ? options.stateDir : '',
+    state: { kind: 'idle' },
+    lastFiredAt: undefined,
+    clearEnded: undefined,
+    writes: new Map(),
   }
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined || state.kind === 'firing') return result
+    if (e.agentId !== undefined || relayer.state.kind === 'firing') return result
 
     try {
       const prompt = e.reason === 'answer' ? handoffPrompt(e.answer) : undefined
       if (prompt === undefined) {
-        await disarm($, 'other-ending')
-      } else if (settings.isEnabled && state.kind === 'idle') {
-        await arm($, prompt)
+        await disarm($, relayer, 'other-ending')
+      } else if (relayer.isEnabled && relayer.state.kind === 'idle') {
+        await arm($, relayer, prompt)
       }
     } catch (error) {
       $.ui.log(`clear-relay: ${String(error)}`) // the answer stands whatever the relay does
@@ -231,27 +276,29 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.edit', async ($, e, next) => {
-    if (state.kind === 'armed') await disarm($, 'keystroke')
+    if (relayer.state.kind === 'armed') await disarm($, relayer, 'keystroke')
 
     return next(e)
   })
 
   on('prompt.submit', async ($, e, next) => {
+    // The relay submits only while firing, which no disarm reaches; the origin
+    // check also covers its own submit arriving after the state moved on.
     const isOwn = e.origin?.kind === 'plugin' && e.origin.name === $.plugin.name
-    if (!isOwn && state.kind === 'armed') await disarm($, 'prompt-submitted')
+    if (!isOwn && relayer.state.kind === 'armed') await disarm($, relayer, 'prompt-submitted')
 
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
-    if (state.kind === 'armed') await disarm($, 'turn-started')
+    if (relayer.state.kind === 'armed') await disarm($, relayer, 'turn-started')
 
     return next(e)
   })
 
   on('command.run', { command: 'stay' }, async $ => {
-    if (state.kind === 'armed') {
-      await disarm($, 'stay')
+    if (relayer.state.kind === 'armed') {
+      await disarm($, relayer, 'stay')
 
       return { text: 'clear-relay: staying in this session.' }
     }
@@ -261,8 +308,8 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
-      if (state.kind === 'armed') await disarm($, 'cleared-by-person')
-      else clearEnded?.()
+      if (relayer.state.kind === 'armed') await disarm($, relayer, 'cleared-by-person')
+      else relayer.clearEnded?.()
     }
 
     return next(e)

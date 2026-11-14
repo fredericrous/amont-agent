@@ -67,15 +67,20 @@ impl World {
             std::process::id(),
             std::thread::current().id()
         ));
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&root); // a world left by a killed run, if any
         let repo = root.join("repo");
         let remote = root.join("origin.git");
         let claude = root.join("claude");
         for dir in [&repo, &claude] {
             std::fs::create_dir_all(dir).unwrap();
         }
+        // The rule ships at `advise`; most cases here judge the Continue.
         let global = root.join("global");
-        std::fs::write(&global, "").unwrap();
+        std::fs::write(
+            &global,
+            "[amont \"agent.clear-at-boundary\"]\n\tstance = deny\n",
+        )
+        .unwrap();
         Command::new("git")
             .args(["init", "-q", "--bare", "--template=", "-b", "main"])
             .arg(&remote)
@@ -198,7 +203,7 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        let _ = std::fs::remove_dir_all(&self.root); // a leftover temp directory is harmless
     }
 }
 
@@ -565,6 +570,83 @@ fn at_observe_boundary_one_falls_through_to_plan_phases_open() {
         w.journal_has("watched", "plan commit (observe)"),
         "{:?}",
         w.journal()
+    );
+}
+
+#[test]
+fn at_advise_boundary_one_lets_plan_phases_open_carry_the_plan() {
+    let w = boundary_one();
+    w.stance("clear-at-boundary", "advise");
+    let big = w.transcript(
+        "big.jsonl",
+        &turn("git commit -m \"docs(plan): x\"", 250_000),
+    );
+    let reply = w.stop("s1", &big, json!({}));
+    assert!(reply.blocks(), "{}", reply.stdout);
+    assert!(
+        reply.reason().starts_with("amont-agent/plan-phases-open:"),
+        "{}",
+        reply.reason()
+    );
+    assert!(
+        w.journal_has("watched", "plan-phases-open carries the plan"),
+        "{:?}",
+        w.journal()
+    );
+    // The next Stop of the same turn is plan-phases-open's to judge too.
+    let next = w.stop("s1", &big, json!({"stop_hook_active": true}));
+    assert!(
+        next.silent() || next.reason().starts_with("amont-agent/plan-phases-open:"),
+        "{}",
+        next.stdout
+    );
+    assert!(
+        !w.journal_has("advised", "plan commit"),
+        "{:?}",
+        w.journal()
+    );
+}
+
+/// The Continue asks for the line the clear-relay plugin reads: the line it
+/// quotes must match the plugin's `HANDOFF` pattern, `/^<prefix>(.+)<suffix>$/`.
+#[test]
+fn the_continue_asks_for_the_line_the_relay_reads() {
+    let source = include_str!("../plugin/clear-relay/hooks/register.ts");
+    let pattern = source
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("const HANDOFF = /^"))
+        .and_then(|rest| rest.strip_suffix("$/"))
+        .expect("register.ts declares const HANDOFF = /^…$/")
+        .replace("\\/", "/");
+    let (prefix, suffix) = pattern
+        .split_once("(.+)")
+        .expect("HANDOFF captures the prompt with (.+)");
+
+    let w = World::new("contract");
+    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let reason = w.stop("s1", &transcript, json!({})).reason();
+    let asked = reason
+        .split('"')
+        .find(|quoted| quoted.starts_with("safe to /clear"))
+        .unwrap_or_else(|| panic!("no quoted handoff line in: {reason}"));
+    let prompt = asked
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .unwrap_or_else(|| panic!("{asked:?} does not match /^{prefix}(.+){suffix}$/"));
+    assert!(!prompt.is_empty(), "{asked:?}");
+}
+
+#[test]
+fn the_rule_ships_at_advise() {
+    let w = World::new("default");
+    std::fs::write(&w.global, "").unwrap();
+    let transcript = w.transcript("t.jsonl", &turn(TEARDOWN, 250_000));
+    let reply = w.stop("s1", &transcript, json!({}));
+    assert!(reply.json().get("decision").is_none(), "{}", reply.stdout);
+    assert!(
+        reply.note().is_some_and(|note| note.contains("hand off")),
+        "{}",
+        reply.stdout
     );
 }
 
